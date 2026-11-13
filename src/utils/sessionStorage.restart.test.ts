@@ -50,17 +50,19 @@ if (!process.env[childKey]) {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 } else {
+  // Loading these pulls in most of the CLI module graph (1.3s warm, 3-5s on
+  // CI), so it happens at file load, outside the test's own time limit.
+  const { getSessionId, setOriginalCwd, setSessionPersistenceDisabled } =
+    await import('../bootstrap/state.js')
+  const storage = await import('./sessionStorage.js')
+  const {
+    createCommandInputMessage,
+    createUserMessage,
+    createAssistantMessage,
+  } = await import('./messages.js')
   test('saves real local-command history for UUID resume', async () => {
-    const { getSessionId, setOriginalCwd, setSessionPersistenceDisabled } =
-      await import('../bootstrap/state.js')
-    const storage = await import('./sessionStorage.js')
-    const {
-      createCommandInputMessage,
-      createUserMessage,
-      createAssistantMessage,
-    } = await import('./messages.js')
     setOriginalCwd(process.cwd())
     const sessionId = getSessionId() as UUID
     const scenario = process.env[childKey]!

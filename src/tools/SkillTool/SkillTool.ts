@@ -6,6 +6,7 @@ import { getProjectRoot } from 'src/bootstrap/state.js'
 import {
   builtInCommandNames,
   findCommand,
+  getCommandName,
   getCommands,
   type PromptCommand,
 } from 'src/commands.js'
@@ -541,22 +542,30 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const permissionCommandName =
       resolved?.commandName ?? direct?.reference.commandName ?? commandName
 
+    // Deny rules match every name the skill can be invoked by, so a denied
+    // skill cannot be reached under its other names. Allow rules match only
+    // the invoked and canonical names (official 2.1.322).
+    const allowNames = [permissionCommandName, ...(commandObj ? [commandObj.name] : [])]
+    const denyNames = commandObj
+      ? [...allowNames, getCommandName(commandObj), ...(commandObj.aliases ?? [])]
+      : allowNames
+
     // Helper function to check if a rule matches the skill
     // Normalizes both inputs by stripping leading slashes for consistent matching
-    const ruleMatches = (ruleContent: string): boolean => {
+    const ruleMatches = (ruleContent: string, names: string[]): boolean => {
       // Normalize rule content by stripping leading slash
       const normalizedRule = ruleContent.startsWith('/')
         ? ruleContent.substring(1)
         : ruleContent
 
       // Match the canonical identity for direct MCP URI skills.
-      if (normalizedRule === permissionCommandName) {
+      if (names.includes(normalizedRule)) {
         return true
       }
       // Check prefix match (e.g., "review:*" matches "review-pr 123")
       if (normalizedRule.endsWith(':*')) {
         const prefix = normalizedRule.slice(0, -2) // Remove ':*'
-        return permissionCommandName.startsWith(prefix)
+        return names.some(name => name.startsWith(prefix))
       }
       return false
     }
@@ -568,7 +577,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       'deny',
     )
     for (const [ruleContent, rule] of denyRules.entries()) {
-      if (ruleMatches(ruleContent)) {
+      if (ruleMatches(ruleContent, denyNames)) {
         return {
           behavior: 'deny',
           message: `Skill execution blocked by permission rules`,
@@ -605,7 +614,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       'allow',
     )
     for (const [ruleContent, rule] of allowRules.entries()) {
-      if (ruleMatches(ruleContent)) {
+      if (ruleMatches(ruleContent, allowNames)) {
         return {
           behavior: 'allow',
           updatedInput: { skill, args },
@@ -1035,6 +1044,10 @@ const SAFE_SKILL_PROPERTIES = new Set([
   'agent',
   'getPromptForCommand',
   'frontmatterKeys',
+  // Path and parsed frontmatter, kept for Mods skill.prompt. Frontmatter that
+  // grants anything (allowed-tools, hooks, shell, ...) is also set as its own
+  // property above, which this check still sees.
+  'skillFile',
   // CommandBase properties
   'name',
   'description',

@@ -20,6 +20,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../tools/ApplyPatchTool/prompt.js'
 import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -123,10 +124,11 @@ const teamMemPrompts = feature('TEAMMEM')
  * Shipped because Claude was burning turns on `ls`/`mkdir -p` before writing.
  * Harness guarantees the directory exists via ensureMemoryDirExists().
  */
-export const DIR_EXISTS_GUIDANCE =
-  'This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).'
-export const DIRS_EXIST_GUIDANCE =
-  'Both directories already exist — write to them directly with the Write tool (do not run mkdir or check for their existence).'
+const writeToolName = () => (isApplyPatchOnly() ? APPLY_PATCH_TOOL_NAME : 'Write')
+export const dirExistsGuidance = () =>
+  `This directory already exists — write to it directly with the ${writeToolName()} tool (do not run mkdir or check for its existence).`
+export const dirsExistGuidance = () =>
+  `Both directories already exist — write to them directly with the ${writeToolName()} tool (do not run mkdir or check for their existence).`
 
 /**
  * Ensure a memory directory exists. Idempotent — called from loadMemoryPrompt
@@ -216,8 +218,8 @@ export function buildMemoryLines(
     `# ${displayName}`,
     '',
     (memoryDir
-      ? `You have a persistent file-based memory at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`
-      : `You have a persistent file-based memory. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`) +
+      ? `You have a persistent file-based memory at \`${memoryDir}\`. ${dirExistsGuidance()}`
+      : `You have a persistent file-based memory. The directory path is provided in your session context. ${dirExistsGuidance()}`) +
       ' Each memory is one file holding one fact, with frontmatter:',
     '',
     '```markdown',

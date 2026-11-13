@@ -23,7 +23,8 @@ const inputSchema = lazySchema(() =>
       .describe(
         'Where to search (default: every enabled scope). user: memories from other projects. project: this project\'s memory files. session: this project\'s past session messages.',
       ),
-    limit: z.number().int().min(1).max(50).optional().describe('Maximum results (default 10)'),
+    // 25 results stay under maxResultSizeChars; more were saved to a file the model then had to read.
+    limit: z.number().int().min(1).max(25).optional().describe('Maximum results (default 10, at most 25)'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -38,7 +39,8 @@ function formatHits(hits: MemorySearchHit[]): string {
   if (hits.length === 0) return 'No matches.'
   const body = hits
     .map(hit => {
-      const where = hit.kind === 'transcript' ? `${hit.path}:${hit.line}` : hit.path
+      const where =
+        hit.kind === 'transcript' ? `${hit.path}:${hit.line}` : hit.modified ? `${hit.path} (saved ${hit.modified})` : hit.path
       return `${where}\n${neutralizeMemoryContent(hit.snippet.replace(/\s+/g, ' ').trim())}`
     })
     .join('\n\n')
@@ -58,7 +60,7 @@ export const SearchMemoryTool = buildTool({
 
 Call it before you answer or act whenever a saved preference, convention or project decision could apply (branches, releases, deploys, tests, commits, naming, config values, people), when the user refers to earlier work, and before you say you don't know or fall back to a common default. Memories attached to the user's message are keyword matches only; search anyway when they don't answer the question. The index is local, so a search is cheap.
 
-Matching is by words, not meaning: memories may be in another language than the user's message, so include English keywords, the user's own words and likely synonyms in one query. If nothing matches, try different words once before concluding there is no memory. Results give the file path (and line for transcripts) with a matching snippet; Read a memory file for its full text.`
+Matching is by words, not meaning: memories may be in another language than the user's message, so include English keywords, the user's own words and likely synonyms in one query. If nothing matches, try different words once before concluding there is no memory. Results give the file path (and line for transcripts) with a matching snippet, newer memory files first among equal matches, each with the day it was saved; when memories disagree, the newest one is usually current. Read a memory file for its full text.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()

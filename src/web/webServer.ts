@@ -2,12 +2,13 @@ import type { Database } from 'bun:sqlite'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
 import { homedir } from 'os'
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
 import { addToHistory, getTimestampedHistory } from '../history.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
 import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
+import { MCP_APP_FRAME_CSP, MCP_APP_FRAME_HTML, MCP_APP_FRAME_PATH } from './mcpAppFrame.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
@@ -240,13 +241,14 @@ const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
-const ACTIVE_TYPES = new Set(['.html', '.htm', '.xhtml', '.svg', '.xml', '.js', '.mjs'])
+// Markup and script would run as this origin (with the page's API), so they are shown as text.
+// Decided by the served type: Bun maps more extensions to these than any list here (.shtml, .xht, .cjs, .ts…).
+const ACTIVE_TYPE = /html|xml|javascript|ecmascript/i
 
 function fileResponse(req: Request, path: string, download: boolean): Response {
   const file = Bun.file(path)
   const size = file.size
-  const ext = extname(path).toLowerCase()
-  const type = ACTIVE_TYPES.has(ext)
+  const type = ACTIVE_TYPE.test(file.type)
     ? 'text/plain; charset=utf-8'
     : file.type || 'application/octet-stream'
   const headers: Record<string, string> = {
@@ -308,7 +310,6 @@ function errorResponse(status: number, message: string): Response {
 
 const EXT_PATH = /^\/api\/ext\/([a-z]+)(?:\/([^/]+))?(?:\/([a-z]+))?$/
 const onBodySchema = lazySchema(() => z.object({ on: z.boolean() }))
-const idBodySchema = lazySchema(() => z.object({ id: z.string().max(300) }))
 const pluginBodySchema = lazySchema(() =>
   z.object({
     id: z.string().max(300),
@@ -344,9 +345,7 @@ async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
  *   GET  /api/ext/memory                 → memory files, auto memory, FTS index
  *   GET  /api/ext/memory/search?q=&scope=
  *   PUT  /api/ext/memory {key, on}       → autoMemoryEnabled / memory.sqlite.enabled
- *   GET  /api/ext/hooks                  → hooks by source, disableAllHooks
- *   POST/PUT/DELETE /api/ext/hooks       → add / {id,...} edit / {id} delete
- *   PUT  /api/ext/hooks/disabled {on}
+ *   GET  /api/ext/hooks                  → hooks by source, disableAllHooks (read-only, like /hooks)
  *   GET  /api/ext/mods                   → plugins with hook modules
  *   GET|PUT /api/ext/mods/:id/source     → entry module source
  *   PUT  /api/ext/mods/:id {on}
@@ -356,6 +355,8 @@ async function handleExtApi(req: Request, url: URL, configDir: string): Promise<
   const match = EXT_PATH.exec(url.pathname)
   if (!match) return errorResponse(404, 'Not found')
   const [, area, rawArg, sub] = match
+  // The dialogs read and edit settings files that sessions, the TUI or the user also change.
+  resetSettingsCache()
   const arg = rawArg === undefined ? undefined : decodeURIComponent(rawArg)
   const route = `${req.method} ${area}${arg === undefined ? '' : '/:arg'}${sub ? `/${sub}` : ''}`
   const ok = () => new Response(null, { status: 204 })
@@ -404,21 +405,6 @@ async function handleExtApi(req: Request, url: URL, configDir: string): Promise<
       }
       case 'GET hooks':
         return Response.json(await ext.listHooks())
-      case 'POST hooks':
-        ext.addHook(await parseBody(req, ext.hookInputSchema))
-        return ok()
-      case 'PUT hooks': {
-        const body = await parseBody(req, ext.hookInputSchema.extend({ id: z.string().max(300) }))
-        ext.updateHook(body.id, body)
-        return ok()
-      }
-      case 'DELETE hooks':
-        ext.deleteHook((await parseBody(req, idBodySchema())).id)
-        return ok()
-      case 'PUT hooks/:arg':
-        if (arg !== 'disabled') break
-        ext.setHooksDisabled((await parseBody(req, onBodySchema())).on)
-        return ok()
       case 'GET mods':
         return Response.json(await ext.listMods())
       case 'PUT mods/:arg':
@@ -1256,6 +1242,7 @@ export function startWebServer(
       pathname === '/api/settings' ||
       pathname === '/api/usage'
     ) {
+      if (pathname === '/api/settings') resetSettingsCache()
       const res = await handleAccount(req, url)
       if (res) return res
     }
@@ -1356,7 +1343,14 @@ export function startWebServer(
         }
 
         if (isApi) {
-          const res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+          let res: Response | undefined
+          try {
+            res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+          } catch (err) {
+            // A malformed %-escape in a path segment.
+            if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
+            throw err
+          }
           return res && withHeaders(res)
         }
         if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -1366,6 +1360,12 @@ export function startWebServer(
           const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
           for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
           res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+          return res
+        }
+        if (pathname === MCP_APP_FRAME_PATH) {
+          const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+          res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
           return res
         }
         const asset = assets.get(pathname) ?? assets.get('/index.html')

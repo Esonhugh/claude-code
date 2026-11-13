@@ -11,7 +11,7 @@ import {
   AGENT_TOOL_NAME,
   VERIFICATION_AGENT_TYPE,
 } from '../tools/AgentTool/constants.js'
-import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../tools/ApplyPatchTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
@@ -294,9 +294,12 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const embedded = hasEmbeddedSearchTools()
   const dedicatedTools = [
     FILE_READ_TOOL_NAME,
-    FILE_EDIT_TOOL_NAME,
-    FILE_WRITE_TOOL_NAME,
-    ...(enabledTools.has(APPLY_PATCH_TOOL_NAME) ? [APPLY_PATCH_TOOL_NAME] : []),
+    // On the OpenAI path apply_patch replaces Edit and Write unless openaiEditTools is "all".
+    ...(!enabledTools.has(APPLY_PATCH_TOOL_NAME)
+      ? [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME]
+      : !isApplyPatchOnly()
+        ? [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME, APPLY_PATCH_TOOL_NAME]
+        : [APPLY_PATCH_TOOL_NAME]),
     ...(embedded ? [] : [GLOB_TOOL_NAME, GREP_TOOL_NAME]),
   ].join(', ')
 
@@ -394,7 +397,8 @@ function getSessionSpecificGuidanceSection(
 }
 
 // @[MODEL LAUNCH]: Remove this section when we launch numbat.
-function getOutputEfficiencySection(): string {
+// Fork: the external "Output efficiency" text ("Be extra concise") is dropped; the content ablation showed no loss without it.
+function getOutputEfficiencySection(): string | null {
   if (isAnt()) {
     return `# Communicating with the user
 When sending user-facing text, you're writing for a person, not logging to a console. Assume users can't see most tool calls or thinking - only your text output. Before your first tool call, briefly state what you're about to do. While working, give short updates at key moments: when you find something load-bearing (a bug, a root cause), when changing direction, when you've made progress without an update.
@@ -407,11 +411,7 @@ What's most important is the reader understanding your output without mental ove
 
 These user-facing text instructions do not apply to code or tool calls.`
   }
-  return `# Output efficiency
-
-IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Be extra concise.
-
-Lead with the answer or action, not the reasoning. Skip filler, preamble, and restating what the user said. Explain only what the user needs to understand. Focus text output on decisions that need the user's input, status updates at natural milestones, and errors or blockers that change the plan. If you can say it in one sentence, don't use three. This does not apply to code or tool calls.`
+  return null
 }
 
 function getSimpleToneAndStyleSection(): string {
@@ -741,10 +741,8 @@ export async function computeSimpleEnvInfo(
     isAnt() && isUndercover()
       ? null
       : `The most recent Claude models are the Claude 5 family. Model IDs — Fable 5.1: '${LATEST_MODEL_IDS.fable}', Opus 5.5: '${LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${LATEST_MODEL_IDS.sonnet}', Haiku 5.5: '${LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
-    isAnt() && isUndercover()
-      ? null
-      : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
-    staticOnly || (isAnt() && isUndercover()) || getAPIProvider() === 'openai'
+    // Fork: no product-surface line, and no /fast hint in headless runs where it can't be toggled.
+    staticOnly || (isAnt() && isUndercover()) || getAPIProvider() === 'openai' || getIsNonInteractiveSession()
       ? null
       : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast.`,
   ].filter(item => item !== null)

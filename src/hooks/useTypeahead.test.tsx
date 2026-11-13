@@ -3,6 +3,7 @@ import { Readable, Writable } from 'node:stream'
 import React, { useState } from 'react'
 import type { Tool } from '../Tool.js'
 import { render } from '../ink.js'
+import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import * as shellCompletion from '../utils/bash/shellCompletion.js'
@@ -263,5 +264,157 @@ test('Tab in bash mode of a remote session does not run local shell completion',
     instance?.unmount()
     instance?.cleanup()
     completionSpy.mockRestore()
+  }
+})
+
+function renderModProbe(
+  initial: string,
+  modAutocomplete: NonNullable<Props['modAutocomplete']>,
+) {
+  const stdin = new Input()
+  const changes: string[] = []
+  const cursors: number[] = []
+  const view: {
+    result?: ReturnType<typeof useTypeahead>
+    setInput?: (value: string) => void
+  } = {}
+  function Probe() {
+    const [input, setInput] = useState(initial)
+    const [suggestionsState, setSuggestionsState] = useState<
+      Props['suggestionsState']
+    >({ suggestions: [], selectedSuggestion: -1 })
+    view.setInput = setInput
+    view.result = useTypeahead({
+      input,
+      cursorOffset: input.length,
+      mode: 'prompt',
+      commands: [],
+      agents: [],
+      suggestionsState,
+      setSuggestionsState,
+      onInputChange: value => changes.push(value),
+      onSubmit: () => {},
+      setCursorOffset: value => cursors.push(value),
+      markAccepted: () => {},
+      modAutocomplete,
+    })
+    return null
+  }
+  const store = createStore(getDefaultAppState())
+  const rendered = render(
+    <AppStoreContext value={store}>
+      <KeybindingSetup>
+        <Probe />
+      </KeybindingSetup>
+    </AppStoreContext>,
+    {
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: new Output() as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+  return { stdin, changes, cursors, view, rendered }
+}
+
+async function waitFor(check: () => boolean) {
+  const deadline = Date.now() + 2000
+  while (!check() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+test('Mod prompt.autocomplete rows show for a plain token and Tab inserts the pick', async () => {
+  const calls: { token: string; start: number }[] = []
+  const probe = renderModProbe('say %o', async input => {
+    calls.push({ token: input.token, start: input.start })
+    return {
+      suggestions: [
+        { text: 'percent-one', label: '%one', description: 'first' },
+        { text: 'percent-two' },
+      ],
+    }
+  })
+  const instance = await probe.rendered
+  try {
+    await waitFor(() => (probe.view.result?.suggestions.length ?? 0) > 0)
+    expect(calls).toEqual([{ token: '%o', start: 4 }])
+    expect(
+      probe.view.result?.suggestions.map(item => [
+        item.displayText,
+        item.description,
+      ]),
+    ).toEqual([
+      ['%one', 'first'],
+      ['percent-two', undefined],
+    ])
+    expect(probe.view.result?.selectedSuggestion).toBe(-1)
+    // The Autocomplete keybinding context registers in an effect after the
+    // rows render; a Tab before that is ignored, as it is for native rows.
+    await waitFor(() => {
+      if (probe.changes.length === 0) probe.stdin.push('\t')
+      return probe.changes.length > 0
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(probe.changes).toEqual(['say percent-one'])
+    expect(probe.cursors).toEqual([15])
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+  }
+})
+
+test('Mod rows follow @-file rows', async () => {
+  const refreshSpy = spyOn(files, 'startBackgroundCacheRefresh').mockImplementation(() => {})
+  const filesSpy = spyOn(files, 'generateFileSuggestions').mockResolvedValue([
+    { id: 'file-modfile.md', displayText: 'modfile.md' },
+  ])
+  const probe = renderModProbe('@mod', async () => ({
+    suggestions: [{ text: '@modfile', description: 'mod row' }],
+  }))
+  const instance = await probe.rendered
+  try {
+    await waitFor(() => (probe.view.result?.suggestions.length ?? 0) > 1)
+    expect(probe.view.result?.suggestions.map(item => item.displayText)).toEqual([
+      'modfile.md',
+      '@modfile',
+    ])
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+    filesSpy.mockRestore()
+    refreshSpy.mockRestore()
+  }
+})
+
+test('fast typing asks once for the latest token and drops a superseded answer', async () => {
+  const asked: string[] = []
+  const signals: AbortSignal[] = []
+  const answers: ((rows: { text: string }[]) => void)[] = []
+  const probe = renderModProbe('%', (input, signal) => {
+    asked.push(input.token)
+    signals.push(signal)
+    return new Promise(resolve =>
+      answers.push(rows => resolve({ suggestions: rows })),
+    )
+  })
+  const instance = await probe.rendered
+  try {
+    probe.view.setInput?.('%o')
+    probe.view.setInput?.('%on')
+    await waitFor(() => asked.length > 0)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(asked).toEqual(['%on'])
+    probe.view.setInput?.('%one')
+    await waitFor(() => asked.length > 1)
+    expect(asked).toEqual(['%on', '%one'])
+    expect(signals[0]?.aborted).toBe(true)
+    answers[0]?.([{ text: 'stale' }])
+    answers[1]?.([{ text: 'fresh' }])
+    await waitFor(() => (probe.view.result?.suggestions.length ?? 0) > 0)
+    expect(probe.view.result?.suggestions.map(item => item.displayText)).toEqual(['fresh'])
+  } finally {
+    instance.unmount()
+    instance.cleanup()
   }
 })

@@ -182,6 +182,12 @@ export type PermissionAllowDecision<
   toolUseID?: string
   acceptFeedback?: string
   contentBlocks?: ContentBlockParam[]
+  /**
+   * The call a permission host actually denied when it differs from the tool
+   * call itself (apply_patch is asked file by file as Edit/Write). Reported in
+   * SDK permission_denials.
+   */
+  deniedCall?: { toolName: string; input: Record<string, unknown> }
 }
 
 /**
@@ -245,6 +251,12 @@ export type PermissionDenyDecision = {
   message: string
   decisionReason: PermissionDecisionReason
   toolUseID?: string
+  /**
+   * The call a permission host actually denied when it differs from the tool
+   * call itself (apply_patch is asked file by file as Edit/Write). Reported in
+   * SDK permission_denials.
+   */
+  deniedCall?: { toolName: string; input: Record<string, unknown> }
 }
 
 /**

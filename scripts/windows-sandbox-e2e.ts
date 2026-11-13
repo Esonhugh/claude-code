@@ -124,7 +124,20 @@ if (failed && fs.existsSync(debugLog)) {
   const lines = fs.readFileSync(debugLog, 'utf8').split('\n').filter(line => /sandbox|srt-win/i.test(line))
   for (const line of lines.slice(-80)) console.log(line.slice(0, 1000))
 }
-fs.rmSync(root, { recursive: true, force: true })
+// Windows releases handles of exited processes with a delay; a process still
+// holding the folder after the retries is listed and fails the run.
+try {
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 15, retryDelay: 1000 })
+} catch (error) {
+  console.log(`cleanup: ${error}`)
+  const procs = spawnSync(
+    'powershell',
+    ['-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*cc-win-sandbox*' -or $_.Name -match 'claude|srt|bash|pwsh|powershell|cmd' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List"],
+    { encoding: 'utf8' },
+  )
+  console.log(procs.stdout)
+  process.exit(1)
+}
 if (failed) {
   console.log(`${failed} check(s) failed`)
   process.exit(1)

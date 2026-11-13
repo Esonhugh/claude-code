@@ -67,6 +67,15 @@ describe('one header per turn', () => {
     expect(joinTurns(items, id => id === 'a1').map(x => x.ids)).toContainEqual(['a1'])
   })
 
+  it('adds up the usage of the joined replies', () => {
+    const u = (input: number) => ({ input, output: 1, cacheRead: 0, cacheWrite: 0 })
+    const [turn] = joinTurns([
+      { kind: 'assistant', id: 'a1', streamed: false, blocks: [text('one')], usage: u(10) },
+      { kind: 'assistant', id: 'a2', streamed: false, blocks: [text('two')], usage: u(20), turnUsage: u(35) },
+    ])
+    expect(turn!.item).toMatchObject({ usage: { input: 30, output: 2 }, turnUsage: { input: 35, output: 1 } })
+  })
+
   it('folds runs of thinking and tools into steps, keeps single steps and task cards apart', () => {
     const blocks = [think, text('a'), think, tool('t1'), think, tool('agent', 'Agent'), tool('agent2', 'Agent'), think, text('b'), undefined]
     expect(turnSegments(blocks, i => i === 5 || i === 6)).toEqual([
@@ -129,6 +138,35 @@ describe('handback report', () => {
     expect(render(false)).toContain('All done.')
     expect(render(false)).not.toContain('class="spin"')
     expect(render(true)).toContain('class="spin"')
+  })
+})
+
+describe('local command output', () => {
+  const render = async (item: Item) => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { Message } = await import('./Message')
+    return renderToStaticMarkup(react.createElement(Message, { item, t: ((key: string) => key) as never, streaming: false }))
+  }
+
+  it('renders stdout as Markdown, like the TUI (/release-notes)', async () => {
+    const html = await render({
+      kind: 'local',
+      id: 'l1',
+      command: 'release-notes',
+      text: 'Version 2.1.297:\n· run `make build` for **built-claude**\n· see [docs](https://example.com)',
+    })
+    expect(html).toContain('<code>make build</code>')
+    expect(html).toContain('<strong>built-claude</strong>')
+    expect(html).toContain('href="https://example.com"')
+    expect(html).not.toContain('`make build`')
+  })
+
+  it('keeps errors as plain text', async () => {
+    const html = await render({ kind: 'local', id: 'l2', text: 'Unknown `x` <name>', isError: true })
+    expect(html).toContain('Unknown `x` &lt;name&gt;')
+    expect(html).not.toContain('<code>')
   })
 })
 

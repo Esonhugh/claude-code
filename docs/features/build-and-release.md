@@ -1,10 +1,31 @@
 # 构建、发布与终端验收工具
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`build-and-release` · 领域：开发与发布 · [返回功能索引](README.md)
 
 ## 这是什么
 
 这一页写给想改代码或自己出包的人。普通使用者装好发布版即可，不需要看。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `build-and-release` · Area: Development and release · [Back to index](README.md)
+
+## What it is
+
+This page is for people who want to change the code or build their own package. If you only use the released build, you do not need it.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`build-and-release` · 領域：開發與釋出 · [返回功能索引](README.md)
+
+## 這是什麼
+
+這一頁寫給想改程式碼或自己出包的人。普通使用者裝好釋出版即可，不需要看。
+
+</details>
 
 ## 快速上手：从源码构建并运行
 

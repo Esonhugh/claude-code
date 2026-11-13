@@ -1,6 +1,7 @@
 import type { HistoryItem, SessionSettings } from './api'
 import {
   addError,
+  addPageCommand,
   addUserMessage,
   answerApproval,
   type Approval,
@@ -66,6 +67,7 @@ export type ChatAction =
   | { type: 'recap'; away?: number }
   | { type: 'rewound'; userId: string; note: string }
   | { type: 'local'; patch: Parameters<typeof setLocal>[1] }
+  | { type: 'pageCommand'; text: string; output: string; isError?: boolean }
 
 export type AppAction =
   | { type: 'chat'; id: string; action: ChatAction }
@@ -139,6 +141,8 @@ function reduceChat(state: ChatState, action: ChatAction): ChatState {
       return rewindTo(state, action.userId, action.note)
     case 'local':
       return setLocal(state, action.patch)
+    case 'pageCommand':
+      return addPageCommand(state, action.text, action.output, action.isError)
   }
 }
 

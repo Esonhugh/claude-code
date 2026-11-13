@@ -2,7 +2,11 @@ import { homedir } from 'os'
 import { isAbsolute, resolve } from 'path'
 import type { z } from 'zod/v4'
 import type { ToolPermissionContext } from '../../Tool.js'
-import type { Redirect, SimpleCommand } from '../../utils/bash/ast.js'
+import {
+  containsAnyPlaceholder,
+  type Redirect,
+  type SimpleCommand,
+} from '../../utils/bash/ast.js'
 import {
   extractOutputRedirections,
   splitCommand_DEPRECATED,
@@ -641,6 +645,40 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
 }
 
 /**
+ * Replaces `$((…))` made only of non-negative decimal literals and `+ * / %`
+ * with its value, as bash does, so checks see the number that will be used.
+ */
+export function expandLiteralArithmetic(text: string): string {
+  const literal = '(?:0|[1-9]\\d*)'
+  return text.replace(
+    new RegExp(
+      `\\$\\(\\(\\s*(${literal}(?:\\s*[+*/%]\\s*${literal})*)\\s*\\)\\)`,
+      'g',
+    ),
+    (whole, expression: string) => {
+      const tokens = expression.match(/\d+|[+*/%]/g)!
+      let sum = 0
+      let term = Number(tokens[0])
+      for (let i = 1; i < tokens.length; i += 2) {
+        const operator = tokens[i]
+        const operand = Number(tokens[i + 1])
+        if (operator === '+') {
+          sum += term
+          term = operand
+        } else if (operator === '*') {
+          term *= operand
+        } else if (operand === 0) {
+          return whole
+        } else {
+          term = operator === '/' ? Math.trunc(term / operand) : term % operand
+        }
+      }
+      return Number.isSafeInteger(sum + term) ? String(sum + term) : whole
+    },
+  )
+}
+
+/**
  * Command-specific validators that run before path validation.
  * Returns true if the command is valid, false if it should be rejected.
  * Used to block commands with flags that could bypass path validation.
@@ -669,8 +707,42 @@ function validateCommandPaths(
   operationTypeOverride?: FileOperationType,
 ): PermissionResult {
   const extractor = PATH_EXTRACTORS[command]
-  const paths = extractor(args)
+  const paths = extractor(args).map(expandLiteralArithmetic)
   const operationType = operationTypeOverride ?? COMMAND_OPERATION_TYPE[command]
+
+  // An explicit Read/Edit deny rule wins over the asks below, which bypass
+  // mode and Bash allow rules answer. cp and mv also read their sources: every
+  // operand but the last, or any operand when flags may move the destination.
+  const copiesOrMoves = command === 'cp' || command === 'mv'
+  const hasFlags = copiesOrMoves && args.some(arg => arg?.startsWith('-'))
+  const targetDirs = copiesOrMoves
+    ? args.flatMap(arg =>
+        arg?.startsWith('--target-directory=')
+          ? [arg.slice('--target-directory='.length)]
+          : [],
+      )
+    : []
+  const sources = !copiesOrMoves ? [] : hasFlags ? paths : paths.slice(0, -1)
+  for (const [candidates, type] of [
+    [[...paths, ...targetDirs], operationType],
+    [sources, 'read'],
+  ] as const) {
+    for (const path of candidates) {
+      const { allowed, resolvedPath, decisionReason } = validatePath(
+        path,
+        cwd,
+        toolPermissionContext,
+        type,
+      )
+      if (!allowed && decisionReason?.type === 'rule') {
+        return {
+          behavior: 'deny',
+          message: `${command} in '${resolvedPath}' was blocked by ${type === 'read' ? 'a Read' : 'an Edit'} deny rule in your permission settings.`,
+          decisionReason,
+        }
+      }
+    }
+  }
 
   // SECURITY: Check command-specific validators (e.g., to block flags that could bypass path validation)
   // Some commands like mv/cp have flags (--target-directory=PATH) that can bypass path extraction,
@@ -684,6 +756,15 @@ function validateCommandPaths(
         type: 'other',
         reason: `${command} command with flags requires manual approval`,
       },
+    }
+  }
+
+  if (operationType !== 'read' && paths.some(containsAnyPlaceholder)) {
+    const reason = `${command} target contains command-substitution or untracked-variable output — the path is runtime-determined and cannot be validated`
+    return {
+      behavior: 'ask',
+      message: reason,
+      decisionReason: { type: 'other', reason },
     }
   }
 
@@ -1141,29 +1222,47 @@ function extractInputRedirectionTargets(command: string): string[] {
   return targets
 }
 
-// Read deny rules apply to `< file` input redirections. Other input targets
-// are left to the existing redirection safety checks.
+// `< file` reads the file: Read deny rules apply, and a file outside the
+// working directories asks like any other read.
 function validateInputRedirections(
   targets: string[],
   cwd: string,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult | undefined {
+  let ask: PermissionResult | undefined
   for (const target of targets) {
-    const { resolvedPath, decisionReason } = validatePath(
+    const { allowed, resolvedPath, decisionReason } = validatePath(
       target,
       cwd,
       toolPermissionContext,
       'read',
     )
-    if (decisionReason?.type === 'rule') {
+    if (decisionReason?.type === 'rule' && !allowed) {
       return {
         behavior: 'deny',
         message: `Input redirection from '${resolvedPath}' was blocked by a deny rule.`,
         decisionReason,
       }
     }
+    if (!allowed) {
+      ask ??= {
+        behavior: 'ask',
+        message:
+          decisionReason?.type === 'other' ||
+          decisionReason?.type === 'safetyCheck'
+            ? decisionReason.reason
+            : outsideWorkingDirsMessage(
+                `Input redirection from '${resolvedPath}'`,
+                formatDirectoryList(
+                  Array.from(allWorkingDirectories(toolPermissionContext)),
+                ),
+              ),
+        blockedPath: resolvedPath,
+        decisionReason,
+      }
+    }
   }
-  return undefined
+  return ask
 }
 
 /**
@@ -1258,8 +1357,11 @@ export function checkPathConstraints(
     cwd,
     toolPermissionContext,
   )
-  if (inputRedirectionResult) return inputRedirectionResult
-  let approvalResult = redirectionResult.behavior === 'ask' ? redirectionResult : undefined
+  if (inputRedirectionResult?.behavior === 'deny') return inputRedirectionResult
+  let approvalResult =
+    redirectionResult.behavior === 'ask'
+      ? redirectionResult
+      : inputRedirectionResult
 
   // SECURITY: When AST-derived commands are available, iterate them with
   // pre-parsed argv instead of re-parsing via splitCommand_DEPRECATED + shell-quote.

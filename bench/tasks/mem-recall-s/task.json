@@ -1,0 +1,15 @@
+{
+  "id": "mem-recall-s",
+  "type": "memory",
+  "length": "short",
+  "requires": [],
+  "sessions": ["s1.md", "s2.md"],
+  "grade": [
+    { "type": "regex", "file": "deploy_staging.sh", "pattern": "--app[ =]+[\"']?owl-staging-7" },
+    { "type": "regex", "file": "deploy_staging.sh", "pattern": "--region[ =]+[\"']?cdg" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('NOTES.json')); assert d['migrations_owner'].strip().lower()=='priya raman', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('NOTES.json')); assert 'thursday' in d['freeze_day'].lower(), d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('NOTES.json')); assert d['http_library'].strip().strip(chr(96)).lower()=='httpx', d\"" },
+    { "type": "cmd", "run": "python3 -c \"import json; d=json.load(open('NOTES.json')); assert d['test_command'].strip().strip(chr(96))=='make t ARGS=-q', d\"" }
+  ]
+}

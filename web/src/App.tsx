@@ -1,4 +1,5 @@
 import { type CSSProperties, type DragEvent, Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
@@ -71,7 +72,7 @@ import {
 import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
-import { nativeCommand, type SlashCommand } from './commands'
+import { nativeCommand, type SlashCommand, withPageCommands } from './commands'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
@@ -248,6 +249,12 @@ export function App() {
   }
 
   const chat: SessionChat | undefined = state.view ? state.chats[state.view] : undefined
+  // The session's own chat opens the page commands too (a project's boxes send everything to the session).
+  const pagePalette = useMemo(() => {
+    if (!chat) return {}
+    const palette = withPageCommands(chat.commands, chat.terminalCommands, key => t(key))
+    return { commands: palette.commands, hiddenCommands: palette.hidden }
+  }, [chat?.commands, chat?.terminalCommands, t])
   const project = projects.find(p => p.id === projectId)
   const inProject = !!project && !!chat && project.coordinator_session_id === state.view
   const view = state.view
@@ -259,7 +266,7 @@ export function App() {
   const quote = quotes[draftKey]
   // What Mods did to a session's prompt box: a dim suggestion, marks on the text, typeahead rows.
   const [modPrompt, setModPrompt] = useState<
-    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; start?: number; end?: number }>
+    Record<string, { suggestion?: string; decorations?: PromptDecoration[]; rows?: ModRow[]; for?: string; start?: number; end?: number }>
   >({})
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
@@ -1038,11 +1045,54 @@ export function App() {
     send(id, userMessage(text, images, uuid))
   }
 
+  /** `/reload-plugins` as the plugins panel runs it, so the session's commands, agents and MCP servers follow. */
+  const reloadPlugins = async (id: string, text: string) => {
+    const current = stateRef.current.chats[id]
+    if (!current || current.mode === 'elsewhere') return
+    if (current.mode !== 'live' && !(await resume(id))) return
+    stickToBottom.current = true
+    const done = (output: string, isError?: boolean) =>
+      dispatch({ type: 'chat', id, action: { type: 'pageCommand', text, output, isError } })
+    try {
+      const body = await requestAsync(id, REQUEST_PREFIX.ext, { subtype: 'reload_plugins' })
+      const names = (Array.isArray(body.plugins) ? body.plugins : []).map(p => String((p as { name?: unknown }).name ?? ''))
+      const errors = typeof body.error_count === 'number' ? body.error_count : 0
+      const lines = [
+        names.length
+          ? t('reloadedPlugins', { n: String(names.length), names: names.join(', ') })
+          : t('reloadedNoPlugins'),
+        ...(errors > 0 ? [t('reloadErrors', { n: String(errors) })] : []),
+      ]
+      done(lines.join('\n'))
+    } catch (error) {
+      done(error instanceof Error ? error.message : String(error), true)
+    }
+  }
+
   /** A bare `/stats`, `/config`, … opens the page's own panel instead of going to the session. */
   const openNative = (text: string, key: string) => {
     const native = nativeCommand(text)
-    if (!native) return false
+    // These act on the session the page shows; the start page has none.
+    if (!native || (('reload' in native || 'panel' in native || 'export' in native) && !stateRef.current.chats[key])) return false
     setDrafts(d => ({ ...d, [key]: '' }))
+    if ('reload' in native) {
+      void reloadPlugins(key, text.trim())
+      return true
+    }
+    if ('panel' in native) {
+      setPreview(undefined)
+      setSideTab(native.panel)
+      if (isNarrow(760)) setSheetOpen(true)
+      return true
+    }
+    if ('search' in native) {
+      setTimeout(focusSearch)
+      return true
+    }
+    if ('export' in native) {
+      exportMarkdown()
+      return true
+    }
     if ('clear' in native) {
       const current = stateRef.current.chats[key]
       if (!current) return true
@@ -1640,9 +1690,12 @@ export function App() {
           // The page's own change (a Mod's rewrite or fill coming back) keeps the marks it came with.
           if (person || decorations || !draft) setModPrompt(m => ({ ...m, [view]: { ...m[view], decorations } }))
           if (typeof res.text === 'string' && res.text !== draft) {
-            setDrafts(d => (d[view] === draft ? { ...d, [view]: res.text as string } : d))
-            const caret = typeof res.cursor === 'number' ? res.cursor : res.text.length
-            requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.setSelectionRange(caret, caret))
+            const text = res.text
+            // The caret goes in with the text: a frame later could land after the person's next edit.
+            flushSync(() => setDrafts(d => (d[view] === draft ? { ...d, [view]: text } : d)))
+            const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
+            const caret = typeof res.cursor === 'number' ? res.cursor : text.length
+            if (box?.value === text) box.setSelectionRange(caret, caret)
           }
         },
         () => {},
@@ -1653,7 +1706,7 @@ export function App() {
           if (mine !== lastEdit.current || res.superseded) return
           const rows = Array.isArray(res.suggestions) ? (res.suggestions as ModRow[]).filter(r => typeof r?.text === 'string') : []
           const start = typeof res.start === 'number' ? res.start : cursor
-          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, start, end: cursor } }))
+          setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: rows.length ? rows : undefined, for: draft, start, end: cursor } }))
         },
         () => {},
       )
@@ -1667,6 +1720,11 @@ export function App() {
     return () => clearTimeout(timer)
   }, [draft, view, modsAttached, modsRequest])
   const modBox = view ? modPrompt[view] : undefined
+  // Rows answer one draft; a token already completed to a row offers nothing, so Enter sends.
+  const modRows =
+    draft && modBox?.for === draft && !modBox.rows?.some(r => r.text === draft.slice(modBox.start, modBox.end))
+      ? modBox.rows
+      : undefined
   const takeModRow = (row: ModRow) => {
     if (!view) return
     const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')
@@ -1675,12 +1733,10 @@ export function App() {
     const from = Math.min(modBox?.start ?? cursor, cursor)
     const next = draft.slice(0, from) + row.text + draft.slice(cursor)
     setModPrompt(m => ({ ...m, [view]: { ...m[view], rows: undefined } }))
-    setDraftByPerson(next)
+    flushSync(() => setDraftByPerson(next))
     const caret = from + row.text.length
-    requestAnimationFrame(() => {
-      box?.focus()
-      box?.setSelectionRange(caret, caret)
-    })
+    box?.focus()
+    box?.setSelectionRange(caret, caret)
   }
   const prompts = useMemo(
     () => (chatItems ?? []).flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])),
@@ -1747,8 +1803,9 @@ export function App() {
               },
             }
           : undefined,
+      control,
     }),
-    [decisions, canRewind, view, rewindTarget, rewindPoints],
+    [decisions, canRewind, view, rewindTarget, rewindPoints, control],
   )
 
   const withChat = (node: ReactNode) => (
@@ -1988,16 +2045,6 @@ export function App() {
               />
             )}
             <ModToasts toasts={chat.mods.toasts} />
-            {modBox?.rows && draft && (
-              <div className="mod-complete" role="listbox" aria-label={t('modSuggestions')}>
-                {modBox.rows.map(row => (
-                  <button key={row.text} type="button" role="option" aria-selected={false} className="btn" onClick={() => takeModRow(row)}>
-                    {row.label ?? row.text}
-                    {row.description && <small>{row.description}</small>}
-                  </button>
-                ))}
-              </div>
-            )}
             {modBox?.suggestion && !draft.trim() && !chat.busy && (
               <div className="mod-suggest">
                 <button
@@ -2021,6 +2068,8 @@ export function App() {
               draft={draft}
               setDraft={setDraftByPerson}
               decorations={modBox?.decorations}
+              modRows={modRows}
+              onModRow={takeModRow}
               onSend={() => void sendInChat()}
               onSendNow={sendNowInChat}
               quote={quote}
@@ -2034,6 +2083,7 @@ export function App() {
               onTarget={x => view && setAgentTargets(a => ({ ...a, [view]: x }))}
               tools={{
                 ...chatTools(chat, listFiles, prompts, historyScope, mode => view && changeMode(view, mode)),
+                ...pagePalette,
                 model: {
                   model: chat.model,
                   effort: chat.effort,

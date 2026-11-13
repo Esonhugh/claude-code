@@ -15,6 +15,7 @@ import {
   getMcpToolsCommandsAndResources,
   getServerCacheKey,
   reconnectMcpServerImpl,
+  stdioCloseReason,
   syncMcpResourceTools,
 } from './client.js'
 import type {
@@ -81,8 +82,7 @@ import {
   fetchClaudeAIMcpConfigsIfEligible,
 } from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
-import { getMcpPrefix } from './mcpStringUtils.js'
-import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
+import { commandBelongsToServer, excludeStalePluginClients, isToolOfServer } from './utils.js'
 import { isAnt } from 'src/utils/userType.js'
 
 // Constants for reconnection with exponential backoff
@@ -252,7 +252,6 @@ export function useManageMCPConnections(
             ? (rawRes ?? [])
             : rawRes
 
-        const prefix = getMcpPrefix(client.name)
         const existingClientIndex = mcp.clients.findIndex(
           c => c.name === client.name,
         )
@@ -265,7 +264,7 @@ export function useManageMCPConnections(
         const updatedTools =
           tools === undefined
             ? mcp.tools
-            : [...reject(mcp.tools, t => t.name?.startsWith(prefix)), ...tools]
+            : [...reject(mcp.tools, t => isToolOfServer(t, client.name)), ...tools]
 
         const updatedCommands =
           commands === undefined
@@ -479,7 +478,11 @@ export function useManageMCPConnections(
                         `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
                       )
                       reconnectTimersRef.current.delete(client.name)
-                      updateServer({ ...client, type: 'failed' })
+                      updateServer({
+                        ...client,
+                        type: 'failed',
+                        error: errorMessage(error),
+                      })
                       return
                     }
                   }
@@ -504,7 +507,11 @@ export function useManageMCPConnections(
 
               void reconnectWithBackoff()
             } else {
-              updateServer({ ...client, type: 'failed' })
+              updateServer({
+                ...client,
+                type: 'failed',
+                error: stdioCloseReason(client.client) ?? 'Connection closed',
+              })
             }
           }
 

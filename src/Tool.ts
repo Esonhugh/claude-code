@@ -104,6 +104,8 @@ export type ValidationResult =
       result: false
       message: string
       errorCode: number
+      /** A permission deny rule refused the call; it counts as a permission denial. */
+      deniedByPermissionRule?: true
     }
 
 export type SetToolJSXFn = (
@@ -552,6 +554,10 @@ export type Tool<
     toolName: string
     /** Model-visible tail used by permission rules when it differs from wire name. */
     permissionToolName?: string
+    /** Validated MCP Apps `_meta` (ui.resourceUri, ui.visibility), for hosts. */
+    uiMeta?: import('./services/mcp/mcpApps.js').McpToolUiMeta
+    /** `_meta.ui.visibility` leaves out "model": hosts may call it, the model never sees it. */
+    hiddenFromModel?: boolean
   }
   /** Trusted ChatGPT connector metadata; only populated by the host-owned Apps ToolSet. */
   connectorInfo?: {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -73,47 +73,34 @@ describe('scanModSource', () => {
 })
 
 describe('hooks', () => {
-  it('adds, edits and deletes a user hook in settings.json', async () => {
-    ext.addHook({ event: 'PreToolUse', matcher: 'Bash', command: '~/block-rm.sh', timeout: 10, source: 'user' })
-    expect(userSettings().hooks).toEqual({
-      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '~/block-rm.sh', timeout: 10 }] }],
-    })
-    let row = (await ext.listHooks()).hooks.find(h => h.command === '~/block-rm.sh')!
-    expect(row).toMatchObject({ event: 'PreToolUse', matcher: 'Bash', source: 'user', timeout: 10 })
-
-    ext.updateHook(row.id!, { event: 'Stop', matcher: '', command: 'echo done', timeout: 5, source: 'user' })
-    expect(userSettings().hooks).toEqual({ Stop: [{ hooks: [{ type: 'command', command: 'echo done', timeout: 5 }] }] })
-
-    row = (await ext.listHooks()).hooks.find(h => h.command === 'echo done')!
-    ext.deleteHook(row.id!)
-    expect(userSettings().hooks).toEqual({})
-  })
-
-  it('writes project hooks to the workspace settings', () => {
-    ext.addHook({ event: 'PostToolUse', matcher: 'Write|Edit', command: 'prettier --write', source: 'project' })
-    const project = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.json'), 'utf8'))
-    expect(project.hooks.PostToolUse[0].matcher).toBe('Write|Edit')
-  })
-
-  it('toggles disableAllHooks', async () => {
-    ext.setHooksDisabled(true)
-    expect(userSettings().disableAllHooks).toBe(true)
-    expect((await ext.listHooks()).disabled).toBe(true)
-    ext.setHooksDisabled(false)
-    expect(userSettings().disableAllHooks).toBeUndefined()
-  })
-
-  it('rejects bad ids and input', () => {
-    expect(() => ext.deleteHook('policySettings:Stop:0:0')).toThrow('Invalid hook id')
-    expect(() => ext.deleteHook('userSettings:NoSuchEvent:0:0')).toThrow('Invalid hook id')
-    expect(() => ext.deleteHook('userSettings:Stop:9:9')).toThrow('Hook not found')
-    const ok = { event: 'Stop', matcher: '', command: 'x', source: 'user' }
-    expect(ext.hookInputSchema.safeParse(ok).success).toBe(true)
-    expect(ext.hookInputSchema.safeParse({ ...ok, event: 'Nope' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, timeout: 0 }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, command: '  ' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, matcher: 'a\nb' }).success).toBe(false)
-    expect(ext.hookInputSchema.safeParse({ ...ok, source: 'policy' }).success).toBe(false)
+  it('lists hooks from every settings file, read-only, including ones written since the last read', async () => {
+    writeFileSync(
+      join(configDir, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '~/block-rm.sh', timeout: 10 }] }],
+          PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'http', url: 'https://example.invalid/hook' }] }],
+        },
+      }),
+    )
+    mkdirSync(join(workspace, '.claude'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo done' }] }] } }),
+    )
+    resetSettingsCache()
+    const listed = await ext.listHooks()
+    expect(listed.disabled).toBe(false)
+    expect(listed.hooks.map(h => [h.event, h.matcher, h.command, h.source])).toEqual([
+      ['PreToolUse', 'Bash', '~/block-rm.sh', 'user'],
+      ['PostToolUse', 'Bash', 'https://example.invalid/hook', 'user'],
+      ['Stop', '', 'echo done', 'project'],
+    ])
+    expect(listed.hooks[0]!.timeout).toBe(10)
+    expect('addHook' in ext || 'deleteHook' in ext || 'setHooksDisabled' in ext).toBe(false)
+    writeFileSync(join(configDir, 'settings.json'), '{}')
+    writeFileSync(join(workspace, '.claude', 'settings.json'), '{}')
+    resetSettingsCache()
   })
 })
 
@@ -180,6 +167,47 @@ describe('memory', () => {
       expect(found.memory[0]?.snippet).toContain('[發布]')
       expect(found.sessions).toHaveLength(1)
       expect(found.sessions[0]?.session).toBe('old')
+    } finally {
+      ext.setMemoryToggle('sqlite', false)
+      resetSettingsCache()
+      if (prevOverride === undefined) delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+      else process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = prevOverride
+      if (prevDisable === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+      else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = prevDisable
+      getAutoMemPath.cache.clear?.()
+    }
+  })
+
+  it('lists and finds every memory file and counts every matching session', async () => {
+    const prevOverride = process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    const prevDisable = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+    process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = join(root, 'memory-many')
+    process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '0'
+    const { getAutoMemPath } = await import('../memdir/paths.js')
+    const { getProjectDir } = await import('../utils/sessionStorage.js')
+    getAutoMemPath.cache.clear?.()
+    mkdirSync(getAutoMemPath(), { recursive: true })
+    for (let i = 0; i < 250; i++) {
+      const file = join(getAutoMemPath(), `note_${i}.md`)
+      writeFileSync(file, `---\nname: note ${i}\n---\nservice-${i} dashboard`)
+      // note_0 is the oldest file.
+      utimesSync(file, 1_700_000_000 + i, 1_700_000_000 + i)
+    }
+    const projectDir = getProjectDir(workspace)
+    mkdirSync(projectDir, { recursive: true })
+    const line = (i: number) => JSON.stringify({ type: 'user', message: { role: 'user', content: `pelican step ${i}` } })
+    writeFileSync(join(projectDir, 'long.jsonl'), Array.from({ length: 60 }, (_, i) => line(i)).join('\n') + '\n')
+    for (let s = 0; s < 8; s++) writeFileSync(join(projectDir, `short-${s}.jsonl`), line(s) + '\n')
+    ext.setMemoryToggle('sqlite', true)
+    resetSettingsCache()
+    try {
+      const list = await ext.listMemory()
+      expect(list.files.filter(f => f.kind === 'auto')).toHaveLength(250)
+      const oldest = list.files.find(f => f.title === 'note_0')
+      expect((await ext.searchMemoryIndex('service-0', 'memory')).memory.map(m => m.id)).toContain(oldest!.id)
+      expect(new Set((await ext.searchMemoryIndex('dashboard', 'memory')).memory.map(m => m.id)).size).toBe(250)
+      const sessions = (await ext.searchMemoryIndex('pelican', 'session')).sessions.map(s => s.session)
+      expect(sessions.sort()).toEqual(['long', ...Array.from({ length: 8 }, (_, s) => `short-${s}`)])
     } finally {
       ext.setMemoryToggle('sqlite', false)
       resetSettingsCache()
@@ -282,14 +310,22 @@ describe('/api/ext endpoints', () => {
           headers: { cookie, origin, 'content-type': 'application/json' },
           ...(body !== undefined && { body: JSON.stringify(body) }),
         })
+      // Read-only, like the TUI's /hooks: no writes, and an edit made outside shows on the next read.
       const hook = { event: 'UserPromptSubmit', matcher: '', command: 'python add-date.py', timeout: 5, source: 'user' }
-      expect((await send('POST', '/api/ext/hooks', hook, 'http://evil.example')).status).toBe(403)
-      expect((await send('POST', '/api/ext/hooks', { ...hook, event: 'Nope' })).status).toBe(400)
-      expect((await send('POST', '/api/ext/hooks', hook)).status).toBe(204)
-      const listed = (await (await send('GET', '/api/ext/hooks')).json()) as { hooks: { id?: string; command: string }[] }
-      const row = listed.hooks.find(h => h.command === 'python add-date.py')!
-      expect((await send('DELETE', '/api/ext/hooks', { id: row.id })).status).toBe(204)
-      expect(userSettings().hooks?.UserPromptSubmit).toBeUndefined()
+      expect((await send('PUT', '/api/ext/memory', { key: 'autoMemory', on: false }, 'http://evil.example')).status).toBe(403)
+      expect((await send('POST', '/api/ext/hooks', hook)).status).toBe(404)
+      expect((await send('PUT', '/api/ext/hooks', { id: 'x', ...hook })).status).toBe(404)
+      expect((await send('DELETE', '/api/ext/hooks', { id: 'x' })).status).toBe(404)
+      expect((await send('PUT', '/api/ext/hooks/disabled', { on: true })).status).toBe(404)
+      expect(userSettings().hooks).toBeUndefined()
+      expect(userSettings().disableAllHooks).toBeUndefined()
+      writeFileSync(
+        join(configDir, 'settings.json'),
+        JSON.stringify({ ...userSettings(), hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo by-hand' }] }] } }),
+      )
+      const reread = (await (await send('GET', '/api/ext/hooks')).json()) as { hooks: { command: string }[] }
+      expect(reread.hooks.map(h => h.command)).toContain('echo by-hand')
+      writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ ...userSettings(), hooks: undefined }))
 
       expect((await send('PUT', '/api/ext/skills/..%2F..%2Fetc', { on: false })).status).toBe(400)
       expect((await send('POST', '/api/ext/plugins', { id: '../../x', action: 'install' })).status).toBe(400)

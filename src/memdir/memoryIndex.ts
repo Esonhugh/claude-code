@@ -7,12 +7,14 @@
  * index is only a cache and can be deleted at any time.
  */
 import type { Database } from 'bun:sqlite'
-import { existsSync } from 'fs'
+import { existsSync, rmSync } from 'fs'
 import { open, readdir, readFile, stat } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
+import { isENOENT } from '../utils/errors.js'
+import { listFilesRecursive } from './memoryScan.js'
 import { foldForSearch } from './searchFold.js'
 import { getAutoMemPath, type SqliteMemoryScope } from './paths.js'
 
@@ -27,6 +29,8 @@ export type MemorySearchHit = {
   snippet: string
   /** Where the bracketed match sits in `snippet`, brackets included; absent without one. */
   match?: [number, number]
+  /** Memory files: the day the file was last saved (YYYY-MM-DD, UTC). */
+  modified?: string
 }
 
 export type MemoryIndexStatus = {
@@ -50,6 +54,12 @@ const MAX_CHUNK_CHARS = 4000
 const MIN_TRIGRAM_CHARS = 3
 // A long pasted prompt is searched by its first words only.
 const MAX_QUERY_WORDS = 200
+// Files whose changes are written in one transaction: one commit per file made
+// a first build of 10,000 memory files take ~30 s (#1105).
+const REFRESH_BATCH_FILES = 500
+const DAY_MS = 86_400_000
+/** How long a write waits for another session's lock before it fails. */
+const BUSY_WAIT_MS = 5000
 
 let db: Database | undefined
 let dbPath: string | undefined
@@ -61,11 +71,33 @@ export function defaultIndexPath(): string {
 function openIndex(): Database {
   if (db) return db
   const path = dbPath ?? defaultIndexPath()
+  try {
+    db = setUpIndex(path)
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    if (code !== 'SQLITE_NOTADB' && code !== 'SQLITE_CORRUPT') throw e
+    // The index only mirrors files on disk, so a damaged one is rebuilt from scratch.
+    for (const suffix of ['', '-wal', '-shm']) rmSync(path + suffix, { force: true })
+    db = setUpIndex(path)
+  }
+  return db
+}
+
+function setUpIndex(path: string): Database {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Database } = require('bun:sqlite') as typeof import('bun:sqlite')
   const index = new Database(path, { create: true })
-  // Several sessions share one index; wait for a writer instead of failing.
-  index.run('PRAGMA busy_timeout = 5000')
+  try {
+    initIndex(index)
+  } catch (e) {
+    index.close()
+    throw e
+  }
+  return index
+}
+
+function initIndex(index: Database): void {
+  index.run(`PRAGMA busy_timeout = ${BUSY_WAIT_MS}`)
   index.run('PRAGMA journal_mode = WAL')
   index.run('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
   const version = index.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as
@@ -81,8 +113,22 @@ function openIndex(): Database {
   index.run(
     "CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(body, text UNINDEXED, path UNINDEXED, kind UNINDEXED, project UNINDEXED, line UNINDEXED, tokenize = 'trigram')",
   )
-  db = index
-  return index
+  // busy_timeout waits synchronously, which freezes the TUI or the whole web server
+  // while another session writes; writes below wait with whenUnlocked instead.
+  index.run('PRAGMA busy_timeout = 0')
+}
+
+/** Runs `write`, retrying while several sessions share one index and another holds the write lock. */
+async function whenUnlocked<T>(write: () => T): Promise<T> {
+  const deadline = Date.now() + BUSY_WAIT_MS
+  for (;;) {
+    try {
+      return write()
+    } catch (e) {
+      if ((e as { code?: unknown }).code !== 'SQLITE_BUSY' || Date.now() >= deadline) throw e
+      await new Promise(r => setTimeout(r, 20))
+    }
+  }
 }
 
 /** Test hook: point the index at another file (or ':memory:'). */
@@ -92,11 +138,12 @@ export function resetMemoryIndexForTesting(path?: string): void {
   dbPath = path
 }
 
-async function listDir(dir: string, recursive = false): Promise<string[]> {
+/** Entries of `dir`: none when it does not exist, null when it cannot be read, so its indexed files are kept. */
+async function listDir(dir: string, recursive = false): Promise<string[] | null> {
   try {
-    return await readdir(dir, { recursive })
-  } catch {
-    return []
+    return recursive ? await listFilesRecursive(dir) : await readdir(dir)
+  } catch (e) {
+    return isENOENT(e) ? [] : null
   }
 }
 
@@ -107,27 +154,30 @@ async function listSources(scopes: readonly MemoryScope[]): Promise<Listing> {
   const autoMemDir = resolve(getAutoMemPath())
   if (scopes.includes('project')) {
     // Recursive: team memory and daily logs live in subdirectories.
-    listing.dirs.push({ dir: autoMemDir, recursive: true })
-    for (const name of await listDir(autoMemDir, true)) {
+    const names = await listDir(autoMemDir, true)
+    if (names) listing.dirs.push({ dir: autoMemDir, recursive: true })
+    for (const name of names ?? []) {
       if (name.endsWith('.md')) listing.files.push({ path: join(autoMemDir, name), kind: 'memory', project })
     }
   }
   if (scopes.includes('session')) {
     // The running session is already in context; only past sessions count.
     const current = `${getSessionId()}.jsonl`
-    listing.dirs.push({ dir: resolve(projectDir), recursive: false })
-    for (const name of await listDir(projectDir)) {
+    const names = await listDir(projectDir)
+    if (names) listing.dirs.push({ dir: resolve(projectDir), recursive: false })
+    for (const name of names ?? []) {
       if (name.endsWith('.jsonl') && name !== current) {
         listing.files.push({ path: join(projectDir, name), kind: 'transcript', project })
       }
     }
   }
   if (scopes.includes('user')) {
-    for (const name of await listDir(getProjectsDir())) {
+    for (const name of (await listDir(getProjectsDir())) ?? []) {
       const memDir = join(getProjectsDir(), name, 'memory')
       if (resolve(memDir) === autoMemDir) continue
-      listing.dirs.push({ dir: resolve(memDir), recursive: true })
-      for (const file of await listDir(memDir, true)) {
+      const files = await listDir(memDir, true)
+      if (files) listing.dirs.push({ dir: resolve(memDir), recursive: true })
+      for (const file of files ?? []) {
         if (file.endsWith('.md')) listing.files.push({ path: join(memDir, file), kind: 'memory', project: name })
       }
     }
@@ -183,6 +233,39 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
     (index.query('SELECT path, mtime, size, lines FROM files').all() as FileRow[]).map(row => [row.path, row]),
   )
   const insert = index.prepare('INSERT INTO chunks (body, text, path, kind, project, line) VALUES (?, ?, ?, ?, ?, ?)')
+  type Pending = { file: SourceFile; prev?: FileRow; append: boolean; chunks: { line: number; body: string }[]; mtime: number; size: number; lines: number }
+  let pending: Pending[] = []
+  // IMMEDIATE takes the write lock before the reads below, so a busy DB waits
+  // in whenUnlocked instead of failing with SQLITE_BUSY on lock upgrade.
+  const flush = async () => {
+    const batch = pending
+    pending = []
+    if (batch.length === 0) return
+    const write = index.transaction(() => {
+      for (const { file, prev, append, chunks, mtime, size, lines } of batch) {
+        if (append) {
+          // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
+          const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
+          if (current?.size !== prev!.size || current.lines !== prev!.lines) continue
+        } else {
+          // Another session, or a concurrent search, may have indexed this file since `known` was read.
+          const current = index.query('SELECT mtime, size FROM files WHERE path = ?').get(file.path) as FileRow | null
+          if (current) {
+            if (current.mtime === mtime && current.size === size) continue
+            // path is UNINDEXED, so this scans every chunk: only a file indexed before has rows to drop.
+            index.run('DELETE FROM chunks WHERE path = ?', [file.path])
+          }
+        }
+        for (const chunk of chunks) {
+          // body is searched folded (simplified script, no accents); text keeps the original for snippets.
+          const folded = foldForSearch(chunk.body)
+          insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
+        }
+        index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [file.path, mtime, size, lines])
+      }
+    })
+    await whenUnlocked(() => write.immediate())
+  }
   for (const file of files) {
     let info
     try {
@@ -213,45 +296,30 @@ async function refresh(index: Database, files: SourceFile[]): Promise<void> {
       lines = (append ? prev.lines : 0) + (complete.match(/\n/g)?.length ?? 0)
       chunks = transcriptChunks(complete, (append ? prev.lines : 0) + 1)
     }
-    // IMMEDIATE takes the write lock before the read below, so a busy DB waits
-    // on busy_timeout instead of failing with SQLITE_BUSY on lock upgrade.
-    index.transaction(() => {
-      if (append) {
-        // Another session, or a concurrent search in this one, may have appended these lines since `known` was read.
-        const current = index.query('SELECT size, lines FROM files WHERE path = ?').get(file.path) as FileRow | null
-        if (current?.size !== prev.size || current.lines !== prev.lines) return
-      } else {
-        index.run('DELETE FROM chunks WHERE path = ?', [file.path])
-      }
-      for (const chunk of chunks) {
-        // body is searched folded (simplified script, no accents); text keeps the original for snippets.
-        const folded = foldForSearch(chunk.body)
-        insert.run(folded, folded === chunk.body ? null : chunk.body, file.path, file.kind, file.project, chunk.line)
-      }
-      index.run('INSERT OR REPLACE INTO files (path, mtime, size, lines) VALUES (?, ?, ?, ?)', [
-        file.path,
-        size === info.size ? info.mtimeMs : 0,
-        size,
-        lines,
-      ])
-    }).immediate()
+    pending.push({ file, prev, append, chunks, mtime: size === info.size ? info.mtimeMs : 0, size, lines })
+    if (pending.length >= REFRESH_BATCH_FILES) await flush()
   }
+  await flush()
 }
 
-function forget(index: Database, path: string): void {
-  index.run('DELETE FROM chunks WHERE path = ?', [path])
-  index.run('DELETE FROM files WHERE path = ?', [path])
+async function forget(index: Database, path: string): Promise<void> {
+  await whenUnlocked(() =>
+    index.transaction(() => {
+      index.run('DELETE FROM chunks WHERE path = ?', [path])
+      index.run('DELETE FROM files WHERE path = ?', [path])
+    }).immediate(),
+  )
 }
 
 function isUnder(path: string, dirs: Listing['dirs']): boolean {
   return dirs.some(({ dir, recursive }) => (recursive ? path.startsWith(dir + sep) : dirname(path) === dir))
 }
 
-function prune(index: Database, { files, dirs }: Listing): void {
+async function prune(index: Database, { files, dirs }: Listing): Promise<void> {
   // A file gone from a directory that was just listed has been deleted.
   const live = new Set(files.map(f => f.path))
   for (const { path } of index.query('SELECT path FROM files').all() as { path: string }[]) {
-    if (!live.has(path) && isUnder(path, dirs)) forget(index, path)
+    if (!live.has(path) && isUnder(path, dirs)) await forget(index, path)
   }
 }
 
@@ -286,36 +354,57 @@ export function hasCjk(text: string): boolean {
 }
 
 function terms(query: string): string[] {
-  return [...new Set(foldForSearch(query).split(/\s+/).filter(Boolean).flatMap(splitCjk))]
+  return [...new Set(foldForSearch(query).split(/[\s\p{Cc}]+/u).filter(Boolean).flatMap(splitCjk))]
 }
 
 export async function searchMemory(params: {
   query: string
   scopes: readonly MemoryScope[]
   limit: number
+  /** Only each file's best chunk, so `limit` counts files instead of chunks. */
+  onePerFile?: boolean
 }): Promise<MemorySearchHit[]> {
   const index = openIndex()
   const listing = await listSources(params.scopes)
   const { files } = listing
   await refresh(index, files)
-  prune(index, listing)
+  await prune(index, listing)
 
   const words = terms(params.query)
   if (words.length === 0) return []
   const paths = files.map(f => f.path)
   if (paths.length === 0) return []
-  const rows = rankChunks(index, paths, words, params.limit, true)
-  return rows.map(({ body, text, ...hit }) => ({ ...hit, ...snippetAround(body ?? '', text ?? body ?? '', words) }))
+  const rows = rankChunks(index, paths, words, params.limit, true, params.onePerFile)
+  return rows.map(({ body, text, mtime, ...hit }) => ({
+    ...hit,
+    ...snippetAround(body ?? '', text ?? body ?? '', words),
+    ...(hit.kind === 'memory' && mtime ? { modified: new Date(mtime).toISOString().slice(0, 10) } : {}),
+  }))
 }
 
-type ChunkRow = { path: string; kind: MemorySearchHit['kind']; line: number; body: string | null; text: string | null }
+type ChunkRow = {
+  path: string
+  kind: MemorySearchHit['kind']
+  line: number
+  body: string | null
+  text: string | null
+  mtime: number | null
+}
 
 /**
  * Chunks in `paths` holding any of `words`, those holding more of the words
- * first, then by bm25. trigram MATCH serves words of three or more
+ * first, then files saved on a later day (a fact updated over time is often
+ * saved again in a new file, #1106), then by bm25. trigram MATCH serves words of three or more
  * characters; shorter ones (most Chinese words) fall back to LIKE.
  */
-function rankChunks(index: Database, paths: string[], query: string[], limit: number, withBody: boolean): ChunkRow[] {
+function rankChunks(
+  index: Database,
+  paths: string[],
+  query: string[],
+  limit: number,
+  withBody: boolean,
+  onePerFile = false,
+): ChunkRow[] {
   // Next to long words, short Latin words and single characters match nearly everything.
   const usable = query.some(w => [...w].length >= MIN_TRIGRAM_CHARS) ? query.filter(isDistinctive) : query
   // Each word adds to the SQL expression, which SQLite caps at depth 1000.
@@ -329,19 +418,26 @@ function rankChunks(index: Database, paths: string[], query: string[], limit: nu
     // Quoted phrases keep FTS5 operators in user text literal.
     args.push(long.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '))
   }
-  args.push(...paths)
+  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
+  args.push(...words, ...paths)
   const any = [...(long.length > 0 ? ['m.id IS NOT NULL'] : []), ...short.map(() => "c.body LIKE ? ESCAPE '\\'")]
   for (const w of short) args.push(`%${w.replace(/[\\%_]/g, c => `\\${c}`)}%`)
-  const covered = words.map(() => '(instr(lower(c.body), lower(?)) > 0)').join(' + ')
-  args.push(...words, limit)
+  args.push(limit)
+  const order = 'covered DESC, day DESC, rank, id DESC'
   return index
     .query(
       // MATERIALIZED runs MATCH once; a flattened subquery re-runs it for every row.
-      `WITH m AS MATERIALIZED (${fts})
-       SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}
-       FROM chunks c LEFT JOIN m ON m.id = c.rowid
-       WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
-       ORDER BY ${covered} DESC, m.rank, c.rowid DESC LIMIT ?`,
+      `WITH m AS MATERIALIZED (${fts}),
+       r AS (
+         SELECT c.path, c.kind, c.line, ${withBody ? 'c.body, c.text' : 'NULL AS body, NULL AS text'}, f.mtime,
+           ${covered} AS covered, CAST(f.mtime / ${DAY_MS} AS INTEGER) AS day, m.rank AS rank, c.rowid AS id
+         FROM chunks c LEFT JOIN m ON m.id = c.rowid LEFT JOIN files f ON f.path = c.path
+         WHERE c.path IN (${paths.map(() => '?').join(',')}) AND (${any.join(' OR ')})
+       )
+       SELECT path, kind, line, body, text, mtime FROM ${
+         onePerFile ? `(SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY ${order}) AS n FROM r) WHERE n = 1` : 'r'
+       }
+       ORDER BY ${order} LIMIT ?`,
     )
     .all(...args) as ChunkRow[]
 }
@@ -420,7 +516,7 @@ export async function findMemoryFilesForPrompt(params: {
   const index = openIndex()
   const listing = await listSources(params.scopes.filter(s => s !== 'session'))
   await refresh(index, listing.files)
-  prune(index, listing)
+  await prune(index, listing)
   const paths = listing.files.map(f => f.path).filter(p => basename(p) !== 'MEMORY.md')
   if (paths.length === 0) return []
   const matchers = words.map(wordMatcher)
@@ -438,12 +534,14 @@ export async function findMemoryFilesForPrompt(params: {
   const known = new Map(
     (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
   )
-  // Map order is rankChunks order, so ties keep the bm25 ranking.
+  const day = (path: string) => Math.floor((known.get(path) ?? 0) / DAY_MS)
+  // Newer days first among equal scores, so an updated fact beats its older
+  // versions (#1106); Map order is rankChunks order, so other ties keep bm25.
   return [...matched]
     .filter(([path]) => !params.exclude.has(path))
     .map(([path, found]) => ({ path, score: [...found].filter(rare).length }))
     .filter(r => r.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || day(b.path) - day(a.path))
     .slice(0, params.limit)
     .map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
 }
@@ -456,44 +554,44 @@ export async function findMemoryFilesForPrompt(params: {
 export async function buildMemoryIndex(scopes: readonly MemoryScope[]): Promise<MemoryIndexStatus> {
   const index = openIndex()
   const listing = await listSources(scopes)
-  index.transaction(() => {
+  const clear = index.transaction(() => {
     index.run('DELETE FROM chunks')
     index.run('DELETE FROM files')
-  })()
+  })
+  await whenUnlocked(() => clear.immediate())
   await refresh(index, listing.files)
-  index.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('built_at', ?)", [String(Date.now())])
-  index.run('VACUUM')
+  await whenUnlocked(() => index.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('built_at', ?)", [String(Date.now())]))
+  await whenUnlocked(() => index.run('VACUUM'))
   return getMemoryIndexStatus()
 }
 
 /** Rows that index one project's memory and transcripts; `claude purge` removes them. */
 export function countProjectIndexRows(projectDir: string): number {
-  return projectIndexRows(projectDir, false)
-}
-
-export function deleteProjectIndexRows(projectDir: string): void {
-  projectIndexRows(projectDir, true)
-}
-
-function projectIndexRows(projectDir: string, remove: boolean): number {
-  const path = dbPath ?? defaultIndexPath()
-  // Never create an index just to purge it.
-  if (!db && (path === ':memory:' || !existsSync(path))) return 0
-  const index = openIndex()
-  const project = basename(projectDir)
-  const prefix = resolve(projectDir) + sep
-  const where = 'substr(path, 1, ?) = ?'
-  const args = [prefix.length, prefix] as const
-  if (remove) {
-    index.transaction(() => {
-      index.run(`DELETE FROM chunks WHERE project = ? OR ${where}`, [project, ...args])
-      index.run(`DELETE FROM files WHERE ${where}`, [...args])
-    })()
-    return 0
-  }
+  const rows = projectRows(projectDir)
+  if (!rows) return 0
+  const { index, project, where, args } = rows
   const chunks = index.query(`SELECT count(*) AS n FROM chunks WHERE project = ? OR ${where}`).get(project, ...args) as { n: number }
   const files = index.query(`SELECT count(*) AS n FROM files WHERE ${where}`).get(...args) as { n: number }
   return chunks.n + files.n
+}
+
+export async function deleteProjectIndexRows(projectDir: string): Promise<void> {
+  const rows = projectRows(projectDir)
+  if (!rows) return
+  const { index, project, where, args } = rows
+  const remove = index.transaction(() => {
+    index.run(`DELETE FROM chunks WHERE project = ? OR ${where}`, [project, ...args])
+    index.run(`DELETE FROM files WHERE ${where}`, [...args])
+  })
+  await whenUnlocked(() => remove.immediate())
+}
+
+function projectRows(projectDir: string) {
+  const path = dbPath ?? defaultIndexPath()
+  // Never create an index just to purge it.
+  if (!db && (path === ':memory:' || !existsSync(path))) return undefined
+  const prefix = resolve(projectDir) + sep
+  return { index: openIndex(), project: basename(projectDir), where: 'substr(path, 1, ?) = ?', args: [prefix.length, prefix] as const }
 }
 
 export function getMemoryIndexStatus(): MemoryIndexStatus {
@@ -505,11 +603,13 @@ export function getMemoryIndexStatus(): MemoryIndexStatus {
   const builtAt = index.query("SELECT value FROM meta WHERE key = 'built_at'").get() as { value: string } | null
   const count = (sql: string) => (index.query(sql).get() as { n: number }).n
   const page = (name: string) => (index.query(`PRAGMA ${name}`).get() as Record<string, number>)[name] ?? 0
+  const files = count('SELECT count(*) AS n FROM files')
   return {
     path,
-    built: builtAt !== null,
+    // Recall and SearchMemory fill the index on demand without a full build.
+    built: builtAt !== null || files > 0,
     builtAt: builtAt ? Number(builtAt.value) : undefined,
-    files: count('SELECT count(*) AS n FROM files'),
+    files,
     chunks: count('SELECT count(*) AS n FROM chunks'),
     bytes: page('page_count') * page('page_size'),
   }

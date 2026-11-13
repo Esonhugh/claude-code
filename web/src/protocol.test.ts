@@ -6,6 +6,9 @@ import zhHant from './locales/zh-Hant.json'
 import {
   addUserMessage,
   answerApproval,
+  approvalRules,
+  approvalScope,
+  approvalUpdates,
   currentTodos,
   hookBlock,
   type Item,
@@ -28,6 +31,27 @@ function fold(messages: unknown[]) {
 }
 
 describe('reduce', () => {
+  it('puts the turn usage of a result on its last reply, and keeps a reloaded request once', () => {
+    const usage = (input: number, output: number, read = 0) => ({ input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: 0 })
+    const asst = (id: string, uuid: string, u: Record<string, number>) => ({
+      type: 'assistant',
+      uuid,
+      message: { id, role: 'assistant', content: [{ type: 'text', text: uuid }], usage: u },
+    })
+    // A transcript writes each content block of a request as its own entry with the same usage.
+    let state = fold([asst('m1', 'e1', usage(100, 1)), asst('m1', 'e2', usage(100, 40, 900)), asst('m2', 'e3', usage(50, 10))])
+    const replies = state.items.filter(i => i.kind === 'assistant')
+    expect(replies.map(i => i.usage)).toEqual([
+      { input: 100, output: 40, cacheRead: 900, cacheWrite: 0 },
+      { input: 50, output: 10, cacheRead: 0, cacheWrite: 0 },
+    ])
+    state = reduce(state, { type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: usage(150, 60, 900) })
+    expect(state.items.at(-1)).toMatchObject({ id: 'm2', turnUsage: { input: 150, output: 60, cacheRead: 900, cacheWrite: 0 } })
+    // A turn with no reply (a local command) leaves the earlier turn's count alone.
+    state = reduce(addUserMessage(state, '/cost'), { type: 'result', subtype: 'success', is_error: false, result: '', usage: usage(1, 1) })
+    expect(state.items.filter(i => i.kind === 'assistant').map(i => i.turnUsage?.input)).toEqual([undefined, 150])
+  })
+
   it('queues a message sent mid-turn and moves it in when the engine echoes it', () => {
     const asst = (id: string, text: string) => ({
       type: 'assistant',
@@ -419,9 +443,14 @@ describe('reduce', () => {
         response: { behavior: 'allow', updatedInput: { command: 'ls' } },
       },
     })
+    // Like the TUI's "No" without feedback: the turn stops so the user can say what to do instead.
     expect(permissionResponse(state.approvals[0]!, 'deny')).toMatchObject({
-      response: { response: { behavior: 'deny' } },
+      response: { response: { behavior: 'deny', interrupt: true } },
     })
+    // A worker's request stops only that tool, as the TUI does for subagents.
+    expect(
+      permissionResponse({ ...state.approvals[0]!, agentId: 'a1' }, 'deny').response,
+    ).not.toHaveProperty('response.interrupt')
   })
 
   it('keeps a background worker\'s request when the turn that started it ends', () => {
@@ -445,6 +474,31 @@ describe('reduce', () => {
     ])
     expect(permissionResponse(state.approvals[0]!, 'always')).toMatchObject({
       response: { response: { behavior: 'allow', updatedPermissions: [rule] } },
+    })
+  })
+
+  it('names where "always allow" is kept and what it adds, and leaves out a command\'s mode switch', () => {
+    const ask = (tool: string, suggestions: unknown[]) =>
+      fold([{ type: 'control_request', request_id: 'r', request: { subtype: 'can_use_tool', tool_name: tool, input: {}, permission_suggestions: suggestions } }]).approvals[0]!
+    const rule = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow', destination: 'localSettings' }
+    const dirs = { type: 'addDirectories', directories: ['/w/ws'], destination: 'localSettings' }
+    const edits = { type: 'setMode', mode: 'acceptEdits', destination: 'session' }
+    // Kept in the project's .claude/settings.local.json, not only this session.
+    expect(approvalScope(ask('Bash', [rule]))).toBe('project')
+    expect(approvalScope(ask('Bash', [{ ...rule, destination: 'userSettings' }]))).toBe('user')
+    expect(approvalScope(ask('Write', [edits]))).toBe('session')
+    // As the TUI, a shell command's option applies its rules and folders, never a mode switch.
+    const bash = ask('Bash', [dirs, edits])
+    expect(approvalRules(bash)).toEqual({ rules: [], directories: ['/w/ws'] })
+    expect(permissionResponse(bash, 'always')).toMatchObject({ response: { response: { updatedPermissions: [dirs] } } })
+    expect(approvalUpdates(ask('Bash', [edits]))).toEqual([])
+    // A file edit's option is the mode switch.
+    expect(approvalRules(ask('Write', [edits]))).toEqual({ rules: [], directories: [], mode: 'acceptEdits' })
+    expect(answerApproval(fold([]), { ...ask('Bash', [rule]), toolUseId: 't1' }, 'always').decisions.t1).toEqual({
+      toolName: 'Bash',
+      choice: 'always',
+      rules: 'Bash(npm test *)',
+      scope: 'project',
     })
   })
 
@@ -571,6 +625,42 @@ describe('conversation extras', () => {
     expect(JSON.stringify(state)).not.toContain('big')
   })
 
+  it('keeps each file patch of an apply_patch result, and a deleted file\'s old text', () => {
+    const hunk = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'apply_patch', input: { input: '*** Begin Patch' } }] } },
+      {
+        type: 'user',
+        tool_use_result: {
+          files: [
+            { type: 'update', filePath: 'a.txt', originalFile: 'big', structuredPatch: [hunk] },
+            { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n', structuredPatch: [] },
+          ],
+        },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Success.' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      meta: { files: [{ type: 'update', filePath: 'a.txt', structuredPatch: [hunk] }, { type: 'delete', filePath: 'b.txt', originalFile: 'gone\n' }] },
+    })
+    expect(JSON.stringify(state)).not.toContain('big')
+  })
+
+  it('keeps an MCP tool result for the MCP App that renders it', () => {
+    const state = fold([
+      { type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'mcp__srv__show', input: {} }] } },
+      {
+        type: 'user',
+        tool_use_result: { content: [{ type: 'text', text: '42' }], structuredContent: { value: 42 }, _meta: { k: 1 } },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: '42' }] },
+      },
+    ])
+    expect((state.items[1] as { blocks: unknown[] }).blocks[0]).toMatchObject({
+      result: '42',
+      mcp: { content: [{ type: 'text', text: '42' }], structuredContent: { value: 42 }, _meta: { k: 1 } },
+    })
+  })
+
   it('marks a compaction and puts its summary under it instead of a bubble', () => {
     const state = fold([
       { type: 'system', subtype: 'compact_boundary', uuid: 'c1', timestamp: '2026-11-02T10:42:00Z', compact_metadata: { trigger: 'auto', pre_tokens: 186000, post_tokens: 12000 } },
@@ -650,6 +740,16 @@ describe('conversation extras', () => {
     expect(addUserMessage(set, '/goal', undefined, 'u3').goal).toBe(set.goal)
   })
 
+  it('follows a permission mode the engine switched to', () => {
+    // An "always" answer whose suggestion is setMode acceptEdits, or an approved plan, changes the mode in the engine.
+    const state = fold([
+      { type: 'system', subtype: 'init', permissionMode: 'default' },
+      { type: 'system', subtype: 'status', status: null, permissionMode: 'acceptEdits' },
+    ])
+    expect(state.permissionMode).toBe('acceptEdits')
+    expect(fold([{ type: 'system', subtype: 'init', permissionMode: 'plan' }, { type: 'system', subtype: 'status', status: 'requesting' }]).permissionMode).toBe('plan')
+  })
+
   it('remembers the answer to an approval by its tool use id', () => {
     const state = fold([
       {
@@ -667,7 +767,7 @@ describe('conversation extras', () => {
     expect(state.approvals[0]?.toolUseId).toBe('t9')
     const always = answerApproval(state, state.approvals[0]!, 'always')
     expect(always.approvals).toEqual([])
-    expect(always.decisions).toEqual({ t9: { toolName: 'Bash', choice: 'always', rules: 'Bash(npm test:*)' } })
+    expect(always.decisions).toEqual({ t9: { toolName: 'Bash', choice: 'always', rules: 'Bash(npm test:*)', scope: 'session' } })
     expect(answerApproval(state, state.approvals[0]!, 'deny').decisions.t9).toEqual({ toolName: 'Bash', choice: 'deny' })
   })
 

@@ -6,13 +6,14 @@ const readable = "Async agent launched successfully. (This tool result is intern
 const noReader = "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: owned-agent (internal ID - do not mention to user. Use SendMessage with to: 'owned-agent', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.\nIn your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running."
 
 // Official 2.1.311 teammate receipt: the resumable agent id, no team name.
+// The last two sentences are the fork's: without them the lead keeps polling the teammate's files while it waits.
 test('teammate spawn receipt reports the resumable agent id like official', () => {
   const data = {status: 'teammate_spawned' as const, prompt: 'Run the timer', teammate_id: 'gamma@session-12345678',
     agent_id: 'agamma-0123456789abcdef', name: 'gamma', team_name: 'session-12345678',
     tmux_session_name: 'in-process', tmux_window_name: 'in-process', tmux_pane_id: 'in-process'}
   expect(AgentTool.mapToolResultToToolResultBlockParam(data as never, 'toolu_mate')).toEqual({
     tool_use_id: 'toolu_mate', type: 'tool_result', content: [{type: 'text', text:
-      "Spawned successfully. (This tool result is internal metadata — never quote or paste any part of it, including the ID below, into a user-facing reply.)\nagent_id: agamma-0123456789abcdef\nname: gamma\nThe agent is now running and will receive instructions via mailbox."}],
+      "Spawned successfully. (This tool result is internal metadata — never quote or paste any part of it, including the ID below, into a user-facing reply.)\nagent_id: agamma-0123456789abcdef\nname: gamma\nThe agent is now running and will receive instructions via mailbox. Its messages are delivered to you automatically. If you have nothing else to do until it reports, end your turn instead of checking on its work."}],
   })
 })
 

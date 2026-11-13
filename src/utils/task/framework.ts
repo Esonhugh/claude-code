@@ -98,6 +98,8 @@ function taskPatch(before: TaskState, after: TaskState) {
   const backgrounded = 'isBackgrounded' in after ? after.isBackgrounded : undefined
   if (backgrounded !== ('isBackgrounded' in before ? before.isBackgrounded : undefined) && backgrounded !== undefined)
     patch.is_backgrounded = backgrounded
+  const idle = 'isIdle' in after ? after.isIdle : undefined
+  if (idle !== ('isIdle' in before ? before.isIdle : undefined) && idle !== undefined) patch.is_idle = idle
   return Object.keys(patch).length > 0 ? patch : null
 }
 

@@ -20,9 +20,8 @@ test('managed Mods require an absolute policy directory, relative catalog source
   expect(await getInPlacePluginSource('guard@inline',policy)).toBeUndefined()
   expect(await getInPlacePluginSource('guard@corp', {...policy,extraKnownMarketplaces:{corp:{source:{source:'directory',path:'relative'}}}})).toBeUndefined()
   expect(await getInPlacePluginSource('guard@corp', {...policy,extraKnownMarketplaces:{corp:{source:{source:'github',repo:'corp/mods'}}}})).toBeUndefined()
-  await catalog(plugin)
-  await expect(getInPlacePluginSource('guard@corp',policy)).rejects.toThrow()
-  for (const source of ['./../outside', {source:'github',repo:'corp/guard'}]) {
+  // An absolute catalog source is a malformed entry: it is never in place.
+  for (const source of [plugin, './../outside', {source:'github',repo:'corp/guard'}]) {
     await catalog(source)
     expect(await getInPlacePluginSource('guard@corp',policy)).toBeUndefined()
   }
@@ -31,4 +30,14 @@ test('managed Mods require an absolute policy directory, relative catalog source
   expect(await getInPlacePluginSource('guard@corp',policy)).toBeUndefined()
   await writeFile(join(market,'.claude-plugin','marketplace.json'),'{broken')
   await expect(getInPlacePluginSource('guard@corp',policy)).rejects.toThrow()
+})
+
+test('an in-place catalog saved with a UTF-8 BOM is read', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'managed-mod-bom-'))
+  roots.push(root)
+  const market = join(root,'market'); const plugin = join(market,'plugins','guard')
+  await mkdir(join(market,'.claude-plugin'),{recursive:true}); await mkdir(plugin,{recursive:true})
+  await writeFile(join(market,'.claude-plugin','marketplace.json'), '﻿'+JSON.stringify({name:'corp',owner:{name:'corp'},plugins:[{name:'guard',source:'./plugins/guard'}]}))
+  const policy = {enabledPlugins:{'guard@corp':true},extraKnownMarketplaces:{corp:{source:{source:'directory' as const,path:market}}}}
+  expect((await getInPlacePluginSource('guard@corp',policy))?.path).toBe(plugin)
 })

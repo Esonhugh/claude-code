@@ -156,6 +156,7 @@ import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
 import { getAPIProvider } from './model/providers.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../tools/ApplyPatchTool/prompt.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -3481,6 +3482,11 @@ function getPlanPhase4Section(): string {
   }
 }
 
+// GPT models in apply_patch-only mode write the plan file with apply_patch.
+function planFileTool(name: string): string {
+  return isApplyPatchOnly() ? APPLY_PATCH_TOOL_NAME : name
+}
+
 function getPlanModeV2Instructions(attachment: {
   isSubAgent?: boolean
   planFilePath?: string
@@ -3498,8 +3504,8 @@ function getPlanModeV2Instructions(attachment: {
   const agentCount = getPlanModeV2AgentCount()
   const exploreAgentCount = getPlanModeV2ExploreAgentCount()
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${planFileTool(FileEditTool.name)} tool.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${planFileTool(FileWriteTool.name)} tool.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
@@ -3602,8 +3608,8 @@ function getPlanModeInterviewInstructions(attachment: {
   planExists?: boolean
 }): UserMessage[] {
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${planFileTool(FileEditTool.name)} tool.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${planFileTool(FileWriteTool.name)} tool.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
@@ -3678,8 +3684,8 @@ function getPlanModeV2SubAgentInstructions(attachment: {
   planExists: boolean
 }): UserMessage[] {
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool if you need to.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool if you need to.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${planFileTool(FileEditTool.name)} tool if you need to.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${planFileTool(FileWriteTool.name)} tool if you need to.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits except to the plan file described below, run any other non-readonly tools (including changing configs or making commits), or otherwise make changes outside that plan file. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
 
@@ -4564,7 +4570,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       if (attachment.removedNames.length > 0) {
         parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${attachment.removedNames.join('\n')}`,
+          `The following deferred tools are no longer available. Do not search for them — ToolSearch will return no match:\n${attachment.removedNames.join('\n')}`,
         )
       }
       return wrapMessagesInSystemReminder([

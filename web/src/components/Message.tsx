@@ -3,19 +3,22 @@ import {
   type AgentTask,
   type Team,
   formatDuration,
+  formatTokens,
   isFinished,
   taskName,
   teamColor,
   teammateEvent,
 } from '../agents'
-import { type DiffRow, toolDiff } from '../diff'
+import { type DiffRow, patchFiles, toolDiff } from '../diff'
 import { baseName, splitMentions, tilde } from '../files'
 import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
-import { type Block, type Decision, hookBlock, type Item, type ModelOption } from '../protocol'
+import { addUsage, type Block, type Decision, hookBlock, type Item, type ModelOption, type Usage, usageTotal } from '../protocol'
 import type { Source } from '../sources'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
+import type { Control } from './extShared'
+import { McpApp } from './McpApp'
 import { ModSite } from './Mods'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
@@ -121,6 +124,8 @@ export const ChatContext = createContext<{
     fork: (id: string) => void
     rewind: (id: string) => void
   }
+  /** Control requests to the live session (MCP Apps read their resource and call tools with it). */
+  control?: Control
 }>({})
 
 /** Puts text into the chat's composer as a quote to reply to; only the session's own feed offers it. */
@@ -327,7 +332,8 @@ function DiffBody({
 export function decisionText(decision: Decision, t: T): string {
   if (decision.choice === 'deny') return t('decisionDeny')
   if (decision.choice === 'allow') return t('decisionAllow')
-  return [t('decisionAlways'), decision.rules].filter(Boolean).join(' ')
+  const always = decision.scope === 'user' ? 'decisionAlwaysUser' : decision.scope === 'project' ? 'decisionAlwaysProject' : 'decisionAlways'
+  return [t(always), decision.rules].filter(Boolean).join(' ')
 }
 
 type T = (key: MessageKey, vars?: Record<string, string>) => string
@@ -350,10 +356,15 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
   const task = agents.byToolUse?.get(block.id) ?? sentTo
   const done = block.result !== undefined
   const diff = block.isError ? undefined : toolDiff(block.name, block.input, block.meta)
+  const patched = block.isError ? [] : patchFiles(block.name, block.meta)
+  const patchPath = (path: string) => (path.startsWith('/') || !files.cwd ? path : `${files.cwd}/${path}`)
   const message = toolMessage(block.name, block.input)
   const decision = chat.decisions?.[block.id]
   const card = (
-    <details className={`toolcard${block.isError ? ' bad' : ''}`} open={diff && !diff.created ? true : undefined}>
+    <details
+      className={`toolcard${block.isError ? ' bad' : ''}`}
+      open={(diff && !diff.created) || patched.some(f => !f.diff.created) ? true : undefined}
+    >
       <summary>
         <span className="tname">{block.name}</span>
         {path ? (
@@ -375,7 +386,9 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
               ? t('todosUpdated')
               : sentTo
                 ? `${t('sentTo')} ${sentTo.title ?? sentTo.description}`
-                : shortSummary(block, files.cwd)}
+                : patched.length
+                  ? patched.map(f => f.path).join(', ')
+                  : shortSummary(block, files.cwd)}
           </span>
         )}
         <span className="tacts">
@@ -412,6 +425,11 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
             <span className="dstat add">+{diff.added}</span>
             {diff.created ? <span>{t('newFile')}</span> : <span className="dstat del">−{diff.removed}</span>}
           </span>
+        ) : patched.length ? (
+          <span className="tstat">
+            <span className="dstat add">+{patched.reduce((n, f) => n + f.diff.added, 0)}</span>
+            <span className="dstat del">−{patched.reduce((n, f) => n + f.diff.removed, 0)}</span>
+          </span>
         ) : (
           <span className={`tstat${done ? (block.isError ? ' bad' : ' ok') : ''}`}>
             {done ? (block.isError ? '✗' : '✓') : <span className="spin" aria-hidden="true" />}
@@ -420,6 +438,17 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       </summary>
       {diff ? (
         <DiffBody diff={diff} path={toolFilePath(block.name, block.input)} t={t} />
+      ) : patched.length ? (
+        // One part per file, named as the TUI's rows: Write, Update or Delete.
+        patched.map(f => (
+          <div key={f.path} className="patchfile">
+            <div className="tfoot">
+              <b>{f.kind === 'add' ? 'Write' : f.kind === 'delete' ? 'Delete' : 'Update'}</b>
+              <span>{f.path}</span>
+            </div>
+            <DiffBody diff={f.diff} path={f.kind === 'delete' ? undefined : patchPath(f.path)} t={t} />
+          </div>
+        ))
       ) : message ? (
         <div className="tbody">
           <Markdown filesBase={files.base} text={message} />
@@ -447,8 +476,9 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
       )}
     </details>
   )
+  const app = block.name.startsWith('mcp__') && chat.control ? <McpApp block={block} control={chat.control} t={t} /> : null
   const blocked = block.isError && block.result ? hookBlock(block.result) : undefined
-  if (!blocked) return card
+  if (!blocked) return app ? <>{card}{app}</> : card
   // As the TUI's line under the tool call; the tool result is all a reloaded transcript keeps of it.
   return (
     <>
@@ -553,7 +583,12 @@ export function joinTurns(items: Item[], splitAfter?: (id: string) => boolean): 
   for (const item of items) {
     const last = out.at(-1)
     if (item.kind === 'assistant' && last?.item.kind === 'assistant' && !splitAfter?.(last.ids.at(-1)!)) {
-      last.item = { ...last.item, blocks: [...last.item.blocks, ...item.blocks] }
+      last.item = {
+        ...last.item,
+        blocks: [...last.item.blocks, ...item.blocks],
+        usage: addUsage(last.item.usage, item.usage),
+        turnUsage: addUsage(last.item.turnUsage, item.turnUsage),
+      }
       last.ids.push(item.id)
     } else {
       out.push({ item, ids: [item.id] })
@@ -606,8 +641,18 @@ function sameMessage(a: MessageProps, b: MessageProps): boolean {
   const x = a.item
   const y = b.item
   if (x === y) return true
-  return x.kind === 'assistant' && y.kind === 'assistant' && x.id === y.id && x.model === y.model && x.streamed === y.streamed && sameList(x.blocks, y.blocks)
+  return (
+    x.kind === 'assistant' &&
+    y.kind === 'assistant' &&
+    x.id === y.id &&
+    x.model === y.model &&
+    x.streamed === y.streamed &&
+    sameList(x.blocks, y.blocks) &&
+    usageTotal(x.turnUsage ?? x.usage ?? NO_USAGE) === usageTotal(y.turnUsage ?? y.usage ?? NO_USAGE)
+  )
 }
+
+const NO_USAGE: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
 export const Message = memo(MessageView, sameMessage)
 
@@ -812,7 +857,14 @@ function MessageView({
             <span className="rm" aria-hidden="true">
               ⎿
             </span>
-            <span className="md">{stripAnsi(String(p.text))}</span>
+            {/* Like the TUI: stdout is Markdown (/release-notes), errors stay plain text. */}
+            {item.isError ? (
+              <span className="md">{stripAnsi(String(p.text))}</span>
+            ) : (
+              <div className="md">
+                <Markdown filesBase={files.base} text={stripAnsi(String(p.text))} />
+              </div>
+            )}
           </div>
         )}
       </ModSite>
@@ -844,6 +896,8 @@ function MessageView({
     },
   )
   const firstText = item.blocks.findIndex(b => b?.kind === 'text')
+  // The result's count is the turn's; a reloaded turn sums what its requests recorded.
+  const usage = item.turnUsage ?? item.usage
   const step = (i: number) => {
     const block = item.blocks[i]!
     if (block.kind === 'thinking') {
@@ -968,7 +1022,7 @@ function MessageView({
           </ModSite>
         )
       })}
-      {(turn || quote) && !streaming && (
+      {(turn || quote || usage) && !streaming && (
         <div className="msg-acts">
           <button
             type="button"
@@ -1004,6 +1058,19 @@ function MessageView({
             <button type="button" onClick={() => turn.rewind(item.id)}>
               {t('rewind')}
             </button>
+          )}
+          {usage && (
+            <span
+              className="usage"
+              title={t('turnUsage', {
+                input: usage.input.toLocaleString(),
+                read: usage.cacheRead.toLocaleString(),
+                write: usage.cacheWrite.toLocaleString(),
+                output: usage.output.toLocaleString(),
+              })}
+            >
+              {formatTokens(usageTotal(usage))}
+            </span>
           )}
         </div>
       )}

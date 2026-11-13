@@ -1,5 +1,7 @@
 # 自动压缩窗口
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`compaction` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -10,6 +12,35 @@
 - **手动压缩**：随时输入 `/compact`。
 
 本 fork 让你按模型设置这个窗口：例如 1M 上下文的模型，你可能想在 200k 时就压缩，省钱也让模型更专注。还可以换成[Codex 式压缩](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 时交给服务端压缩。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `compaction` · Area: Context and memory · [Back to index](README.md)
+
+## What it is
+
+A model can only see so much at once (its context window), and the longer a conversation gets, the slower and more expensive each request becomes. **Compaction** has the model summarise the older part of the conversation and replaces the original text with that summary, freeing room to continue.
+
+- **Auto-compact** runs when the conversation reaches the compaction window.
+- **Manual compaction**: type `/compact` at any time.
+
+This fork lets you set that window per model: with a 1M-context model, for example, you may want to compact at 200k to save money and keep the model focused. You can also switch to [Codex-style compaction](#换一种压缩方式codex-式压缩), which keeps the most recent stretch of the conversation verbatim and, on OpenAI, lets the server do the compaction.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`compaction` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+## 這是什麼
+
+模型一次能看的內容（上下文視窗）有上限，而且對話越長，每次請求越貴、越慢。**壓縮**就是把較早的對話交給模型寫成一段摘要，用摘要替換原文，騰出空間繼續聊。
+
+- **自動壓縮**：對話長度到達「壓縮視窗」時自動進行；
+- **手動壓縮**：隨時輸入 `/compact`。
+
+本 fork 讓你按模型設定這個視窗：例如 1M 上下文的模型，你可能想在 200k 時就壓縮，省錢也讓模型更專注。還可以換成[Codex 式壓縮](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 時交給服務端壓縮。
+
+</details>
 
 ## 快速上手
 
@@ -72,6 +103,24 @@
 - 写摘要的请求本身太长时，多保留几轮最近的原文、只摘要更早的部分，不再直接丢掉最早的对话。
 - 连续三次压缩、每次都在上一次之后 3 轮内又满了，回合停止并显示 `Autocompact is thrashing`（SDK 的 `terminal_reason` 为 `rapid_refill_breaker`），避免无限压缩烧 token。
 - 压缩后重新列出可用的 skill，并提醒模型还开着的 Tmux 终端；`ToolSearch` 已加载的工具在 Codex 式压缩和 Mod 改写的压缩后同样保留。
+
+## 自动压缩时多保留最近原文（选用）
+
+默认的自动压缩和官方一样：只原样保留最后一轮，更早的对话写成摘要。设置 `compact.keepRecentRatio` 后，自动压缩会原样保留最近一段对话，约占有效窗口（窗口减去输出预留）的这个比例；只摘要更早的部分（做法同 dsh，它用 `0.16`）：
+
+```json
+{
+  "compact": { "keepRecentRatio": 0.16 }
+}
+```
+
+- 取值 0 到 0.5；不设或设 0 时只保留最后一轮。
+- 从最后一轮往回数，直到累计 token 达到预算，至少一轮；工具调用和它的结果不会被拆开。
+- 只影响自动压缩（含请求超长后的自动压缩，以及 OpenAI provider 默认的 `claude` 方式）。手动 `/compact` 和 `compact.mode: "codex"` 不变。
+- 写摘要的请求只送较早的部分，所以比默认的摘要请求小，仍然命中原来的前缀缓存。压缩后照常重新附上最近读过的文件，已经在保留段里的文件不会重复附上。
+- 1M 窗口下 `0.16` 约等于保留 15 万 token，大窗口建议用小一点的值，或配合较小的 `autoCompactWindow`。
+
+实测（ChatGPT `gpt-6.1-sol`，`CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000`，长任务 `compact-recall` 各 3 次）：两种都 3/3 通过、各压缩 2 次；`0.16` 每次保留 14 到 20 条消息，压缩后上下文只多约 1.7k token，总 token 多 11%，费用多约 5%。
 
 ## 空闲压缩（idle compaction）
 

@@ -1,5 +1,7 @@
 # 权限规则、权限模式与 Safe mode
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`permissions` · 领域：权限与安全 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@ Claude 每次要改文件、跑命令、访问网络之前，都会判断要不�
 3. **安全底线**：改 `.git/`、`.claude/`、shell 配置这类敏感位置，不论规则和模式怎么设，都会先问（bypass 模式除外，见下文）。
 
 自动模式（让分类器替你判断）见 [auto-mode.md](auto-mode.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `permissions` · Area: Permissions and security · [Back to index](README.md)
+
+## What it is
+
+Before Claude changes a file, runs a command or goes on the network, it decides whether to ask you first. Three things decide that:
+
+1. **Permission rules**: your own "always allow / always ask / always deny" for kinds of actions.
+2. **Permission mode**: how strict things are overall, such as "edit files without asking" or "plan only". Switch with `Shift+Tab`.
+3. **Safety floor**: changes to sensitive places such as `.git/`, `.claude/` and shell config always ask first, whatever the rules and mode say (except in bypass mode, see below).
+
+For auto mode, where a classifier decides for you, see [auto-mode.md](auto-mode.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`permissions` · 領域：權限與安全 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不要先問你。決定這件事的有三樣東西：
+
+1. **權限規則**：你提前寫好的「這類操作直接允許 / 總是先問 / 一律禁止」。
+2. **權限模式**：整體的鬆緊程度，例如「改檔案不用問」或「先只做計劃」。按 `Shift+Tab` 切換。
+3. **安全底線**：改 `.git/`、`.claude/`、shell 配置這類敏感位置，不論規則和模式怎麼設，都會先問（bypass 模式除外，見下文）。
+
+自動模式（讓分類器替你判斷）見 [auto-mode.md](auto-mode.md)。
+
+</details>
 
 ## 第一次遇到：权限确认框
 
@@ -69,7 +102,13 @@ Claude 每次要改文件、跑命令、访问网络之前，都会判断要不�
 
 几条容易踩的细节：
 
-- Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配。
+- Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配；deny 和 ask 规则还会匹配 `/bin/rm` 这类带路径的命令，以及包在 `$(…)`、反引号、`( )`、`{ }`、`<( )` 里的命令。
+- Bash 的 allow 规则匹配前也会剥掉 `command`、`command -p` 和 `noglob`；`[ … ]`、`[[ … ]]` 当作只读的 `test`，`cd .` 不算换目录。所以有 `Bash(touch:*)` 时，`command touch f`、`[ -f x ] || touch f`、`cd . && touch f` 直接执行，`cd sub && touch f` 仍会询问（同官方）。
+- 有语法错误的命令（以 `&&`、`||` 结尾，或双引号没闭合）即使匹配 allow 规则也会询问，同官方。
+- 只读命令按解析后的词判断：`cat 'a|b'`、`ls "a&b"`、`find . -name 'a;b'`、`[ -f "a;b" ]` 这类引号或转义里的 shell 字符不会触发询问，同官方。
+- 不带根的 Read/Edit deny 规则（如 `./secret/**`、`.env`）在命令里 `cd` 之后仍按启动目录匹配；`cp` / `mv` 的来源按读取检查，deny 规则也检查符号链接指向的真实路径。bypass 和 Bash allow 规则都不会绕过这些 deny。
+- 没有规则时哪些 Bash 命令直接执行，也和官方 2.1.322 一致：`[[ a && b ]]` 当作一个测试；只含数字的 `$((…))` 先算出来，所以 `echo $((1+2))` 直接执行；只读命令可以带安全的环境变量前缀（如 `CI=1`、`COLUMNS=80`）或 `command` / `builtin` / `timeout N`。会询问的情况：本来会放行的命令放到后台（`&`）、写入路径里有命令替换或未知变量、`< 文件` 读工作目录外的文件、accept edits 下包在 wrapper 里或带选项的 `touch`。
+- Read 的 deny 规则也挡住对同一路径的 Write / Edit：`Read(**/.env)` 时不能新建或改写 `.env`。
 - `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。
 - 超过 10000 字符、或以悬空的 `&&` / `||` / `|` 结尾的命令一律询问。
 - 工作目录外的写入、带 `cd` 的复合写入命令、带参数的 `cp` / `mv` 仍会询问。
@@ -109,7 +148,7 @@ Claude 每次要改文件、跑命令、访问网络之前，都会判断要不�
 | 模式 | 启动参数 `--permission-mode` | 行为 |
 | --- | --- | --- |
 | Manual（默认） | `manual`（即 `default`） | 按规则来，没规则就问 |
-| Accept edits | `acceptEdits` | 改文件不再问；命令照常问 |
+| Accept edits | `acceptEdits` | 改文件不再问；在工作目录内的 `mkdir`、`touch`、`rm`、`rmdir`、`mv`、`cp`、`sed` 命令也不再问（同官方），其余命令照常问 |
 | Plan | `plan` | 只读、只出计划，不动文件；需要先开启 `planModeAvailable` |
 | Auto | `auto` | 由分类器判断是否需要问，见 [auto-mode.md](auto-mode.md) |
 | Don't ask | `dontAsk` | 没有规则放行的操作直接拒绝，不弹框 |

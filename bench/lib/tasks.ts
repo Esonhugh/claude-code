@@ -4,7 +4,7 @@ import path from 'node:path'
 export const BENCH_ROOT = path.resolve(import.meta.dir, '..')
 export const TASKS_DIR = path.join(BENCH_ROOT, 'tasks')
 
-export const TASK_TYPES = ['office', 'research', 'coding', 'ops', 'troubleshoot', 'lean'] as const
+export const TASK_TYPES = ['office', 'research', 'coding', 'ops', 'troubleshoot', 'lean', 'memory'] as const
 export type TaskType = (typeof TASK_TYPES)[number]
 
 export type GradeStep =
@@ -21,8 +21,14 @@ export type Task = {
   requires: string[]
   lab?: { kind: 'ssh' | 'k8s'; variant: 's' | 'l' }
   grade: GradeStep[]
+  // Memory tasks: [script, ...args] run as python3 <task dir>/<script> ...args <memory dir>
+  // to fill the project's auto-memory folder before the first session.
+  seedMemory?: string[]
   dir: string
   prompt: string
+  // Memory tasks: one prompt per fresh session, run in order on the same HOME
+  // and workspace (task.json "sessions": ["s1.md", ...]); otherwise [prompt].
+  sessions: string[]
 }
 
 export function loadTask(id: string, root = TASKS_DIR): Task {
@@ -32,8 +38,9 @@ export function loadTask(id: string, root = TASKS_DIR): Task {
   if (!TASK_TYPES.includes(spec.type)) throw new Error(`task ${id}: unknown type ${spec.type}`)
   if (!Array.isArray(spec.grade) || spec.grade.length === 0) throw new Error(`task ${id}: no grade steps`)
   if (!fs.existsSync(path.join(dir, 'workspace'))) throw new Error(`task ${id}: no workspace/`)
-  const prompt = fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8').trim()
-  return { ...spec, requires: spec.requires ?? [], dir, prompt }
+  const read = (f: string) => fs.readFileSync(path.join(dir, f), 'utf8').trim()
+  const sessions: string[] = Array.isArray(spec.sessions) ? spec.sessions.map(read) : [read('prompt.md')]
+  return { ...spec, requires: spec.requires ?? [], dir, prompt: sessions[0], sessions }
 }
 
 export function listTasks(root = TASKS_DIR): Task[] {
@@ -58,6 +65,6 @@ export function selectTasks(spec: string | undefined, root = TASKS_DIR): Task[] 
 }
 
 // Placeholders a lab fills in before the prompt reaches the agent.
-export function renderPrompt(task: Task, vars: Record<string, string>): string {
-  return task.prompt.replace(/\{([A-Z]+)\}/g, (m, k) => vars[k] ?? m)
+export function renderPrompt(task: Task, vars: Record<string, string>, prompt = task.prompt): string {
+  return prompt.replace(/\{([A-Z]+)\}/g, (m, k) => vars[k] ?? m)
 }

@@ -1185,6 +1185,7 @@ async function checkPermissionsAndCallTool(
           ],
           toolUseResult: `Error: ${isValidCall.message}`,
           sourceToolAssistantUUID: assistantMessage.uuid,
+          toolDenialKind: isValidCall.deniedByPermissionRule ? 'permission-rule' : undefined,
         }),
       },
     ]

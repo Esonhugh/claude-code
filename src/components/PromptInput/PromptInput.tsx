@@ -277,6 +277,7 @@ type Props = {
   onInputChange: (value: string) => void
   onInputStateChange?: () => void
   onPromptEdit?: (edit: TextInputEdit) => void
+  onModAutocomplete?: Parameters<typeof useTypeahead>[0]['modAutocomplete']
   mode: PromptInputMode
   onModeChange: (mode: PromptInputMode) => void
   stashedPrompt:
@@ -369,6 +370,7 @@ function PromptInput({
   onInputChange,
   onInputStateChange,
   onPromptEdit,
+  onModAutocomplete,
   mode,
   onModeChange,
   stashedPrompt,
@@ -1788,6 +1790,7 @@ function PromptInput({
     suppressSuggestions: isSearchingHistory || historyIndex > 0,
     markAccepted,
     onModeChange,
+    modAutocomplete: onModAutocomplete,
   })
   if (typeaheadActiveRef) typeaheadActiveRef.current = suggestions.length > 0
 

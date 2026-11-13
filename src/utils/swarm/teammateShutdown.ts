@@ -10,6 +10,22 @@ import { unassignTeammateTasks } from '../tasks.js'
 import { removeTeammateFromTeamFile } from './teamHelpers.js'
 
 /**
+ * The teammate a shutdown_approved message from `name` refers to. A teammate
+ * spawned or resumed after the approval was written is a new run that the old
+ * approval must not end (the lead can resume it before the approval is read).
+ */
+export function findApprovedTeammateId(
+  teammates: Record<string, { name: string; spawnedAt: number }> | undefined,
+  name: string,
+  approvedAt: string,
+): string | undefined {
+  const approvedMs = Date.parse(approvedAt)
+  return Object.entries(teammates ?? {}).find(
+    ([, t]) => t.name === name && !(t.spawnedAt > approvedMs),
+  )?.[0]
+}
+
+/**
  * Mark a shut-down teammate's in-process tasks terminal so hasRunningTeammates
  * becomes false and the spinner stops. Without this, out-of-process (tmux)
  * teammate tasks stay status:'running' forever because only in-process

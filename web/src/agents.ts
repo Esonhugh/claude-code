@@ -32,6 +32,8 @@ export type AgentTask = {
   toolUseId?: string
   depth: number
   background?: boolean
+  /** A teammate waiting for its next message (`task_updated` `is_idle`). */
+  idle?: boolean
   tokens?: number
   toolUses?: number
   durationMs?: number
@@ -156,6 +158,7 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
         description: str(patch.description),
         error: str(patch.error),
         background: typeof patch.is_backgrounded === 'boolean' ? patch.is_backgrounded : undefined,
+        idle: typeof patch.is_idle === 'boolean' ? patch.is_idle : undefined,
       })
     }
     case 'task_notification':
@@ -418,9 +421,10 @@ export function buildTeam(tasks: Tasks, items: Item[]): Team | undefined {
       name,
       color: events.findLast(e => e.from === name && e.color)?.color,
       agentId: /^agent_id: (\S+)$/m.exec(tool?.result ?? '')?.[1],
+      // The engine's idle flag comes first; a reloaded transcript has only the idle notification.
       state: isFinished(task)
         ? 'stopped'
-        : last?.from === name && last.type === 'idle_notification'
+        : (task.idle ?? (last?.from === name && last.type === 'idle_notification'))
           ? 'idle'
           : 'working',
     }

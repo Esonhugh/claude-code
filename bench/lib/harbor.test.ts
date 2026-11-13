@@ -1,7 +1,8 @@
 import { expect, test } from 'bun:test'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { containerName, PUBLIC_DIR, readPicks, tomlValue } from './harbor'
+import { collectCommands, containerName, harborTask, PUBLIC_DIR, readPicks, separateVerifier, tomlValue } from './harbor'
 
 test('task.toml values by section', () => {
   const toml = 'version = "1.0"\n[environment]\ndocker_image = "alexgshaw/regex-log:20251031"\n[agent]\ntimeout_sec = 900.0\n[verifier]\ntimeout_sec = 600\n'
@@ -32,4 +33,28 @@ test('container names stay unique and valid for long SWE-bench Pro task ids', ()
         names.add(n)
       }
   expect(names.size).toBe(18)
+})
+
+test('separate-verifier tasks: environment mode and collect hooks', () => {
+  const toml =
+    '[verifier]\nnetwork_mode = "no-network"\nenvironment_mode = "separate"\n\n[[verifier.collect]]\ncommand = "cd /app && git diff --binary abc HEAD > /logs/artifacts/model.patch"\ntimeout_sec = 300.0\n\n[agent]\ntimeout_sec = 5400.0\n'
+  expect(separateVerifier(toml)).toBe(true)
+  expect(collectCommands(toml)).toEqual(['cd /app && git diff --binary abc HEAD > /logs/artifacts/model.patch'])
+  expect(separateVerifier('[verifier]\ntimeout_sec = 900.0\n')).toBe(false)
+  expect(collectCommands('[verifier]\ntimeout_sec = 900.0\n')).toEqual([])
+})
+
+test('FrontierHarness v1 picks: 21 Terminal-Bench 2 + 9 DeepSWE tasks', () => {
+  const picks = readPicks(path.join(PUBLIC_DIR, 'picks-frontierharness-v1.txt'))
+  expect(picks.filter(p => p.suite === 'tb2')).toHaveLength(21)
+  expect(picks.filter(p => p.suite === 'deepswe')).toHaveLength(9)
+})
+
+test('deepswe tasks resolve under BENCH_DEEPSWE_ROOT/tasks', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deepswe-'))
+  fs.mkdirSync(path.join(root, 'tasks', 'anko'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'tasks', 'anko', 'task.toml'), '')
+  expect(harborTask('deepswe', 'anko', undefined, { BENCH_DEEPSWE_ROOT: root }).dir).toBe(path.join(root, 'tasks', 'anko'))
+  expect(() => harborTask('deepswe', 'anko', undefined, {})).toThrow('set BENCH_DEEPSWE_ROOT')
+  fs.rmSync(root, { recursive: true })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { agentCommands, filterCommands, recallList, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull } from './commands'
+import { agentCommands, filterCommands, recallList, moveSelection, nativeCommand, paletteQuery, recallPrompt, type SlashCommand, typedInFull, withPageCommands } from './commands'
 
 const cmd = (name: string, aliases?: string[]): SlashCommand => ({
   name,
@@ -115,6 +115,58 @@ describe('nativeCommand', () => {
     expect(nativeCommand('/compact')).toBeUndefined()
     expect(nativeCommand('stats')).toBeUndefined()
     expect(nativeCommand('/constructor')).toBeUndefined()
+    expect(nativeCommand('/reload-plugins')).toEqual({ reload: true })
+    expect(nativeCommand('/status')).toEqual({ panel: 'status' })
+    expect(nativeCommand('/diff')).toEqual({ panel: 'files' })
+    expect(nativeCommand('/tasks')).toEqual({ panel: 'bg' })
+    expect(nativeCommand('/bashes')).toEqual({ panel: 'bg' })
+    expect(nativeCommand('/workflows')).toEqual({ panel: 'workflow' })
+    expect(nativeCommand('/resume')).toEqual({ search: true })
+    expect(nativeCommand('/continue')).toEqual({ search: true })
+    expect(nativeCommand('/help')).toEqual({ dialog: 'keys' })
+    expect(nativeCommand('/export')).toEqual({ export: true })
+    expect(nativeCommand('/export notes.md')).toBeUndefined()
+  })
+})
+
+describe('withPageCommands', () => {
+  const describe_ = (key: string) => `[${key}]`
+  it('offers /reload-plugins although the session marks it terminal-only, and keeps the other terminal commands hidden', () => {
+    const session = [cmd('compact'), cmd('reload-plugins'), cmd('color'), cmd('doctor')]
+    const palette = withPageCommands(session, ['doctor', 'color', 'reload-plugins'], describe_)
+    expect(palette.hidden).toEqual(['doctor', 'color'])
+    expect(filterCommands(palette.commands, 'rel', palette.hidden).map(c => c.name)).toEqual(['reload-plugins'])
+    expect(filterCommands(palette.commands, 'co', palette.hidden).map(c => c.name)).toEqual(['compact'])
+  })
+
+  it('adds the page panels the session list lacks, once', () => {
+    const palette = withPageCommands([cmd('compact'), cmd('usage', ['cost', 'stats'])], [], describe_)
+    expect(palette.commands.map(c => c.name)).toEqual([
+      'compact',
+      'usage',
+      'reload-plugins',
+      'plugin',
+      'hooks',
+      'memory',
+      'skills',
+      'theme',
+      'keybindings',
+      'status',
+      'diff',
+      'tasks',
+      'workflows',
+      'resume',
+      'help',
+      'export',
+    ])
+    expect(palette.commands.find(c => c.name === 'plugin')).toEqual({
+      name: 'plugin',
+      description: '[cmdPlugin]',
+      argumentHint: '',
+      aliases: ['plugins'],
+    })
+    expect(filterCommands(palette.commands, 'plugins').map(c => c.name)).toEqual(['plugin', 'reload-plugins'])
+    expect(withPageCommands([cmd('hooks')], [], describe_).commands.filter(c => c.name === 'hooks')).toHaveLength(1)
   })
 })
 

@@ -12,6 +12,8 @@ import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
+import { applyPatchInputPaths } from '../../tools/ApplyPatchTool/plan.js'
+import { APPLY_PATCH_TOOL_NAME } from '../../tools/ApplyPatchTool/prompt.js'
 import {
   FileReadTool,
   type Output as FileReadToolOutput,
@@ -470,6 +472,13 @@ export function createMemoryFileCanUseTool(memoryPath: string): CanUseToolFn {
       const filePath = input.file_path
       if (typeof filePath === 'string' && filePath === memoryPath) {
         return { behavior: 'allow' as const, updatedInput: input }
+      }
+    }
+    // On the OpenAI path apply_patch stands in for Edit.
+    if (tool.name === APPLY_PATCH_TOOL_NAME) {
+      const paths = applyPatchInputPaths(input)
+      if (paths.length > 0 && paths.every(p => p === memoryPath)) {
+        return { behavior: 'allow' as const, updatedInput: input as Record<string, unknown> }
       }
     }
     return {

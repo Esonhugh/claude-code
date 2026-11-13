@@ -25,8 +25,11 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
+import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../ApplyPatchTool/prompt.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from '../EnterPlanModeTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
+import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
 
 const CODEX_APPS_SEARCH_WAIT_MS = 5_000
@@ -436,14 +439,22 @@ export const ToolSearchTool = buildTool({
 
       const found: string[] = []
       const missing: string[] = []
-      for (const toolName of requested) {
+      for (const requestedName of requested) {
+        // In apply_patch-only mode Edit and Write never reach the model, so
+        // selecting them hands back apply_patch.
+        const toolName =
+          isApplyPatchOnly() &&
+          [FILE_EDIT_TOOL_NAME, FILE_WRITE_TOOL_NAME].includes(requestedName) &&
+          findToolByName(tools, APPLY_PATCH_TOOL_NAME)
+            ? APPLY_PATCH_TOOL_NAME
+            : requestedName
         const tool =
           findToolByName(deferredTools, toolName) ??
           findToolByName(tools, toolName)
         if (tool) {
           if (!found.includes(tool.name)) found.push(tool.name)
         } else {
-          missing.push(toolName)
+          missing.push(requestedName)
         }
       }
 

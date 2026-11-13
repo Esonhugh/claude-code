@@ -151,6 +151,13 @@ export function MCPStdioServerMenu({
             )}
           </Box>
 
+          {server.client.type === 'failed' && server.client.error && (
+            <Box>
+              <Text bold>Error: </Text>
+              <Text color="error">{server.client.error}</Text>
+            </Box>
+          )}
+
           <Box>
             <Text bold>Command: </Text>
             <Text dimColor>{server.config.command}</Text>

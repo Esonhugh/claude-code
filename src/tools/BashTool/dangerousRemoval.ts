@@ -1,5 +1,6 @@
+import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { basename, isAbsolute, resolve } from 'path'
+import { basename, dirname, isAbsolute, resolve } from 'path'
 import { getParserModule } from '../../utils/bash/bashParser.js'
 import type { Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -8,6 +9,9 @@ import { isDangerousRemovalPath } from '../../utils/permissions/pathValidation.j
 
 type Argument = { value: string; unknown: boolean }
 type Variables = Readonly<Record<string, string | undefined>>
+type Known = (name: string) => string[]
+// `dir` is the working directory after literal cd commands, when known.
+type Scope = { changed: boolean; dir?: string }
 
 // The shell maintains these itself, so the process snapshot does not describe them.
 const SHELL_MAINTAINED = new Set(['PWD', 'OLDPWD', '_'])
@@ -19,6 +23,7 @@ const VARIABLE = /\$(?:([A-Za-z_]\w*)(?![\w:[])|\{([A-Za-z_]\w*)\}(?![:[]))/y
 function argument(text: string, vars: Variables): Argument {
   let value = ''
   let quote = ''
+  let opened = 0
   let unknown = false
   const braces: boolean[] = []
   for (let i = 0; i < text.length; i++) {
@@ -52,6 +57,7 @@ function argument(text: string, vars: Variables): Argument {
       quote = ''
     } else if (!quote && (char === "'" || char === '"')) {
       quote = char
+      opened = value.length
     } else {
       if (!quote) {
         if (char === '{') braces.push(false)
@@ -82,6 +88,9 @@ function argument(text: string, vars: Variables): Argument {
       } else value += char
     }
   }
+  // The parser ends an open single quote on the word's last character.
+  if (quote === "'")
+    return { value: value.slice(0, Math.max(opened, value.length - 1)), unknown }
   return { value, unknown: unknown || quote !== '' }
 }
 
@@ -96,6 +105,52 @@ function protectedPath(value: string, cwd: string): boolean {
     isDangerousRemovalPath(lexical) ||
     isDangerousRemovalPath(resolve(cwd, literal))
   )
+}
+
+// Unresolved parts (variables, substitutions) drop out, as when they expand
+// empty: `"$DIR"/` becomes `/`. Known values of each variable are tried too.
+const EXPANSION =
+  /\$\{[^}]*\}|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|\$[~=^]*[A-Za-z_]\w*|\$[0-9@*#?!$-]/g
+const NAMED = /^\$(?:[~=^]*([A-Za-z_]\w*)|\{[~=^]*([A-Za-z_]\w*)\})$/
+
+function expansionValues(value: string, known: Known): string[] {
+  const name = (match: string) => {
+    const named = NAMED.exec(match)
+    return named?.[1] ?? named?.[2]
+  }
+  const values = [value.replace(EXPANSION, '')]
+  for (const variable of new Set([...value.matchAll(EXPANSION)].map(match => name(match[0]))))
+    for (const candidate of variable ? known(variable) : [])
+      values.push(value.replace(EXPANSION, match => (name(match) === variable ? candidate : '')))
+  return values
+}
+
+// Like official, an unresolved target only asks when it can reach a protected
+// path, or when a trailing `*` can cover the working directory.
+function unresolvedTarget(
+  target: Argument,
+  cwd: string,
+  changed: boolean,
+  known: Known,
+): PermissionResult | undefined {
+  for (const [i, value] of expansionValues(target.value, known).entries()) {
+    const path = resolve(cwd, value)
+    // `$DIR/name` with DIR empty only reaches an existing top-level entry.
+    const missingRootChild =
+      i === 0 && dirname(path) === '/' && path !== '/' && !/[*?[]/.test(path) && !existsSync(path)
+    if (protectedPath(value, cwd) && !missingRootChild)
+      return mandatory(`Removal target can reach a protected path: ${target.value}`)
+    const wipe = /^(.*?)\/?\*$/.exec(value)
+    if (!wipe) continue
+    const dir = resolve(cwd, wipe[1] || '.')
+    if (
+      (changed && !isAbsolute(value)) ||
+      protectedPath(wipe[1] || '.', cwd) ||
+      cwd === dir ||
+      cwd.startsWith(`${dir}/`)
+    )
+      return mandatory(`Removal glob can cover a protected or working directory: ${target.value}`)
+  }
 }
 
 function mandatory(reason: string): PermissionResult {
@@ -171,18 +226,11 @@ const WRAPPERS: Record<string, { value: string[]; flag: RegExp }> = {
 }
 
 // This only uncovers removal candidates, never grants wrapper permissions.
-function unwrap(argv: Argument[]): {
-  argv: Argument[]
-  unknown: boolean
-  input?: boolean
-} {
-  let unknown = false
-  let input = false
+function unwrap(argv: Argument[]): { argv: Argument[] } {
   while (argv[0] && !argv[0].unknown) {
     const name = basename(argv[0].value)
     const options = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : undefined
     if (!options) break
-    if (name === 'xargs') input = true
     let i = 1
     for (; i < argv.length; i++) {
       const arg = argv[i]!
@@ -191,7 +239,7 @@ function unwrap(argv: Argument[]): {
         break
       }
       if (name === 'command' && /^-[pvV]*[vV][pvV]*$/.test(arg.value))
-        return { argv: [], unknown: false }
+        return { argv: [] }
       if (name === 'env' && /^[A-Za-z_][A-Za-z_0-9]*=/.test(arg.value)) continue
       if (!arg.value.startsWith('-')) break
       if (name === 'env' && /^(-S|--split-string(?:=|$))/.test(arg.value)) {
@@ -211,14 +259,12 @@ function unwrap(argv: Argument[]): {
                 { value: '', unknown: true },
               ]
             : [],
-          unknown: true,
         }
       }
       if (
         (name === 'env' && /^(-C|--chdir)(=|$)/.test(arg.value)) ||
         (name === 'sudo' && /^(-D|--chdir)(=|$)/.test(arg.value))
       ) {
-        unknown = true
         if (!arg.value.includes('=')) i++
         continue
       }
@@ -237,7 +283,6 @@ function unwrap(argv: Argument[]): {
       )
         continue
       if (!options.flag.test(arg.value) || arg.unknown) {
-        unknown = true
         // An unknown option may consume a value. Only use the immediately
         // following removal name as evidence; do not search arbitrary arguments.
         if (
@@ -252,7 +297,7 @@ function unwrap(argv: Argument[]): {
     if (name === 'timeout') i++ // duration, not a command
     argv = argv.slice(i)
   }
-  return { argv, unknown, input }
+  return { argv }
 }
 
 function* operands(args: Argument[]): Generator<Argument> {
@@ -313,7 +358,7 @@ function checkFind(
   argv: Argument[],
   cwd: string,
   changed: boolean,
-  unknown: boolean,
+  known: Known,
 ): PermissionResult | undefined {
   const roots: Argument[] = []
   let i = 1
@@ -355,19 +400,20 @@ function checkFind(
       )
         continue
       for (const target of operands(argv.slice(start + 1, i))) {
-        if (unknown) return mandatory('Unresolved find removal wrapper')
         if (target.value === '{}') {
           traverses = true
           continue
         }
+        if (target.unknown) {
+          const result = unresolvedTarget(target, cwd, changed, known)
+          if (result) return result
+          continue
+        }
         if (
           target.value.includes('{}') ||
-          target.unknown ||
           ((changed || value.endsWith('dir')) && !isAbsolute(target.value))
         )
-          return mandatory(
-            `Unresolved find exec removal target or working directory: ${target.value}`,
-          )
+          continue
         if (protectedPath(target.value, cwd))
           return mandatory(
             `Protected find exec removal target: ${resolve(cwd, target.value)}`,
@@ -375,12 +421,13 @@ function checkFind(
       }
     }
     if (!traverses) continue
-    if (unknown) return mandatory('Unresolved find removal wrapper')
     for (const target of roots) {
-      if (target.unknown || (changed && !isAbsolute(target.value)))
-        return mandatory(
-          `Unresolved find removal root or working directory: ${target.value}`,
-        )
+      if (target.unknown) {
+        const result = unresolvedTarget(target, cwd, changed, known)
+        if (result) return result
+        continue
+      }
+      if (changed && !isAbsolute(target.value)) continue
       const path = resolve(cwd, target.value)
       // Root children and home are protected objects, not protected whole trees.
       // Traversal is also dangerous when it can reach a protected home descendant.
@@ -420,9 +467,9 @@ function commandWords(children: Node[]): Node[] {
 
 function* commands(
   root: Node,
-): Generator<{ words: Node[]; scope: { changed: boolean } }> {
+): Generator<{ words: Node[]; scope: Scope }> {
   const pending = [
-    { node: root, scope: { changed: false }, trailing: [] as Node[] },
+    { node: root, scope: { changed: false } as Scope, trailing: [] as Node[] },
   ]
   while (pending.length) {
     const { node, scope, trailing } = pending.pop()!
@@ -455,14 +502,14 @@ function* commands(
       'command_substitution',
       'process_substitution',
     ].includes(node.type)
-    const childScope = isolated ? { changed: scope.changed } : scope
+    const childScope = isolated ? { ...scope } : scope
     for (let i = node.children.length - 1; i >= 0; i--) {
       pending.push({
         node: node.children[i]!,
         trailing:
           node.children[i] === recipient ? [...redirected, ...trailing] : [],
         scope:
-          node.type === 'pipeline' ? { changed: scope.changed } : childScope,
+          node.type === 'pipeline' ? { ...scope } : childScope,
       })
     }
   }
@@ -528,6 +575,24 @@ function assignsVariables(root: Node): boolean {
   return false
 }
 
+// Literal values each variable is assigned in the command; values that
+// still need the shell to evaluate them are left out.
+function assignedValues(root: Node, env: Variables): Map<string, string[]> {
+  const assigned = new Map<string, string[]>()
+  const pending = [root]
+  while (pending.length) {
+    const node = pending.pop()!
+    pending.push(...node.children)
+    if (node.type !== 'variable_assignment') continue
+    const [name, , value] = node.children
+    if (name?.type !== 'variable_name') continue
+    const resolved = value ? argument(value.text, env) : { value: '', unknown: false }
+    if (resolved.unknown) continue
+    assigned.set(name.text, [...(assigned.get(name.text) ?? []), resolved.value])
+  }
+  return assigned
+}
+
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh'])
 // Nesting depth for `sh -c '...'` scripts analyzed as their own command.
 const MAX_SCRIPT_DEPTH = 3
@@ -554,19 +619,19 @@ function shellScript(argv: Argument[]): Argument | undefined {
 }
 
 function checkScript(
-  script: Argument,
+  script: string,
   cwd: string,
   changed: boolean,
   env: Variables,
   depth: number,
 ): PermissionResult | undefined {
   if (depth >= MAX_SCRIPT_DEPTH)
-    return /\b(?:rm|rmdir|unlink)\b/.test(script.value)
+    return /\b(?:rm|rmdir|unlink)\b/.test(script)
       ? mandatory('Shell -c script nested too deeply to analyze')
       : undefined
-  const root = getParserModule()?.parse(script.value)
+  const root = getParserModule()?.parse(script)
   if (!root) {
-    return /\b(?:rm|rmdir|unlink)\b/.test(script.value)
+    return /\b(?:rm|rmdir|unlink)\b/.test(script)
       ? mandatory('Shell -c script could not be analyzed')
       : undefined
   }
@@ -620,39 +685,59 @@ function checkRoot(
   depth: number,
   changed: boolean,
 ): PermissionResult {
-  const vars = assignsVariables(root) ? {} : env
+  const assigns = assignsVariables(root)
+  const vars = assigns ? {} : env
+  const assigned = assigns ? assignedValues(root, env) : new Map<string, string[]>()
+  const known: Known = name => [
+    ...(assigned.get(name) ?? []),
+    ...(SHELL_MAINTAINED.has(name) || env[name] === undefined ? [] : [env[name]]),
+  ]
   for (const { words, scope } of commands(root)) {
     scope.changed ||= changed
-    const { argv, unknown, input } = unwrap(
+    const here = scope.dir ?? cwd
+    const lost = scope.changed && scope.dir === undefined
+    const { argv } = unwrap(
       words.map(child => argument(child.text, vars)),
     )
     if (!argv[0] || argv[0].unknown) continue
     const name = basename(argv[0].value)
-    if (['cd', 'pushd', 'popd'].includes(name)) scope.changed = true
+    if (['cd', 'pushd', 'popd'].includes(name)) {
+      const [to, extra] = [...operands(argv.slice(1))]
+      scope.dir =
+        !lost && !extra && !to?.unknown && to?.value !== '-' &&
+        (name === 'cd' || (name === 'pushd' && to))
+          ? resolve(here, to?.value ?? homedir())
+          : undefined
+      scope.changed = true
+    }
     const script = SHELLS.has(name) ? shellScript(argv) : undefined
-    if (script) {
-      if (script.unknown && /\b(?:rm|rmdir|unlink)\b/.test(root.text))
-        return mandatory(`Unresolved shell -c script expansion: ${script.value}`)
-      const result = checkScript(script, cwd, scope.changed, vars, depth)
+    const scripts = !script
+      ? []
+      : script.unknown
+        ? expansionValues(script.value, known)
+        : [script.value]
+    for (const text of scripts) {
+      const result = checkScript(text, here, lost, vars, depth)
       if (result) return result
     }
     if (name === 'find') {
-      const result = checkFind(argv, cwd, scope.changed, unknown || !!input)
+      const result = checkFind(argv, here, lost, known)
       if (result) return result
     }
     if (!REMOVALS.has(name)) continue
-    if (input) return mandatory('Removal targets supplied by xargs input')
     for (const target of operands(argv.slice(1))) {
-      if (unknown) return mandatory('Unresolved removal wrapper')
-      if (target.unknown)
-        return mandatory(`Unresolved removal target expansion: ${target.value}`)
-      if (scope.changed && !isAbsolute(target.value))
+      // Like official: an empty operand is not a path that can be ruled out.
+      if (target.value === '' && !target.unknown && name !== 'unlink')
+        return mandatory('Removal target is empty')
+      if (target.unknown) {
+        const result = unresolvedTarget(target, here, lost, known)
+        if (result) return result
+        continue
+      }
+      if (lost && !isAbsolute(target.value)) continue
+      if (protectedPath(target.value, here))
         return mandatory(
-          `Unresolved working directory for removal target: ${target.value}`,
-        )
-      if (protectedPath(target.value, cwd))
-        return mandatory(
-          `Protected removal target: ${resolve(cwd, target.value)} (${target.value})`,
+          `Protected removal target: ${resolve(here, target.value)} (${target.value})`,
         )
     }
   }

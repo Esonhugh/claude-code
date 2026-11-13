@@ -1,9 +1,9 @@
 <main id="top">
 <div class="hero"><div class="wrap">
   <h1 class="en">One CLI.<br><span class="c">Claude</span> or <span class="g">ChatGPT</span>.</h1>
-  <h1 class="zh">一個 CLI，<br><span class="c">Claude</span> 或 <span class="g">ChatGPT</span> 帳號都能用。</h1>
+  <h1 class="hant">一個 CLI，<br><span class="c">Claude</span> 或 <span class="g">ChatGPT</span> 帳號都能用。</h1><h1 class="hans">一个 CLI，<br><span class="c">Claude</span> 或 <span class="g">ChatGPT</span> 账号都能用。</h1>
   <p class="lede en">An unofficial fork of Claude Code that keeps every tool, permission, hook and skill, then adds OpenAI models, a browser UI, Mods and real Agent Teams, with a shorter system prompt than the official build.</p>
-  <p class="lede zh">Claude Code 的非官方分支：保留全部工具、權限、hooks 與 skills，再加上 OpenAI 模型、瀏覽器介面、Mods 與真正組隊的 Agent Teams，系統提示還比官方版短。</p>
+  <p class="lede hant">Claude Code 的非官方分支：保留全部工具、權限、hooks 與 skills，再加上 OpenAI 模型、瀏覽器介面、Mods 與真正組隊的 Agent Teams，系統提示還比官方版短。</p><p class="lede hans">Claude Code 的非官方分支：保留全部工具、权限、hooks 与 skills，再加上 OpenAI 模型、浏览器界面、Mods 与真正组队的 Agent Teams，系统提示还比官方版短。</p>
 
   <div class="install">
     <div class="tabs" role="tablist" aria-label="Install method">
@@ -11,62 +11,70 @@
       <button type="button" role="tab" id="tab-src" aria-selected="false" data-cmd="git clone https://github.com/Esonhugh/claude-code && cd claude-code && bun install && make build">source</button>
     </div>
     <div class="cmd"><pre><span class="p">$ </span><span id="cmd">bun add --global @esonhugh/claude-code</span></pre><button type="button" class="copy" id="copy">Copy</button></div>
-    <div class="note"><span class="en">Linux x64 / arm64, macOS arm64, Windows x64. Then run <code>claude</code>.</span><span class="zh">支援 Linux x64 / arm64、macOS arm64、Windows x64。裝完執行 <code>claude</code>。</span></div>
+    <div class="note"><span class="en">Linux x64 / arm64, macOS arm64, Windows x64. Then run <code>claude</code>.</span><span class="hant">支援 Linux x64 / arm64、macOS arm64、Windows x64。裝完執行 <code>claude</code>。</span><span class="hans">支持 Linux x64 / arm64、macOS arm64、Windows x64。装完运行 <code>claude</code>。</span></div>
   </div>
   <p class="scroll-cue">$ scroll to continue</p>
 </div></div>
 
 <section id="tour"><div class="tour">
   <div class="tour-stage"><div class="demo" data-demo="tour" data-scene="accounts"></div>
-  <p class="demo-cap"><span class="en">Illustrative replays; scroll to switch.</span><span class="zh">示意重播；往下捲動切換。</span></p></div>
+  <p class="demo-cap"><span class="en">Recorded from the real CLI in tmux. Model replies are scripted, except the ChatGPT pane, which is a real ChatGPT account; scroll to switch.</span><span class="hant">在 tmux 裡錄下的真實 CLI。模型回覆是預設腳本，只有 ChatGPT 那一格是真的 ChatGPT 帳號；往下捲動切換。</span><span class="hans">在 tmux 里录下的真实 CLI。模型回复是预设脚本，只有 ChatGPT 那一格是真的 ChatGPT 账号；往下滚动切换。</span></p></div>
   <div class="tour-steps">
     <div class="tour-step" data-step="accounts">
       <p class="prompt">$ <b>claude</b> --help accounts</p>
       <h2 class="en">Same tools, either account</h2>
-      <h2 class="zh">同一套工具，換帳號就好</h2>
-      <p class="en">Sign in with a Claude account, a ChatGPT account (browser OAuth or device code over SSH), or an API key. Tools, UI and slash commands stay the same. The ChatGPT path adds a Codex-style <code>apply_patch</code> (shown as Patch), Codex Apps from your ChatGPT connections, and the <code>/daybreak</code> cyber access tier.</p>
-      <p class="zh">用 Claude 帳號、ChatGPT 帳號（瀏覽器 OAuth，或 SSH 上用 device code）或 API key 登入都行，工具、介面、斜線指令完全一樣。走 ChatGPT 時還多了 Codex 式 <code>apply_patch</code>（畫面上顯示為 Patch）、ChatGPT 裡已連好的 Codex Apps，以及 <code>/daybreak</code> 網路安全存取檔位。</p>
-      <a href="docs/openai-provider.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <h2 class="hant">同一套工具，換帳號就好</h2><h2 class="hans">同一套工具，换账号就好</h2>
+      <p class="en">Sign in with a Claude account, a ChatGPT account (browser OAuth or device code over SSH), or an API key. Tools, UI and slash commands stay the same. The ChatGPT path adds a Codex-style <code>apply_patch</code> (one call changes several files, each shown as its own Update or Write row), Codex Apps from your ChatGPT connections, and the <code>/daybreak</code> cyber access tier.</p>
+      <p class="hant">用 Claude 帳號、ChatGPT 帳號（瀏覽器 OAuth，或 SSH 上用 device code）或 API key 登入都行，工具、介面、斜線指令完全一樣。走 ChatGPT 時還多了 Codex 式 <code>apply_patch</code>，一次改多個檔案，畫面上每個檔案各一行 Update 或 Write，和 Edit、Write 一樣；ChatGPT 裡已連好的 Codex Apps，以及 <code>/daybreak</code> 網路安全存取檔位。</p><p class="hans">用 Claude 账号、ChatGPT 账号（浏览器 OAuth，或 SSH 上用 device code）或 API key 登录都行，工具、界面、斜杠命令完全一样。走 ChatGPT 时还多了 Codex 式 <code>apply_patch</code>，一次改多个文件，画面上每个文件各一行 Update 或 Write，和 Edit、Write 一样；ChatGPT 里已连好的 Codex Apps，以及 <code>/daybreak</code> 网络安全访问档位。</p>
+      <a href="docs/openai-provider.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="goal">
-      <p class="prompt">$ <b>claude</b> /goal all tests pass</p>
+      <p class="prompt">$ <b>claude</b> Goal</p>
       <h2 class="en">Keep going until it is done</h2>
-      <h2 class="zh">做到才算完</h2>
-      <p class="en">Give a finish condition. At the end of every turn a separate model call reads the transcript and decides whether it holds; if not, Claude is told what is missing and continues. It stops after 9 misses in a row so it cannot loop forever.</p>
-      <p class="zh">給一個完成條件。每輪結束時另一次模型呼叫讀對話紀錄判斷是否達成，沒達成就告訴 Claude 還差什麼、繼續做；連續 9 次沒達成會強制停下，不會無限循環。</p>
-      <a href="docs/goal.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <h2 class="hant">做到才算完</h2><h2 class="hans">做到才算完</h2>
+      <p class="en">Say what "done" means in plain words and Claude sets the goal itself with the <code>Goal</code> tool, or type <code>/goal &lt;condition&gt;</code>. At the end of every turn a separate model call reads the transcript and decides whether it holds; if not, Claude is told what is missing and continues. It stops after 9 misses in a row so it cannot loop forever.</p>
+      <p class="hant">用一句話說清楚怎樣才算做完，Claude 會自己用 <code>Goal</code> 工具設定目標；也可以直接打 <code>/goal 條件</code>。每輪結束時另一次模型呼叫讀對話紀錄判斷是否達成，沒達成就告訴 Claude 還差什麼、繼續做；連續 9 次沒達成會強制停下，不會無限循環。</p><p class="hans">用一句话说清楚怎样才算做完，Claude 会自己用 <code>Goal</code> 工具设定目标；也可以直接打 <code>/goal 条件</code>。每轮结束时另一次模型调用读对话记录判断是否达成，没达成就告诉 Claude 还差什么、继续做；连续 9 次没达成会强制停下，不会无限循环。</p>
+      <a href="docs/goal.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="teams">
       <p class="prompt">$ <b>claude</b> --agent-teams</p>
       <h2 class="en">A team that stays online</h2>
-      <h2 class="zh">常駐的團隊</h2>
+      <h2 class="hant">常駐的團隊</h2><h2 class="hans">常驻的团队</h2>
       <p class="en">Ask for a team and name the members. Each teammate is a full Claude session that stays online, messages the others with SendMessage and shares one task list. You can switch to any teammate and watch it work.</p>
-      <p class="zh">要求組隊並替成員取名。每位隊友都是常駐的完整 Claude 會話，用 SendMessage 互傳訊息、共用一份任務清單；你可以切到任一隊友看它工作。</p>
-      <a href="docs/agent-teams.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <p class="hant">要求組隊並替成員取名。每位隊友都是常駐的完整 Claude 會話，用 SendMessage 互傳訊息、共用一份任務清單；你可以切到任一隊友看它工作。</p><p class="hans">要求组队并替成员取名。每位队友都是常驻的完整 Claude 会话，用 SendMessage 互传消息、共用一份任务清单；你可以切到任一队友看它工作。</p>
+      <a href="docs/agent-teams.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="tmux">
       <p class="prompt">$ <b>claude</b> Tmux</p>
       <h2 class="en">A terminal Claude can drive</h2>
-      <h2 class="zh">Claude 能操作的終端</h2>
+      <h2 class="hant">Claude 能操作的終端</h2><h2 class="hans">Claude 能操作的终端</h2>
       <p class="en">The Tmux tool gives Claude a persistent interactive terminal: start a REPL, send keys, press Ctrl+C, read the screen. It runs on its own socket, isolated from your tmux server, and inside the Bash sandbox when that is on.</p>
-      <p class="zh">Tmux 工具給 Claude 一個可持續互動的終端：開 REPL、送按鍵、按 Ctrl+C、讀畫面。它用自己的 socket，與你的 tmux 隔離；開了 Bash 沙箱時也在沙箱裡跑。</p>
-      <a href="docs/terminal-tool.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <p class="hant">Tmux 工具給 Claude 一個可持續互動的終端：開 REPL、送按鍵、按 Ctrl+C、讀畫面。它用自己的 socket，與你的 tmux 隔離；開了 Bash 沙箱時也在沙箱裡跑。</p><p class="hans">Tmux 工具给 Claude 一个可持续交互的终端：开 REPL、发按键、按 Ctrl+C、读画面。它用自己的 socket，与你的 tmux 隔离；开了 Bash 沙箱时也在沙箱里跑。</p>
+      <a href="docs/terminal-tool.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="mods">
       <p class="prompt">$ <b>claude</b> --plugin-dir ./blast-radius</p>
       <h2 class="en">Mods change the harness itself</h2>
-      <h2 class="zh">Mods 改造工具本身</h2>
+      <h2 class="hant">Mods 改造工具本身</h2><h2 class="hans">Mods 改造工具本身</h2>
       <p class="en">A Mod is one JS/TS file that can register commands, hold or rewrite tool calls and draw UI in the terminal and in <code>claude web</code>. The Blast Radius example holds risky commands and shows what they would delete before you choose Proceed or Cancel.</p>
-      <p class="zh">Mod 是一個 JS/TS 檔，能註冊指令、暫停或改寫工具呼叫，在終端和 <code>claude web</code> 畫介面。Blast Radius 範例會先攔住危險指令，列出會刪掉什麼，再讓你選 Proceed 或 Cancel。</p>
-      <a href="docs/mods.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <p class="hant">Mod 是一個 JS/TS 檔，能註冊指令、暫停或改寫工具呼叫，在終端和 <code>claude web</code> 畫介面。Blast Radius 範例會先攔住危險指令，列出會刪掉什麼，再讓你選 Proceed 或 Cancel。</p><p class="hans">Mod 是一个 JS/TS 文件，能注册命令、暂停或改写工具调用，在终端和 <code>claude web</code> 画界面。Blast Radius 范例会先拦住危险指令，列出会删掉什么，再让你选 Proceed 或 Cancel。</p>
+      <a href="docs/mods.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
     <div class="tour-step" data-step="context">
       <p class="prompt">$ <b>claude</b> /context-window 200k</p>
       <h2 class="en">Pick your context window</h2>
-      <h2 class="zh">自己選上下文窗口</h2>
+      <h2 class="hant">自己選上下文窗口</h2><h2 class="hans">自己选上下文窗口</h2>
       <p class="en">Choose 128k, 200k, 272k, 500k or 1M per model, or let it follow the account catalog. <code>/context</code> shows where the tokens go; memory can switch to SQLite FTS5 search so it is looked up only when needed.</p>
-      <p class="zh">每個模型可以選 128k、200k、272k、500k 或 1M，或跟隨帳號的模型目錄。<code>/context</code> 看 token 用在哪；記憶可改用 SQLite FTS5 全文檢索，需要時才查。</p>
-      <a href="docs/compaction.html"><span class="en">Read the docs</span><span class="zh">看文件</span> →</a>
+      <p class="hant">每個模型可以選 128k、200k、272k、500k 或 1M，或跟隨帳號的模型目錄。<code>/context</code> 看 token 用在哪；記憶可改用 SQLite FTS5 全文檢索，需要時才查。</p><p class="hans">每个模型可以选 128k、200k、272k、500k 或 1M，或跟随账号的模型目录。<code>/context</code> 看 token 用在哪；记忆可改用 SQLite FTS5 全文检索，需要时才查。</p>
+      <a href="docs/compaction.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
+    </div>
+    <div class="tour-step" data-step="peers">
+      <p class="prompt">$ <b>claude</b> --name builder</p>
+      <h2 class="en">Sessions that talk to each other</h2>
+      <h2 class="hant">會話之間互相傳話</h2><h2 class="hans">会话之间互相传话</h2>
+      <p class="en">Open two CLIs in the same project with <code>--name</code>. <code>/peers</code> lists the other sessions on this machine, and Claude uses <code>SendMessage</code> to drop a note in another session's inbox. The receiver shows <code>Peer · builder</code> and treats it as input, never as your approval.</p>
+      <p class="hant">在同一個專案用 <code>--name</code> 開兩個 CLI。<code>/peers</code> 列出同機的其他會話，Claude 用 <code>SendMessage</code> 把訊息放進對方的收件匣；對方顯示 <code>Peer · builder</code> 並當成新輸入處理，但不算你的批准。</p><p class="hans">在同一个项目用 <code>--name</code> 开两个 CLI。<code>/peers</code> 列出同机的其他会话，Claude 用 <code>SendMessage</code> 把消息放进对方的收件箱；对方显示 <code>Peer · builder</code> 并当成新输入处理，但不算你的批准。</p>
+      <a href="docs/peer-messaging.html"><span class="en">Read the docs</span><span class="hant">看文件</span><span class="hans">看文档</span> →</a>
     </div>
   </div>
 </div></section>
@@ -74,42 +82,42 @@
 <section id="features"><div class="wrap">
   <p class="prompt">$ <b>claude</b> --list-features</p>
   <h2 class="en">What the fork adds</h2>
-  <h2 class="zh">這個分支多了什麼</h2>
+  <h2 class="hant">這個分支多了什麼</h2><h2 class="hans">这个分支多了什么</h2>
   <ul class="feat">
-    <li><b>claude web</b><span class="en">Claude Code in your browser: rendered math, Mermaid and diffs, PDF and Office previews, comments on files, interject or stop mid-turn.</span><span class="zh">在瀏覽器裡用 Claude Code：公式、Mermaid、diff 直接渲染，預覽 PDF 與 Office，在檔案上留言，回合中途插話或立刻停止。</span></li>
-    <li><b>Projects</b><span class="en">A coordinator splits work into tasks and runs several workers in parallel; you approve, message or review each one.</span><span class="zh">協調者把工作拆成任務，交給多個 worker 並行；每個任務都能批准、發訊息、審閱。</span></li>
-    <li><b>Mods</b><span class="en">One JS/TS file adds commands, rewrites tool calls, and draws bands and side panels in the terminal and the web UI.</span><span class="zh">一個 JS/TS 檔就能加指令、改寫工具呼叫，在終端與網頁介面畫狀態條和側邊面板。</span></li>
-    <li><b>Agent Teams</b><span class="en">A lead and teammates that stay online, message each other with SendMessage and share one task list.</span><span class="zh">負責人帶隊友，每位隊友都是常駐的完整會話，用 SendMessage 互傳訊息、共用任務清單。</span></li>
-    <li><b>Dynamic Workflow</b><span class="en">Claude writes an orchestration script that runs sub-agents in phases and in parallel; watch it in /workflows.</span><span class="zh">讓 Claude 寫編排腳本，分階段並行調度子 agent，用 /workflows 看進度。</span></li>
-    <li><b>Tmux tool</b><span class="en">A persistent interactive terminal for REPLs, TUIs and Ctrl+C, isolated from your own tmux server.</span><span class="zh">可持續互動的終端：開 REPL、操作 TUI、按 Ctrl+C，與你自己的 tmux 隔離。</span></li>
-    <li><b>/goal</b><span class="en">Give a finish condition such as "all tests pass"; Claude checks it each turn and keeps going until it holds.</span><span class="zh">給一個完成條件，例如「所有測試通過」，每輪結束自動檢查，沒達成就繼續。</span></li>
-    <li><b>Context tiers</b><span class="en"><code>/context-window</code> picks 128k to 1M per model; memory can switch to SQLite FTS5 lookup.</span><span class="zh"><code>/context-window</code> 按模型選 128k 到 1M；記憶可改用 SQLite FTS5 全文檢索。</span></li>
-    <li><b>Private by default</b><span class="en">No telemetry to Anthropic unless you turn it on; project settings cannot turn it on for you.</span><span class="zh">預設不向 Anthropic 傳送遙測；專案設定也無法替你打開。</span></li>
+    <li><b>claude web</b><span class="en">Claude Code in your browser: rendered math, Mermaid and diffs, PDF and Office previews, comments on files, interject or stop mid-turn.</span><span class="hant">在瀏覽器裡用 Claude Code：公式、Mermaid、diff 直接渲染，預覽 PDF 與 Office，在檔案上留言，回合中途插話或立刻停止。</span><span class="hans">在浏览器里用 Claude Code：公式、Mermaid、diff 直接渲染，预览 PDF 与 Office，在文件上留言，回合中途插话或立刻停止。</span></li>
+    <li><b>Projects</b><span class="en">A coordinator splits work into tasks and runs several workers in parallel; you approve, message or review each one.</span><span class="hant">協調者把工作拆成任務，交給多個 worker 並行；每個任務都能批准、發訊息、審閱。</span><span class="hans">协调者把工作拆成任务，交给多个 worker 并行；每个任务都能批准、发消息、审阅。</span></li>
+    <li><b>Mods</b><span class="en">One JS/TS file adds commands, rewrites tool calls, and draws bands and side panels in the terminal and the web UI.</span><span class="hant">一個 JS/TS 檔就能加命令、改寫工具呼叫，在終端與網頁介面畫狀態條和側邊面板。</span><span class="hans">一个 JS/TS 文件就能加命令、改写工具调用，在终端与网页界面画状态条和侧边面板。</span></li>
+    <li><b>Agent Teams</b><span class="en">A lead and teammates that stay online, message each other with SendMessage and share one task list.</span><span class="hant">負責人帶隊友，每位隊友都是常駐的完整會話，用 SendMessage 互傳訊息、共用任務清單。</span><span class="hans">负责人带队友，每位队友都是常驻的完整会话，用 SendMessage 互传消息、共用任务清单。</span></li>
+    <li><b>Dynamic Workflow</b><span class="en">Claude writes an orchestration script that runs sub-agents in phases and in parallel; watch it in /workflows.</span><span class="hant">讓 Claude 寫編排腳本，分階段並行調度子 agent，用 /workflows 看進度。</span><span class="hans">让 Claude 写编排脚本，分阶段并行调度子 agent，用 /workflows 看进度。</span></li>
+    <li><b>Tmux tool</b><span class="en">A persistent interactive terminal for REPLs, TUIs and Ctrl+C, isolated from your own tmux server.</span><span class="hant">可持續互動的終端：開 REPL、操作 TUI、按 Ctrl+C，與你自己的 tmux 隔離。</span><span class="hans">可持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，与你自己的 tmux 隔离。</span></li>
+    <li><b>/goal</b><span class="en">Give a finish condition such as "all tests pass"; Claude checks it each turn and keeps going until it holds.</span><span class="hant">給一個完成條件，例如「所有測試通過」，每輪結束自動檢查，沒達成就繼續。</span><span class="hans">给一个完成条件，例如「所有测试通过」，每轮结束自动检查，没达成就继续。</span></li>
+    <li><b>Context tiers</b><span class="en"><code>/context-window</code> picks 128k to 1M per model; memory can switch to SQLite FTS5 lookup.</span><span class="hant"><code>/context-window</code> 按模型選 128k 到 1M；記憶可改用 SQLite FTS5 全文檢索。</span><span class="hans"><code>/context-window</code> 按模型选 128k 到 1M；记忆可改用 SQLite FTS5 全文检索。</span></li>
+    <li><b>Private by default</b><span class="en">No telemetry to Anthropic unless you turn it on; project settings cannot turn it on for you.</span><span class="hant">預設不向 Anthropic 傳送遙測；專案設定也無法替你打開。</span><span class="hans">默认不向 Anthropic 发送遥测；项目设置也无法替你打开。</span></li>
   </ul>
-  <a class="btn" href="docs/"><span class="en">All {{featureCount}} feature docs</span><span class="zh">全部 {{featureCount}} 份功能文件</span></a>
+  <a class="btn" href="docs/"><span class="en">All {{featureCount}} feature docs</span><span class="hant">全部 {{featureCount}} 份功能文件</span><span class="hans">全部 {{featureCount}} 份功能文档</span></a>
 </div></section>
 
 <section id="web"><div class="wrap">
   <p class="prompt">$ <b>claude web</b> --no-open</p>
   <h2 class="en">A browser UI that stays on your machine</h2>
-  <h2 class="zh">瀏覽器介面，資料留在本機</h2>
+  <h2 class="hant">瀏覽器介面，資料留在本機</h2><h2 class="hans">浏览器界面，数据留在本机</h2>
   <p class="en">The web UI talks to your local <code>claude</code>. It listens on localhost only; the one-time token in the URL becomes a cookie and leaves the address bar. LAN access needs an explicit <code>--dangerously-allow-local-network</code>.</p>
-  <p class="zh">網頁介面連的是你本機的 <code>claude</code>，只監聽 localhost；網址裡的一次性 token 換成 cookie 後就從網址列移除。要讓區網存取必須明確加上 <code>--dangerously-allow-local-network</code>。</p>
+  <p class="hant">網頁介面連的是你本機的 <code>claude</code>，只監聽 localhost；網址裡的一次性 token 換成 cookie 後就從網址列移除。要讓區網存取必須明確加上 <code>--dangerously-allow-local-network</code>。</p><p class="hans">网页界面连的是你本机的 <code>claude</code>，只监听 localhost；网址里的一次性 token 换成 cookie 后就从网址列移除。要让区网访问必须明确加上 <code>--dangerously-allow-local-network</code>。</p>
   <div class="code"><span class="k">$</span> claude web                 <span class="k"># local only, opens the browser</span>
 <span class="k">$</span> claude web --no-open       <span class="k"># over SSH: print the URL only</span></div>
   <div class="demo" data-demo="web"></div>
-  <p class="demo-cap"><span class="en">Simulated session with the real UI labels: read, edit with a diff, approve a command, check the result.</span><span class="zh">用真實介面文字模擬的一次會話：讀檔、改檔看 diff、批准命令、看結果。</span></p>
-  <a class="btn" href="web-demo/"><span class="en">Try the live demo</span><span class="zh">試玩互動 demo</span></a>
-  <a class="btn ghost" href="docs/web-ui-tour.html"><span class="en">Take the screenshot tour</span><span class="zh">看截圖導覽</span></a>
-  <p class="demo-cap"><span class="en">The live demo is the real web UI running in your browser, with a guided tour and six scripted scenarios: bug fix, new feature, parallel agents, /goal, channels and mods. Every API call is answered by a script, so nothing reaches a model or your files.</span><span class="zh">試玩版就是真的網頁介面，跑在你的瀏覽器裡，附導覽和六個腳本情境：修 bug、新功能、並行 agent、/goal、頻道、mods。所有 API 都由腳本回應，不會連到模型，也碰不到你的檔案。</span></p>
+  <p class="demo-cap"><span class="en">Simulated session with the real UI labels: read, edit with a diff, approve a command, check the result.</span><span class="hant">用真實介面文字模擬的一次會話：讀檔、改檔看 diff、批准命令、看結果。</span><span class="hans">用真实界面文字模拟的一次会话：读文件、改文件看 diff、批准命令、看结果。</span></p>
+  <a class="btn" href="web-demo/"><span class="en">Try the live demo</span><span class="hant">試玩互動 demo</span><span class="hans">试玩交互 demo</span></a>
+  <a class="btn ghost" href="docs/web-ui-tour.html"><span class="en">Take the screenshot tour</span><span class="hant">看截圖導覽</span><span class="hans">看截图导览</span></a>
+  <p class="demo-cap"><span class="en">The live demo is the real web UI running in your browser, with a guided tour and six scripted scenarios: bug fix, new feature, parallel agents, /goal, channels and mods. Every API call is answered by a script, so nothing reaches a model or your files.</span><span class="hant">試玩版就是真的網頁介面，跑在你的瀏覽器裡，附導覽和六個腳本情境：修 bug、新功能、並行 agent、/goal、頻道、mods。所有 API 都由腳本回應，不會連到模型，也碰不到你的檔案。</span><span class="hans">试玩版就是真的网页界面，跑在你的浏览器里，附导览和六个脚本情境：修 bug、新功能、并行 agent、/goal、频道、mods。所有 API 都由脚本回应，不会连到模型，也碰不到你的文件。</span></p>
 </div></section>
 
 <section id="mods"><div class="wrap">
   <p class="prompt">$ <b>claude</b> --plugin-dir ./hello-mod</p>
   <h2 class="en">Change the harness, not your habits</h2>
-  <h2 class="zh">改造工具本身，不必改習慣</h2>
+  <h2 class="hant">改造工具本身，不必改習慣</h2><h2 class="hans">改造工具本身，不必改习惯</h2>
   <p class="en">A Mod is a plugin with a hooks module. It can register slash commands, intercept tool calls, and render UI that shows in both the terminal and <code>claude web</code>. The repo ships examples: Token Weather draws a context-usage band; Blast Radius shows what a risky command would touch before it runs.</p>
-  <p class="zh">Mod 就是帶 hooks 模組的插件：註冊斜線指令、攔截工具呼叫、畫出同時出現在終端與 <code>claude web</code> 的介面。repo 內附範例：Token Weather 在輸入框上方畫上下文用量條，Blast Radius 在危險指令執行前列出它會影響什麼。</p>
+  <p class="hant">Mod 就是帶 hooks 模組的插件：註冊斜線指令、攔截工具呼叫、畫出同時出現在終端與 <code>claude web</code> 的介面。repo 內附範例：Token Weather 在輸入框上方畫上下文用量條，Blast Radius 在危險指令執行前列出它會影響什麼。</p><p class="hans">Mod 就是带 hooks 模块的插件：注册斜杠命令、拦截工具调用、画出同时出现在终端与 <code>claude web</code> 的界面。repo 内附范例：Token Weather 在输入框上方画上下文用量条，Blast Radius 在危险指令运行前列出它会影响什么。</p>
   <div class="code">hello-mod/
 ├── .claude-plugin/plugin.json
 └── hooks/
@@ -123,11 +131,11 @@
 <section id="benchmark"><div class="wrap">
   <p class="prompt">$ <b>bun</b> bench/cli.ts --report</p>
   <h2 class="en">Fewer tokens, same cache hits</h2>
-  <h2 class="zh">token 更少，快取命中率不變</h2>
+  <h2 class="hant">token 更少，快取命中率不變</h2><h2 class="hans">token 更少，缓存命中率不变</h2>
   <p class="en">Same tasks (office, research, coding, ops, Lean proofs), same model, fresh HOME per run, at least 3 runs per cell, every request logged through a recording proxy. Hit rate is cache reads divided by all input, weighted by tokens.</p>
-  <p class="zh">同一批任務（辦公、研究、程式、維運、Lean 證明）、同一模型、每次全新 HOME、每格至少 3 次，所有請求經記錄代理留存。命中率 = 快取讀取 ÷ 全部輸入，按 token 加權。</p>
+  <p class="hant">同一批任務（辦公、研究、程式、維運、Lean 證明）、同一模型、每次全新 HOME、每格至少 3 次，所有請求經記錄代理留存。命中率 = 快取讀取 ÷ 全部輸入，按 token 加權。</p><p class="hans">同一批任务（办公、研究、编码、运维、Lean 证明）、同一模型、每次全新 HOME、每格至少 3 次，所有请求经记录代理留存。命中率 = 缓存读取 ÷ 全部输入，按 token 加权。</p>
   <div class="tablewrap"><table>
-    <thead><tr><th><span class="en">CLI · account</span><span class="zh">CLI · 帳號</span></th><th><span class="en">Cache hit</span><span class="zh">命中率</span></th><th><span class="en">Tokens / task</span><span class="zh">token / 任務</span></th><th><span class="en">$ / task</span><span class="zh">$ / 任務</span></th><th><span class="en">Passed</span><span class="zh">通過</span></th></tr></thead>
+    <thead><tr><th><span class="en">CLI · account</span><span class="hant">CLI · 帳號</span><span class="hans">CLI · 账号</span></th><th><span class="en">Cache hit</span><span class="hant">命中率</span><span class="hans">命中率</span></th><th><span class="en">Tokens / task</span><span class="hant">token / 任務</span><span class="hans">token / 任务</span></th><th><span class="en">$ / task</span><span class="hant">$ / 任務</span><span class="hans">$ / 任务</span></th><th><span class="en">Passed</span><span class="hant">通過</span><span class="hans">通过</span></th></tr></thead>
     <tbody>
       <tr><td class="us"><span class="sw" style="background:var(--claude)"></span>This fork · Claude</td><td class="us">87.1%</td><td class="us">72.7k</td><td class="us">$0.078</td><td>33/33</td></tr>
       <tr><td><span class="sw" style="background:var(--claude);opacity:.4"></span>Official Claude Code</td><td>87.3%</td><td>81.0k</td><td>$0.088</td><td>33/33</td></tr>
@@ -137,23 +145,23 @@
       <tr><td><span class="sw" style="background:var(--gpt);opacity:.4"></span>pi</td><td>84.0%</td><td>36.5k</td><td>$0.041</td><td>33/33</td></tr>
     </tbody>
   </table></div>
-  <p class="foot"><span class="en">Collected 2026-11-07. Claude side: claude-sonnet-5-5, medium effort. ChatGPT side: gpt-6.1-sol, low effort. Cost uses public API prices for both.</span><span class="zh">採集於 2026-11-07。Claude 側 claude-sonnet-5-5、medium effort；ChatGPT 側 gpt-6.1-sol、low effort。花費按兩家公開 API 價換算。</span></p>
-  <a class="btn" href="benchmark/"><span class="en">How we test, and all results</span><span class="zh">測試方法與完整結果</span></a>
+  <p class="foot"><span class="en">Collected 2026-11-07. Claude side: claude-sonnet-5-5, medium effort. ChatGPT side: gpt-6.1-sol, low effort. Cost uses public API prices for both.</span><span class="hant">採集於 2026-11-07。Claude 側 claude-sonnet-5-5、medium effort；ChatGPT 側 gpt-6.1-sol、low effort。花費按兩家公開 API 價換算。</span><span class="hans">采集于 2026-11-07。Claude 侧 claude-sonnet-5-5、medium effort；ChatGPT 侧 gpt-6.1-sol、low effort。花费按两家公开 API 价换算。</span></p>
+  <a class="btn" href="benchmark/"><span class="en">How we test, and all results</span><span class="hant">測試方法與完整結果</span><span class="hans">测试方法与完整结果</span></a>
 </div></section>
 
 <section id="limits"><div class="wrap">
   <h2 class="en">Unofficial build</h2>
-  <h2 class="zh">非官方版本</h2>
+  <h2 class="hant">非官方版本</h2><h2 class="hans">非官方版本</h2>
 </div></section>
 
 <section id="docs"><div class="wrap">
   <p class="prompt">$ <b>ls</b> docs/</p>
   <h2 class="en">Read more</h2>
-  <h2 class="zh">延伸閱讀</h2>
+  <h2 class="hant">延伸閱讀</h2><h2 class="hans">延伸阅读</h2>
   <div class="cards">
-    <a href="https://github.com/Esonhugh/claude-code/blob/dev/docs/articles/why-this-fork.en.md"><b class="en">Why this fork</b><b class="zh">為什麼用這個分支</b><span class="en">The long introduction, with setup for both accounts.</span><span class="zh">完整介紹，含兩種帳號的設定步驟。</span></a>
-    <a href="docs/"><b class="en">Feature docs</b><b class="zh">功能文件</b><span class="en">Every feature, its settings and what it looks like.</span><span class="zh">每項功能的作用、設定與畫面。</span></a>
-    <a href="https://github.com/Esonhugh/claude-code/issues"><b>Issues</b><span class="en">Report a bug or ask for a feature.</span><span class="zh">回報問題或提出功能需求。</span></a>
+    <a href="https://github.com/Esonhugh/claude-code/blob/dev/docs/articles/why-this-fork.en.md"><b class="en">Why this fork</b><b class="hant">為什麼用這個分支</b><b class="hans">为什么用这个分支</b><span class="en">The long introduction, with setup for both accounts.</span><span class="hant">完整介紹，含兩種帳號的設定步驟。</span><span class="hans">完整介绍，含两种账号的设置步骤。</span></a>
+    <a href="docs/"><b class="en">Feature docs</b><b class="hant">功能文件</b><b class="hans">功能文档</b><span class="en">Every feature, its settings and what it looks like.</span><span class="hant">每項功能的作用、設定與畫面。</span><span class="hans">每项功能的作用、设置与画面。</span></a>
+    <a href="https://github.com/Esonhugh/claude-code/issues"><b>Issues</b><span class="en">Report a bug or ask for a feature.</span><span class="hant">回報問題或提出功能需求。</span><span class="hans">报告问题或提出功能需求。</span></a>
   </div>
 </div></section>
 </main>

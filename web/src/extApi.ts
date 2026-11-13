@@ -83,21 +83,12 @@ export type MemoryList = {
 }
 
 export type HookRow = {
-  id?: string
   event: string
   matcher: string
   command: string
   timeout?: number
   source: 'user' | 'project' | 'local' | 'policy' | 'plugin'
   label: string
-}
-
-export type HookInput = {
-  event: string
-  matcher: string
-  command: string
-  timeout?: number
-  source: 'user' | 'project'
 }
 
 export type Mod = {
@@ -151,10 +142,6 @@ export const ext = {
     ),
   setMemory: (key: 'autoMemory' | 'sqlite', on: boolean) => call<void>('PUT', 'memory', { key, on }),
   hooks: () => call<{ disabled: boolean; hooks: HookRow[] }>('GET', 'hooks'),
-  addHook: (hook: HookInput) => call<void>('POST', 'hooks', hook),
-  updateHook: (id: string, hook: HookInput) => call<void>('PUT', 'hooks', { id, ...hook }),
-  deleteHook: (id: string) => call<void>('DELETE', 'hooks', { id }),
-  setHooksDisabled: (on: boolean) => call<void>('PUT', 'hooks/disabled', { on }),
   mods: () => call<Mod[]>('GET', 'mods'),
   setMod: (id: string, on: boolean) => call<{ message: string }>('PUT', `mods/${enc(id)}`, { on }),
   modSource: (id: string) => call<{ source: string }>('GET', `mods/${enc(id)}/source`),

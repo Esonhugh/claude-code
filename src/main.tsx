@@ -361,6 +361,7 @@ import {
 import {
   excludeCommandsByServer,
   excludeResourcesByServer,
+  mcpToolKey,
 } from 'src/services/mcp/utils.js'
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js'
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js'
@@ -3832,7 +3833,7 @@ async function run(): Promise<CommanderCommand> {
         claudeaiMcpPromise,
       ]).then(([local, claudeai]) => ({
         clients: [...local.clients, ...claudeai.clients],
-        tools: uniqBy([...local.tools, ...claudeai.tools], 'name'),
+        tools: uniqBy([...local.tools, ...claudeai.tools], mcpToolKey),
         commands: uniqBy([...local.commands, ...claudeai.commands], 'name'),
       }))
 
@@ -4225,7 +4226,7 @@ async function run(): Promise<CommanderCommand> {
                         c.name === client.name ? client : c,
                       )
                     : [...prev.mcp.clients, client],
-                  tools: uniqBy([...prev.mcp.tools, ...tools], 'name'),
+                  tools: uniqBy([...prev.mcp.tools, ...tools], mcpToolKey),
                   commands: uniqBy([...prev.mcp.commands, ...commands], 'name'),
                 },
               }))
@@ -6219,6 +6220,12 @@ async function run(): Promise<CommanderCommand> {
         '--max-sessions <n>',
         'Maximum concurrent sessions (0 = unlimited)',
         '8',
+      )
+      .option(
+        '--plugin-dir <path>',
+        'Load a plugin from a directory or .zip in every session (repeatable)',
+        (val: string, prev: string[]) => [...prev, val],
+        [] as string[],
       )
       .action(
         async opts => {

@@ -185,6 +185,7 @@ import {
   clearPluginSkillsCache,
 } from './utils/plugins/loadPluginCommands.js'
 import memoize from 'lodash-es/memoize.js'
+import uniqBy from 'lodash-es/uniqBy.js'
 import {
   getOpenAIAuthInfo,
   isUsing3PServices,
@@ -623,7 +624,9 @@ export function getMcpSkillCommands(
 // This includes both skills (from /skills/) and commands (from /commands/)
 export const getSkillToolCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
-    const allCommands = await getCommands(cwd)
+    // A name loaded twice (e.g. user and project skills) runs the first
+    // match (findCommand), so list only that one.
+    const allCommands = uniqBy(await getCommands(cwd), 'name')
     return allCommands.filter(
       cmd =>
         cmd.type === 'prompt' &&

@@ -17,9 +17,35 @@ export type Block =
       input: string
       result?: string
       isError?: boolean
-      /** The file edit part of `tool_use_result` (Edit, Write): its structured patch. */
-      meta?: { type?: string; structuredPatch?: unknown[] }
+      /** The file edit part of `tool_use_result` (Edit, Write): its structured patch; apply_patch's per file. */
+      meta?: { type?: string; structuredPatch?: unknown[]; files?: unknown[] }
+      /** An MCP tool's own result (`tool_use_result`), for an MCP App that renders it. */
+      mcp?: McpToolResult
     }
+
+export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+export function usageOf(v: unknown): Usage | undefined {
+  if (!isObj(v)) return undefined
+  const n = (x: unknown) => (typeof x === 'number' && x > 0 ? x : 0)
+  const u = { input: n(v.input_tokens), output: n(v.output_tokens), cacheRead: n(v.cache_read_input_tokens), cacheWrite: n(v.cache_creation_input_tokens) }
+  return usageTotal(u) > 0 ? u : undefined
+}
+
+export const usageTotal = (u: Usage) => u.input + u.output + u.cacheRead + u.cacheWrite
+
+export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+  if (!a || !b) return a ?? b
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite }
+}
+
+/** Each content block of a reply is its own transcript entry; the usage they repeat is the request's once. */
+function maxUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+  if (!a || !b) return a ?? b
+  return { input: Math.max(a.input, b.input), output: Math.max(a.output, b.output), cacheRead: Math.max(a.cacheRead, b.cacheRead), cacheWrite: Math.max(a.cacheWrite, b.cacheWrite) }
+}
+
+export type McpToolResult = { content?: unknown[]; structuredContent?: unknown; _meta?: Record<string, unknown> }
 
 export type Item =
   | { kind: 'user'; id: string; text: string; images?: string[] }
@@ -47,6 +73,10 @@ export type Item =
       blocks: Block[]
       /** The SDK messages (by uuid) folded into this reply, so one given again is not added twice. */
       parts?: string[]
+      /** This API request's tokens, as the transcript records them. */
+      usage?: Usage
+      /** The whole turn's tokens (`result.usage`), on the turn's last reply. */
+      turnUsage?: Usage
     }
   | { kind: 'error'; id: string; text: string }
   /** Output of a local slash command (`/model`, `/usage`), shown as a muted system line. */
@@ -72,7 +102,7 @@ export type Approval = {
 }
 
 /** The user's answer to an approval, shown where the request was. */
-export type Decision = { toolName: string; choice: ApprovalChoice; rules?: string }
+export type Decision = { toolName: string; choice: ApprovalChoice; rules?: string; scope?: 'session' | 'project' | 'user' }
 
 /** `/goal` as `system/goal_state_changed` reports it. `checks`: reasons the condition was not met yet. */
 export type Goal = {
@@ -475,6 +505,17 @@ export function addUserMessage(
   return { ...state, busy: true, startedAt: state.startedAt ?? Date.now(), items, goal }
 }
 
+/** A slash command the page ran itself (`/reload-plugins`): its line and its output, with no turn. */
+export function addPageCommand(state: ChatState, text: string, output: string, isError?: boolean): ChatState {
+  const id = `page-${state.items.length}`
+  return addLocal({ ...state, items: [...state.items, { kind: 'user', id, text }] }, {
+    kind: 'local',
+    id: `${id}-out`,
+    text: output,
+    ...(isError && { isError }),
+  })
+}
+
 /**
  * A message sent while a turn runs. The engine queues it and feeds it to the
  * model between tool calls, or runs it as the next turn; its echo (same uuid)
@@ -484,19 +525,38 @@ export function queueUserMessage(state: ChatState, text: string, uuid: string, i
   return { ...state, queued: [...state.queued, { kind: 'user', id: uuid, text, ...(images?.length && { images }) }] }
 }
 
-/** The rules an "always allow" answer adds, as `Bash(npm test:*)`. */
-export function approvalRules(approval: Approval): string[] {
-  return approval.suggestions
-    .flatMap(s => {
-      const rule = s as { rules?: { toolName?: string; ruleContent?: string }[] }
-      return (rule.rules ?? []).map(r => (r.ruleContent ? `${r.toolName}(${r.ruleContent})` : (r.toolName ?? '')))
-    })
+/**
+ * The updates an "always allow" answer applies. As the TUI, a shell command's
+ * suggested mode switch is left out: its option names rules and folders only.
+ */
+export function approvalUpdates(approval: Approval): Record<string, unknown>[] {
+  const updates = approval.suggestions.filter(isObj)
+  return ['Bash', 'PowerShell'].includes(approval.toolName) ? updates.filter(u => u.type !== 'setMode') : updates
+}
+
+/** Where an "always allow" answer is kept: this session only, the project's settings or the user's. */
+export function approvalScope(approval: Approval): 'session' | 'project' | 'user' {
+  const where = approvalUpdates(approval).map(u => u.destination)
+  if (where.includes('userSettings')) return 'user'
+  return where.some(d => d === 'localSettings' || d === 'projectSettings') ? 'project' : 'session'
+}
+
+/** What an "always allow" answer adds: rules as `Bash(npm test:*)`, folders, and a mode to switch to. */
+export function approvalRules(approval: Approval): { rules: string[]; directories: string[]; mode?: string } {
+  const updates = approvalUpdates(approval)
+  const rules = updates
+    .flatMap(u => (Array.isArray(u.rules) ? u.rules.filter(isObj) : []))
+    .map(r => (str(r.ruleContent) ? `${str(r.toolName) ?? ''}(${str(r.ruleContent)})` : (str(r.toolName) ?? '')))
     .filter(Boolean)
+  const directories = updates.flatMap(u => (Array.isArray(u.directories) ? u.directories.filter(d => typeof d === 'string') : []))
+  const mode = updates.flatMap(u => (u.type === 'setMode' && str(u.mode) ? [str(u.mode)!] : [])).at(-1)
+  return { rules, directories, ...(mode && { mode }) }
 }
 
 /** Drops an answered approval and remembers the answer for its place in the chat. */
 export function answerApproval(state: ChatState, approval: Approval, choice: ApprovalChoice): ChatState {
-  const rules = choice === 'always' ? approvalRules(approval).join(', ') : ''
+  const added = approvalRules(approval)
+  const rules = choice === 'always' ? [...added.rules, ...added.directories].join(', ') : ''
   return {
     ...removeApproval(state, approval.requestId),
     decisions: {
@@ -505,6 +565,7 @@ export function answerApproval(state: ChatState, approval: Approval, choice: App
         toolName: approval.toolName,
         choice,
         ...(rules && { rules }),
+        ...(choice === 'always' && { scope: approvalScope(approval) }),
       },
     },
   }
@@ -889,6 +950,10 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         }
       }
       if (raw.subtype === 'goal_state_changed') return reduceGoal(state, raw)
+      // The engine changed the mode itself: an approval's setMode suggestion, an approved plan.
+      if (raw.subtype === 'status' && typeof raw.permissionMode === 'string') {
+        return { ...state, permissionMode: raw.permissionMode }
+      }
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
         return tasks === state.tasks ? state : { ...state, tasks, ...noteEnded(state, tasks, raw) }
@@ -956,6 +1021,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const part = str(raw.uuid)
       if (part && existing?.parts?.includes(part)) return state
       const parts = part ? [...(existing?.parts ?? []), part] : existing?.parts
+      const usage = maxUsage(existing?.usage, usageOf(message.usage))
       if (existing?.streamed) {
         // The streamed copy already has the text; take the final tool input.
         let next = state
@@ -964,13 +1030,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             next = mapTool(next, block.id, b => ({ ...b, input: block.input }))
           }
         }
-        return next
+        return usage ? updateLastAssistant(next, id, item => ({ ...item, usage })) : next
       }
       if (existing) {
         return updateLastAssistant(state, id, item => ({
           ...item,
           blocks: [...item.blocks, ...blocks],
           parts,
+          ...(usage && { usage }),
         }))
       }
       return {
@@ -984,6 +1051,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
             streamed: false,
             blocks,
             ...(parts && { parts }),
+            ...(usage && { usage }),
           },
         ],
       }
@@ -1063,10 +1131,22 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       // Keep only the patch of a file edit's result; it also carries the whole file.
       const result = isObj(raw.tool_use_result) ? raw.tool_use_result : undefined
       const meta =
-        result && (Array.isArray(result.structuredPatch) || result.type === 'create')
+        result && (Array.isArray(result.structuredPatch) || result.type === 'create' || Array.isArray(result.files))
           ? {
               ...(typeof result.type === 'string' && { type: result.type }),
               ...(Array.isArray(result.structuredPatch) && { structuredPatch: result.structuredPatch }),
+              // apply_patch: each file's patch; a deleted file keeps its old text, which is its diff.
+              ...(Array.isArray(result.files) && {
+                files: result.files.filter(isObj).map(({ originalFile, ...f }) => (f.type === 'delete' ? { ...f, originalFile } : f)),
+              }),
+            }
+          : undefined
+      const mcp: McpToolResult | undefined =
+        result && (result.structuredContent !== undefined || isObj(result._meta))
+          ? {
+              ...(Array.isArray(result.content) && { content: result.content }),
+              ...(result.structuredContent !== undefined && { structuredContent: result.structuredContent }),
+              ...(isObj(result._meta) && { _meta: result._meta }),
             }
           : undefined
       for (const part of content) {
@@ -1081,6 +1161,7 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
           result: unwrapped ?? text,
           isError: part.is_error === true,
           ...(meta && { meta }),
+          ...(mcp && b.name.startsWith('mcp__') && { mcp }),
         }))
       }
       return next
@@ -1089,6 +1170,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     case 'result': {
       if (typeof raw.total_cost_usd === 'number') {
         state = { ...state, costUsd: raw.total_cost_usd }
+      }
+      // The stream's replies carry the usage of each request's start; the result has the turn's whole.
+      const turnUsage = usageOf(raw.usage)
+      const lastReply = state.items.findLastIndex(i => i.kind === 'assistant')
+      if (turnUsage && lastReply > state.items.findLastIndex(i => i.kind === 'user')) {
+        const items = state.items.slice()
+        items[lastReply] = { ...(items[lastReply] as Extract<Item, { kind: 'assistant' }>), turnUsage }
+        state = { ...state, items }
       }
       const failed = raw.is_error === true || raw.subtype !== 'success'
       const next = {
@@ -1437,12 +1526,18 @@ export function permissionResponse(
 ): Json {
   const response =
     choice === 'deny'
-      ? { behavior: 'deny', message: 'The user denied this tool use.' }
+      ? {
+          behavior: 'deny',
+          message: 'The user denied this tool use.',
+          // The session's own tool: the turn stops, like the TUI's "No", so the
+          // user's next message says what to do instead. A worker's goes on.
+          ...(!approval.agentId && { interrupt: true }),
+        }
       : {
           behavior: 'allow',
           updatedInput: approval.input,
-          ...(choice === 'always' && approval.suggestions.length
-            ? { updatedPermissions: approval.suggestions }
+          ...(choice === 'always' && approvalUpdates(approval).length
+            ? { updatedPermissions: approvalUpdates(approval) }
             : {}),
         }
   return {

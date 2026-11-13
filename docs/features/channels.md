@@ -1,5 +1,7 @@
 # Channels
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`channels` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@
 频道本质上是一个特殊的 MCP server：它声明自己是「频道」，并主动推送消息。官方提供 telegram、discord、imessage 等插件，你也可以自己写一个。
 
 **注意**：推进来的消息会被 Claude 当作输入处理，相当于给了外部一个「对 Claude 说话」的入口。只接你信任的频道。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `channels` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+Normally Claude only acts when you type in the terminal. Channels let **outside message sources** push messages into a session too:
+
+- you send "check why CI failed" from Telegram on your phone, and the Claude session open on your desktop gets to work;
+- when Claude needs you to approve a command, the request can go to your phone as well, and replying `yes abcde` allows it.
+
+A channel is a special MCP server: it declares itself a channel and pushes messages. Official plugins exist for telegram, discord, imessage and others, and you can write your own.
+
+**Note**: Claude treats pushed messages as input, so a channel gives the outside world a way to talk to Claude. Only connect channels you trust.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`channels` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+平時只有你在終端裡打字，Claude 才會動。Channels（頻道）讓**外部訊息源**也能往會話裡「塞」訊息：
+
+- 你在手機 Telegram 裡發一句「幫我看下 CI 為什麼掛了」，桌面上開著的 Claude 收到後直接開工；
+- Claude 需要你批准某個命令時，審批請求也可以發到手機上，你回一句 `yes abcde` 就放行。
+
+頻道本質上是一個特殊的 MCP server：它宣告自己是「頻道」，並主動推送訊息。官方提供 telegram、discord、imessage 等插件，你也可以自己寫一個。
+
+**注意**：推進來的訊息會被 Claude 當作輸入處理，相當於給了外部一個「對 Claude 說話」的入口。只接你信任的頻道。
+
+</details>
 
 ## 快速上手：用一个本地小频道体验全过程
 

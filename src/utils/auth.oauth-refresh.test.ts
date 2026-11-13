@@ -48,7 +48,9 @@ mock.module('./authFileDescriptor.js', () => ({
   getOAuthTokenFromFileDescriptor: () => null,
   getApiKeyFromFileDescriptor: () => null,
 }))
+const lockfile = { ...(await import('./lockfile.js')) }
 mock.module('./lockfile.js', () => ({
+  ...lockfile,
   lock: async () => {
     onLock?.()
     return async () => {}

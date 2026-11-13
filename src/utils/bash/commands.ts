@@ -239,7 +239,33 @@ export function splitCommandWithOperators(command: string): string[] {
     })
 
     // Restore heredocs that were extracted before parsing
-    return restoreHeredocs(quotedParts, heredocs)
+    const restored = restoreHeredocs(quotedParts, heredocs)
+
+    // `&&` and `||` inside `[[ ... ]]` join tests; they do not end the
+    // command. Only rejoin when the parts really close with `]]`.
+    const closesTest = (part: string) => /[ \t]\]\]$/.test(part.trim())
+    const joined: string[] = []
+    for (let i = 0; i < restored.length; i++) {
+      let part = restored[i]!
+      let next = i
+      if (/^\[\[[ \t]/.test(part.trim())) {
+        while (
+          !part.includes(']]') &&
+          next + 2 < restored.length &&
+          (restored[next + 1] === '&&' || restored[next + 1] === '||')
+        ) {
+          part = `${part} ${restored[next + 1]} ${restored[next + 2]}`
+          next += 2
+        }
+      }
+      if (next > i && closesTest(part)) {
+        joined.push(part)
+        i = next
+      } else {
+        joined.push(restored[i]!)
+      }
+    }
+    return joined
   } catch (_error) {
     // If shell-quote fails to parse (e.g., malformed variable substitutions),
     // treat the entire command as a single string to avoid crashing

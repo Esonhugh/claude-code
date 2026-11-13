@@ -59,10 +59,17 @@ const KILL_AGENT = `for p in /proc/[0-9]*; do c=$(tr '\\0' ' ' < $p/cmdline 2>/d
 export type HarborTask = { suite: string; task: string; dir: string; variantDir?: string }
 
 // Upstream sources are not vendored: BENCH_HARBOR_ROOT is a checkout of
-// harbor-datasets (datasets/<suite>/<task>); BENCH_TB2_ROOT one of Terminal-Bench 2.
+// harbor-datasets (datasets/<suite>/<task>); BENCH_TB2_ROOT one of Terminal-Bench 2;
+// BENCH_DEEPSWE_ROOT one of datacurve-ai/deep-swe (tasks/<task>).
+const SUITE_ROOT: Record<string, [string, (root: string) => string]> = {
+  tb2: ['BENCH_TB2_ROOT', root => root],
+  deepswe: ['BENCH_DEEPSWE_ROOT', root => path.join(root, 'tasks')],
+}
+
 export function harborTask(suite: string, task: string, variant: string | undefined, env = process.env): HarborTask {
-  const root = suite === 'tb2' ? env.BENCH_TB2_ROOT : env.BENCH_HARBOR_ROOT && path.join(env.BENCH_HARBOR_ROOT, 'datasets', suite)
-  if (!root) throw new Error(suite === 'tb2' ? 'set BENCH_TB2_ROOT' : 'set BENCH_HARBOR_ROOT')
+  const [envName, sub] = SUITE_ROOT[suite] ?? ['BENCH_HARBOR_ROOT', (root: string) => path.join(root, 'datasets', suite)]
+  const root = env[envName] && sub(env[envName]!)
+  if (!root) throw new Error(`set ${envName}`)
   const dir = path.join(root, task)
   if (!fs.existsSync(path.join(dir, 'task.toml'))) throw new Error(`no task.toml in ${dir}`)
   const variantDir = variant ? path.join(PUBLIC_DIR, 'perturb', variant, suite, task) : undefined
@@ -154,7 +161,8 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
     docker(['cp', mitm.bundle, `${name}:/etc/bench-ca.crt`])
     docker(['cp', mitm.bundle, `${name}:/etc/ccr-ca.crt`]) // the name prelude.sh reads
     const upstream = process.env.HTTPS_PROXY ?? ''
-    const sysEnv = ['-e', `HTTPS_PROXY=${upstream}`, '-e', `https_proxy=${upstream}`, '-e', 'SSL_CERT_FILE=/etc/bench-ca.crt', '-e', 'REQUESTS_CA_BUNDLE=/etc/bench-ca.crt', '-e', 'PIP_CERT=/etc/bench-ca.crt']
+    // NO_PROXY: verifiers that talk to a server the task started on localhost (kv-store-grpc) must not go through the proxy.
+    const sysEnv = ['-e', `HTTPS_PROXY=${upstream}`, '-e', `https_proxy=${upstream}`, '-e', 'NO_PROXY=127.0.0.1,localhost', '-e', 'no_proxy=127.0.0.1,localhost', '-e', 'SSL_CERT_FILE=/etc/bench-ca.crt', '-e', 'REQUESTS_CA_BUNDLE=/etc/bench-ca.crt', '-e', 'PIP_CERT=/etc/bench-ca.crt']
     fs.writeFileSync(path.join(raw, 'prelude.log'), docker(['exec', '-i', ...sysEnv, name, 'sh'], { input: fs.readFileSync(path.join(PUBLIC_DIR, 'prelude.sh'), 'utf8') }).stdout)
     // SWE-bench Pro: keep the full history outside the container while the agent runs (so it cannot read the
     // upstream fix), and bring it back before grading: test.sh checks out the gold tests from the fix commit.
@@ -235,9 +243,9 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
       fs.appendFileSync(path.join(raw, 'gitscrub.log'), `restore: ${g.status}\n${g.stderr ?? ''}`)
       fs.rmSync(bundle, { force: true })
     }
-    const v = docker(['exec', '-w', wd, ...sysEnv, name, 'bash', '/tests/test.sh'], { timeoutSec: verifyTimeout })
-    fs.writeFileSync(path.join(raw, 'verifier.log'), (v.stdout ?? '') + (v.stderr ?? ''))
-    const reward = docker(['exec', name, 'cat', '/logs/verifier/reward.txt']).stdout.trim() || 'NA'
+    const reward = separateVerifier(toml)
+      ? verifySeparately(t, toml, name, image, raw, verifyTimeout)
+      : verifyInPlace(name, wd, sysEnv, raw, verifyTimeout)
 
     const meta: RunMeta & { suite: string; variant: string; reward: string; scrubbed?: string[] } = {
       cell: cellId,
@@ -269,6 +277,50 @@ async function harborExecute(t: HarborTask, cellId: string, rep: number, opts: H
     fs.rmSync(path.join(opts.workRoot, `${name}.bundle`), { force: true })
     docker(['rm', '-f', name])
   }
+}
+
+function verifyInPlace(name: string, wd: string, sysEnv: string[], raw: string, timeoutSec: number): string {
+  const v = docker(['exec', '-w', wd, ...sysEnv, name, 'bash', '/tests/test.sh'], { timeoutSec })
+  fs.writeFileSync(path.join(raw, 'verifier.log'), (v.stdout ?? '') + (v.stderr ?? ''))
+  return docker(['exec', name, 'cat', '/logs/verifier/reward.txt']).stdout.trim() || 'NA'
+}
+
+export const separateVerifier = (toml: string) => tomlValue(toml, 'verifier', 'environment_mode') === 'separate'
+
+// [[verifier.collect]] hooks: commands run in the agent container after the agent stops.
+export function collectCommands(toml: string): string[] {
+  return [...toml.matchAll(/^\[\[verifier\.collect\]\]\s*\ncommand\s*=\s*"((?:[^"\\]|\\.)*)"/gm)].map(m => m[1].replace(/\\(["\\])/g, '$1'))
+}
+
+// DeepSWE (environment_mode = "separate"): the collect hook writes the agent's committed work as
+// /logs/artifacts/model.patch; it is graded in a fresh container built from tests/Dockerfile
+// (the task image plus hidden tests), without network, so nothing the agent left behind leaks in.
+function verifySeparately(t: HarborTask, toml: string, name: string, image: string, raw: string, timeoutSec: number): string {
+  const log = path.join(raw, 'verifier.log')
+  for (const cmd of collectCommands(toml)) {
+    const c = docker(['exec', name, 'sh', '-c', cmd], { timeoutSec: 300 })
+    fs.appendFileSync(log, `collect: ${c.status}\n${c.stdout ?? ''}${c.stderr ?? ''}`)
+  }
+  const artifacts = path.join(raw, 'artifacts')
+  const out = path.join(raw, 'verifier')
+  fs.mkdirSync(artifacts, { recursive: true })
+  fs.mkdirSync(out, { recursive: true })
+  docker(['cp', `${name}:/logs/artifacts/.`, `${artifacts}/`])
+  const vimage = `${image.split(':')[0].split('/').pop()}-verifier:${t.task}`.toLowerCase().replace(/[^a-z0-9_.:-]/g, '-')
+  if (docker(['image', 'inspect', `bench/${vimage}`]).status !== 0) {
+    const b = docker(['build', '-q', '-t', `bench/${vimage}`, path.join(t.dir, 'tests')], { timeoutSec: 1800 })
+    fs.appendFileSync(log, `build: ${b.status}\n${b.stdout ?? ''}${b.stderr ?? ''}`)
+    if (b.status !== 0) throw new Error('verifier image build failed')
+  }
+  const v = docker(
+    ['run', '--rm', '--network', 'none', '-v', `${path.resolve(artifacts)}:/logs/artifacts:ro`, '-v', `${path.resolve(out)}:/logs/verifier`, `bench/${vimage}`, 'bash', '/tests/test.sh'],
+    { timeoutSec },
+  )
+  fs.appendFileSync(log, (v.stdout ?? '') + (v.stderr ?? ''))
+  const txt = path.join(out, 'reward.txt')
+  if (fs.existsSync(txt)) return fs.readFileSync(txt, 'utf8').trim() || 'NA'
+  const json = path.join(out, 'reward.json')
+  return fs.existsSync(json) ? String(JSON.parse(fs.readFileSync(json, 'utf8')).reward ?? 'NA') : 'NA'
 }
 
 // Perturbed variants are generated by public/perturb/mkperturb.py from the upstream

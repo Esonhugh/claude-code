@@ -366,8 +366,8 @@ function removeExtraMarketplace(
     if (settings.enabledPlugins) {
       const suffix = `@${name}`
       let removedPlugins = false
-      const updatedPlugins = { ...settings.enabledPlugins }
-      for (const pluginId in updatedPlugins) {
+      const updatedPlugins: typeof settings.enabledPlugins = {}
+      for (const pluginId in settings.enabledPlugins) {
         if (pluginId.endsWith(suffix)) {
           updatedPlugins[pluginId] = undefined
           removedPlugins = true

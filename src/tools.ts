@@ -5,6 +5,7 @@ import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
 import { TerminalTool } from './tools/TerminalTool/TerminalTool.js'
 import { ApplyPatchTool } from './tools/ApplyPatchTool/ApplyPatchTool.js'
+import { APPLY_PATCH_TOOL_NAME } from './tools/ApplyPatchTool/prompt.js'
 import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
 import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
 import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
@@ -274,7 +275,15 @@ export function filterToolsByDenyRules<
     mcpInfo?: { serverName: string; toolName: string }
   },
 >(tools: readonly T[], permissionContext: ToolPermissionContext): T[] {
-  return tools.filter(tool => !getDenyRuleForTool(permissionContext, tool))
+  // apply_patch does Edit's and Write's work, so a blanket deny of either removes it too, as for agents.
+  const patchDenied =
+    getDenyRuleForTool(permissionContext, FileEditTool) !== null ||
+    getDenyRuleForTool(permissionContext, FileWriteTool) !== null
+  return tools.filter(
+    tool =>
+      !getDenyRuleForTool(permissionContext, tool) &&
+      !(patchDenied && tool.name === APPLY_PATCH_TOOL_NAME),
+  )
 }
 
 export const getTools = (permissionContext: ToolPermissionContext): Tools => {
@@ -366,7 +375,7 @@ export function assembleToolPool(
   const builtInTools = getTools(permissionContext)
 
   // Filter out MCP tools that are in the deny list
-  const enabledMcpTools = filterEnabledCodexAppTools(mcpTools)
+  const enabledMcpTools = modelVisibleMcpTools(mcpTools)
   const allowedMcpTools = filterToolsByDenyRules(
     enabledMcpTools,
     permissionContext,
@@ -406,5 +415,12 @@ export function getMergedTools(
   mcpTools: Tools,
 ): Tools {
   const builtInTools = getTools(permissionContext)
-  return [...builtInTools, ...filterEnabledCodexAppTools(mcpTools)]
+  return [...builtInTools, ...modelVisibleMcpTools(mcpTools)]
+}
+
+/** MCP tools the model may see: enabled Codex apps, minus MCP Apps tools for the app only. */
+function modelVisibleMcpTools(mcpTools: Tools): Tools {
+  return filterEnabledCodexAppTools(mcpTools).filter(
+    tool => tool.mcpInfo?.hiddenFromModel !== true,
+  )
 }

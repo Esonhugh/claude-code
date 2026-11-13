@@ -2,7 +2,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const configDir = await mkdtemp(join(tmpdir(), 'session-team-'))
 process.env.CLAUDE_CONFIG_DIR = configDir
@@ -13,6 +13,8 @@ afterAll(async () => {
 const { getSessionId } = await import('../../bootstrap/state.js')
 const { getTasksDir, getTaskListId } = await import('../tasks.js')
 const { readTeamFileAsync } = await import('./teamHelpers.js')
+const { getInboxPath } = await import('../teammateMailbox.js')
+const { getTeamsDir } = await import('../envUtils.js')
 const { ensureSessionTeam, getSessionTeamName } = await import('./sessionTeam.js')
 type AppState = import('../../state/AppStateStore.js').AppState
 
@@ -30,6 +32,9 @@ test('ensureSessionTeam creates session-<id> with the leader and keeps session t
   const sessionId = getSessionId()
   await mkdir(getTasksDir(sessionId), { recursive: true })
   await writeFile(join(getTasksDir(sessionId), '1.json'), '{}')
+  // TaskUpdate owner set before the team existed mails the owner here.
+  await mkdir(dirname(getInboxPath('worker', sessionId)), { recursive: true })
+  await writeFile(getInboxPath('worker', sessionId), '[]')
 
   const { getAppState, setAppState } = fakeState()
   const teamName = await ensureSessionTeam(getAppState, setAppState)
@@ -46,6 +51,8 @@ test('ensureSessionTeam creates session-<id> with the leader and keeps session t
   expect(getTaskListId()).toBe(teamName)
   expect(existsSync(join(getTasksDir(teamName), '1.json'))).toBe(true)
   expect(existsSync(getTasksDir(sessionId))).toBe(false)
+  expect(existsSync(getInboxPath('worker', teamName))).toBe(true)
+  expect(existsSync(join(getTeamsDir(), sessionId))).toBe(false)
 })
 
 test('ensureSessionTeam drops the previous run\'s in-process members on resume (#802)', async () => {

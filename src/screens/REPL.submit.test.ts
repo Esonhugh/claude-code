@@ -1155,6 +1155,33 @@ for (const gap of ['mods', 'hooks']) {
   })
 }
 
+test('an idle prompt shows as processing while it waits on the Mods barrier', async () => {
+  const h = harness({ active: false })
+  const shown: (string | undefined)[] = []
+  h.scope.setUserInputOnProcessing = (value: string | undefined) => { shown.push(value) }
+  const pending = h.submit('submitted', h.helpers)
+  await Promise.resolve()
+  expect(h.draft.text).toBe('')
+  expect(shown).toEqual(['submitted'])
+  h.release()
+  await pending
+  expect(shown).toEqual(['submitted'])
+  expect(h.executions).toHaveLength(1)
+})
+
+test('a prompt that queues behind a turn started during the Mods barrier drops its processing placeholder', async () => {
+  const h = harness({ active: false })
+  const shown: (string | undefined)[] = []
+  h.scope.setUserInputOnProcessing = (value: string | undefined) => { shown.push(value) }
+  const pending = h.submit('submitted', h.helpers)
+  await Promise.resolve()
+  h.guard.isActive = true
+  h.release()
+  await pending
+  expect(shown).toEqual(['submitted', undefined])
+  expect(h.queued).toHaveLength(1)
+})
+
 test('commands activated during the Mods barrier are available before a React render', async () => {
   let calls = 0
   const h = harness({input:'/new-panel'})

@@ -13,6 +13,7 @@ import {
   saveCustomTitle,
 } from '../utils/sessionStorage.js'
 import { resolveSessionFilePath } from '../utils/sessionStoragePortable.js'
+import { formatTeammateMessages } from '../utils/teammateMailbox.js'
 
 export const AGENT_ID = /^[\w-]{1,100}$/
 
@@ -69,6 +70,8 @@ function isVisible(message: Record<string, unknown>): boolean {
     // A message the user sent mid-turn, fed to the model between tool calls.
     // A task ending the model read mid-turn: the page notes it where it happened.
     if (attachment?.type === 'queued_command') return ['prompt', 'task-notification'].includes(attachment.commandMode ?? 'prompt')
+    // Teammate messages the lead read between tool calls.
+    if (attachment?.type === 'teammate_mailbox') return true
     return attachment?.type === 'goal_status' || HOOK_NOTICES.has(attachment?.type ?? '')
   }
   // A channel message is meta to the model; the person sees it, as in the TUI.
@@ -211,6 +214,11 @@ function toStreamJson(
           // message to its worker is meta to the model but shown in the worker's conversation.
           return { type: 'user', uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content: attachment.prompt }, ...(attachment.isMeta === true && attachment.origin?.kind !== 'coordinator' && { isSynthetic: true }) }
         }
+        if (attachment.type === 'teammate_mailbox') {
+          // As the live stream replays it, and as the prompt that delivers them between turns reads.
+          const content = formatTeammateMessages((m.attachment as { messages: Parameters<typeof formatTeammateMessages>[0] }).messages)
+          return { type: 'user', uuid: m.uuid, timestamp: m.timestamp, parent_tool_use_id: null, isReplay: true, message: { role: 'user', content } }
+        }
         if (HOOK_NOTICES.has(attachment.type ?? '')) return hookNotice(m)
         return { type: 'system', subtype: 'goal_state_changed', uuid: m.uuid, goal: m.attachment }
       }
@@ -242,7 +250,19 @@ function thinkingMs(m: Record<string, unknown>, prev: number | undefined): { thi
 
 function editPatch(result: unknown): { tool_use_result?: Record<string, unknown> } {
   if (typeof result !== 'object' || result === null) return {}
-  const { type, structuredPatch } = result as { type?: unknown; structuredPatch?: unknown }
+  const { type, structuredPatch, files } = result as { type?: unknown; structuredPatch?: unknown; files?: unknown }
+  // apply_patch: each file's patch; a deleted file keeps its old text, which is its diff.
+  if (Array.isArray(files)) {
+    return {
+      tool_use_result: {
+        files: files.flatMap(f => {
+          if (typeof f !== 'object' || f === null) return []
+          const { originalFile, ...rest } = f as Record<string, unknown>
+          return [rest.type === 'delete' ? { ...rest, originalFile } : rest]
+        }),
+      },
+    }
+  }
   if (!Array.isArray(structuredPatch)) return {}
   return { tool_use_result: { type, structuredPatch } }
 }

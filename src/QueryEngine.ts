@@ -65,7 +65,8 @@ import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { Message, MessageOrigin, UserMessage } from './types/message.js'
+import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
+import { formatTeammateMessages } from './utils/teammateMailbox.js'
 import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import { applyCompletedMessageDisplayHooks } from './utils/hooks/messageDisplay.js'
@@ -181,6 +182,25 @@ export function channelReplays(messages: readonly Message[]): SDKUserMessageRepl
 }
 
 /**
+ * Replay of the teammate messages a turn read between tool calls, shaped like
+ * the prompt that delivers them between turns.
+ */
+export function teammateMailboxReplays(message: AttachmentMessage): SDKUserMessageReplay[] {
+  if (message.attachment.type !== 'teammate_mailbox') return []
+  return [
+    {
+      type: 'user',
+      message: { role: 'user', content: formatTeammateMessages(message.attachment.messages) },
+      session_id: getSessionId(),
+      parent_tool_use_id: null,
+      uuid: message.uuid,
+      timestamp: message.timestamp,
+      isReplay: true,
+    } as SDKUserMessageReplay,
+  ]
+}
+
+/**
  * Like 2.1.311, permission_denials also lists calls a hook refused; those
  * never reach canUseTool, so they are read from the refused tool result.
  */
@@ -233,6 +253,22 @@ export function resultMessageOf(messages: readonly Message[]): Message | undefin
   return messages.findLast(
     m => m.type === 'assistant' || (m.type === 'user' && !m.isMeta),
   )
+}
+
+/**
+ * The text of the reply the result is read from. A ChatGPT response can end
+ * with reasoning items after its text, each a message of its own with the
+ * same message id; the text before them is the reply.
+ */
+export function resultTextOf(messages: readonly Message[], result: AssistantMessage): string {
+  const reply = messages
+    .filter(m => m.type === 'assistant' && m.message.id === result.message.id)
+    .flatMap(m => (m as AssistantMessage).message.content)
+    .filter(b => b.type !== 'thinking' && b.type !== 'redacted_thinking')
+  const lastContent = last(reply.length > 0 ? reply : result.message.content)
+  return lastContent?.type === 'text' && !SYNTHETIC_MESSAGES.has(lastContent.text as string)
+    ? (lastContent.text as string)
+    : ''
 }
 
 export type QueryEngineConfig = {
@@ -461,11 +497,12 @@ export class QueryEngine {
       )
 
       // Track denials for SDK reporting
-      if (result.behavior !== 'allow') {
+      const deniedCall = result.behavior === 'ask' ? undefined : result.deniedCall
+      if (result.behavior !== 'allow' || deniedCall) {
         this.permissionDenials.push({
-          tool_name: sdkCompatToolName(tool.name),
+          tool_name: sdkCompatToolName(deniedCall?.toolName ?? tool.name),
           tool_use_id: toolUseID,
-          tool_input: input,
+          tool_input: deniedCall?.input ?? input,
         })
       }
 
@@ -963,7 +1000,13 @@ export class QueryEngine {
 
     // A channel message is meta to the model, but a client that asked for
     // replays shows it, as the TUI does; before the reply, where it was read.
-    if (replayUserMessages) yield* channelReplays(messagesFromUserInput)
+    if (replayUserMessages) {
+      yield* channelReplays(messagesFromUserInput)
+      // Teammate messages that were unread when the prompt was processed (#1274).
+      for (const message of messagesFromUserInput) {
+        if (message.type === 'attachment') yield* teammateMailboxReplays(message)
+      }
+    }
 
     // Like official 2.1.311, every result carries the fast mode state and,
     // when fast mode is unavailable, why.
@@ -1397,6 +1440,9 @@ export class QueryEngine {
             }
             return
           }
+          else if (replayUserMessages && message.attachment.type === 'teammate_mailbox') {
+            yield* teammateMailboxReplays(message)
+          }
           // Yield queued_command attachments as SDK user message replays
           else if (
             replayUserMessages &&
@@ -1661,13 +1707,7 @@ export class QueryEngine {
     let isApiError = false
 
     if (result.type === 'assistant') {
-      const lastContent = last(result.message.content)
-      if (
-        lastContent?.type === 'text' &&
-        !SYNTHETIC_MESSAGES.has(lastContent.text as string)
-      ) {
-        textResult = lastContent.text as string
-      }
+      textResult = resultTextOf(messages, result)
       isApiError = Boolean(result.isApiErrorMessage)
     }
 

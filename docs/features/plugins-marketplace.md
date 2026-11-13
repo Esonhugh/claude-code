@@ -1,5 +1,7 @@
 # 插件与 Marketplace
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`plugins-marketplace` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@
 **Marketplace（插件市场）**是插件的目录。它可以是一个 GitHub 仓库，也可以是本地文件夹。团队把常用插件放进自己的 marketplace，成员加一次就能浏览和安装。
 
 本 fork 启动时会自动登记 `Esonhugh-Marketplace`（底部提示 `✓ Esonhugh-Marketplace installed`），官方插件名称照常兼容。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `plugins-marketplace` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+A **plugin** is a packaged extension that can hold slash commands, [skills](skills.md), [subagents](agents.md), [hooks](hooks.md), [MCP servers](mcp.md), LSP servers and more, so installing one plugin gives you a whole set of capabilities at once.
+
+A **marketplace** is a catalogue of plugins. It can be a GitHub repo or a local folder. A team puts the plugins it uses into its own marketplace, and members add it once to browse and install.
+
+At startup this fork registers `Esonhugh-Marketplace` automatically (the footer shows `✓ Esonhugh-Marketplace installed`); official plugin names work as usual.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`plugins-marketplace` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+**插件**是一個打包好的擴充：裡面可以有斜槓命令、[skill](skills.md)、[子代理](agents.md)、[hook](hooks.md)、[MCP server](mcp.md)、LSP 等，裝一個插件就一次性拿到一整套能力。
+
+**Marketplace（插件市場）**是插件的目錄。它可以是一個 GitHub 倉庫，也可以是本地資料夾。團隊把常用插件放進自己的 marketplace，成員加一次就能瀏覽和安裝。
+
+本 fork 啟動時會自動登記 `Esonhugh-Marketplace`（底部提示 `✓ Esonhugh-Marketplace installed`），官方插件名稱照常相容。
+
+</details>
 
 ## 快速上手：建一个团队 marketplace 并安装插件
 

@@ -16,7 +16,7 @@ const { drainSdkEvents } = await import('../sdkEventQueue.js')
 const { PANEL_GRACE_MS } = await import('../task/framework.js')
 const { createTask, getTask } = await import('../tasks.js')
 const { readTeamFileAsync, writeTeamFileAsync } = await import('./teamHelpers.js')
-const { handleTeammateShutdownApproved } = await import('./teammateShutdown.js')
+const { findApprovedTeammateId, handleTeammateShutdownApproved } = await import('./teammateShutdown.js')
 
 import type { AppState } from '../../state/AppStateStore.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
@@ -120,4 +120,19 @@ test('shutdown approval removes the teammate everywhere and ends its in-process 
   })
   expect(again.removed).toBe(false)
   expect(drainSdkEvents()).toEqual([])
+})
+
+test('a shutdown approval does not match a teammate resumed after it was written', () => {
+  const approvedAt = '2026-11-12T03:21:32.947Z'
+  const approvedMs = Date.parse(approvedAt)
+  const teammates = {
+    [RESEARCHER]: { ...teammateEntry('researcher'), spawnedAt: approvedMs - 2000 },
+    [`writer@${TEAM}`]: { ...teammateEntry('writer'), spawnedAt: approvedMs + 4500 },
+  }
+  expect(findApprovedTeammateId(teammates, 'researcher', approvedAt)).toBe(RESEARCHER)
+  expect(findApprovedTeammateId(teammates, 'writer', approvedAt)).toBeUndefined()
+  expect(findApprovedTeammateId(teammates, 'nobody', approvedAt)).toBeUndefined()
+  expect(findApprovedTeammateId(undefined, 'researcher', approvedAt)).toBeUndefined()
+  // An unparseable timestamp keeps the old by-name match.
+  expect(findApprovedTeammateId(teammates, 'writer', 'not-a-date')).toBe(`writer@${TEAM}`)
 })

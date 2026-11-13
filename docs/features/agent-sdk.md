@@ -1,5 +1,7 @@
 # Agent SDK 与 stream-json 控制协议
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agent-sdk` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -7,6 +9,29 @@
 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) 让你在自己的 TypeScript / Python 程序里使用 Claude Code：发一个任务，逐条收到 Claude 的思考、工具调用、工具结果和最终结果。SDK 在底层启动 `claude` 进程，用 **stream-json**（一行一个 JSON）和它通信。
 
 本 fork 的 CLI 可以直接作为 SDK 的执行程序，只要把 `pathToClaudeCodeExecutable` 指过来。已用官方 TS SDK 0.3.303 和 Python SDK 验证，并补齐了 SDK 会发的几个控制请求（见下方「和官方的区别」）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agent-sdk` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+The [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) lets you use Claude Code from your own TypeScript or Python program: send a task and receive Claude's thinking, tool calls, tool results and final result one message at a time. Under the hood the SDK starts a `claude` process and talks to it over **stream-json** (one JSON object per line).
+
+This fork's CLI works as the SDK's executable: point `pathToClaudeCodeExecutable` at it. It has been checked with the official TS SDK 0.3.303 and the Python SDK, and it adds the control requests the SDK sends that were missing (see the 和官方的区别 section below).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agent-sdk` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) 讓你在自己的 TypeScript / Python 程式裡使用 Claude Code：發一個任務，逐條收到 Claude 的思考、工具呼叫、工具結果和最終結果。SDK 在底層啟動 `claude` 程序，用 **stream-json**（一行一個 JSON）和它通訊。
+
+本 fork 的 CLI 可以直接作為 SDK 的執行程式，只要把 `pathToClaudeCodeExecutable` 指過來。已用官方 TS SDK 0.3.303 和 Python SDK 驗證，並補齊了 SDK 會發的幾個控制請求（見下方「和官方的區別」）。
+
+</details>
 
 ## 快速上手（TypeScript）
 
@@ -139,6 +164,7 @@ result success 完成。
 - 后台子代理还在跑时，原回合的 `result` 先暂存，等子代理的 `task_notification` 发出后再输出；之后处理通知的回合再输出第二个 `result`，和官方一致。
 - `stop_task` 对不存在或已结束的任务回成功（和官方一致），`task_id` 不是字符串时回错误。
 - 与官方 2.1.319 一样，`-p` 的输入关闭后最多等后台任务 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`（默认 10 分钟，`0` 表示一直等），到时停止它们；被停止的 shell 会通知模型，模型再跑一轮说明后退出，不会因为守护进程占着输出管道而挂起。
+- OpenAI provider 的 `apply_patch` 在 `canUseTool` / `--permission-prompt-tool stdio` 里按文件拆成 Edit / Write 逐个询问，被拒的文件也按 Edit / Write 列进 `permission_denials`，宿主不用认识 `apply_patch`，细节见 [openai-provider.md](openai-provider.md)。
 - 尚未实现：`set_mcp_permission_mode_override`。另外后台子代理结束时，本 fork 的 `background_tasks_changed`（空清单）比 `task_notification` 早一条，官方是之后；两者内容相同，只是先后不同。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。

@@ -4,6 +4,7 @@
  * the API-client chain (which closed a cycle through memdir.ts — #25372).
  */
 
+import type { Dirent } from 'fs'
 import { readdir } from 'fs/promises'
 import { basename, join } from 'path'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
@@ -20,11 +21,38 @@ export type MemoryHeader = {
 }
 
 const MAX_MEMORY_FILES = 200
+
+/**
+ * Paths of the files under `dir`, relative to it, like readdir's recursive
+ * option but without entering symlinked directories: Bun's recursive readdir
+ * follows them, so a link back into the directory fails with ELOOP or, with
+ * two such links, grows until the process runs out of memory. A subdirectory
+ * that cannot be read is skipped; an unreadable `dir` throws.
+ */
+export async function listFilesRecursive(dir: string): Promise<string[]> {
+  const files: string[] = []
+  const walk = async (relative: string): Promise<void> => {
+    let entries: Dirent[]
+    try {
+      entries = await readdir(join(dir, relative), { withFileTypes: true })
+    } catch (e) {
+      if (relative === '') throw e
+      return
+    }
+    for (const entry of entries) {
+      const path = relative ? join(relative, entry.name) : entry.name
+      if (entry.isDirectory()) await walk(path)
+      else files.push(path)
+    }
+  }
+  await walk('')
+  return files
+}
 const FRONTMATTER_MAX_LINES = 30
 
 /**
  * Scan a memory directory for .md files, read their frontmatter, and return
- * a header list sorted newest-first (capped at MAX_MEMORY_FILES). Shared by
+ * a header list sorted newest-first (capped at `limit`, default MAX_MEMORY_FILES). Shared by
  * findRelevantMemories (query-time recall) and extractMemories (pre-injects
  * the listing so the extraction agent doesn't spend a turn on `ls`).
  *
@@ -36,9 +64,10 @@ const FRONTMATTER_MAX_LINES = 30
 export async function scanMemoryFiles(
   memoryDir: string,
   signal: AbortSignal,
+  limit = MAX_MEMORY_FILES,
 ): Promise<MemoryHeader[]> {
   try {
-    const entries = await readdir(memoryDir, { recursive: true })
+    const entries = await listFilesRecursive(memoryDir)
     const mdFiles = entries.filter(
       f => f.endsWith('.md') && basename(f) !== 'MEMORY.md',
     )
@@ -78,7 +107,7 @@ export async function scanMemoryFiles(
       )
       .map(r => r.value)
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
-      .slice(0, MAX_MEMORY_FILES)
+      .slice(0, limit)
   } catch {
     return []
   }

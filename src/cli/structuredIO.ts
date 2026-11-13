@@ -56,6 +56,8 @@ import {
 import { jsonParse } from '../utils/slowOperations.js'
 import { Stream } from '../utils/stream.js'
 import { ndjsonSafeStringify } from './ndjsonSafeStringify.js'
+import { askApplyPatchPerFile, isApplyPatchRule } from '../tools/ApplyPatchTool/askPerFile.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
 
 /**
  * Synthetic tool name used when forwarding sandbox network permission
@@ -594,7 +596,7 @@ export class StructuredIO {
   createCanUseTool(
     onPermissionPrompt?: (details: RequiresActionDetails) => void,
   ): CanUseToolFn {
-    return async (
+    const canUseTool: CanUseToolFn = async (
       tool: Tool,
       input: { [key: string]: unknown },
       toolUseContext: ToolUseContext,
@@ -621,6 +623,19 @@ export class StructuredIO {
           mainPermissionResult,
         )
         return mainPermissionResult
+      }
+
+      // The host knows Edit and Write, not patches: ask file by file.
+      if (tool.name === APPLY_PATCH_TOOL_NAME && !isApplyPatchRule(mainPermissionResult)) {
+        // A hook's ask holds for every file; rules and the mode must not allow it.
+        const hookAsk = mainPermissionResult.decisionReason?.type === 'hook' ? mainPermissionResult : undefined
+        const perFile = await askApplyPatchPerFile(
+          input,
+          toolUseContext.options.tools,
+          (fileTool, fileInput) =>
+            canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseID, hookAsk),
+        )
+        if (perFile) return perFile
       }
 
       // Run PermissionRequest hooks in parallel with the SDK permission
@@ -803,6 +818,7 @@ export class StructuredIO {
         parentSignal.removeEventListener('abort', onParentAbort)
       }
     }
+    return canUseTool
   }
 
   createHookCallback(callbackId: string, timeout?: number): HookCallback {
@@ -975,8 +991,12 @@ async function executePermissionRequestHooksForSDK(
     ) {
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
-        const finalInput = decision.updatedInput || input
-        if (decision.updatedInput) {
+        // An empty updatedInput keeps the input, as for an SDK host's answer.
+        const finalInput =
+          decision.updatedInput && Object.keys(decision.updatedInput).length > 0
+            ? decision.updatedInput
+            : input
+        if (finalInput !== input) {
           const denied = await recheckPermissionRequestHookInput(
             tool,
             finalInput,

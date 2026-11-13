@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -155,5 +155,120 @@ if (process.env[childFlag] !== '1') {
     expect(calls()).toBe(1)
     expect(promptToolCalls).toBe(0)
     expect(decision).toMatchObject({ behavior: 'deny', message: 'by hook' })
+  })
+
+  // Like the stdio host, a --permission-prompt-tool host is asked about a
+  // patch one file at a time, as Edit or Write.
+  test('--permission-prompt-tool asks about apply_patch file by file', async () => {
+    const asks = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async () => ({ behavior: 'passthrough', message: 'ask' }) }
+    const tools = [{ ...asks, name: 'Edit' }, { ...asks, name: 'Write' }] as unknown as Tool[]
+    const applyPatch = { ...asks, name: 'apply_patch' } as unknown as Tool
+    const a = join(home, 'a.txt')
+    const b = join(home, 'b.txt')
+    await Bun.write(a, 'one\n')
+    await Bun.write(b, 'two\n')
+    const asked: { tool_name: string; file_path: unknown }[] = []
+    const promptTool = {
+      name: 'mcp__host__approve',
+      call: async (req: { tool_name: string; input: Record<string, unknown> }) => {
+        asked.push({ tool_name: req.tool_name, file_path: req.input.file_path })
+        const deny = req.input.file_path === b
+        return { data: deny ? { behavior: 'deny', message: 'no b' } : { behavior: 'allow', updatedInput: req.input } }
+      },
+      mapToolResultToToolResultBlockParam: (data: unknown) => ({ type: 'tool_result', tool_use_id: '1', content: [{ type: 'text', text: JSON.stringify(data) }] }),
+    } as never
+    const patchInput = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Update File: ${b}`, '-two', '+TWO', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, patchInput, context, assistant, 'toolu_6')
+    expect(asked).toEqual([{ tool_name: 'Edit', file_path: a }, { tool_name: 'Edit', file_path: b }])
+    expect(decision).toMatchObject({ behavior: 'allow', deniedCall: { toolName: 'Edit', input: { file_path: b } } })
+    if (decision.behavior !== 'allow') return
+    expect(String(decision.updatedInput?.input)).not.toContain(b)
+  })
+  // A PreToolUse hook's ask is not answered by rules or the mode, so each file
+  // of a patch is still asked, with the hook's reason.
+  const hookAsk = {
+    behavior: 'ask',
+    message: 'hook wants a human',
+    decisionReason: { type: 'hook', hookName: 'PreToolUse', reason: 'hook wants a human' },
+  } as const
+  function allowedPatch() {
+    const allows = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async (input: Record<string, unknown>) => ({ behavior: 'allow', updatedInput: input }) }
+    const tools = [{ ...allows, name: 'Edit' }, { ...allows, name: 'Write' }] as unknown as Tool[]
+    const a = join(home, 'a.txt')
+    writeFileSync(a, 'one\n')
+    const input = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Add File: ${join(home, 'new.txt')}`, '+hi', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    return { applyPatch: { ...allows, name: 'apply_patch' } as unknown as Tool, input, context }
+  }
+
+  test('--permission-prompt-tool asks each patch file for a PreToolUse hook ask', async () => {
+    const { applyPatch, input, context } = allowedPatch()
+    const asked: string[] = []
+    const promptTool = {
+      name: 'mcp__host__approve',
+      call: async (req: { tool_name: string }) => {
+        asked.push(req.tool_name)
+        return { data: { behavior: 'deny', message: 'host says no' } }
+      },
+      mapToolResultToToolResultBlockParam: (data: unknown) => ({ type: 'tool_result', tool_use_id: '1', content: [{ type: 'text', text: JSON.stringify(data) }] }),
+    } as never
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, input, context, assistant, 'toolu_7', hookAsk)
+    expect(asked).toEqual(['Edit'])
+    expect(decision.behavior).toBe('deny')
+  })
+
+  test('the stdio host is asked each patch file with a PreToolUse hook ask reason', async () => {
+    const { applyPatch, input, context } = allowedPatch()
+    const io = new StructuredIO((async function* () {})())
+    const asked: { tool_name: unknown; decision_reason: unknown }[] = []
+    io.setOnControlRequestSent(request => {
+      const r = request.request as unknown as { tool_name: unknown; decision_reason: unknown; input: Record<string, unknown> }
+      asked.push({ tool_name: r.tool_name, decision_reason: r.decision_reason })
+      setTimeout(() => io.injectControlResponse({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: request.request_id, response: { behavior: 'allow', updatedInput: r.input } },
+      }), 0)
+    })
+    const decision = await io.createCanUseTool()(applyPatch, input, context, assistant, 'toolu_8', hookAsk)
+    expect(asked).toEqual([
+      { tool_name: 'Edit', decision_reason: 'hook wants a human' },
+      { tool_name: 'Write', decision_reason: 'hook wants a human' },
+    ])
+    expect(decision.behavior).toBe('allow')
+  })
+  // An empty updatedInput from a PermissionRequest hook keeps the input, as it
+  // does for an SDK host, so it does not change a patch file.
+  function emptyUpdatedInputHook() {
+    registerHookCallbacks({
+      PermissionRequest: [{
+        hooks: [{
+          type: 'callback',
+          callback: async () => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: {} } } }),
+        }],
+      }],
+    })
+    const asks = { name: 'x', inputSchema: z.object({}).passthrough(), isReadOnly: () => false, checkPermissions: async () => ({ behavior: 'passthrough', message: 'ask' }) }
+    const tools = [{ ...asks, name: 'Edit' }, { ...asks, name: 'Write' }] as unknown as Tool[]
+    const a = join(home, 'a.txt')
+    writeFileSync(a, 'one\n')
+    const input = { input: ['*** Begin Patch', `*** Update File: ${a}`, '-one', '+ONE', `*** Add File: ${join(home, 'new.txt')}`, '+hi', '*** End Patch'].join('\n') }
+    const context = { ...toolUseContext(), options: { isNonInteractiveSession: true, tools } } as unknown as ToolUseContext
+    return { applyPatch: { ...asks, name: 'apply_patch' } as unknown as Tool, input, context }
+  }
+
+  test('the stdio host keeps patch files a hook allows with an empty updatedInput', async () => {
+    const { applyPatch, input, context } = emptyUpdatedInputHook()
+    const io = new StructuredIO((async function* () {})())
+    io.setOnControlRequestSent(() => {})
+    const decision = await io.createCanUseTool()(applyPatch, input, context, assistant, 'toolu_9')
+    expect(decision).toMatchObject({ behavior: 'allow', updatedInput: input })
+  })
+
+  test('--permission-prompt-tool keeps patch files a hook allows with an empty updatedInput', async () => {
+    const { applyPatch, input, context } = emptyUpdatedInputHook()
+    const promptTool = { name: 'mcp__host__approve', call: async () => { throw new Error('prompt tool should not run') } } as never
+    const decision = await createCanUseToolWithPermissionPrompt(promptTool)(applyPatch, input, context, assistant, 'toolu_10')
+    expect(decision).toMatchObject({ behavior: 'allow', updatedInput: input })
   })
 }

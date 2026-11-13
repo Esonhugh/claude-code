@@ -558,12 +558,8 @@ export async function uninstallPluginOp(
 
   // Remove the plugin from the appropriate settings file (delete key entirely)
   // Use undefined to signal deletion via mergeWith in updateSettingsForSource
-  const newEnabledPlugins: Record<string, boolean | string[] | undefined> = {
-    ...settings?.enabledPlugins,
-  }
-  newEnabledPlugins[pluginId] = undefined
   const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: newEnabledPlugins,
+    enabledPlugins: { [pluginId]: undefined },
   })
   if (error) {
     return {
@@ -662,10 +658,7 @@ export async function setPluginEnabledOp(
       }
     }
     const { error } = updateSettingsForSource('userSettings', {
-      enabledPlugins: {
-        ...getSettingsForSource('userSettings')?.enabledPlugins,
-        [plugin]: enabled,
-      },
+      enabledPlugins: { [plugin]: enabled },
     })
     if (error) {
       return {
@@ -817,11 +810,10 @@ export async function setPluginEnabledOp(
   }
 
   // ── ACTION: write settings ──
+  // Only this plugin's key: the write merges it onto the file as it is on
+  // disk, keeping what other processes changed since this one read it.
   const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: {
-      ...getSettingsForSource(settingSource)?.enabledPlugins,
-      [pluginId]: enabled,
-    },
+    enabledPlugins: { [pluginId]: enabled },
   })
   if (error) {
     return {
@@ -930,13 +922,19 @@ export async function updatePluginOp(
   // Without a confirmation, only the command recorded at install is re-run.
   { confirmCommandSource }: CommandSourceConfirmation = {},
 ): Promise<PluginUpdateResult> {
+  // A bare name resolves to the installed plugin@marketplace it names
+  const identifier = parsePluginIdentifier(plugin).marketplace
+    ? plugin
+    : (resolveDelistedPluginId(plugin)?.pluginId ?? plugin)
   // Parse the plugin identifier to get the full plugin ID
   const { name: pluginName, marketplace: marketplaceName } =
-    parsePluginIdentifier(plugin)
-  const pluginId = marketplaceName ? `${pluginName}@${marketplaceName}` : plugin
+    parsePluginIdentifier(identifier)
+  const pluginId = marketplaceName
+    ? `${pluginName}@${marketplaceName}`
+    : identifier
 
   // Get plugin info from marketplace
-  const pluginInfo = await getPluginById(plugin)
+  const pluginInfo = await getPluginById(identifier)
   if (!pluginInfo) {
     return {
       success: false,

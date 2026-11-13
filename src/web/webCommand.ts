@@ -1,6 +1,6 @@
 import { accessSync, constants, mkdirSync } from 'fs'
-import { join } from 'path'
-import { setCwdState, setOriginalCwd, setProjectRoot } from '../bootstrap/state.js'
+import { join, resolve } from 'path'
+import { getInlinePlugins, setCwdState, setInlinePlugins, setOriginalCwd, setProjectRoot } from '../bootstrap/state.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { initBuiltinPlugins } from '../plugins/bundled/index.js'
 import { initBundledSkills } from '../skills/bundled/index.js'
@@ -19,6 +19,9 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
 import { fetchBootstrapData } from '../services/api/bootstrap.js'
 import { checkAndInstallOfficialMarketplace } from '../utils/plugins/officialMarketplaceStartupCheck.js'
+import { mergePluginDirectories } from '../utils/plugins/pluginDirectories.js'
+import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
+import { webSessionArgs } from './sessionArgs.js'
 import { createWebSecrets, readWebState, writeWebState } from './auth.js'
 import { lanInterfaceAddresses, resolveBindHost } from './network.js'
 import {
@@ -62,6 +65,7 @@ export type WebCommandOptions = {
   tlsCert?: string
   tlsKey?: string
   previewOrigin?: string[]
+  pluginDir?: string[]
 }
 
 function urlHost(host: string): string {
@@ -173,6 +177,10 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   setProjectRoot(workspace)
   setCwdState(workspace)
   resetSettingsCache()
+  if (opts.pluginDir?.length) {
+    setInlinePlugins(mergePluginDirectories(getInlinePlugins(), opts.pluginDir.map(dir => resolve(dir))))
+    clearPluginCache('claude web --plugin-dir')
+  }
   // The Skills and Mods dialogs list built-in skills and plugins like a session does.
   await initBuiltinPlugins()
   initBundledSkills()
@@ -195,6 +203,10 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
       fileCheckpointing: getGlobalConfig().fileCheckpointingEnabled !== false,
       // A reloaded page learns that a turn is still running.
       emitSessionState: true,
+      // The page renders MCP Apps (ui:// resources) in a sandboxed frame.
+      mcpAppsHost: true,
+      // Plugin and settings flags given to `claude web` load in each session too.
+      sessionArgs: webSessionArgs(),
     }),
     {
       idleTimeoutMs: Number(opts.idleTimeout ?? 600_000),

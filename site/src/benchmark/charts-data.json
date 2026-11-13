@@ -7,28 +7,36 @@
    "ours": true,
    "side": "claude",
    "shortEn": "Fork\nClaude",
-   "shortZh": "本分支\nClaude"
+   "shortZh": "本分支\nClaude",
+   "hans": "本分支 · Claude",
+   "shortHans": "本分支\nClaude"
   },
   "official": {
    "en": "Official Claude Code 2.1.319",
    "zh": "官方 Claude Code 2.1.319",
    "side": "claude",
    "shortEn": "Official\n2.1.319",
-   "shortZh": "官方\n2.1.319"
+   "shortZh": "官方\n2.1.319",
+   "hans": "官方 Claude Code 2.1.319",
+   "shortHans": "官方\n2.1.319"
   },
   "opencode-claude": {
    "en": "opencode · Claude API key",
    "zh": "opencode · Claude API key",
    "side": "claude",
    "shortEn": "opencode\nClaude key",
-   "shortZh": "opencode\nClaude key"
+   "shortZh": "opencode\nClaude key",
+   "hans": "opencode · Claude API key",
+   "shortHans": "opencode\nClaude key"
   },
   "pi-claude": {
    "en": "pi · Claude API key",
    "zh": "pi · Claude API key",
    "side": "claude",
    "shortEn": "pi\nClaude key",
-   "shortZh": "pi\nClaude key"
+   "shortZh": "pi\nClaude key",
+   "hans": "pi · Claude API key",
+   "shortHans": "pi\nClaude key"
   },
   "fork-openai": {
    "en": "This fork · ChatGPT",
@@ -36,28 +44,36 @@
    "ours": true,
    "side": "chatgpt",
    "shortEn": "Fork\nChatGPT",
-   "shortZh": "本分支\nChatGPT"
+   "shortZh": "本分支\nChatGPT",
+   "hans": "本分支 · ChatGPT",
+   "shortHans": "本分支\nChatGPT"
   },
   "codex": {
    "en": "Codex CLI 0.167.0",
    "zh": "Codex CLI 0.167.0",
    "side": "chatgpt",
    "shortEn": "Codex\n0.167.0",
-   "shortZh": "Codex\n0.167.0"
+   "shortZh": "Codex\n0.167.0",
+   "hans": "Codex CLI 0.167.0",
+   "shortHans": "Codex\n0.167.0"
   },
   "opencode": {
    "en": "opencode 1.19.5",
    "zh": "opencode 1.19.5",
    "side": "chatgpt",
    "shortEn": "opencode\n1.19.5",
-   "shortZh": "opencode\n1.19.5"
+   "shortZh": "opencode\n1.19.5",
+   "hans": "opencode 1.19.5",
+   "shortHans": "opencode\n1.19.5"
   },
   "pi": {
    "en": "pi 1.5.0",
    "zh": "pi 1.5.0",
    "side": "chatgpt",
    "shortEn": "pi\n1.5.0",
-   "shortZh": "pi\n1.5.0"
+   "shortZh": "pi\n1.5.0",
+   "hans": "pi 1.5.0",
+   "shortHans": "pi\n1.5.0"
   }
  },
  "overall": [
@@ -179,7 +195,8 @@
       5.0,
       17
      ]
-    ]
+    ],
+    "hans": "办公・短"
    },
    {
     "id": "doc-l",
@@ -216,7 +233,8 @@
       113.0,
       272
      ]
-    ]
+    ],
+    "hans": "办公・长"
    },
    {
     "id": "research-s",
@@ -253,7 +271,8 @@
       10.9,
       26
      ]
-    ]
+    ],
+    "hans": "研究・短"
    },
    {
     "id": "research-l",
@@ -290,7 +309,8 @@
       12.1,
       37
      ]
-    ]
+    ],
+    "hans": "研究・长"
    },
    {
     "id": "coding-s",
@@ -327,7 +347,8 @@
       7.7,
       19
      ]
-    ]
+    ],
+    "hans": "编码・短"
    },
    {
     "id": "coding",
@@ -364,7 +385,8 @@
       30.2,
       77
      ]
-    ]
+    ],
+    "hans": "编码・长"
    },
    {
     "id": "longcode",
@@ -401,7 +423,8 @@
       92.9,
       194
      ]
-    ]
+    ],
+    "hans": "编码・最长"
    },
    {
     "id": "ops-s",
@@ -438,7 +461,8 @@
       6.7,
       20
      ]
-    ]
+    ],
+    "hans": "运维・短"
    },
    {
     "id": "ops",
@@ -475,7 +499,8 @@
       92.7,
       81
      ]
-    ]
+    ],
+    "hans": "运维・长"
    },
    {
     "id": "lean-s",
@@ -512,7 +537,8 @@
       8.4,
       22
      ]
-    ]
+    ],
+    "hans": "Lean・短"
    },
    {
     "id": "lean-l",
@@ -549,7 +575,8 @@
       22.2,
       52
      ]
-    ]
+    ],
+    "hans": "Lean・长"
    }
   ]
  },
@@ -757,7 +784,7 @@
   ]
  },
  "public": {
-  "source": "regression/public-bench-1108/summary.json (2026-11-09)",
+  "source": "regression/public-bench-1108/summary.json (2026-11-09); fork-openai: regression/fork-refresh-1112 (2026-11-12)",
   "runs": 1800,
   "cells": [
    {
@@ -793,7 +820,8 @@
       "n": 24,
       "cost": 0.047
      }
-    }
+    },
+    "hans": "dsh"
    },
    {
     "id": "opencode-claude",
@@ -828,7 +856,8 @@
       "n": 24,
       "cost": 0.048
      }
-    }
+    },
+    "hans": "opencode"
    },
    {
     "id": "omp-claude",
@@ -863,7 +892,8 @@
       "n": 24,
       "cost": 0.053
      }
-    }
+    },
+    "hans": "oh-my-pi"
    },
    {
     "id": "official-key",
@@ -898,7 +928,8 @@
       "n": 24,
       "cost": 0.04
      }
-    }
+    },
+    "hans": "官方 2.1.319"
    },
    {
     "id": "official-key-sub",
@@ -933,12 +964,13 @@
       "n": 24,
       "cost": 0.073
      }
-    }
+    },
+    "hans": "官方 + 3 个 subagent"
    },
    {
     "id": "fork-claude-key-sub",
-    "en": "This fork + 3 subagents",
-    "zh": "本分支 + 3 個 subagent",
+    "en": "This fork + 3 subagents (Nov 8 build)",
+    "zh": "本分支 + 3 個 subagent（11-08 構建）",
     "short": "fork+sub",
     "side": "claude",
     "ours": true,
@@ -968,12 +1000,13 @@
       "n": 24,
       "cost": 0.048
      }
-    }
+    },
+    "hans": "本分支 + 3 个 subagent（11-08 构建）"
    },
    {
     "id": "fork-claude-key",
-    "en": "This fork",
-    "zh": "本分支",
+    "en": "This fork (Nov 8 build)",
+    "zh": "本分支（11-08 構建）",
     "short": "fork",
     "side": "claude",
     "ours": true,
@@ -1003,7 +1036,8 @@
       "n": 24,
       "cost": 0.044
      }
-    }
+    },
+    "hans": "本分支（11-08 构建）"
    },
    {
     "id": "pi-claude",
@@ -1038,7 +1072,44 @@
       "n": 24,
       "cost": 0.026
      }
-    }
+    },
+    "hans": "pi"
+   },
+   {
+    "id": "fork-openai",
+    "en": "This fork (Nov 12 build)",
+    "zh": "本分支（11-12 構建）",
+    "short": "fork",
+    "side": "chatgpt",
+    "ours": true,
+    "effort": "high",
+    "version": "2.1.297 (Claude Code, dev 1ebf7a1)",
+    "n": 120,
+    "pass": 65.0,
+    "orig": 65.0,
+    "pert": 65.0,
+    "tokens": 581,
+    "cost": 0.208,
+    "hit": 93.3,
+    "dur": 253,
+    "suites": {
+     "tb2": {
+      "pass": 42,
+      "n": 48,
+      "cost": 0.155
+     },
+     "swebenchpro": {
+      "pass": 18,
+      "n": 48,
+      "cost": 0.347
+     },
+     "spreadsheetbench-verified": {
+      "pass": 18,
+      "n": 24,
+      "cost": 0.035
+     }
+    },
+    "hans": "本分支（11-12 构建）"
    },
    {
     "id": "omp-openai",
@@ -1073,12 +1144,13 @@
       "n": 24,
       "cost": 0.041
      }
-    }
+    },
+    "hans": "oh-my-pi"
    },
    {
     "id": "fork-openai-sub",
-    "en": "This fork + 3 subagents",
-    "zh": "本分支 + 3 個 subagent",
+    "en": "This fork + 3 subagents (Nov 8 build)",
+    "zh": "本分支 + 3 個 subagent（11-08 構建）",
     "short": "fork+sub",
     "side": "chatgpt",
     "ours": true,
@@ -1108,7 +1180,8 @@
       "n": 24,
       "cost": 0.115
      }
-    }
+    },
+    "hans": "本分支 + 3 个 subagent（11-08 构建）"
    },
    {
     "id": "pi-openai",
@@ -1143,7 +1216,8 @@
       "n": 24,
       "cost": 0.017
      }
-    }
+    },
+    "hans": "pi"
    },
    {
     "id": "codex",
@@ -1178,7 +1252,8 @@
       "n": 24,
       "cost": 0.024
      }
-    }
+    },
+    "hans": "Codex CLI 0.167.0"
    },
    {
     "id": "dsh-openai",
@@ -1213,42 +1288,8 @@
       "n": 24,
       "cost": 0.02
      }
-    }
-   },
-   {
-    "id": "fork-openai",
-    "en": "This fork",
-    "zh": "本分支",
-    "short": "fork",
-    "side": "chatgpt",
-    "ours": true,
-    "effort": "low",
-    "version": "2.1.297 (Claude Code)",
-    "n": 120,
-    "pass": 45.0,
-    "orig": 43.3,
-    "pert": 46.7,
-    "tokens": 311,
-    "cost": 0.117,
-    "hit": 90.8,
-    "dur": 131,
-    "suites": {
-     "tb2": {
-      "pass": 23,
-      "n": 48,
-      "cost": 0.099
-     },
-     "swebenchpro": {
-      "pass": 13,
-      "n": 48,
-      "cost": 0.18
-     },
-     "spreadsheetbench-verified": {
-      "pass": 18,
-      "n": 24,
-      "cost": 0.028
-     }
-    }
+    },
+    "hans": "dsh"
    },
    {
     "id": "opencode-openai",
@@ -1283,7 +1324,8 @@
       "n": 24,
       "cost": 0.029
      }
-    }
+    },
+    "hans": "opencode"
    }
   ],
   "paired": [
@@ -1296,8 +1338,8 @@
    [
     "fork-openai",
     "codex",
-    -4.2,
-    3.4
+    15.8,
+    8.1
    ],
    [
     "fork-claude-key-sub",

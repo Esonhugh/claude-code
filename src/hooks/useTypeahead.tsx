@@ -86,6 +86,13 @@ import {
   type RemoteFileSuggestionResult,
   toRemoteFileSuggestionResult,
 } from './remoteFileSuggestions.js'
+import {
+  normalizePromptAutocompleteRows,
+  promptAutocompleteToken,
+  type PromptAutocompleteInput,
+  type PromptAutocompleteResult,
+} from '../services/mods/promptAutocomplete.js'
+import { logForDebugging } from '../utils/debug.js'
 
 // Unicode-aware character class for file path tokens:
 // \p{L} = letters (CJK, Latin, Cyrillic, etc.)
@@ -179,6 +186,17 @@ type Props = {
   remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
   markAccepted: () => void
   onModeChange?: (mode: PromptInputMode) => void
+  // Mods `prompt.autocomplete`; undefined when no Mod hooks it.
+  modAutocomplete?: (
+    input: PromptAutocompleteInput,
+    signal: AbortSignal,
+  ) => Promise<PromptAutocompleteResult> | undefined
+}
+
+// Mod rows go after the native rows; their metadata holds the text to insert.
+const MOD_ROW_PREFIX = 'mod-row-'
+function isModRow(item: SuggestionItem): boolean {
+  return item.id.startsWith(MOD_ROW_PREFIX)
 }
 
 type UseTypeaheadResult = {
@@ -497,6 +515,7 @@ export function useTypeahead({
   remoteFileSuggestionProvider,
   markAccepted,
   onModeChange,
+  modAutocomplete,
 }: Props): UseTypeaheadResult {
   const { addNotification } = useNotifications()
   const thinkingToggleShortcut = useShortcutDisplay(
@@ -590,6 +609,14 @@ export function useTypeahead({
   )
   const enableFileCompletions =
     enableLocalIOCompletions || remoteFileSuggestionProvider !== undefined
+  // Mod rows answer one input; `start`..`end` is the token they replace.
+  const [modRows, setModRows] = useState<{
+    for: string
+    start: number
+    end: number
+    items: SuggestionItem[]
+  }>()
+  const modRowsAbortRef = useRef<AbortController | null>(null)
 
   // Clear all suggestions
   const clearSuggestions = useCallback(() => {
@@ -599,6 +626,9 @@ export function useTypeahead({
       clearTimeout(remoteFileSuggestionRetryRef.current)
       remoteFileSuggestionRetryRef.current = null
     }
+    modRowsAbortRef.current?.abort()
+    modRowsAbortRef.current = null
+    setModRows(undefined)
     setSuggestionsState(() => ({
       commandArgumentHint: undefined,
       suggestions: [],
@@ -665,6 +695,7 @@ export function useTypeahead({
     () => () => {
       remoteFileSuggestionAbortRef.current?.abort()
       remoteFileSuggestionAbortRef.current = null
+      modRowsAbortRef.current?.abort()
       if (remoteFileSuggestionRetryRef.current) {
         clearTimeout(remoteFileSuggestionRetryRef.current)
         remoteFileSuggestionRetryRef.current = null
@@ -1298,6 +1329,94 @@ export function useTypeahead({
     ],
   )
 
+  const fetchModRows = useCallback(
+    (value: string, cursor: number): void => {
+      modRowsAbortRef.current?.abort()
+      const controller = new AbortController()
+      modRowsAbortRef.current = controller
+      const token = promptAutocompleteToken({ text: value, cursor })
+      const pending = token && modAutocomplete?.(token, controller.signal)
+      if (!token || !pending) {
+        setModRows(undefined)
+        return
+      }
+      void pending
+        .then(
+          result => normalizePromptAutocompleteRows(result.suggestions),
+          error => {
+            if (!controller.signal.aborted) {
+              logForDebugging(
+                `prompt.autocomplete: ${error instanceof Error ? error.message : String(error)}; no row added`,
+              )
+            }
+            return []
+          },
+        )
+        .then(rows => {
+          if (controller.signal.aborted) return
+          modRowsAbortRef.current = null
+          // A token already completed to a row offers nothing more.
+          const items = rows.some(row => row.text === token.token)
+            ? []
+            : rows.map((row, index) => ({
+                id: `${MOD_ROW_PREFIX}${index}`,
+                displayText: row.label ?? row.text,
+                description: row.description,
+                metadata: { text: row.text },
+              }))
+          setModRows(
+            items.length > 0
+              ? { for: value, start: token.start, end: token.cursor, items }
+              : undefined,
+          )
+        })
+    },
+    [modAutocomplete],
+  )
+  const debouncedFetchModRows = useDebounceCallback(fetchModRows, 50)
+
+  useEffect(() => {
+    if (
+      !modAutocomplete ||
+      mode !== 'prompt' ||
+      suppressSuggestions ||
+      dismissedForInputRef.current === input
+    ) {
+      debouncedFetchModRows.cancel()
+      return
+    }
+    debouncedFetchModRows(input, cursorOffsetRef.current)
+  }, [input, mode, suppressSuggestions, modAutocomplete, debouncedFetchModRows])
+
+  // Native setters replace the list, so keep this input's Mod rows after them.
+  useEffect(() => {
+    const items = modRows?.for === input ? modRows.items : []
+    setSuggestionsState(prev => {
+      const native = prev.suggestions.filter(item => !isModRow(item))
+      if (
+        prev.suggestions.length === native.length + items.length &&
+        items.every((item, index) => prev.suggestions[native.length + index] === item)
+      ) {
+        return prev
+      }
+      const suggestions = [...native, ...items]
+      return {
+        ...prev,
+        suggestions,
+        selectedSuggestion:
+          prev.selectedSuggestion < suggestions.length ? prev.selectedSuggestion : -1,
+      }
+    })
+  }, [modRows, input, suggestions, setSuggestionsState])
+
+  function applyModRow(suggestion: SuggestionItem): void {
+    if (!modRows) return
+    const text = (suggestion.metadata as { text: string }).text
+    onInputChange(input.slice(0, modRows.start) + text + input.slice(modRows.end))
+    setCursorOffset(modRows.start + text.length)
+    clearSuggestions()
+  }
+
   // Update suggestions when input changes
   // Note: We intentionally don't depend on cursorOffset here - cursor movement alone
   // shouldn't re-trigger suggestions. The cursorOffsetRef is used to get the current
@@ -1363,7 +1482,9 @@ export function useTypeahead({
       const index = selectedSuggestion === -1 ? 0 : selectedSuggestion
       const suggestion = suggestions[index]
 
-      if (suggestionType === 'command' && index < suggestions.length) {
+      if (suggestion && isModRow(suggestion)) {
+        applyModRow(suggestion)
+      } else if (suggestionType === 'command' && index < suggestions.length) {
         if (suggestion) {
           applyCommandSuggestion(
             suggestion,
@@ -1521,7 +1642,9 @@ export function useTypeahead({
         }
 
         // Check if all suggestions share a common prefix longer than the current input
-        const commonPrefix = findLongestCommonPrefix(suggestions)
+        const commonPrefix = findLongestCommonPrefix(
+          suggestions.filter(item => !isModRow(item)),
+        )
 
         // Determine if token starts with @ to preserve it during replacement
         const hasAtPrefix = completionToken.token.startsWith('@')
@@ -1683,6 +1806,7 @@ export function useTypeahead({
     debouncedFetchFileSuggestions,
     debouncedFetchSlackChannels,
     effectiveGhostText,
+    modRows,
   ])
 
   // Handle enter key press - apply and execute suggestions
@@ -1691,7 +1815,9 @@ export function useTypeahead({
 
     const suggestion = suggestions[selectedSuggestion]
 
-    if (
+    if (suggestion && isModRow(suggestion)) {
+      applyModRow(suggestion)
+    } else if (
       suggestionType === 'command' &&
       selectedSuggestion < suggestions.length
     ) {
@@ -1874,6 +2000,7 @@ export function useTypeahead({
     clearSuggestions,
     debouncedFetchFileSuggestions,
     debouncedFetchSlackChannels,
+    modRows,
   ])
 
   // Handler for autocomplete:accept - accepts current suggestion via Tab or Right Arrow

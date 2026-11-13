@@ -14,7 +14,6 @@ import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { z } from 'zod/v4'
 import { getOriginalCwd } from '../bootstrap/state.js'
 import { type Command, clearCommandsCache, getCommandName, getCommands } from '../commands.js'
-import { HOOK_EVENTS } from '../entrypoints/sdk/coreTypes.js'
 import { scanMemoryFiles } from '../memdir/memoryScan.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import type { HookCommand, HookMatcher } from '../schemas/hooks.js'
@@ -418,7 +417,8 @@ async function memoryEntries(): Promise<MemoryEntry[]> {
     entries.push({ id: `f${entries.length}`, kind, title: basename(path), where: tildify(path), path, ...(missing && { missing }) })
   }
   if (isAutoMemoryEnabled()) {
-    const headers = await scanMemoryFiles(getAutoMemPath(), new AbortController().signal)
+    // Every file, not the newest 200 that recall prompts list, so the page can show and search all of them.
+    const headers = await scanMemoryFiles(getAutoMemPath(), new AbortController().signal, Infinity)
     for (const m of headers.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
       entries.push({
         id: `a${entries.length}`,
@@ -461,9 +461,10 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
   if (q.length < 2 || !sqliteEnabled() || typeof Bun === 'undefined') return { memory: [], sessions: [] }
   const { searchMemory } = await import('../memdir/memoryIndex.js')
   // Separate searches, so transcript chunks cannot take every slot from memory files.
+  // One row per file, so a long session cannot fill the slots and hide other sessions.
   const [memoryHits, sessionHits] = await Promise.all([
-    scope === 'session' ? [] : searchMemory({ query: q, scopes: ['user', 'project'], limit: 40 }),
-    scope === 'memory' ? [] : searchMemory({ query: q, scopes: ['session'], limit: 40 }),
+    scope === 'session' ? [] : searchMemory({ query: q, scopes: ['user', 'project'], limit: 1000, onePerFile: true }),
+    scope === 'memory' ? [] : searchMemory({ query: q, scopes: ['session'], limit: 1000, onePerFile: true }),
   ])
   const entries = await memoryEntries()
   const byPath = new Map(entries.map(e => [resolve(e.path), e.id]))
@@ -472,10 +473,7 @@ export async function searchMemoryIndex(query: string, scope: 'all' | 'memory' |
       const id = h.kind === 'memory' ? byPath.get(resolve(h.path)) : undefined
       return id ? [{ id, snippet: h.snippet, match: h.match }] : []
     }),
-    // One row per session, with its best match: every row opens the same session.
-    sessions: sessionHits
-      .map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet, match: h.match }))
-      .filter((h, i, all) => all.findIndex(o => o.session === h.session) === i),
+    sessions: sessionHits.map(h => ({ session: basename(h.path, '.jsonl'), snippet: h.snippet, match: h.match })),
   }
 }
 
@@ -487,37 +485,17 @@ export function setMemoryToggle(key: 'autoMemory' | 'sqlite', on: boolean): void
   if (error) throw new ExtError(error.message, 500)
 }
 
-// ---- hooks (settings `hooks`, written like the TUI's settings writes) ----
+// ---- hooks (read-only, like the TUI's /hooks: edit settings.json or ask Claude) ----
 
-const HOOK_SOURCES = { user: 'userSettings', project: 'projectSettings' } as const
 const EDITABLE: EditableSettingSource[] = ['userSettings', 'projectSettings', 'localSettings']
-type HookEvent = (typeof HOOK_EVENTS)[number]
-const HOOK_ID = /^(userSettings|projectSettings|localSettings):([A-Za-z]+):(\d{1,4}):(\d{1,4})$/
 
-export const hookInputSchema = z.object({
-  event: z.enum(HOOK_EVENTS),
-  matcher: z.string().max(200).regex(/^[^\n\r\0]*$/),
-  command: z.string().trim().min(1).max(4000).regex(/^[^\0]*$/),
-  timeout: z.number().int().min(1).max(600).optional(),
-  source: z.enum(['user', 'project']),
-})
-export type HookInput = z.infer<typeof hookInputSchema>
-
-function settingsHooks(source: EditableSettingSource): Partial<Record<HookEvent, HookMatcher[]>> {
-  return (getSettingsForSource(source)?.hooks ?? {}) as Partial<Record<HookEvent, HookMatcher[]>>
-}
-
-function writeHooks(source: EditableSettingSource, event: HookEvent, matchers: HookMatcher[]): void {
-  const { error } = updateSettingsForSource(source, {
-    hooks: { [event]: matchers.length ? matchers : undefined },
-  })
-  if (error) throw new ExtError(error.message, 500)
+function settingsHooks(source: EditableSettingSource): Partial<Record<string, HookMatcher[]>> {
+  return (getSettingsForSource(source)?.hooks ?? {}) as Partial<Record<string, HookMatcher[]>>
 }
 
 export async function listHooks() {
   const seen = new Set<string>()
   const rows: {
-    id?: string
     event: string
     matcher: string
     command: string
@@ -530,10 +508,9 @@ export async function listHooks() {
     if (!file || seen.has(resolve(file))) continue
     seen.add(resolve(file))
     for (const [event, matchers] of Object.entries(settingsHooks(source))) {
-      ;(matchers ?? []).forEach((m, mi) =>
-        m.hooks.forEach((h, hi) =>
+      ;(matchers ?? []).forEach(m =>
+        m.hooks.forEach(h =>
           rows.push({
-            id: `${source}:${event}:${mi}:${hi}`,
             event,
             matcher: m.matcher ?? '',
             command: hookText(h),
@@ -579,60 +556,6 @@ function hookText(h: HookCommand): string {
       return h.url
     default:
       return h.prompt
-  }
-}
-
-function parseHookId(id: string): { source: EditableSettingSource; event: HookEvent; mi: number; hi: number } {
-  const match = HOOK_ID.exec(id)
-  if (!match || !(HOOK_EVENTS as readonly string[]).includes(match[2]!)) throw new ExtError('Invalid hook id')
-  return {
-    source: match[1] as EditableSettingSource,
-    event: match[2] as HookEvent,
-    mi: Number(match[3]),
-    hi: Number(match[4]),
-  }
-}
-
-/** Removes one hook; the matcher group and event go too once empty. */
-export function deleteHook(id: string): void {
-  const { source, event, mi, hi } = parseHookId(id)
-  const matchers = structuredClone(settingsHooks(source)[event] ?? [])
-  const group = matchers[mi]
-  if (!group?.hooks[hi]) throw new ExtError('Hook not found', 404)
-  group.hooks.splice(hi, 1)
-  writeHooks(
-    source,
-    event,
-    matchers.filter(m => m.hooks.length > 0),
-  )
-}
-
-export function addHook(input: HookInput): void {
-  const source = HOOK_SOURCES[input.source]
-  const matchers = structuredClone(settingsHooks(source)[input.event] ?? [])
-  const hook: HookCommand = {
-    type: 'command',
-    command: input.command.trim(),
-    ...(input.timeout !== undefined && { timeout: input.timeout }),
-  }
-  const group = matchers.find(m => (m.matcher ?? '') === input.matcher)
-  if (group) group.hooks.push(hook)
-  else matchers.push({ ...(input.matcher && { matcher: input.matcher }), hooks: [hook] })
-  writeHooks(source, input.event, matchers)
-}
-
-export function updateHook(id: string, input: HookInput): void {
-  parseHookId(id)
-  deleteHook(id)
-  addHook(input)
-}
-
-/** "停用全部 hooks": `disableAllHooks` in user settings; turning it back on clears every editable file. */
-export function setHooksDisabled(disabled: boolean): void {
-  for (const source of disabled ? (['userSettings'] as const) : EDITABLE) {
-    if (!disabled && getSettingsForSource(source)?.disableAllHooks === undefined) continue
-    const { error } = updateSettingsForSource(source, { disableAllHooks: disabled ? true : undefined })
-    if (error) throw new ExtError(error.message, 500)
   }
 }
 

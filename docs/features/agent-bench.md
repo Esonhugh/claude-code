@@ -1,5 +1,7 @@
 # Agent 基准测试套件（bench/）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agent-bench` · 领域：上下文与记忆 · [返回功能索引](README.md)
 
 `bench/` 是仓库里的一套独立工具：让本 fork、官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 在 Claude 账号和 ChatGPT 账号两侧跑同一批真实任务，记录每个模型请求的用量，算出缓存命中率、每任务 token、每任务 API 等价花费，并画成散点图。[缓存命中与用户体验基准](cache-benchmark.md) 里的数据就是用这套方法采集的；以后重跑、加 CLI、加任务都在这里做。
@@ -11,6 +13,37 @@
 - 发版前确认缓存命中、token 用量没有退步。
 - 新出一个 CLI 版本（或新增一个 CLI），想放到同一张图上比较。
 - 想用公开基准（Terminal-Bench 2.0 等）的难题测任务完成率，又要防止模型背过答案。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agent-bench` · Area: Context and memory · [Back to index](README.md)
+
+`bench/` is a standalone toolkit in the repo. It runs this fork, the official Claude Code, Codex CLI, opencode, pi, oh-my-pi and dsh on the same set of real tasks, on both a Claude account and a ChatGPT account, records the usage of every model request, and computes cache hit rate, tokens per task and API-equivalent cost per task, drawn as scatter plots. The data in the [cache hit and user experience benchmark](cache-benchmark.md) was collected this way; reruns, new CLIs and new tasks all go through here.
+
+It is not part of the `claude` binary and does not change this fork's system prompt or runtime behaviour.
+
+## When to use it
+
+- Before a release, to confirm cache hits and token usage have not regressed.
+- When a new CLI version (or a new CLI) comes out and you want it on the same chart.
+- When you want to measure task completion on hard public benchmark tasks (Terminal-Bench 2.0 and others) while guarding against models that have memorised the answers.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agent-bench` · 領域：上下文與記憶 · [返回功能索引](README.md)
+
+`bench/` 是倉庫裡的一套獨立工具：讓本 fork、官方 Claude Code、Codex CLI、opencode、pi、oh-my-pi、dsh 在 Claude 帳號和 ChatGPT 帳號兩側跑同一批真實任務，記錄每個模型請求的用量，算出快取命中率、每任務 token、每任務 API 等價花費，並畫成散點圖。[快取命中與使用者體驗基準](cache-benchmark.md) 裡的資料就是用這套方法採集的；以後重跑、加 CLI、加任務都在這裡做。
+
+它不進 `claude` 二進位檔，也不改本 fork 的系統提示或執行時行為。
+
+## 什麼時候用
+
+- 發版前確認快取命中、token 用量沒有退步。
+- 新出一個 CLI 版本（或新增一個 CLI），想放到同一張圖上比較。
+- 想用公開基準（Terminal-Bench 2.0 等）的難題測任務完成率，又要防止模型背過答案。
+
+</details>
 
 ## 快速开始
 
@@ -50,7 +83,7 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 
 ### 任务
 
-15 题，6 类，每类至少一短一长：
+23 题，7 类，每类至少一短一长：
 
 | 类型 | 任务 | 评分 |
 | --- | --- | --- |
@@ -60,6 +93,9 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 | 运维 ops | `ops-s`、`ops` | 修复说明、配置检查脚本、`sh -n` |
 | 排障 troubleshoot | `ssh-s`、`ssh-l`、`k8s-s`、`k8s-l` | 环境验收脚本；agent 走 docker exec 等旁路进入目标机即判失败 |
 | Lean | `lean-s`、`lean-l` | `lean` 编译通过、无 warning，原有陈述一字不改，禁用 `sorry` 等 |
+| 记忆 memory | `mem-recall-s`、`mem-implicit-s`、`mem-update`、`mem-hay-s`、`mem-hay-l`、`mem-huge`、`mem-huge-x` | 后续会话写出的文件里，前面会话给的事实（或预置记忆里的事实）是否正确 |
+
+记忆任务跨会话：`task.json` 的 `"sessions": ["s1.md", "s2.md"]` 让每个提示各起一个新 CLI 进程，依次跑在同一个 HOME 和工作区上；`"seedMemory": ["../memseed.py", "300"]` 在第一次会话前往项目的 auto memory 目录预置 N 条记忆和 `MEMORY.md`；`mem-huge`（3,000 条）、`mem-huge-x`（10,000 条）用 `memseed_log.py` 生成带日期的运维日志，索引行只有日期，目标事实各改过 5 次，要答最新值。每次 run 的最终记忆目录存在原始记录的 `memory/` 下，会话记录（含自动召回附上的记忆）存在 `transcripts/` 下。
 
 `--tasks` 接任务 id、`type:<类型>` 或 `all`。
 
@@ -74,6 +110,11 @@ bun bench/cli.ts chart --raw ~/bench-raw/2026-11-08 --out ~/bench-charts --png
 | `pi-openai` / `pi-claude` | pi | ChatGPT 订阅 / Claude API key |
 | `omp-openai` / `omp-claude` | oh-my-pi | ChatGPT 订阅 / Claude API key |
 | `dsh-openai` / `dsh-claude` | dsh | ChatGPT 订阅 / Claude API key |
+| `fork-claude-key-sqlite` / `fork-openai-sqlite` | 本仓库，`memory.sqlite.enabled: true` | Claude API key / ChatGPT 订阅 |
+| `official-key-high` | 官方 Claude Code，effort high（与本仓库 `-p` 默认一致） | Claude API key |
+| `fork-claude-key-high` / `fork-claude-key-sqlite-high` | 本仓库，effort 固定 high（用于 `-p` 默认 medium 的旧版本） | Claude API key |
+| `fork-claude-key-medium` | 本仓库，effort 固定 medium（与官方 `-p` 默认相同，做同 effort 对比） | Claude API key |
+| `fork-openai-all` | 本仓库，`openaiEditTools: "all"`（除 apply_patch 外也给 Edit / Write） | ChatGPT 订阅 |
 
 模型默认 Claude 侧 `claude-sonnet-5-5`、ChatGPT 侧 `gpt-6.1-sol`（`BENCH_MODEL_CLAUDE`、`BENCH_MODEL_CHATGPT` 可改）。effort 用各 CLI 默认值，实际值从请求里读出，写进每次 run 的结果和图上。
 
@@ -139,6 +180,7 @@ Codex 预热 WebSocket 的极小请求（提示不足 10 token）不计。
 ```bash
 export BENCH_TB2_ROOT=~/src/terminal-bench-2      # 上游任务源码，不进仓库
 export BENCH_HARBOR_ROOT=~/src/harbor-datasets    # SWE-bench Pro、SpreadsheetBench 等
+export BENCH_DEEPSWE_ROOT=~/src/deep-swe          # datacurve-ai/deep-swe（FrontierHarness 题组用）
 bun bench/cli.ts public --picks bench/public/picks-A.txt --cells oracle --reps 1 --variant seed1108 --raw ~/bench-raw/public
 bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key --reps 3 --variant seed1108 --raw ~/bench-raw/public
 ```
@@ -162,6 +204,9 @@ bun bench/cli.ts public --picks bench/public/picks-A.txt --cells fork-claude-key
   - Terminal-Bench 2.0 8 题：`polyglot-rust-c`、`polyglot-c-py`、`custom-memory-heap-crash`、`mailman`、`make-mips-interpreter`、`write-compressor`、`configure-git-webserver`、`merge-diff-arc-agi-task`。
   - SWE-bench Pro 8 题：flipt、navidrome、element-web、NodeBB、ansible、openlibrary ×2、vuls 各一题（完整实例名见清单）。
   - SpreadsheetBench Verified 4 题：`56953`、`3911`、`290-27`、`472-15`。
+- **FrontierHarness v1.0 题组（`bench/public/picks-frontierharness-v1.txt`）**：[FrontierHarness Eval](https://frontierharness.org) v1.0 的 30 题，Terminal-Bench 2 21 题加 DeepSWE 9 题（`datacurve-ai/deep-swe` 提交 `435ee89`），没有扰动变体。`build-cython-ext` 的参考解在本环境不通过（上游仓库测试失败），比较时排除。
+- DeepSWE 用独立评分环境（`task.toml` 里 `environment_mode = "separate"`）：agent 停下后在任务容器里执行 `[[verifier.collect]]` 命令，把提交的改动导出为 `/logs/artifacts/model.patch`；再用 `tests/Dockerfile`（任务镜像加隐藏测试）建评分镜像，在不联网的新容器里应用补丁、跑测试。只评分已提交的改动，补丁和评分输出存在原始记录的 `artifacts/`、`verifier/`。
+- 评分脚本带 `NO_PROXY=127.0.0.1,localhost`：要连任务自己在本机起的服务的测试（如 `kv-store-grpc` 的 gRPC）不能走代理。
   - 校准时本 fork（Claude API key，1 次）在其中 7 题失败，题组对完成率有区分度。
   - 生成器是 `bench/public/perturb/mkperturb2.py`，输出确定：同一种子重跑结果逐字节相同。
   - `seed1108r2`：`polyglot-rust-c`、`polyglot-c-py`、SpreadsheetBench `56953` 的修订版（`REV=2 mkperturb2.py`），这 3 题用它代替 `seed1108`。第一版把难度改低了：polyglot 的改写指令写出了测试才检查的「目录里只能有源文件」，56953 的改写前言暗示答案区填静态值即可。15 格 × 3 次的通过率是改写 42/45、22/45、37/45，原版只有 7/45、5/45、4/45。修订版保留原题措辭，只改数列、路径和文件名，参考解全部通过。

@@ -170,3 +170,23 @@ test('Windows: a //server/share rule stays rooted at / for the UNC spelling', ()
     relativePattern: '/server/share/**',
   })
 })
+
+test('relative deny and ask rules keep guarding the starting directory after cd', () => {
+  const ctx = permissionContext({
+    deny: ['Read(./secret/**)', 'Edit(.env)'],
+    ask: ['Edit(./asked/**)'],
+    allow: ['Edit(./safe/**)'],
+  })
+  setCwdState(join(project, 'safe'))
+  try {
+    expect(matchingRuleForInput(join(project, 'secret', 's'), ctx, 'read', 'deny')).not.toBeNull()
+    expect(matchingRuleForInput(join(project, '.env'), ctx, 'edit', 'deny')).not.toBeNull()
+    expect(matchingRuleForInput(join(project, 'asked', 'a'), ctx, 'edit', 'ask')).not.toBeNull()
+    // Still relative to where the shell is now.
+    expect(matchingRuleForInput(join(project, 'safe', 'secret', 's'), ctx, 'read', 'deny')).not.toBeNull()
+    // Allow rules do not follow: they stay relative to the current directory.
+    expect(matchingRuleForInput(join(project, 'safe', 'a'), ctx, 'edit', 'allow')).toBeNull()
+  } finally {
+    setCwdState(project)
+  }
+})

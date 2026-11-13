@@ -28,7 +28,6 @@ import {
 } from '../utils/plugins/lspRecommendation.js'
 import { cacheAndRegisterPlugin } from '../utils/plugins/pluginInstallationHelpers.js'
 import {
-  getSettingsForSource,
   updateSettingsForSource,
 } from '../utils/settings/settings.js'
 import {
@@ -133,12 +132,8 @@ export function useLspPluginRecommendation(): UseLspPluginRecommendationResult {
                 localSourcePath,
               )
               // Enable in user settings so it loads on restart
-              const settings = getSettingsForSource('userSettings')
               updateSettingsForSource('userSettings', {
-                enabledPlugins: {
-                  ...settings?.enabledPlugins,
-                  [pluginId]: true,
-                },
+                enabledPlugins: { [pluginId]: true },
               })
               logForDebugging(
                 `[useLspPluginRecommendation] Plugin installed: ${pluginId}`,

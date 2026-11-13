@@ -403,6 +403,30 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             { type: 'tool_use', id: 'toolu_task_b', name: 'TaskCreate', input: { subject: 'Write tests', description: 'Write them', activeForm: 'Writing tests' } },
           ]
           stop = 'tool_use'
+        } else if (lastText.includes('toolu_mid_glob')) {
+          // The lead read its teammates' reports between tool calls (#1262).
+          blocks = [{ type: 'text', text: lastText.includes('teammate-message') ? 'LEAD_READ_MIDTURN' : 'LEAD_NO_REPORTS' }]
+        } else if (lastText.includes('toolu_mid_alice')) {
+          // Hold the lead's turn until both teammates have gone idle, then call one more tool.
+          await new Promise(r => setTimeout(r, 8_000))
+          blocks = [{ type: 'tool_use', id: 'toolu_mid_glob', name: 'Glob', input: { pattern: '*.none' } }]
+          stop = 'tool_use'
+        } else if (lastText.includes('toolu_hold_alice')) {
+          // Hold the lead's last request until both teammates have gone idle; no tool call follows.
+          await new Promise(r => setTimeout(r, 6_000))
+          blocks = [{ type: 'text', text: 'LEAD_HELD_DONE' }]
+        } else if (lastText.includes('MAKE_TEAM_HOLD')) {
+          blocks = [
+            { type: 'tool_use', id: 'toolu_hold_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
+            { type: 'tool_use', id: 'toolu_hold_bob', name: 'Agent', input: { name: 'bob', description: 'Review results', prompt: 'TEAM_BOB review results' } },
+          ]
+          stop = 'tool_use'
+        } else if (lastText.includes('MAKE_TEAM_MID')) {
+          blocks = [
+            { type: 'tool_use', id: 'toolu_mid_alice', name: 'Agent', input: { name: 'alice', description: 'Review methods', prompt: 'TEAM_ALICE review methods' } },
+            { type: 'tool_use', id: 'toolu_mid_bob', name: 'Agent', input: { name: 'bob', description: 'Review results', prompt: 'TEAM_BOB review results' } },
+          ]
+          stop = 'tool_use'
         } else if (lastText.includes('MEMBER_PING')) {
           blocks = [{ type: 'text', text: 'MEMBER_PONG' }]
         } else if (teammate && allText.includes('TEAM_ALICE')) {
@@ -451,7 +475,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         } else if (/PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.test(lastText)) {
           const [, dev, own] = /PREVIEW_URLS ([^"\\\s]+) ([^"\\\s]+)/.exec(lastText)!
           blocks = [{ type: 'text', text: `Dev server: ${dev} and this UI: ${own}` }]
-        } else if (lastBlocks.some(b => b.type === 'tool_result')) {
+        } else if (lastBlocks.some(b => b.type === 'tool_result') && !lastText.includes('Request interrupted by user')) {
+          // A tool's result continues the turn; a denied one that interrupted it arrives with the next prompt.
           blocks = [{ type: 'text', text: 'WEB_DONE' }]
         } else if (lastText.includes('OPEN_TERMINAL_TWO')) {
           blocks = [{
@@ -604,7 +629,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.press('Enter')
       await dialog.getByText('Claude wants to run a command').waitFor({ timeout: 30_000 })
       await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
-      await page.getByText('WEB_DONE').nth(1).waitFor({ timeout: 30_000 })
+      // Like the TUI's "No": the turn stops so the next message says what to do instead (#1234).
+      await page.locator('.feed').getByText('Interrupted', { exact: true }).waitFor({ timeout: 30_000 })
+      expect(await page.getByText('WEB_DONE').count()).toBe(1)
       expect(existsSync(join(workspace, 'denied.txt'))).toBe(false)
 
       const dialogs: string[] = []
@@ -1160,6 +1187,17 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.waitForTimeout(200)
       expect(await palette.getByRole('option', { name: /^\/color/ }).count()).toBe(0)
 
+      // The page runs /reload-plugins as a reload_plugins request, so it is offered although
+      // system/init marks it terminal-only, and it calls no model.
+      await input.fill('/reload-p')
+      await palette.getByRole('option', { name: /^\/reload-plugins/ }).waitFor()
+      await input.press('Enter')
+      expect(await input.inputValue()).toBe('/reload-plugins ')
+      const beforeReload = promptsSeen.length
+      await input.press('Enter')
+      await page.locator('.msg.local', { hasText: 'Reloaded' }).waitFor({ timeout: 30_000 })
+      expect(promptsSeen.length).toBe(beforeReload)
+
       // `cost` is an alias of `usage`, which opens the page's own Usage settings: no model call.
       await input.fill('/cos')
       const usage = palette.getByRole('option', { name: /^\/usage/ })
@@ -1290,6 +1328,87 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('shows teammate reports the lead reads mid-turn, also after a reload (#1262)', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      const panel = page.locator('aside.side')
+      const agentsTab = panel.getByRole('tab', { name: /^Agents/ })
+      // The fake holds the lead's turn until both teammates are idle, so their reports reach it between tool calls.
+      await input.fill('please MAKE_TEAM_MID now')
+      await input.press('Enter')
+      await agentsTab.click()
+      const team = panel.locator('.team-section', { hasText: 'Team' })
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await page.getByText('LEAD_READ_MIDTURN').first().waitFor({ timeout: 60_000 })
+      const shown = async () => {
+        await team.getByText('0 working · 2 idle').waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'bob' }).first().waitFor({ timeout: 15_000 })
+      }
+      await showing(shown(), panel)
+
+      await page.locator('.session-row', { hasText: 'please MAKE_TEAM_MID now' }).waitFor({ timeout: 30_000 })
+      await page.reload()
+      await page.locator('.session-row', { hasText: 'please MAKE_TEAM_MID now' }).locator('.session-title').click()
+      await page.locator('.status-live').waitFor({ timeout: 30_000 })
+      await agentsTab.click()
+      await team.locator('.agent-row', { hasText: 'alice' }).waitFor({ timeout: 30_000 })
+      await showing(shown(), panel)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  it('shows teammate reports the lead reads with the next prompt (#1274)', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      const errors: string[] = []
+      page.on('pageerror', e => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      const input = page.getByLabel('Message', { exact: true })
+      const panel = page.locator('aside.side')
+      // The fake holds the lead's turn while both teammates go idle. The prompt queued meanwhile
+      // starts the next turn before the lead's inbox is polled, so it carries their reports.
+      await input.fill('please MAKE_TEAM_HOLD now')
+      await input.press('Enter')
+      await panel.getByRole('tab', { name: /^Agents/ }).click()
+      const team = panel.locator('.team-section', { hasText: 'Team' })
+      await team.locator('.agent-row', { hasText: 'bob' }).waitFor({ timeout: 30_000 })
+      await page.waitForTimeout(1_000)
+      await input.fill('QUEUED_BEHIND_TEAM')
+      await input.press('Enter')
+      await page.locator('.main .msg.user:not(.queued)', { hasText: 'QUEUED_BEHIND_TEAM' }).waitFor({ timeout: 30_000 })
+      const shown = async () => {
+        await team.getByText('0 working · 2 idle').waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'alice' }).first().waitFor({ timeout: 15_000 })
+        await page.locator('.msg.teammate', { hasText: 'bob' }).first().waitFor({ timeout: 15_000 })
+      }
+      await showing(shown(), panel)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
 
   it('fits a phone screen with drawers for both side panels', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
@@ -1509,6 +1628,22 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       // @ lists workspace files; Enter puts the mention in the box.
       // Keep the pointer off the palette so hovering does not move the selection.
       await page.mouse.move(0, 0)
+      // A frame can come late on a busy page: here it lands just after the box is selected to be
+      // cleared, and the caret a pick sets must not undo that selection.
+      await page.evaluate(() => {
+        const w = window as unknown as { rafSaved?: typeof requestAnimationFrame }
+        w.rafSaved = window.requestAnimationFrame
+        window.requestAnimationFrame = cb => {
+          const box = document.querySelector<HTMLTextAreaElement>('.composer textarea')!
+          const late = () => {
+            if (box.selectionStart !== 0 || box.selectionEnd !== box.value.length || !box.value) return
+            document.removeEventListener('selectionchange', late)
+            cb(performance.now())
+          }
+          document.addEventListener('selectionchange', late)
+          return 0
+        }
+      })
       await input.fill('look at @READ')
       const option = page.getByRole('option', { name: /@README\.md/ })
       await option.waitFor({ timeout: 10_000 })
@@ -1519,6 +1654,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await input.fill('')
       await input.press('ArrowUp')
       expect(await input.inputValue()).toBe('TODOS please')
+      await page.evaluate(() => {
+        window.requestAnimationFrame = (window as unknown as { rafSaved: typeof requestAnimationFrame }).rafSaved
+      })
       await input.press('ArrowUp')
       expect(await input.inputValue()).toBe('please EDITME')
       await input.press('ArrowDown')
@@ -1758,21 +1896,18 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await tip.textContent()).toMatch(/\d/)
       await close()
 
-      // Hooks: add one to user settings, then delete it.
+      // Hooks: read-only like the TUI's /hooks; a hook added to settings.json by hand is listed.
       const userSettings = join(home, '.claude', 'settings.json')
+      const before = readJson(userSettings)
+      writeFileSync(
+        userSettings,
+        JSON.stringify({ ...before, hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo e2e-hook' }] }] } }),
+      )
       await page.locator('.snav button', { hasText: 'Hooks' }).click()
-      await dialog.locator('[data-hook-new]').click()
-      await dialog.locator('#hk-matcher').fill('Bash')
-      await dialog.locator('#hk-cmd').fill('echo e2e-hook')
-      await dialog.locator('#hook-form button[type=submit]').click()
-      const del = dialog.locator('.hookrow', { hasText: 'echo e2e-hook' }).locator('[data-hook-del]')
-      await del.waitFor()
-      expect(readJson(userSettings).hooks).toEqual({
-        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo e2e-hook', timeout: 60 }] }],
-      })
-      await del.click()
-      await del.waitFor({ state: 'detached' })
-      expect(JSON.stringify(readJson(userSettings).hooks ?? {})).not.toContain('e2e-hook')
+      await dialog.locator('.hookrow', { hasText: 'echo e2e-hook' }).waitFor()
+      await dialog.locator('[data-hooks-readonly]').waitFor()
+      expect(await dialog.locator('.hookrow button').count()).toBe(0)
+      writeFileSync(userSettings, JSON.stringify(before))
       await close()
 
       // Skills: preview SKILL.md and turn the skill off in local settings.
@@ -1834,9 +1969,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await panel.getByRole('tab', { name: /^Terminals/ }).click()
       // Each terminal is a drawer: its row toggles the screen, Stop sits on the row.
       const first = panel.locator('.term').nth(0)
-      const row = first.locator('.termrow')
+      // The row shows the task description until the terminal's details arrive.
+      const row = first.locator('.termrow', { hasText: 'bash --norc' })
       await row.waitFor({ timeout: 15_000 })
-      expect(await row.textContent()).toContain('bash --norc')
       expect(await row.locator('.badge').textContent()).toBe('running')
       expect(await row.locator('.meta2').textContent()).toBe('Main session opened · 80×12')
       // The server sends styled spans; the page only maps them to classes.
@@ -2208,7 +2343,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await focused()).toBe('Search sessions')
       await page.keyboard.press('Escape')
 
-      // A dialog keeps Tab inside, a menu in it closes alone on Esc, and focus returns to the opener.
+      // A dialog keeps Tab inside, Esc closes it, and focus returns to the opener.
       const hooks = page.locator('#sessions nav button', { hasText: 'Hooks' })
       await hooks.focus()
       await page.keyboard.press('Enter')
@@ -2221,18 +2356,6 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
         await page.keyboard.press('Shift+Tab')
         expect(await inDialog()).toBe(true)
       }
-      await page.locator('[data-hook-new]').click()
-      await page.locator('#hk-event').click()
-      await page.locator('.dialog [role="menu"]').waitFor()
-      await page.keyboard.press('Escape')
-      await page.locator('.dialog [role="menu"]').waitFor({ state: 'detached' })
-      expect(await page.locator('.dialog').count()).toBe(1)
-      await page.locator('#hk-cmd').focus()
-      await page.evaluate(() => navigator.clipboard.writeText('echo SWEEP_HOOK'))
-      await page.keyboard.press('ControlOrMeta+v')
-      await page.locator('#hk-matcher').fill('Bash')
-      await page.locator('#hk-matcher').press('Enter')
-      await page.locator('.dialog').getByText('echo SWEEP_HOOK').waitFor()
       await page.keyboard.press('Escape')
       await page.locator('.dialog').waitFor({ state: 'detached' })
       expect(await focused()).toContain('Hooks')
@@ -3059,7 +3182,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       })
       expect(header).toEqual({ rows: 1, chipInside: true, ellipsis: 'ellipsis' })
       await dialog.getByRole('option', { name: /Deny and tell Claude/ }).click()
-      await page.getByText('WEB_DONE').first().waitFor({ timeout: 30_000 })
+      await page.locator('.feed').getByText('Interrupted', { exact: true }).waitFor({ timeout: 30_000 })
 
       // Every side panel tab stays in view on a narrow panel: the row wraps instead of hiding tabs.
       const tabs = page.locator('aside.side .tabs')

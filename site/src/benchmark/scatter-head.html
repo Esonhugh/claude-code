@@ -1,7 +1,7 @@
-<title>CLI 缓存散点图</title>
+<title>Tokens vs cache hit rate</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=Noto+Sans+SC:wght@400;600;700&family=IBM+Plex+Mono:wght@400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Sans+TC:wght@400;600;700&family=IBM+Plex+Mono:wght@400&display=swap">
 <style>
 /* layout: one column, controls row, one chart card, table below */
 :root{
@@ -49,4 +49,6 @@ th{color:var(--muted);font-weight:600;font-size:12px}
 th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
 td.front{font-weight:600}
 @media (prefers-reduced-motion:no-preference){circle.pt,path.pt{transition:opacity .15s}}
+:root:is([data-lang="zh"],[data-lang="hans"]) .en,:root:not([data-lang="zh"]) .hant,:root:not([data-lang="hans"]) .hans{display:none!important}
+:root[data-lang="zh"]{--sans:'IBM Plex Sans','Noto Sans TC','PingFang TC','Microsoft JhengHei',system-ui,sans-serif}
 </style>

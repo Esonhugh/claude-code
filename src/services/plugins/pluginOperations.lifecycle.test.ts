@@ -37,7 +37,7 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 6 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -97,6 +97,34 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
     expect(existsSync(join(installPath, 'live-marker'))).toBe(true)
   })
 
+  test('enable and disable keep plugin settings another process wrote meanwhile', async () => {
+    const settingsPath = join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    const enabledOnDisk = () => JSON.parse(readFileSync(settingsPath, 'utf-8')).enabledPlugins
+    const current = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    writeFileSync(settingsPath, JSON.stringify({ ...current, enabledPlugins: { ...current.enabledPlugins, 'q@mkt': true } }))
+    settingsCache.resetSettingsCache()
+    // Another CLI holds the settings lock and disables q@mkt after this
+    // process has read the settings, but before it gets the lock.
+    const lockDir = `${settingsPath}.lock`
+    const other = Bun.spawn([
+      process.execPath,
+      '-e',
+      `const fs = require('fs')
+       fs.mkdirSync(${JSON.stringify(lockDir)})
+       setTimeout(() => {
+         const s = JSON.parse(fs.readFileSync(${JSON.stringify(settingsPath)}, 'utf-8'))
+         s.enabledPlugins['q@mkt'] = false
+         fs.writeFileSync(${JSON.stringify(settingsPath)}, JSON.stringify(s))
+         fs.rmdirSync(${JSON.stringify(lockDir)})
+       }, 500)`,
+    ])
+    while (!existsSync(lockDir)) await Bun.sleep(10)
+    expect((await ops.setPluginEnabledOp('p@mkt', false, 'user')).success).toBe(true)
+    await other.exited
+    expect(enabledOnDisk()).toMatchObject({ 'p@mkt': false, 'q@mkt': false })
+    expect((await ops.setPluginEnabledOp('p@mkt', true, 'user')).success).toBe(true)
+  })
+
   test('an up-to-date update restores a missing version directory', async () => {
     const installPath = records().find(r => r.scope === 'user')!.installPath
     rmSync(installPath, { recursive: true, force: true })
@@ -105,6 +133,14 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
     expect(
       existsSync(join(installPath, '.claude-plugin/plugin.json')),
     ).toBe(true)
+  })
+
+  test('update accepts the bare name of an installed plugin', async () => {
+    expect(await ops.updatePluginOp('p', 'user')).toMatchObject({
+      success: true,
+      alreadyUpToDate: true,
+      pluginId: 'p@mkt',
+    })
   })
 
   test('installing an installed version at another scope reuses its directory', async () => {

@@ -483,6 +483,19 @@ describe('claude web server', () => {
     expect(csp).toContain(`script-src 'sha256-${hash}' blob:`)
   })
 
+  it('serves the MCP App frame sandboxed, away from the web API', async () => {
+    const r = start()
+    expect((await fetch(`${r.base}/mcp-app-frame`)).status).toBe(401)
+    const cookie = await signIn(r)
+    const frame = await fetch(`${r.base}/mcp-app-frame`, { headers: { cookie } })
+    expect(frame.status).toBe(200)
+    const csp = frame.headers.get('content-security-policy') ?? ''
+    expect(csp).toContain('sandbox allow-scripts allow-forms')
+    expect(csp).not.toContain('allow-same-origin')
+    expect(csp).not.toContain("'self'")
+    expect(await frame.text()).toContain("e.source !== parent")
+  })
+
   it('serves an upload while the session transcript has no messages yet', async () => {
     const r = start()
     const prior = process.env.CLAUDE_CONFIG_DIR
@@ -567,9 +580,20 @@ describe('claude web server', () => {
     expect(ranged.status).toBe(206)
     expect(await ranged.text()).toBe('ell')
 
+    for (const path of ['/api/history/%ZZ/messages', '/api/sessions/%E0%A4%A/ws', `/api/files/%ZZ`]) {
+      expect([path, (await fetch(`${r.base}${path}`, { headers: { cookie } })).status]).toEqual([path, 400])
+    }
+
     writeFileSync(join(r.workspace, 'page.html'), '<script>alert(1)</script>')
     const page = await get(join(r.workspace, 'page.html'))
     expect(page.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+    // Every extension Bun maps to markup or script, not only the common ones.
+    for (const name of ['page.shtml', 'page.xht', 'schema.xsd', 'feed.atom', 'img.svgz', 'run.cjs', 'run.ts', 'run.jsx']) {
+      writeFileSync(join(r.workspace, name), '<script>alert(1)</script>')
+      expect([name, (await get(join(r.workspace, name))).headers.get('content-type')]).toEqual([name, 'text/plain; charset=utf-8'])
+    }
+    writeFileSync(join(r.workspace, 'pic.png'), 'png')
+    expect((await get(join(r.workspace, 'pic.png'))).headers.get('content-type')).toBe('image/png')
 
     const outside = realpathSync(mkdtempSync(join(tmpdir(), 'web-out-')))
     writeFileSync(join(outside, 'secret.txt'), 'nope')

@@ -789,13 +789,26 @@ export async function marketplaceUpdateHandler(
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`Updating ${marketplaceNames.length} marketplace(s)...`)
 
-      await refreshAllMarketplaces()
+      const failed = await refreshAllMarketplaces()
       clearAllCaches()
 
       logEvent('tengu_marketplace_updated_all', {
         count:
           marketplaceNames.length as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+
+      if (failed.length > 0) {
+        const updated = marketplaceNames.length - failed.length
+        // biome-ignore lint/suspicious/noConsole:: intentional console output
+        console.error(
+          `${failed.length} ${plural(failed.length, 'marketplace')} could not be refreshed (see --debug): ${failed.join(', ')}`,
+        )
+        cliError(
+          updated > 0
+            ? `${figures.cross} Updated ${updated} ${plural(updated, 'marketplace')}, but not all`
+            : `${figures.cross} No marketplaces were updated`,
+        )
+      }
 
       cliOk(
         `${figures.tick} Successfully updated ${marketplaceNames.length} marketplace(s)`,

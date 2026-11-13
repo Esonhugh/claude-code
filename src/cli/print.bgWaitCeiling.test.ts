@@ -146,4 +146,52 @@ if (process.env[childFlag] !== '1') {
       for (const mock of mocks) mock.mockRestore()
     }
   }, 15_000)
+
+  // A stopped workflow's runner enqueues its 'stopped' notification only after
+  // it unwinds; -p must wait for it instead of ending first.
+  test('a workflow stopped at the wait ceiling still gets its notification turn', async () => {
+    process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS = '1000'
+    const prompts: string[] = []
+    let state = getDefaultAppState()
+    let unwinding = false
+    const setState = (updater: (prev: AppState) => AppState) => {
+      state = updater(state)
+      const task = state.tasks.wstuck as { status: string, notified?: boolean } | undefined
+      if (task?.status === 'killed' && !task.notified && !unwinding) {
+        unwinding = true
+        void Bun.sleep(300).then(async () => {
+          await queue.enqueuePendingNotification({ value: '<task-notification><task-id>wstuck</task-id><status>killed</status></task-notification>', mode: 'task-notification' })
+          setState(prev => ({ ...prev, tasks: { ...prev.tasks, wstuck: { ...prev.tasks.wstuck!, notified: true } as never } }))
+        })
+      }
+    }
+    const mocks = mockHeadless(prompt => {
+      prompts.push(prompt)
+      if (prompts.length === 1) {
+        const task = {
+          ...createTaskStateBase('wstuck', 'local_workflow', 'stuck workflow', 'toolu_wstuck'),
+          type: 'local_workflow' as const,
+          status: 'running' as const,
+          isBackgrounded: true,
+        }
+        setState(prev => ({ ...prev, tasks: { ...prev.tasks, wstuck: task as never } }))
+      }
+    })
+    const stderr = spyOn(process.stderr, 'write')
+    try {
+      const run = runHeadless(oneLine('FIRST'), () => state, setState, [], [], {}, [], {
+        outputFormat: 'stream-json', verbose: true, sessionStartHooksPromise: Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      const ended = await Promise.race([run.then(() => true), Bun.sleep(8000).then(() => false)])
+      expect(ended).toBe(true)
+      expect(state.tasks.wstuck?.status).toBe('killed')
+      expect(prompts).toHaveLength(2)
+      expect(prompts[1]).toContain('<task-id>wstuck</task-id>')
+    } finally {
+      delete process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+      stderr.mockRestore()
+      queue.resetCommandQueue()
+      for (const mock of mocks) mock.mockRestore()
+    }
+  }, 15_000)
 }

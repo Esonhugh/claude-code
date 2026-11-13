@@ -124,6 +124,12 @@ export function hasLiveShellCommands(): boolean {
   return liveCommands.size > 0
 }
 
+// Stops commands that are still running, e.g. a hook that has no cleanup of
+// its own (a SessionStart hook still running at exit).
+export function killLiveShellCommands(): void {
+  for (const command of liveCommands) command.kill()
+}
+
 export async function waitForLiveShellResults(): Promise<void> {
   await Promise.allSettled([...liveCommands].map(command => command.result))
 }

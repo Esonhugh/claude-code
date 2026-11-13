@@ -125,6 +125,22 @@ if (process.env[childFlag] !== '1') {
     expect(joinPromptValues(['first', 'second'])).toBe('first\nsecond')
   })
 
+  test('slash commands never batch with neighbouring prompts', () => {
+    const plain: QueuedCommand = { mode: 'prompt', value: 'sdk hi' }
+    const slash: QueuedCommand = { mode: 'prompt', value: '/cost' }
+    expect(canBatchWith(slash, plain)).toBe(false)
+    expect(canBatchWith(plain, slash)).toBe(false)
+    expect(canBatchWith(slash, slash)).toBe(false)
+    expect(canBatchWith(plain, { ...plain, value: '  /mstat' })).toBe(false)
+    const blocks: QueuedCommand = {
+      mode: 'prompt',
+      value: [{ type: 'text', text: '/cost' }],
+    }
+    expect(canBatchWith(plain, blocks)).toBe(false)
+    expect(canBatchWith(blocks, plain)).toBe(false)
+    expect(canBatchWith(plain, { ...plain, value: 'a /b' })).toBe(true)
+  })
+
   test.each(['incoming', 'held-at-start', 'channel'] as const)(
     'headless preserves %s input, live permissions, and EOF cleanup',
     async arrival => {

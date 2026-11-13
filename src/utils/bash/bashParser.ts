@@ -605,6 +605,8 @@ type ParseState = {
   inBacktick: number
   /** When set, parseSimpleCommand stops at this token (for `[` backtrack) */
   stopToken: string | null
+  /** A `$(`, `${`, `$((`, `$[` or `((` is never closed */
+  unterminated: boolean
 }
 
 function parseSource(source: string, timeoutMs?: number): TsNode | null {
@@ -620,11 +622,16 @@ function parseSource(source: string, timeoutMs?: number): TsNode | null {
     aborted: false,
     inBacktick: 0,
     stopToken: null,
+    unterminated: false,
   }
   try {
     const program = parseProgram(P)
     if (P.aborted) return null
-    return program
+    // The shell keeps reading past the end of such a command, so the tree
+    // does not describe what would run. Like tree-sitter, mark the whole parse.
+    return P.unterminated
+      ? mk(P, 'ERROR', program.startIndex, program.endIndex, [program])
+      : program
   } catch {
     return null
   }
@@ -1051,6 +1058,7 @@ function parseCommand(P: ParseState): TsNode | null {
     const open = leaf(P, '((', t)
     const exprs = parseArithCommaList(P, '))', 'var')
     const closeTok = nextToken(P.L, 'cmd')
+    if (closeTok.value !== '))') P.unterminated = true
     const close =
       closeTok.value === '))'
         ? leaf(P, '))', closeTok)
@@ -2444,6 +2452,7 @@ function parseDollarLike(P: ParseState): TsNode | null {
       advance(P.L)
       close = mk(P, '))', cStart, P.L.b, [])
     } else {
+      P.unterminated = true
       close = mk(P, '))', P.L.b, P.L.b, [])
     }
     return mk(P, 'arithmetic_expansion', dStart, close.endIndex, [
@@ -2465,6 +2474,7 @@ function parseDollarLike(P: ParseState): TsNode | null {
       advance(P.L)
       close = mk(P, ']', cStart, P.L.b, [])
     } else {
+      P.unterminated = true
       close = mk(P, ']', P.L.b, P.L.b, [])
     }
     return mk(P, 'arithmetic_expansion', dStart, close.endIndex, [
@@ -2485,6 +2495,7 @@ function parseDollarLike(P: ParseState): TsNode | null {
       advance(P.L)
       close = mk(P, ')', cStart, P.L.b, [])
     } else {
+      P.unterminated = true
       close = mk(P, ')', P.L.b, P.L.b, [])
     }
     // $(< file) shorthand: unwrap redirected_statement → bare file_redirect
@@ -2514,6 +2525,7 @@ function parseDollarLike(P: ParseState): TsNode | null {
       advance(P.L)
       close = mk(P, '}', cStart, P.L.b, [])
     } else {
+      P.unterminated = true
       close = mk(P, '}', P.L.b, P.L.b, [])
     }
     return mk(P, 'expansion', dStart, close.endIndex, [open, ...inner, close])
@@ -3228,6 +3240,8 @@ function parseFor(P: ParseState, forTok: Token): TsNode {
       advance(P.L)
       advance(P.L)
       kids.push(mk(P, '))', cStart, P.L.b, []))
+    } else {
+      P.unterminated = true
     }
     // Optional ; or newline
     const save = saveLex(P.L)

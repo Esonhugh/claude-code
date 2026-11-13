@@ -299,11 +299,33 @@ const KEEP_RECENT = { compact: { mode: 'codex', codex: { keepPostCompactAttachme
 export const COMPACT_CELLS: Cell[] = [
   claudeCell('fork-claude-ac', 'fork', 'claude', { env: AC_ENV }),
   claudeCell('fork-claude-ac-keep', 'fork', 'claude', { env: AC_ENV, settings: KEEP_RECENT }),
+  // dsh-style: summarize only the older part, keep the last 16% of the window verbatim.
+  claudeCell('fork-openai-ac', 'fork', 'chatgpt', { env: AC_ENV }),
+  claudeCell('fork-openai-ac-keep16', 'fork', 'chatgpt', { env: AC_ENV, settings: { compact: { keepRecentRatio: 0.16 } } }),
+]
+
+// Memory A/B: the fork's SQLite FTS5 recall (SearchMemory) instead of MEMORY.md in context.
+const SQLITE_MEMORY = { memory: { sqlite: { enabled: true } } }
+export const MEMORY_CELLS: Cell[] = [
+  claudeCell('fork-claude-key-sqlite', 'fork', 'claude-key', { settings: SQLITE_MEMORY }),
+  // Effort pinned to high, for builds whose -p default is medium (fork before #1095, official).
+  claudeCell('fork-claude-key-high', 'fork', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
+  claudeCell('fork-claude-key-sqlite-high', 'fork', 'claude-key', { settings: SQLITE_MEMORY, env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
+  claudeCell('official-key-high', 'official', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } }),
+  // Effort pinned to medium (official's -p default), for fork vs official at the same effort.
+  claudeCell('fork-claude-key-medium', 'fork', 'claude-key', { env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' } }),
+  claudeCell('fork-openai-sqlite', 'fork', 'chatgpt', { settings: SQLITE_MEMORY }),
+]
+
+// GPT models with Edit and Write offered besides apply_patch (the default offers only apply_patch).
+export const EDIT_CELLS: Cell[] = [
+  claudeCell('fork-openai-all', 'fork', 'chatgpt', { settings: { openaiEditTools: 'all' } }),
 ]
 
 export function getCell(id: string): Cell {
-  const c = CELLS.find(x => x.id === id) ?? SUB_CELLS.find(x => x.id === id) ?? COMPACT_CELLS.find(x => x.id === id)
-  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...SUB_CELLS, ...COMPACT_CELLS].map(x => x.id).join(', ')}`)
+  const extra = [...SUB_CELLS, ...COMPACT_CELLS, ...MEMORY_CELLS, ...EDIT_CELLS]
+  const c = CELLS.find(x => x.id === id) ?? extra.find(x => x.id === id)
+  if (!c) throw new Error(`unknown cell ${id}; known: ${[...CELLS, ...extra].map(x => x.id).join(', ')}`)
   return c
 }
 

@@ -1832,11 +1832,17 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ? { plugin: caller.plugin, registration: caller.registrationId }
             : owner.declaration.name)
         const invocation = invocationSignal.getStore()
-        // Logging and the operation that cancels the turn must acknowledge
-        // completion even after that turn's cancellation reaches this frame.
-        const signal = ['ui.log', 'turn.abort'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
+        // Logging, the operation that cancels the turn, and closing or redrawing
+        // panes (a cancelled hook's finally cleanup) must still complete after
+        // that turn's cancellation reaches this frame. Status, toasts, state and
+        // store calls made after the cancellation (finally cleanup) run without
+        // it too; ones already in flight still end with it.
+        const callerSignal = context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
+        const signal = fn === hostIdentity && (['ui.log', 'turn.abort', 'ui.close', 'ui.invalidate'].includes(op) ||
+          callerSignal?.aborted && ['ui.status', 'ui.toast', 'state.get', 'state.set', 'store.get', 'store.set'].includes(op))
+          ? undefined : callerSignal
         signal?.throwIfAborted()
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         const modelAbort = op === 'model.complete' && fn === hostIdentity
@@ -2865,9 +2871,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         : typeof value.model !== 'string') throw new Error('agent.spawn must return model or deny, never both')
       return
     }
-    if (event === 'tool.call' && (value.deny !== undefined
-      ? typeof value.deny !== 'string' || Object.hasOwn(value, 'result')
-      : !Object.hasOwn(value, 'result'))) throw new Error('tool.call must return result or deny, never both')
+    if (event === 'tool.call') {
+      if (value.deny === undefined) {
+        if (!Object.hasOwn(value, 'result')) throw new Error('tool.call must return result or deny')
+      } else if (typeof value.deny !== 'string') throw new Error('tool.call deny must be a string')
+      else if (Object.hasOwn(value, 'result')) throw new Error('tool.call must return result or deny, never both')
+    }
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
     if (event === 'session.measure') {
       if (!Array.isArray(value.changed) || !value.changed.every(unit => ['context', 'rateLimits', 'cost'].includes(unit)))

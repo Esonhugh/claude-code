@@ -219,7 +219,6 @@ export function ManageMarketplaces({
     setProgressMessage(null)
 
     try {
-      const settings = getSettingsForSource('userSettings')
       let updatedCount = 0
       let removedCount = 0
       const refreshedMarketplaces = new Set<string>()
@@ -229,7 +228,7 @@ export function ManageMarketplaces({
         if (state.pendingRemove) {
           // First uninstall all plugins from this marketplace
           if (state.installedPlugins && state.installedPlugins.length > 0) {
-            const newEnabledPlugins = { ...settings?.enabledPlugins }
+            const newEnabledPlugins: Record<string, boolean> = {}
             for (const plugin of state.installedPlugins) {
               const pluginId = createPluginId(plugin.name, state.name)
               // Mark as disabled/uninstalled

@@ -1,3 +1,4 @@
+import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import React, { useRef } from 'react'
@@ -19,6 +20,7 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { useSelectedMessageBg } from '../messageActions.js'
 import { PrBadge } from '../PrBadge.js'
 import { ToolUseLoader } from '../ToolUseLoader.js'
+import { UserToolErrorMessage } from './UserToolResultMessage/UserToolErrorMessage.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemCollapsed = feature('TEAMMEM')
@@ -45,6 +47,48 @@ function isVerboseToolUseBlock(block: unknown): block is VerboseToolUseBlock {
     (block as { type?: unknown }).type === 'tool_use' &&
     typeof (block as { id?: unknown }).id === 'string' &&
     typeof (block as { name?: unknown }).name === 'string'
+  )
+}
+
+function findTool(tools: Tools, name: string) {
+  // Same REPL-primitive fallback as getToolSearchOrReadInfo — REPL mode strips
+  // these from the execution tools list, but virtual messages still need them
+  // to render in verbose mode.
+  return (
+    findToolByName(tools, name) ??
+    findToolByName(getReplPrimitiveTools(), name)
+  )
+}
+
+/** A failed tool use's error, rendered as it is outside a group */
+function ToolUseError({
+  content,
+  tools,
+  lookups,
+  verbose,
+}: {
+  content: VerboseToolUseBlock
+  tools: Tools
+  lookups: ReturnType<typeof buildMessageLookups>
+  verbose: boolean
+}): React.ReactNode {
+  const resultMsg = lookups.toolResultByToolUseID.get(content.id)
+  const param =
+    resultMsg?.type === 'user' && Array.isArray(resultMsg.message.content)
+      ? (resultMsg.message.content.find(
+          block =>
+            block.type === 'tool_result' && block.tool_use_id === content.id,
+        ) as ToolResultBlockParam | undefined)
+      : undefined
+  if (!param) return null
+  return (
+    <UserToolErrorMessage
+      progressMessagesForMessage={[]}
+      tool={findTool(tools, content.name)}
+      tools={tools}
+      param={param}
+      verbose={verbose}
+    />
   )
 }
 
@@ -76,12 +120,7 @@ function VerboseToolUse({
   theme: ResolvedTheme
 }): React.ReactNode {
   const bg = useSelectedMessageBg()
-  // Same REPL-primitive fallback as getToolSearchOrReadInfo — REPL mode strips
-  // these from the execution tools list, but virtual messages still need them
-  // to render in verbose mode.
-  const tool =
-    findToolByName(tools, content.name) ??
-    findToolByName(getReplPrimitiveTools(), content.name)
+  const tool = findTool(tools, content.name)
   if (!tool) return null
 
   const isResolved = lookups.resolvedToolUseIDs.has(content.id)
@@ -128,6 +167,14 @@ function VerboseToolUse({
             theme,
           })}
         </Box>
+      )}
+      {isResolved && isError && (
+        <ToolUseError
+          content={content}
+          tools={tools}
+          lookups={lookups}
+          verbose
+        />
       )}
     </Box>
   )
@@ -239,34 +286,35 @@ export function CollapsedReadSearchContent({
 
   const displayedHint = useMinDisplayTime(incomingHint, MIN_HINT_DISPLAY_MS)
 
+  const toolUses: VerboseToolUseBlock[] = []
+  for (const msg of groupMessages) {
+    const messages: NormalizedAssistantMessage[] =
+      msg.type === 'assistant'
+        ? [msg]
+        : msg.type === 'grouped_tool_use'
+          ? msg.messages
+          : []
+    for (const { message } of messages) {
+      const content = message.content[0]
+      if (isVerboseToolUseBlock(content)) toolUses.push(content)
+    }
+  }
+
   // In verbose mode, render each tool use with its 1-line result summary
   if (verbose) {
-    const toolUses: NormalizedAssistantMessage[] = []
-    for (const msg of groupMessages) {
-      if (msg.type === 'assistant') {
-        toolUses.push(msg)
-      } else if (msg.type === 'grouped_tool_use') {
-        toolUses.push(...msg.messages)
-      }
-    }
-
     return (
       <Box flexDirection="column">
-        {toolUses.map(msg => {
-          const content = msg.message.content[0]
-          if (!isVerboseToolUseBlock(content)) return null
-          return (
-            <VerboseToolUse
-              key={content.id}
-              content={content}
-              tools={tools}
-              lookups={lookups}
-              inProgressToolUseIDs={inProgressToolUseIDs}
-              shouldAnimate={shouldAnimate}
-              theme={theme}
-            />
-          )
-        })}
+        {toolUses.map(content => (
+          <VerboseToolUse
+            key={content.id}
+            content={content}
+            tools={tools}
+            lookups={lookups}
+            inProgressToolUseIDs={inProgressToolUseIDs}
+            shouldAnimate={shouldAnimate}
+            theme={theme}
+          />
+        ))}
         {message.hookInfos && message.hookInfos.length > 0 && (
           <>
             <Text dimColor>
@@ -620,6 +668,18 @@ export function CollapsedReadSearchContent({
             ))}
           </Box>
         </Box>
+      )}
+      {toolUses.map(
+        content =>
+          lookups.erroredToolUseIDs.has(content.id) && (
+            <ToolUseError
+              key={content.id}
+              content={content}
+              tools={tools}
+              lookups={lookups}
+              verbose={false}
+            />
+          ),
       )}
       {message.hookTotalMs !== undefined && message.hookTotalMs > 0 && (
         <Text dimColor>

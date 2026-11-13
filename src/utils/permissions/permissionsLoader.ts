@@ -389,18 +389,15 @@ export function deletePermissionRuleFromSettings(
   }
 
   try {
-    // Keep a copy of the original permissions data to preserve unrecognized keys
-    const updatedSettingsData = {
-      ...settingsData,
+    // Filter the list as it is when written, so a rule another process just
+    // added is kept.
+    const { error } = updateSettingsForSource(rule.source, existing => ({
       permissions: {
-        ...settingsData.permissions,
-        [rule.ruleBehavior]: behaviorArray.filter(
-          raw => normalizeEntry(raw) !== ruleString,
-        ),
+        [rule.ruleBehavior]: (
+          existing.permissions?.[rule.ruleBehavior] ?? []
+        ).filter(raw => normalizeEntry(raw) !== ruleString),
       },
-    }
-
-    const { error } = updateSettingsForSource(rule.source, updatedSettingsData)
+    }))
     if (error) {
       // Error already logged inside updateSettingsForSource
       return false
@@ -472,15 +469,24 @@ export function addPermissionRulesToSettings(
       return true
     }
 
-    // Keep a copy of the original settings data to preserve unrecognized keys
-    const updatedSettingsData = {
-      ...settingsData,
-      permissions: {
-        ...existingPermissions,
-        [ruleBehavior]: [...existingRules, ...newRules],
-      },
-    }
-    const result = updateSettingsForSource(source, updatedSettingsData)
+    // Add to the list as it is when written, so rules another process just
+    // added are kept.
+    const result = updateSettingsForSource(source, existing => {
+      const rules = existing.permissions?.[ruleBehavior] ?? []
+      const present = new Set(
+        rules.map(raw =>
+          permissionRuleValueToString(permissionRuleValueFromString(raw)),
+        ),
+      )
+      return {
+        permissions: {
+          [ruleBehavior]: [
+            ...rules,
+            ...newRules.filter(rule => !present.has(rule)),
+          ],
+        },
+      }
+    })
 
     if (result.error) {
       throw result.error

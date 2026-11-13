@@ -1153,7 +1153,11 @@ function saveConfigWithLock<A extends object>(
   try {
     const lockFilePath = `${file}.lock`
     const startTime = Date.now()
-    release = lockfile.lockSync(file, {
+    // Several CLIs write this file (e.g. parallel `claude mcp add`): wait for the
+    // holder instead of falling back to an unlocked write that drops its change.
+    release = lockfile.lockSyncWaiting(file, {
+      // The file may not exist yet; the lock is the separate `.lock` path.
+      realpath: false,
       lockfilePath: lockFilePath,
       onCompromised: err => {
         // Default onCompromised throws from a setTimeout callback, which

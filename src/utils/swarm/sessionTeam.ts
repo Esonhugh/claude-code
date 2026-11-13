@@ -1,8 +1,10 @@
-import { rename } from 'fs/promises'
+import { rename, rmdir } from 'fs/promises'
+import { dirname } from 'path'
 import { getSessionId } from '../../bootstrap/state.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import { formatAgentId } from '../agentId.js'
 import { getCwd } from '../cwd.js'
+import { getInboxPath } from '../teammateMailbox.js'
 import { ensureTasksDir, getTasksDir, setLeaderTeamName } from '../tasks.js'
 import { TEAM_LEAD_NAME } from './constants.js'
 import {
@@ -71,6 +73,13 @@ export async function ensureSessionTeam(
     () => {},
   )
   await ensureTasksDir(teamName)
+  // Same for mail sent before the team existed (TaskUpdate owner assignment).
+  const sessionInboxes = dirname(getInboxPath(TEAM_LEAD_NAME, getSessionId()))
+  await rename(
+    sessionInboxes,
+    dirname(getInboxPath(TEAM_LEAD_NAME, teamName)),
+  ).catch(() => {})
+  await rmdir(dirname(sessionInboxes)).catch(() => {})
   setLeaderTeamName(teamName)
 
   setAppState(prev => ({

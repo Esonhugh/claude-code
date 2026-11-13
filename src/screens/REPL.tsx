@@ -2,6 +2,8 @@ import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
+import { formatPluginNotice } from '../services/mods/uiNoticeText.js'
+import type { PromptAutocompleteInput, PromptAutocompleteResult } from '../services/mods/promptAutocomplete.js'
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import inkInstances from '../ink/instances.js'
 import { copyModCallerChain } from '../services/mods/callerChain.js'
@@ -2287,7 +2289,7 @@ export function REPL({
       const key = `plugin-status-${plugin}`
       removeNotification(key)
       if (text !== undefined) addNotification({
-        key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
+        key, text: formatPluginNotice(plugin, text), priority: 'low', pinned: true,
       })
     },
   }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections, terminal])
@@ -2338,6 +2340,10 @@ export function REPL({
   const onModPromptEdit = useCallback((edit: TextInputEdit) => {
     if (modPromptEditRuntime?.hasHooks('prompt.edit')) modPromptEditQueue.record(edit)
   }, [modPromptEditRuntime, modPromptEditQueue])
+  const onModAutocomplete = useCallback((input: PromptAutocompleteInput, signal: AbortSignal) =>
+    modPromptEditRuntime?.hasHooks('prompt.autocomplete')
+      ? modPromptEditRuntime.dispatch('prompt.autocomplete', input, async () => ({suggestions: []}), {signal}) as Promise<PromptAutocompleteResult>
+      : undefined, [modPromptEditRuntime])
 
   // Wrap setInputValue to co-locate suppression state updates.
   // Both setState calls happen in the same synchronous context so React
@@ -5609,7 +5615,25 @@ export function REPL({
       const isSlashCommand = !speculationAccept && input.trim().startsWith('/')
       if (!isSlashCommand) restoreStash()
 
-      if (modsSession) await awaitMods().catch(restoreOnError)
+      // Show the prompt and spinner now: the first submit can wait here for a
+      // mod's session.start, and the composer has already been cleared.
+      const showsProcessingPlaceholder = () =>
+        !options?.fromKeybinding &&
+        !queryGuard.isActive &&
+        !isExternalLoading &&
+        !isSlashCommand &&
+        submittedInputMode === 'prompt' &&
+        !speculationAccept &&
+        !activeRemote.isRemoteMode
+      const placeholderBeforeMods = showsProcessingPlaceholder()
+      if (placeholderBeforeMods) {
+        setUserInputOnProcessing(input)
+        resetTimingRefs()
+      }
+      if (modsSession) await awaitMods().catch(error => {
+        if (placeholderBeforeMods) setUserInputOnProcessing(undefined)
+        return restoreOnError(error)
+      })
 
       // Handle immediate commands - these bypass the queue and execute right away
       // even while Claude is processing. Commands opt-in via `immediate: true`.
@@ -5790,20 +5814,17 @@ export function REPL({
       if (!options?.fromKeybinding) {
         // Skip the processing placeholder for slash/bash (they have their own echo), speculation and remote
         // mode (both setMessages directly with no gap to bridge).
-        if (
-          !queryGuard.isActive &&
-          !isExternalLoading &&
-          !isSlashCommand &&
-          submittedInputMode === 'prompt' &&
-          !speculationAccept &&
-          !activeRemote.isRemoteMode
-        ) {
+        const showsPlaceholder = showsProcessingPlaceholder()
+        if (showsPlaceholder && !placeholderBeforeMods) {
           setUserInputOnProcessing(input)
           // showSpinner includes userInputOnProcessing, so the spinner appears
           // on this render. Reset timing refs now (before queryGuard.reserve()
           // would) so elapsed time doesn't read as Date.now() - 0. The
           // isQueryActive transition above does the same reset — idempotent.
           resetTimingRefs()
+        } else if (!showsPlaceholder && placeholderBeforeMods) {
+          // A turn started while this prompt waited for mods; it queues instead.
+          setUserInputOnProcessing(undefined)
         }
 
         // Increment prompt count for attribution tracking and save snapshot
@@ -8205,6 +8226,7 @@ export function REPL({
                         onInputChange={setInputValue}
                         onInputStateChange={onInputStateChange}
                         onPromptEdit={onModPromptEdit}
+                        onModAutocomplete={onModAutocomplete}
                         mode={inputMode}
                         onModeChange={setInputMode}
                         stashedPrompt={stashedPrompt}

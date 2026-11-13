@@ -47,6 +47,18 @@ const parseFileCache = new Map<string, ParsedSettings>()
 // Only pending/blocked files need a last-accepted snapshot across cache resets.
 const retainedFiles = new Map<string, ParsedSettings>()
 
+// True while the change detector watches settings files and reviews outside
+// edits (ConfigChange hooks) before the session applies them.
+let outsideEditsReviewed = false
+
+export function setOutsideEditsReviewed(value: boolean): void {
+  outsideEditsReviewed = value
+}
+
+export function areOutsideEditsReviewed(): boolean {
+  return outsideEditsReviewed
+}
+
 export function getCachedParsedFile(path: string): ParsedSettings | undefined {
   return retainedFiles.get(path) ?? parseFileCache.get(path)
 }
@@ -70,6 +82,32 @@ export function isSettingsFileRetained(path: string): boolean {
 
 export function releaseSettingsFile(path: string): void {
   retainedFiles.delete(path)
+}
+
+/** Retains `path` with this snapshot as what the session has accepted. */
+export function retainSettingsSnapshot(path: string, value: ParsedSettings): void {
+  retainedFiles.set(path, value)
+  sessionSettingsCache = null
+  perSourceCache.clear()
+}
+
+// Per path, the file version whose ConfigChange review was blocked.
+const blockedCandidates = new Map<string, string | null>()
+
+export function blockSettingsCandidate(path: string, identity: string | null): void {
+  blockedCandidates.set(path, identity)
+}
+
+export function unblockSettingsCandidate(path: string): void {
+  blockedCandidates.delete(path)
+}
+
+export function isBlockedSettingsCandidate(path: string, identity: string | null): boolean {
+  return blockedCandidates.has(path) && blockedCandidates.get(path) === identity
+}
+
+export function clearBlockedSettingsCandidates(): void {
+  blockedCandidates.clear()
 }
 
 export function getParsedSettingsPaths(): string[] {

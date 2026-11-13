@@ -154,8 +154,14 @@ export function hasMalformedTokens(
   }
   if (doubleCount % 2 !== 0 || singleCount % 2 !== 0) return true
 
+  // `[[` and `]]` are the two halves of one test command, each its own token.
+  const testOpens = parsed.filter(entry => entry === '[[').length
+  const testCloses = parsed.filter(entry => entry === ']]').length
+  if (testOpens !== testCloses) return true
+
   for (const entry of parsed) {
     if (typeof entry !== 'string') continue
+    if (entry === '[[' || entry === ']]') continue
 
     // Check for unbalanced curly braces
     const openBraces = (entry.match(/{/g) || []).length

@@ -138,7 +138,7 @@ export function dispatchModStream(options: {
       let current: AsyncGenerator<unknown, unknown> | undefined
       let currentPull: Promise<IteratorResult<unknown, unknown>> | undefined
       let timer: ReturnType<typeof setTimeout> | undefined
-      let started = 0, remaining = 0, allowance = 0, pauses = 0, working = false
+      let started = 0, remaining = 0, allowance = 0, pauses = 0, working = false, stalled = false
       let controller = createAbortController()
       let expire: ((error: Error) => void) | undefined
       let clock: BigInt64Array | undefined
@@ -175,8 +175,14 @@ export function dispatchModStream(options: {
       const resume = () => {
         if (!working || pauses || timer !== undefined || controller.signal.aborted) return
         started = performance.now()
+        const deadline = started + Math.max(0, remaining)
         timer = setTimeout(() => {
-          stop(); timedOut = true
+          // A late timer means the host thread was stalled, not the hook: give
+          // back the stalled time once per invocation, as dispatchModEvent does.
+          const late = performance.now() - deadline
+          stop()
+          if (!stalled && late >= 1) { stalled = true; remaining = Math.min(late, allowance); resume(); return }
+          timedOut = true
           const error = new Error(`Mod ${hook?.plugin} timed out for ${options.event}`)
           operationController.abort(error); expire?.(error); controller.abort(error)
         }, Math.max(0, remaining))
@@ -281,7 +287,7 @@ export function dispatchModStream(options: {
         controller = createAbortController()
         operationController = createAbortController()
         allowance = catching ? options.catchGraceMs ?? 1000 : options.budgetMs ?? 10_000
-        remaining = allowance; pauses = 0
+        remaining = allowance; pauses = 0; stalled = false
         clock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT)); publish()
         const next = nextFor(catching, failure)
         const timeout = new Promise<never>((_resolve, reject) => { expire = reject })
@@ -602,6 +608,7 @@ export async function dispatchModEvent(options: {
     let allowance = budgetMs
     let remaining = budgetMs
     let started = 0
+    let stalled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     let expire: (() => void) | undefined
     let timedOut = false
@@ -650,7 +657,16 @@ export async function dispatchModEvent(options: {
         return
       if (pending > 0 || external > 0) return
       started = performance.now()
-      timer = setTimeout(expire, Math.max(0, remaining))
+      const deadline = started + Math.max(0, remaining)
+      timer = setTimeout(() => {
+        // A late timer means the host thread was stalled, not the hook: the
+        // hook's answer may be queued behind the stall. Give back the stalled
+        // time once per invocation, so a hung hook still times out promptly.
+        const late = performance.now() - deadline
+        stopTimer()
+        if (!stalled && late >= 1) { stalled = true; remaining = Math.min(late, allowance); startTimer(); return }
+        expire?.()
+      }, Math.max(0, remaining))
       publishBudget()
     }
     function below(rewritten: ModInput, target?: ModTier): Promise<unknown> {
@@ -805,6 +821,7 @@ export async function dispatchModEvent(options: {
       let settledRemaining: number | undefined
       allowance = catching ? catchGraceMs : budgetMs
       remaining = allowance
+      stalled = false
       external = 0
       budgetClock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT))
       publishBudget()

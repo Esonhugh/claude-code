@@ -52,8 +52,25 @@ import {
  * @returns Tools belonging to the specified server
  */
 export function filterToolsByServer(tools: Tool[], serverName: string): Tool[] {
-  const prefix = `mcp__${normalizeNameForMCP(serverName)}__`
-  return tools.filter(tool => tool.name?.startsWith(prefix))
+  return tools.filter(tool => isToolOfServer(tool, serverName))
+}
+
+/**
+ * A tool's identity for de-duplication: its server and its own name. Two servers
+ * (`a.b`, `a_b`) or two tools (`do.it`, `do_it`) can share one `mcp__…` name.
+ */
+export function mcpToolKey(tool: Pick<Tool, 'name' | 'mcpInfo'>): string {
+  return tool.mcpInfo ? `${tool.mcpInfo.serverName}\0${tool.mcpInfo.toolName}` : tool.name
+}
+
+/**
+ * True when a tool belongs to the given MCP server. The name prefix alone also
+ * matches the tools of a server named "<serverName>__…", so a tool that knows
+ * its server answers by that.
+ */
+export function isToolOfServer(tool: Pick<Tool, 'name' | 'mcpInfo'>, serverName: string): boolean {
+  if (tool.mcpInfo) return tool.mcpInfo.serverName === serverName
+  return tool.name?.startsWith(`mcp__${normalizeNameForMCP(serverName)}__`) ?? false
 }
 
 /**
@@ -136,8 +153,7 @@ export function excludeToolsByServer(
   tools: Tool[],
   serverName: string,
 ): Tool[] {
-  const prefix = `mcp__${normalizeNameForMCP(serverName)}__`
-  return tools.filter(tool => !tool.name?.startsWith(prefix))
+  return tools.filter(tool => !isToolOfServer(tool, serverName))
 }
 
 /**
@@ -378,8 +394,15 @@ const isLocalSettingsGitTracked = memoize((projectDir: string): boolean => {
   return result.error !== undefined || result.status === 0
 })
 
+/**
+ * settingsOnly: approval from settings alone, without the bypass and
+ * non-interactive auto-approve a session gets. `claude mcp list | cat` is not
+ * a -p session and must not start an unapproved .mcp.json command
+ * (official 2.1.322).
+ */
 export function getProjectMcpServerStatus(
   serverName: string,
+  { settingsOnly = false }: { settingsOnly?: boolean } = {},
 ): 'approved' | 'rejected' | 'pending' {
   const settings = getSettings_DEPRECATED()
   const normalizedName = normalizeNameForMCP(serverName)
@@ -424,6 +447,9 @@ export function getProjectMcpServerStatus(
       })
   if (approved) {
     return 'approved'
+  }
+  if (settingsOnly) {
+    return 'pending'
   }
 
   // In bypass permissions mode (--dangerously-skip-permissions), there's no way

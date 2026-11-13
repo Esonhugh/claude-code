@@ -1,5 +1,7 @@
 # OpenAI / Codex provider
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`openai-provider` · 领域：模型与 Provider · [返回功能索引](README.md)
 
 ## 这是什么
@@ -9,6 +11,33 @@ Claude Code 默认调用 Anthropic 的 Claude 模型。打开 OpenAI provider �
 - **ChatGPT 账号登录**（OAuth 或设备码），用订阅里的 Codex 额度；
 - **OpenAI API key**，按量计费；
 - **OpenAI 兼容网关**（公司网关、OpenRouter 等）。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `openai-provider` · Area: Models and providers · [Back to index](README.md)
+
+## What it is
+
+Claude Code calls Anthropic's Claude models by default. With the OpenAI provider turned on, the UI, tools, permissions and commands stay the same; only **the model behind them becomes OpenAI's** (through the Responses API). You can use:
+
+- **a ChatGPT account sign-in** (OAuth or device code), using the Codex allowance in your subscription;
+- **an OpenAI API key**, billed by usage;
+- **an OpenAI-compatible gateway** (a company gateway, OpenRouter and so on).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`openai-provider` · 領域：模型與 Provider · [返回功能索引](README.md)
+
+## 這是什麼
+
+Claude Code 預設呼叫 Anthropic 的 Claude 模型。開啟 OpenAI provider 後，同一套介面、工具、權限、命令不變，只是**背後的模型換成 OpenAI 的**（通過 Responses API）。可以用：
+
+- **ChatGPT 帳號登入**（OAuth 或裝置碼），用訂閱裡的 Codex 額度；
+- **OpenAI API key**，按量計費；
+- **OpenAI 相容閘道**（公司閘道、OpenRouter 等）。
+
+</details>
 
 ## 快速上手
 
@@ -91,12 +120,15 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 
 ## `apply_patch` 工具
 
-GPT 模型训练时用的是 Codex 的 `apply_patch`：一次调用可以改多个文件、多处位置。OpenAI provider 下 Claude Code 额外提供同名工具（参数 `input`，Codex 的补丁格式：`*** Add File` / `*** Update File`（可带 `*** Move to`）/ `*** Delete File`、`@@` 段、`*** End of File`，也接受 heredoc 写法），Claude 路径仍只用 Edit / Write。同一个编码任务，请求数从 13 次降到 7 次（Codex 0.167.0 为 5 次），总 token 从 156k 降到 85k。
+GPT 模型训练时用的是 Codex 的 `apply_patch`：一次调用可以改多个文件、多处位置。OpenAI provider 下 Claude Code 提供同名工具，默认取代 Edit / Write（参数 `input`，Codex 的补丁格式：`*** Add File` / `*** Update File`（可带 `*** Move to`）/ `*** Delete File`、`@@` 段、`*** End of File`，也接受 heredoc 写法），Claude 路径仍只用 Edit / Write。同一个编码任务，请求数从 13 次降到 7 次（Codex 0.167.0 为 5 次），总 token 从 156k 降到 85k。
 
-- **先校验再写**：整个补丁先对照文件检查（上下文行必须匹配，空白和弯引号的差异按 Codex 的规则容忍），有一段对不上就一个文件都不改。
-- **权限**：补丁涉及的每个路径（包括 Move 的目标）都按 Edit 的权限规则和权限模式检查。确认框显示整个补丁，选项 2 把本会话切到 accept edits。Explore、Plan 与 verification 这类只读 agent 不能用它。
+- **按顺序套用**：和 Codex 一样逐个文件对照检查后写入（上下文行必须匹配，空白和弯引号的差异按 Codex 的规则容忍）。某个文件对不上时，前面已写入的文件保留，在这个文件停下，返回给模型的结果写明哪个文件失败及原因、哪些已套用、哪些没有尝试；第一个文件就对不上时一个文件都不改。格式错误、同一路径出现两次或命中 deny 规则时整个补丁不执行。hooks 只对会被写入的文件运行。
+- **显示**：每个文件单独一行，和 Claude 并行编辑多个文件时一样：新增是 `Write(path)`，修改是 `Update(path)`，删除是 `Delete(path)`，移动的文件显示 `Update(旧路径 → 新路径)`，各自带 diff；失败的文件以红点显示错误，后面没有尝试的文件列在下方。
+- **权限**：补丁涉及的每个路径（包括 Move 的目标）都按 Edit 的权限规则和权限模式检查；不带路径的整工具规则也生效：新增文件和 Move 目标看 `Write`，其余看 `Edit`，所以 `allow: ["Edit", "Write"]` 下补丁不再弹确认，`deny`/`ask` 同理。确认框显示整个补丁，选项 2 把本会话切到 accept edits。Explore、Plan 与 verification 这类只读 agent 不能用它。
 - **hooks**：`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 按文件拆成等价的 Edit / Write 事件各跑一次（修改 → Edit，新增 → Write，删除 → 把内容改成空的 Edit，移动 → 新路径的 Write 加旧路径的删除 Edit），所以已有的 `Edit|Write` hook 不用改。matcher 写 `apply_patch` 匹配不到这三个事件，`*` 或不写 matcher 的 hook 也按文件运行。按文件的 hook 可以阻止、拒绝或要求确认，阻止任何一个文件就整个补丁不执行；它返回的 allow、`updatedInput` 和输出改写会被忽略。`PermissionRequest` / `PermissionDenied` 对应唯一的确认框，整个补丁只触发一次，`tool_name` 是 `apply_patch`，写 `Edit` 或 `Write` 的 matcher 也会匹配；`tool_input.file_path` 是第一个文件，`tool_input.file_paths` 是全部文件的绝对路径。
+- **SDK / `claude web` 的确认**：Agent SDK 的 `canUseTool`、`--permission-prompt-tool`（stdio 或 MCP 工具）和 `claude web` 收到的不是一个 `apply_patch` 请求，而是按文件拆开、和 hooks 相同形状的 Edit / Write 请求（修改的 `old_string` / `new_string` 是整个文件内容），按补丁顺序逐个询问；已被规则或模式允许的文件不再询问，这时 `PermissionRequest` 也按文件以 Edit / Write 触发。宿主拒绝某个文件时，前面的文件照常写入，在这个文件停下，模型收到已套用的结果和一段说明哪个文件被拒、哪些没有改；第一个文件就被拒时整个补丁不执行。宿主可以通过 `updatedInput` 改 `new_string` / `content`，改动会写进文件；改路径会被拒绝。被宿主拒绝的文件按它看到的 Edit / Write（含该文件的输入）列在 SDK 结果的 `permission_denials` 里，和 Claude 模式分开调用 Edit / Write 时一样。只为 `apply_patch` 写的 ask 规则仍然整个补丁询问一次。
 - 文件历史、读取状态、LSP 与 VS Code 通知、设置文件校验和 Edit / Write 相同。
+- **只给 apply_patch**：默认（`"openaiEditTools": "apply_patch"`）OpenAI provider 下不提供 Edit / Write，和 Codex 一样只用 apply_patch 编辑文件；设为 `"all"` 时三个都提供。2026-11-11 用 bench 对照（5 个编辑类任务各 3 次，gpt-6.1-sol）：两者通过率都是 100%；第一次测得只给 apply_patch 时每任务 token 少约 11%，用最终默认的 binary 重跑没有重现，token 与花费差异在噪声内。
 
 ## 网络安全访问档位（Daybreak）
 

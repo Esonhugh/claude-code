@@ -33,6 +33,7 @@ type TaskUpdatedEvent = {
     total_paused_ms?: number
     error?: string
     is_backgrounded?: boolean
+    is_idle?: boolean
   }
 }
 
@@ -133,6 +134,12 @@ export function getTaskRunId(taskId: string): string | undefined {
 
 const MAX_QUEUE_SIZE = 1000
 const queue: (SdkEvent | SubagentSdkMessage)[] = []
+let onEnqueue: (() => void) | undefined
+
+/** Called after each queued event, so the output stream can take it right away. */
+export function setSdkEventListener(listener: (() => void) | undefined): void {
+  onEnqueue = listener
+}
 
 export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   // SDK events are only consumed (drained) in headless/streaming mode.
@@ -147,6 +154,7 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
     event = { ...event, run_id: runIds.get(event.task_id) }
   }
   queue.push(event)
+  onEnqueue?.()
 }
 
 /** Everything queued for the SDK output stream, in order. */

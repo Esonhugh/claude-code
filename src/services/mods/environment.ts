@@ -737,7 +737,7 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id, ...(streaming && next && canSettleModStreamAfterAbort(next) ? {cooperative:true as const} : {}), ...(['turn.step','process.spawn','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(streaming && next && canSettleModStreamAfterAbort(next) ? {cooperative:true as const} : {}), ...(next ? {reason:{name:['turn.step','process.spawn','model.complete','model.classify','model.fork','ui.render'].includes(next.event) ? 'HooksError' : 'AbortError',message:typeof next.signal.reason === 'string' ? next.signal.reason : errorMessage(next.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
       if (streaming && retained) {
         // The opening RPC is already settled; the watchdog must cover the
         // retained stream's pulls as well, including a guest-only pending wait.

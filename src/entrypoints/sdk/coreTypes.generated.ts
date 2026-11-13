@@ -89,6 +89,7 @@ export type McpServerStatus = {
       destructive?: boolean
       openWorld?: boolean
     }
+    _meta?: Record<string, unknown>
   }>
   capabilities?: {
     experimental?: Record<string, unknown>
@@ -582,6 +583,7 @@ export type SDKTaskUpdatedMessage = {
     total_paused_ms?: number
     error?: string
     is_backgrounded?: boolean
+    is_idle?: boolean
   }
   uuid: string
   session_id: string

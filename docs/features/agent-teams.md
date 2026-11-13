@@ -1,5 +1,7 @@
 # Agent Teams
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`agent-teams` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - 你可以随时切过去看某个队友在干什么，直接给它发话。
 
 和官方 2.1.303 一样，这个功能默认关闭。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `agent-teams` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+A normal sub-agent is sent off to do one thing and hands back a result. Agent Teams works more like a small group: your session is the **team lead**, and it can start several named **teammates**. Each teammate is a full Claude session that stays online, and together they can:
+
+- message each other (`SendMessage`); a teammate tells the lead when it finishes something;
+- share one task list that records who owns which task and how far it has got;
+- let you switch to any teammate at any time to watch it work or talk to it directly.
+
+As in the official 2.1.303, this feature is off by default.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`agent-teams` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+普通的子 Agent 是「派出去幹一件事、做完交回結果」。Agent Teams 更像一個小組：你所在的會話是**負責人（team-lead）**，它可以拉起幾個有名字的**隊友（teammate）**。隊友各自是一個完整的 Claude 會話，會一直線上；大家可以：
+
+- 互相發訊息（`SendMessage`），隊友做完一件事會主動告訴負責人；
+- 共用一份任務清單，誰負責哪項、做到哪一步都記在上面；
+- 你可以隨時切過去看某個隊友在幹什麼，直接給它發話。
+
+和官方 2.1.303 一樣，這個功能預設關閉。
+
+</details>
 
 ## 什么时候用
 
@@ -26,7 +59,7 @@
 | 环境变量 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude` |
 | 命令行 | `claude --agent-teams` |
 
-没开启时，模型调用团队工具会直接得到 `Error: No such tool available: TeamCreate`。
+没开启时不会组成团队：`Agent` 的 `name` 只用来给后台 agent 命名（可以用 `SendMessage` 按名字找它），向 `*` 广播会得到 `agent teams are not enabled in this session` 的提示。
 
 队友的运行方式由 `teammateMode` 决定（`/config` 里改，保存在 `~/.claude.json`）：
 
@@ -58,7 +91,7 @@
 
 空闲的队友超过 3 个时，多出来的会折叠成 `N idle agents` 一行；选中它按 Enter 展开，展开后按 `Esc` 再折叠。和官方 2.1.311 一致。
 
-**2. 队友做完后会发消息回来。** 消息以 `@writer❯` 开头显示在负责人的对话里，负责人会接着处理。
+**2. 队友做完后会发消息回来。** 消息以 `@writer❯` 开头显示在负责人的对话里，负责人会接着处理；负责人正在工作时，新消息也会在这一轮中途送到，不用等它停下。
 
 **3. 切过去看队友。** 按 `↓` 进入面板，用 `↑/↓` 选中队友，按 Enter。顶部显示 `Viewing @writer`，下面是它收到的任务和它的对话；这时输入框变成 `Message @writer…`，打字发送就是直接对它说话：
 
@@ -127,6 +160,10 @@
 
 - **权限模式跟随负责人**：负责人处于 bypass、acceptEdits 或 auto 模式时，进程内队友也用同样的模式；否则队友的权限请求会转给负责人确认。
 - **解散**：队友被要求 shutdown 并确认后，会从 `config.json` 的成员名单里移除。
+- **空闲队友自动同意关闭**：进程内队友空闲时收到 shutdown 请求，如果上一回合正常结束、名下没有未完成的任务、信箱里也没有别的未读消息，就直接同意并退出，不再叫醒模型。其他情况仍由队友自己决定同意还是拒绝。
+- **汇报后结束回合**：进程内队友的一次回复如果只是用 SendMessage 给负责人发了纯文本消息，工具结果返回后这一回合就结束，队友进入空闲，不再多请求一次模型。队友还有在后台运行的 Bash 或名下有进行中的任务时不会这样结束，避免进度汇报后后台命令被停掉、任务被搁置。Stop、TaskCompleted、TeammateIdle hook 照常执行，hook 阻止时队友继续工作。
+- **队友的提示词**：进程内队友用完整的主提示词；以 `general-purpose` 类型拉起时不再额外附加 general-purpose agent 的提示词（它和主提示词重复，还要求把结果作为最终回复交给调用方，而队友应该用 SendMessage 汇报）。
+- **负责人不用轮询**：生成队友的工具结果会告诉负责人，队友的消息会自动送达，没有别的事可做时结束这一回合等待即可。
 - **`-p` / SDK 下的权限请求**：队友的权限请求先走 PermissionRequest hook；普通 `-p` 随后拒绝（发出带 `agent_id` 的 `permission_denied`），`--permission-prompt-tool stdio` 时以带 `agent_id` 的 `can_use_tool` 交给宿主（`claude web` 显示在协调者的批准框里）。
 - **`-p` / SDK 退出**：会话结束时负责人会被要求关闭团队；之后 15 秒内没有未读消息、也没有队友在工作，就在 stderr 打印 `Team members did not shut down after the shutdown request; stopping them.`，停止剩下的队友、把它们从 `config.json` 移除并正常退出，不会一直挂着。SDK 用字符串 prompt 时同样等队友汇报完。
 - **失败通知**：队友的回合以 API 错误结束（额度用完、400、认证失败）时，空闲通知是 `idleReason: "failed"` 并带 `failureReason`，负责人不会再反复催它。

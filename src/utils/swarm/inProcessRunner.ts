@@ -27,10 +27,13 @@ import {
 import { getAutoCompactThreshold } from '../../services/compact/autoCompact.js'
 import {
   buildPostCompactMessages,
+  type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
+import { formatDeferredToolLines } from '../../tools/ToolSearchTool/prompt.js'
+import { createAttachmentMessage } from '../attachments.js'
 import type { AppState } from '../../state/AppState.js'
 import type { Tool, ToolPermissionContext, ToolUseContext, Tools } from '../../Tool.js'
 import { assembleToolPool } from '../../tools.js'
@@ -69,9 +72,11 @@ import {
   createUserMessage,
 } from '../../utils/messages.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
+import type { TaskState } from '../../tasks/types.js'
 import {
   evictTerminalTask,
   PANEL_GRACE_MS,
+  updateTaskState as updateAppTask,
 } from '../../utils/task/framework.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { createAbortController } from '../abortController.js'
@@ -104,6 +109,7 @@ import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
 import {
   createIdleNotification,
+  createShutdownApprovedMessage,
   getIdleResult,
   getTurnFailureReason,
   getLastPeerDmSummary,
@@ -128,6 +134,7 @@ import {
 } from './permissionSync.js'
 import { leaderModeReachesTeammates } from './teamHelpers.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
+import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -606,30 +613,15 @@ export type InProcessRunnerResult = {
 }
 
 /**
- * Updates task state in AppState.
+ * Updates task state in AppState, through the task framework so SDK consumers
+ * get the task_updated patch (status, is_idle).
  */
 function updateTaskState(
   taskId: string,
   updater: (task: InProcessTeammateTaskState) => InProcessTeammateTaskState,
   setAppState: SetAppStateFn,
 ): void {
-  setAppState(prev => {
-    const task = prev.tasks[taskId]
-    if (!task || task.type !== 'in_process_teammate') {
-      return prev
-    }
-    const updated = updater(task)
-    if (updated === task) {
-      return prev
-    }
-    return {
-      ...prev,
-      tasks: {
-        ...prev.tasks,
-        [taskId]: updated,
-      },
-    }
-  })
+  updateAppTask<TaskState>(taskId, setAppState, task => (task.type === 'in_process_teammate' ? updater(task) : task))
 }
 
 /**
@@ -757,6 +749,7 @@ type WaitResult =
       type: 'shutdown_request'
       request: ReturnType<typeof isShutdownRequest>
       originalMessage: string
+      hasOtherUnread: boolean
     }
   | {
       type: 'new_message'
@@ -777,7 +770,8 @@ type WaitResult =
  * - Abort signal
  *
  * This keeps the teammate alive in 'idle' state instead of terminating.
- * Does NOT auto-approve shutdown - the model should make that decision.
+ * A shutdown request is returned to the caller, which decides whether the
+ * model has anything to weigh.
  */
 async function waitForNextPromptOrShutdown(
   identity: TeammateIdentity,
@@ -893,6 +887,9 @@ async function waitForNextPromptOrShutdown(
           type: 'shutdown_request',
           request: shutdownParsed,
           originalMessage: msg.text,
+          hasOtherUnread: allMessages.some(
+            (m, i) => i !== shutdownIndex && !m.read,
+          ),
         }
       }
 
@@ -958,6 +955,63 @@ async function waitForNextPromptOrShutdown(
     `[inProcessRunner] ${identity.agentName} exiting poll loop (abort=${abortController.signal.aborted}, polls=${pollCount})`,
   )
   return { type: 'aborted' }
+}
+
+/**
+ * Summarizes a teammate's history between prompts. The summary request is
+ * sent as a fork of forkContextMessages, so the history itself must be passed
+ * there too (as official does), or the summarizer sees an empty conversation.
+ */
+export async function compactTeammateHistory(
+  messages: Message[],
+  toolUseContext: ToolUseContext,
+): Promise<CompactionResult> {
+  // An isolated copy so compaction does not clear the main session's
+  // readFileState cache or trigger the main session's UI callbacks.
+  const isolatedContext: ToolUseContext = {
+    ...toolUseContext,
+    readFileState: cloneFileStateCache(toolUseContext.readFileState),
+    onCompactProgress: undefined,
+    setStreamMode: undefined,
+  }
+  const result = await compactConversation(
+    messages,
+    isolatedContext,
+    {
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      toolUseContext: isolatedContext,
+      forkContextMessages: messages,
+    },
+    true, // suppressFollowUpQuestions
+    undefined, // customInstructions
+    true, // isAutoCompact
+  )
+  // Compaction re-announces deferred tools from this context's base tool
+  // pool, which still has tools runAgent filters out for the teammate (Goal),
+  // so its next turn would be told they were removed. Re-announce what the
+  // teammate itself had been told instead.
+  const told = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'attachment' || message.attachment.type !== 'deferred_tools_delta') continue
+    for (const name of message.attachment.addedNames) told.add(name)
+    for (const name of message.attachment.removedNames) told.delete(name)
+  }
+  const toldTools = toolUseContext.options.tools.filter(tool => told.has(tool.name))
+  return {
+    ...result,
+    attachments: result.attachments.flatMap(message => {
+      if (message.attachment.type !== 'deferred_tools_delta') return [message]
+      if (toldTools.length === 0) return []
+      return [createAttachmentMessage({
+        type: 'deferred_tools_delta',
+        addedNames: toldTools.map(tool => tool.name).sort(),
+        addedLines: formatDeferredToolLines(toldTools),
+        removedNames: [],
+      })]
+    }),
+  }
 }
 
 /**
@@ -1099,7 +1153,9 @@ export async function runInProcessTeammate(
       const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
 
       // If a specialized agent definition is provided, append its prompt.
-      if (agentDefinition) {
+      // The general-purpose prompt only repeats the main prompt and asks for a
+      // final report to the caller, which teammates must send via SendMessage.
+      if (agentDefinition && agentDefinition.agentType !== GENERAL_PURPOSE_AGENT.agentType) {
         const agentPrompt = isBuiltInAgent(agentDefinition)
           ? agentDefinition.getSystemPrompt({ toolUseContext })
           : agentDefinition.getSystemPrompt()
@@ -1199,28 +1255,9 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,
         )
-        // Create an isolated copy of toolUseContext so that compaction
-        // does not clear the main session's readFileState cache or
-        // trigger the main session's UI callbacks.
-        const isolatedContext: ToolUseContext = {
-          ...toolUseContext,
-          readFileState: cloneFileStateCache(toolUseContext.readFileState),
-          onCompactProgress: undefined,
-          setStreamMode: undefined,
-        }
-        const compactedSummary = await compactConversation(
+        const compactedSummary = await compactTeammateHistory(
           allMessages,
-          isolatedContext,
-          {
-            systemPrompt: asSystemPrompt([]),
-            userContext: {},
-            systemContext: {},
-            toolUseContext: isolatedContext,
-            forkContextMessages: [],
-          },
-          true, // suppressFollowUpQuestions
-          undefined, // customInstructions
-          true, // isAutoCompact
+          toolUseContext,
         )
         contextMessages = buildPostCompactMessages(compactedSummary)
         // Reset microcompact state since full compact replaces all
@@ -1532,7 +1569,45 @@ export async function runInProcessTeammate(
 
       switch (waitResult.type) {
         case 'shutdown_request':
-          // Pass shutdown request to model for decision
+          // A teammate that ended its turn normally, owns no unfinished task
+          // and has nothing else unread has nothing to weigh: approve here
+          // instead of waking the model for one more full-context request.
+          if (
+            waitResult.request &&
+            !waitResult.hasOtherUnread &&
+            !workWasAborted &&
+            getTurnFailureReason(allMessages) === undefined &&
+            !(await listTasks(taskListId)).some(
+              t =>
+                t.status !== 'completed' &&
+                (t.owner === identity.agentName || t.owner === identity.agentId),
+            )
+          ) {
+            logForDebugging(
+              `[inProcessRunner] ${identity.agentId} idle with nothing pending - approving shutdown`,
+            )
+            await writeToMailbox(
+              TEAM_LEAD_NAME,
+              {
+                from: identity.agentName,
+                text: jsonStringify(
+                  createShutdownApprovedMessage({
+                    requestId: waitResult.request.requestId,
+                    from: identity.agentName,
+                    paneId: 'in-process',
+                    backendType: 'in-process',
+                  }),
+                ),
+                timestamp: new Date().toISOString(),
+                color: identity.color,
+              },
+              identity.teamName,
+            )
+            abortController.abort(TEAMMATE_SHUTDOWN_APPROVED)
+            shouldExit = true
+            break
+          }
+          // Otherwise pass the shutdown request to the model for decision
           // Format as teammate-message for consistency with how tmux teammates receive it
           // The model will use approveShutdown or rejectShutdown tool
           logForDebugging(

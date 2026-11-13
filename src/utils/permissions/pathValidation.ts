@@ -135,17 +135,23 @@ export function isPathAllowed(
   // Determine which permission type to check based on operation
   const permissionType = operationType === 'read' ? 'read' : 'edit'
 
-  // 1. Check deny rules first (they take precedence)
-  const denyRule = matchingRuleForInput(
+  // 1. Check deny rules first (they take precedence), on the path as written
+  // and on where its symlinks lead.
+  for (const pathToCheck of new Set([
     resolvedPath,
-    context,
-    permissionType,
-    'deny',
-  )
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: 'rule', rule: denyRule },
+    ...(precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)),
+  ])) {
+    const denyRule = matchingRuleForInput(
+      pathToCheck,
+      context,
+      permissionType,
+      'deny',
+    )
+    if (denyRule !== null) {
+      return {
+        allowed: false,
+        decisionReason: { type: 'rule', rule: denyRule },
+      }
     }
   }
 
@@ -421,14 +427,14 @@ export function validatePath(
   // - $VAR (Unix/Linux environment variables like $HOME, $PWD)
   // - ${VAR} (brace expansion)
   // - $(cmd) (command substitution)
-  // - %VAR% (Windows environment variables like %TEMP%, %USERPROFILE%)
+  // - %VAR% (Windows environment variables like %TEMP%, %USERPROFILE%), on Windows only
   // - Nested combinations like $(echo $HOME)
   // - =cmd (Zsh equals expansion, e.g. =rg expands to /usr/bin/rg)
   // All of these are preserved as literal strings during validation but expanded
   // by the shell during execution, creating a TOCTOU vulnerability
   if (
     cleanPath.includes('$') ||
-    cleanPath.includes('%') ||
+    (getPlatform() === 'windows' && cleanPath.includes('%')) ||
     cleanPath.startsWith('=')
   ) {
     return {

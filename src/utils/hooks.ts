@@ -189,6 +189,10 @@ export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
+// After a command hook exits, how long its stdio may stay quiet before we stop
+// waiting for end-of-stream (a background child can hold the pipes open).
+const HOOK_STDIO_QUIET_MS = 500
+
 export const PROMPT_AGENT_HOOK_CONCURRENCY = 12
 
 /**
@@ -1238,7 +1242,12 @@ async function execCommandHook(
   // Line buffer for detecting prompt requests in streaming output
   let lineBuffer = ''
 
+  // Last time either stream delivered data; the post-exit quiet window
+  // restarts on every chunk.
+  let lastDataAt = Date.now()
+
   child.stdout.on('data', data => {
+    lastDataAt = Date.now()
     stdout += data
     output += data
 
@@ -1341,6 +1350,7 @@ async function execCommandHook(
   })
 
   child.stderr.on('data', data => {
+    lastDataAt = Date.now()
     stderr += data
     output += data
   })
@@ -1396,8 +1406,11 @@ async function execCommandHook(
     child.on('error', reject)
   })
 
-  // Create promise for child process close - but only resolve after streams end
-  // to ensure all output has been collected
+  // Resolve once the hook process has exited and its output is complete.
+  // Normally that is when both streams end ('close'). A background child the
+  // hook started (`sleep 300 & echo started`) inherits the pipes and keeps
+  // them open after the hook exits, so after 'exit' we also stop waiting once
+  // the streams have been quiet for HOOK_STDIO_QUIET_MS.
   const childClosePromise = new Promise<{
     stdout: string
     stderr: string
@@ -1406,33 +1419,83 @@ async function execCommandHook(
     aborted?: boolean
   }>(resolve => {
     let exitCode: number | null = null
+    let settled = false
+    let quietTimer: ReturnType<typeof setTimeout> | undefined
+    const streamsEnded = Promise.all([stdoutEndPromise, stderrEndPromise])
 
-    child.on('close', code => {
-      exitCode = code ?? 1
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(quietTimer)
+      // Strip lines we processed as prompt requests so parseHookOutput
+      // only sees the final hook result. Content-matching against the set
+      // of actually-processed lines means prompt JSON can never leak
+      // through (fail-closed), regardless of line positioning.
+      const finalStdout =
+        processedPromptLines.size === 0
+          ? stdout
+          : stdout
+              .split('\n')
+              .filter(line => !processedPromptLines.has(line.trim()))
+              .join('\n')
 
-      // Wait for both streams to end before resolving with the final output
-      void Promise.all([stdoutEndPromise, stderrEndPromise]).then(() => {
-        // Strip lines we processed as prompt requests so parseHookOutput
-        // only sees the final hook result. Content-matching against the set
-        // of actually-processed lines means prompt JSON can never leak
-        // through (fail-closed), regardless of line positioning.
-        const finalStdout =
-          processedPromptLines.size === 0
-            ? stdout
-            : stdout
-                .split('\n')
-                .filter(line => !processedPromptLines.has(line.trim()))
-                .join('\n')
-
-        resolve({
-          stdout: finalStdout,
-          stderr,
-          output,
-          status: exitCode!,
-          aborted: signal.aborted,
-        })
+      resolve({
+        stdout: finalStdout,
+        stderr,
+        output,
+        status: exitCode!,
+        aborted: signal.aborted,
       })
+    }
+
+    const waitForQuiet = () => {
+      const quietFor = Date.now() - lastDataAt
+      if (quietFor >= HOOK_STDIO_QUIET_MS) {
+        logForDebugging(
+          `Hooks: ${hookName} exited but its stdio is still open (a background child holds it); continuing after ${HOOK_STDIO_QUIET_MS}ms of quiet`,
+        )
+        child.stdout.destroy()
+        child.stderr.destroy()
+        finish()
+        return
+      }
+      quietTimer = setTimeout(waitForQuiet, HOOK_STDIO_QUIET_MS - quietFor)
+    }
+
+    const onExit = (code: number | null) => {
+      if (exitCode !== null) return
+      exitCode = code ?? 1
+      // Wait for both streams to end before resolving with the final output
+      void streamsEnded.then(finish)
+    }
+
+    child.on('exit', code => {
+      onExit(code)
+      if (!settled) {
+        quietTimer = setTimeout(waitForQuiet, HOOK_STDIO_QUIET_MS)
+      }
     })
+    child.on('close', onExit)
+  })
+
+  // The hook timeout and cancellation abort `signal`; wrapSpawn kills the
+  // hook, but that does not close pipes a background child still holds, so
+  // stop waiting here.
+  let onAbort: (() => void) | undefined
+  const abortPromise = new Promise<{
+    stdout: string
+    stderr: string
+    output: string
+    status: number
+    aborted: boolean
+  }>(resolve => {
+    onAbort = () => {
+      // An 'interrupt' leaves the hook running, as wrapSpawn does.
+      if (signal.reason === 'interrupt') return
+      resolve({ stdout, stderr, output, status: 1, aborted: true })
+    }
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
   })
 
   // Race between stdin write, async detection, and process completion
@@ -1450,6 +1513,7 @@ async function execCommandHook(
       childIsAsyncPromise,
       childClosePromise,
       childErrorPromise,
+      abortPromise,
     ])
     // Ensure all queued prompt responses have been sent
     await promptChain
@@ -1503,6 +1567,7 @@ async function execCommandHook(
       })
     }
     stopProgressInterval()
+    if (onAbort) signal.removeEventListener('abort', onAbort)
     // Clean up stream resources unless ownership was transferred (e.g., to async hook registry)
     if (!shellCommandTransferred) {
       shellCommand.cleanup()

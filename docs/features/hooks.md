@@ -1,5 +1,7 @@
 # Hooks 事件、匹配与输出校验
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`hooks` · 领域：权限与安全 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@ Hook 是「到了某个时刻就自动执行的命令」。你在 settings.json 
 - **通知**：Claude 需要你确认时发桌面通知。
 
 行为对齐官方 2.1.303。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `hooks` · Area: Permissions and security · [Back to index](README.md)
+
+## What it is
+
+A hook is a command that runs automatically at a certain moment. In settings.json you register which event, which tool and which script. Typical uses:
+
+- **Block**: before Claude runs `rm -rf`, your script checks it, refuses, and tells Claude what to do instead.
+- **Clean up**: run the formatter and lint after every file edit.
+- **Add context**: give Claude the current branch and open to-dos when a session starts.
+- **Notify**: send a desktop notification when Claude needs your approval.
+
+Behaviour matches the official 2.1.303.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`hooks` · 領域：權限與安全 · [返回功能索引](README.md)
+
+## 這是什麼
+
+Hook 是「到了某個時刻就自動執行的命令」。你在 settings.json 裡登記：在什麼事件、對什麼工具、跑哪個腳本。典型用途：
+
+- **攔截**：Claude 要跑 `rm -rf` 之前，你的腳本檢查並拒絕，同時告訴它該怎麼做；
+- **善後**：每次改完檔案自動跑格式化、lint；
+- **補充資訊**：會話開始時把當前分支、待辦事項塞給 Claude；
+- **通知**：Claude 需要你確認時發桌面通知。
+
+行為對齊官方 2.1.303。
+
+</details>
 
 ## 一个完整的例子
 

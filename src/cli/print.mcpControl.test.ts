@@ -329,6 +329,68 @@ if (process.env[childFlag] !== '1') {
       'mcp_call does not support SDK MCP servers. SDK servers are caller-provided — invoke sdk directly.',
     ])
   })
+  test('mcp_call runs the tool on the server that owns it when a server name contains __', async () => {
+    const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
+    const calls: string[] = []
+    const server = (name: string) => {
+      const conn = connected(name, config) as MCPServerConnection & { client: Record<string, unknown> }
+      conn.client.callTool = async () => {
+        calls.push(name)
+        return { content: [{ type: 'text', text: name }] }
+      }
+      return conn
+    }
+    const initial = getDefaultAppState()
+    initial.mcp.clients = [server('w'), server('w__x')]
+    initial.mcp.tools = [
+      { name: 'mcp__w__y', mcpInfo: { serverName: 'w', toolName: 'y' } },
+      { name: 'mcp__w__x__y', mcpInfo: { serverName: 'w__x', toolName: 'y' } },
+    ] as unknown as Tool[]
+    await runControls(initial, [
+      { subtype: 'mcp_call', tool: 'mcp__w__x__y' },
+      { subtype: 'mcp_call', tool: 'mcp__w__y' },
+    ])
+    expect(calls).toEqual(['w__x', 'w'])
+  })
+  test('mcp_status lists every tool of a server and mcp_call refuses a name two tools share', async () => {
+    const config: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/mcp', scope: 'dynamic' }
+    const calls: string[] = []
+    const server = (name: string) => {
+      const conn = connected(name, config) as MCPServerConnection & { client: Record<string, unknown> }
+      conn.client.callTool = async (params: { name: string }) => {
+        calls.push(`${name}/${params.name}`)
+        return { content: [{ type: 'text', text: name }] }
+      }
+      return conn
+    }
+    const mcpTool = (name: string, serverName: string, toolName: string) =>
+      ({ name, mcpInfo: { serverName, toolName }, isReadOnly: () => false }) as unknown as Tool
+    const initial = getDefaultAppState()
+    // "a.b" and "a_b" both normalize to a_b; "do.it" and "do_it" both to do_it.
+    initial.mcp.clients = [server('a.b'), server('a_b'), server('dup')]
+    initial.mcp.tools = [
+      mcpTool('mcp__a_b__y', 'a_b', 'y'),
+      mcpTool('mcp__a_b__y', 'a.b', 'y'),
+      mcpTool('mcp__dup__do_it', 'dup', 'do.it'),
+      mcpTool('mcp__dup__do_it', 'dup', 'do_it'),
+    ]
+    const { responses } = await runControls(initial, [
+      { subtype: 'mcp_status' },
+      { subtype: 'mcp_call', tool: 'mcp__a_b__y' },
+      { subtype: 'mcp_call', tool: 'mcp__dup__do_it' },
+    ])
+    const servers = (responses[0] as unknown as { response: { mcpServers: { name: string; tools?: { name: string }[] }[] } }).response.mcpServers
+    expect(servers.map(s => [s.name, s.tools?.map(t => t.name)])).toEqual([
+      ['a.b', ['y']],
+      ['a_b', ['y']],
+      ['dup', ['do.it', 'do_it']],
+    ])
+    expect(responses.slice(1).map(r => r.subtype === 'error' ? r.error : r.subtype)).toEqual([
+      'mcp_call: mcp__a_b__y names more than one MCP tool (a_b/y, a.b/y)',
+      'mcp_call: mcp__dup__do_it names more than one MCP tool (dup/do.it, dup/do_it)',
+    ])
+    expect(calls).toEqual([])
+  })
   test('register_repo_root adds a session working directory once', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-repo-root-'))
     try {

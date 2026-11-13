@@ -232,6 +232,12 @@ export const McpServerStatusSchema = lazySchema(() =>
                 openWorld: z.boolean().optional(),
               })
               .optional(),
+            _meta: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe(
+                "The MCP Apps (SEP-1865) members of the tool's `_meta`: `ui` (`resourceUri`, a `ui://` string; `visibility`, 'model' | 'app') and the deprecated `ui/resourceUri`, validated. Present only on a tool that declares one, from CLIs that advertise `mcp_tool_ui_meta_v1`.",
+              ),
           }),
         )
         .optional()
@@ -2384,6 +2390,7 @@ export const SDKTaskUpdatedMessageSchema = lazySchema(() =>
       total_paused_ms: z.number().optional(),
       error: z.string().optional(),
       is_backgrounded: z.boolean().optional(),
+      is_idle: z.boolean().optional().describe('An in-process teammate waiting for its next message (true) or working again (false).'),
     }),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),

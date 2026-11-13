@@ -344,11 +344,18 @@ if (process.env[childFlag] !== '1') {
     }
   }
 
-  test('stdio servers negotiate 2026-07-28 when they serve it and fall back otherwise', async () => {
+  test('stdio servers negotiate 2026-07-28 when they serve it and fall back otherwise, starting once', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-negotiation-stdio-')))
-    const server = (era: 'modern' | 'legacy') => {
+    const starts = join(root, 'starts')
+    writeFileSync(starts, '')
+    const count = (era: string) => readFileSync(starts, 'utf8').split('\n').filter(line => line === era).length
+    const server = (era: 'modern' | 'legacy' | 'strict') => {
       const file = join(root, `${era}.mjs`)
       writeFileSync(file, `
+        import { appendFileSync } from 'node:fs'
+        appendFileSync(${JSON.stringify(starts)}, '${era}\\n')
+        // strict: like SDKs that exit on any request before initialize
+        if (${JSON.stringify(era)} === 'strict') process.stdin.once('data', chunk => { if (!String(chunk).includes('"initialize"')) process.exit(1) })
         import { McpServer } from ${JSON.stringify(serverEntry)}
         import { serveStdio, StdioServerTransport } from ${JSON.stringify(serverStdioEntry)}
         const create = () => {
@@ -365,6 +372,8 @@ if (process.env[childFlag] !== '1') {
       expect(await connectedProtocol('negotiation-modern-stdio', server('modern'))).toBe('2026-07-28')
       expect(await connectedProtocol('negotiation-legacy-stdio', server('legacy'))).toBe('2025-11-25')
       expect(await connectedProtocol('negotiation-optout-stdio', server('modern'), 'legacy')).toBe('2025-11-25')
+      expect(await connectedProtocol('negotiation-strict-stdio', server('strict'))).toBe('2025-11-25')
+      expect([count('modern'), count('legacy'), count('strict')]).toEqual([2, 1, 2])
     } finally {
       rmSync(root,{recursive:true,force:true})
     }
@@ -397,6 +406,52 @@ if (process.env[childFlag] !== '1') {
       expect(await connectedProtocol('negotiation-optout-http', config('modern'), 'legacy')).toBe('2025-11-25')
     } finally {
       await modern.close()
+      http.stop(true)
+    }
+  },30_000)
+
+  test('a stdio server that dies after connecting reports its stderr as the close reason', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(),'cc-mcp-close-')))
+    const file = join(root,'server.mjs')
+    writeFileSync(file,`
+      process.stdin.on('data', chunk => {
+        for (const line of String(chunk).split('\\n').filter(Boolean)) {
+          const msg = JSON.parse(line)
+          if (msg.method === 'initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:msg.id, result:{protocolVersion:msg.params.protocolVersion, capabilities:{tools:{}}, serverInfo:{name:'dies', version:'1'}}}) + '\\n')
+          if (msg.method === 'notifications/initialized') setTimeout(() => { process.stderr.write('Error: lost upstream session\\n'); process.exit(3) }, 50)
+        }
+      })`)
+    const config = {type:'stdio', command:process.execPath, args:[file], env:{MCP_PROTOCOL_NEGOTIATION:'legacy'}, scope:'dynamic'} as Config
+    try {
+      const connection = await connectToServer('dies-later', config)
+      if (connection.type !== 'connected') throw new Error(`not connected: ${JSON.stringify(connection)}`)
+      const closed = new Promise<void>(resolve => { connection.client.onclose = resolve })
+      await closed
+      expect(client.stdioCloseReason(connection.client)).toBe('Error: lost upstream session')
+    } finally {
+      await clearServerCache('dies-later', config)
+      rmSync(root,{recursive:true,force:true})
+    }
+  },30_000)
+
+  test('the session ingress token is sent only to the CCR MCP proxy', async () => {
+    const seen: Record<string, string | null> = {}
+    const http = Bun.serve({port:0, hostname:'127.0.0.1', fetch(req) {
+      const path = new URL(req.url).pathname
+      seen[path] ??= req.headers.get('authorization')
+      return new Response('no', {status:404})
+    }})
+    process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN = 'ingress-test-token'
+    const config = (path: string) => ({type:'http', url:`http://127.0.0.1:${http.port}${path}`, scope:'dynamic'}) as Config
+    try {
+      for (const [name, path] of [['repo-server', '/mcp'], ['ccr-proxy', '/v2/ccr-sessions/s1/mcp']] as const) {
+        await connectToServer(name, config(path))
+        await clearServerCache(name, config(path))
+      }
+      expect(seen['/mcp']).toBeNull()
+      expect(seen['/v2/ccr-sessions/s1/mcp']).toBe('Bearer ingress-test-token')
+    } finally {
+      delete process.env.CLAUDE_CODE_SESSION_ACCESS_TOKEN
       http.stop(true)
     }
   },30_000)

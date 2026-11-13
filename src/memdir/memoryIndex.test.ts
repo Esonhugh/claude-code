@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -189,8 +190,25 @@ describe('searchMemory', () => {
     expect(await search('staging', { scopes: ['user'] })).toEqual([])
   })
 
+  test('a symlink back into the memory directory neither loops nor drops its memories', async () => {
+    expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    // Two links back used to make Bun's recursive readdir grow until it ran out of memory.
+    symlinkSync(memDir, join(memDir, 'loop'))
+    symlinkSync('..', join(memDir, 'team-loop'))
+    try {
+      expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    } finally {
+      rmSync(join(memDir, 'loop'))
+      rmSync(join(memDir, 'team-loop'))
+    }
+  })
+
   test('treats FTS5 syntax in queries as literal text', async () => {
     expect(await search('"NEAR( OR *')).toEqual([])
+  })
+
+  test('control characters in a query separate words instead of failing the search', async () => {
+    expect((await search('package\u0000binary')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
   })
 
   test('skips the running session transcript', async () => {
@@ -218,6 +236,17 @@ describe('searchMemory', () => {
     expect((await search('narwhal')).map(h => h.line).sort()).toEqual([1, 2])
   })
 
+  test('concurrent searches index a new file once', async () => {
+    writeFileSync(join(memDir, 'manatee.md'), 'The manatee note.')
+    writeFileSync(join(projectDir, 'session-m.jsonl'), line('user', 'a manatee question'))
+    await Promise.all([search('manatee'), search('manatee'), search('manatee')])
+    expect((await search('manatee')).map(h => h.path).sort()).toEqual(
+      [join(memDir, 'manatee.md'), join(projectDir, 'session-m.jsonl')].sort(),
+    )
+    rmSync(join(memDir, 'manatee.md'))
+    rmSync(join(projectDir, 'session-m.jsonl'))
+  })
+
   test('indexes memory in subdirectories such as team memory', async () => {
     mkdirSync(join(memDir, 'team'), { recursive: true })
     writeFileSync(join(memDir, 'team', 'review.md'), 'Reviews need two approvals from the octopus team.')
@@ -238,6 +267,15 @@ describe('searchMemory', () => {
     expect(await search('badger')).toHaveLength(1)
     expect(await search('beaver')).toEqual([])
     rmSync(file)
+  })
+
+  test('an index a search filled counts as built', async () => {
+    resetMemoryIndexForTesting(':memory:')
+    await search('walrus')
+    const status = getMemoryIndexStatus()
+    expect(status.files).toBeGreaterThan(0)
+    expect(status.built).toBe(true)
+    expect(status.builtAt).toBeUndefined()
   })
 
   test('build drops rows outside the scopes and reports status', async () => {
@@ -267,6 +305,28 @@ describe('searchMemory', () => {
     rmSync(join(memDir, 'MEMORY.md'))
   })
 
+  test('recall and search put newer days first among equally matching memory files', async () => {
+    const days = ['2024-01-05', '2025-06-01', '2024-09-09']
+    const versions = days.map((day, i) => {
+      const path = join(memDir, `oncall-${i}.md`)
+      writeFileSync(path, `On-call for ledger-sync rotated; page @alias-${i} from now on.`)
+      utimesSync(path, new Date(day), new Date(day))
+      return path
+    })
+    const recalled = await findMemoryFilesForPrompt({
+      prompt: 'who is on-call for ledger-sync',
+      scopes: ['project'],
+      exclude: new Set(),
+      limit: 3,
+    })
+    const hits = await search('ledger-sync on-call')
+    versions.forEach(path => rmSync(path))
+    const newestFirst = [versions[1], versions[2], versions[0]]
+    expect(recalled.map(h => h.path)).toEqual(newestFirst)
+    expect(hits.map(h => h.path)).toEqual(newestFirst)
+    expect(hits.map(h => h.modified)).toEqual(['2025-06-01', '2024-09-09', '2024-01-05'])
+  })
+
   test('recalls nothing for words that only match inside other words or in most memory files', async () => {
     const notes = Array.from({ length: 6 }, (_, i) => join(memDir, `note-${i}.md`))
     notes.forEach((path, i) => writeFileSync(path, `Raise the runtime timeout for gateway step ${i}.`))
@@ -277,5 +337,41 @@ describe('searchMemory', () => {
     expect(results[0]).toEqual([])
     expect(results[1]).toEqual([])
     expect(results[2]!.map(h => h.path)).toEqual([join(memDir, 'build.md')])
+  })
+
+  test('replaces an index file that is not a database instead of failing every search', async () => {
+    const path = join(root, 'damaged.sqlite')
+    writeFileSync(path, Buffer.alloc(8192, 0x5a))
+    resetMemoryIndexForTesting(path)
+    try {
+      expect((await search('package')).map(h => h.path)).toEqual([join(memDir, 'build.md')])
+    } finally {
+      resetMemoryIndexForTesting(':memory:')
+    }
+  })
+
+  test('waits for another session holding the write lock without freezing the event loop', async () => {
+    const path = join(root, 'locked.sqlite')
+    resetMemoryIndexForTesting(path)
+    try {
+      await search('package')
+      writeFileSync(join(memDir, 'lock.md'), 'Written while another session holds the lock.')
+      const { Database } = await import('bun:sqlite')
+      const other = new Database(path)
+      other.run('BEGIN IMMEDIATE')
+      const started = Date.now()
+      let firstTick = 0
+      setTimeout(() => (firstTick = Date.now() - started), 10)
+      setTimeout(() => other.run('COMMIT'), 300)
+      const hits = await search('another session')
+      other.close()
+      expect(hits.map(h => h.path)).toEqual([join(memDir, 'lock.md')])
+      // busy_timeout would block this timer until the lock is released.
+      expect(firstTick).toBeGreaterThan(0)
+      expect(firstTick).toBeLessThan(200)
+    } finally {
+      rmSync(join(memDir, 'lock.md'), { force: true })
+      resetMemoryIndexForTesting(':memory:')
+    }
   })
 })

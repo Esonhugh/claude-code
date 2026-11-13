@@ -352,3 +352,52 @@ test('a marketplace with an entry of an unknown source type still loads its othe
     { source: 'github', repo: 'owner/tool' },
   ])
 })
+
+test('a marketplace with a malformed entry still loads its other plugins', () => {
+  const marketplace = PluginMarketplaceSchema().parse({
+    name: 'market',
+    owner: { name: 'owner' },
+    plugins: [
+      { name: 'good', source: './good' },
+      { name: 'climb', source: '../outside' },
+      { name: 'abs', source: '/etc' },
+      { source: './nameless' },
+    ],
+  })
+  expect(marketplace.plugins.map(p => [p.name, p.source])).toEqual([
+    ['good', './good'],
+    ['climb', { source: 'unsupported', sourceType: 'invalid', error: 'source: Invalid string: must start with "./"' }],
+    ['abs', { source: 'unsupported', sourceType: 'invalid', error: 'source: Invalid string: must start with "./"' }],
+  ])
+})
+
+describe('UTF-8 BOM', () => {
+  const BOM = '﻿'
+
+  test('accepts plugin, marketplace and hooks files that start with a BOM', async () => {
+    const root = await pluginRoot()
+    const manifest = join(root, '.claude-plugin', 'plugin.json')
+    await writeFile(manifest, BOM + JSON.stringify({ name: 'bom', description: 'd' }))
+    const marketplace = join(root, '.claude-plugin', 'marketplace.json')
+    await writeFile(marketplace, BOM + JSON.stringify({ name: 'bm', owner: { name: 'x' }, plugins: [] }))
+    await mkdir(join(root, 'hooks'))
+    await writeFile(join(root, 'hooks', 'hooks.json'), BOM + JSON.stringify({ hooks: {} }))
+
+    expect((await validatePluginManifest(manifest)).errors).toEqual([])
+    expect((await validateMarketplaceManifest(marketplace)).errors).toEqual([])
+    const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+    expect(hooks?.errors ?? []).toEqual([])
+  })
+})
+
+describe('plugin name warning', () => {
+  test.each([
+    ['../evil', 'refuses a plugin with this name'],
+    ['My_Plugin', 'Claude Code accepts it'],
+  ])('%s', async (name, text) => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.warnings.find(warning => warning.path === 'name')?.message).toContain(text)
+  })
+})

@@ -469,6 +469,29 @@ export function splitKeptTail(
 }
 
 /**
+ * Number of trailing API rounds whose tokens first reach `budgetTokens`
+ * (at least one), like dsh's retained tail. Never so many that no reply is
+ * left to summarize: splitKeptTail would then keep nothing.
+ */
+export function roundsForRecentBudget(
+  messages: Message[],
+  budgetTokens: number,
+): number {
+  const groups = groupMessagesByApiRound(
+    messages.filter(m => m.type !== 'progress'),
+  )
+  let tokens = 0
+  let rounds = 0
+  for (let i = groups.length - 1; i >= 0 && tokens < budgetTokens; i--) {
+    // @ts-ignore - recovered code
+    tokens += roughTokenCountEstimationForMessages(groups[i]!)
+    rounds++
+  }
+  const firstReply = groups.findIndex(g => g.some(m => m.type === 'assistant'))
+  return Math.max(1, Math.min(rounds, groups.length - 1 - firstReply))
+}
+
+/**
  * Official 2.1.319: when the summary request itself is too long, keep more
  * trailing rounds verbatim so less needs summarizing, instead of dropping the
  * oldest context. Adds rounds until their tokens cover the gap (a fifth of

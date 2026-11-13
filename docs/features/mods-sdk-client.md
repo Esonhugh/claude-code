@@ -1,5 +1,7 @@
 # Mods 远程客户端（stream-json）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`mods-sdk-client` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -12,6 +14,39 @@
 4. 用户在你的界面上点按钮、输入文字时，你把事件发回去（`ui_press`、`ui_input`、`ui_select`），Mod 的回调就会执行。
 
 普通用户用不到这一页；它是给 SDK / 前端开发者的。基础的 stream-json 会话见 [agent-sdk.md](agent-sdk.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `mods-sdk-client` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+[Mods](mods.md) draw their UI in the terminal by default. If you are building **your own front end** (a desktop app, an IDE plugin, a web page) and want the same Mod UI to show up there, use this protocol:
+
+1. Your program starts `claude` in stream-json mode and exchanges one JSON object per line over stdin and stdout.
+2. You declare "I am a desktop UI, 90×30" (`ui_attach`).
+3. When you need a slot drawn, send `ui_render`; the CLI runs the Mod's `ui.render` hook and returns a **component tree** (Box, Text, Button… as JSON).
+4. When the user clicks a button or types in your UI, send the event back (`ui_press`, `ui_input`, `ui_select`) and the Mod's callback runs.
+
+Ordinary users do not need this page; it is for SDK and front-end developers. For the basic stream-json session see [agent-sdk.md](agent-sdk.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`mods-sdk-client` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+[Mods](mods.md) 預設把介面畫在終端裡。如果你在做**自己的前端**（桌面應用、IDE 插件、網頁），想讓同樣的 Mod 介面顯示在你的前端上，就用這套協議：
+
+1. 你的程式以 stream-json 模式啟動 `claude`，通過 stdin / stdout 交換一行一個 JSON；
+2. 你宣告「我是一個 desktop 介面，視窗 90×30」（`ui_attach`）；
+3. 需要畫某個位置時發 `ui_render`，CLI 執行 Mod 的 `ui.render` hook，把**元件樹**（Box、Text、Button…的 JSON）返回給你；
+4. 使用者在你的介面上點按鈕、輸入文字時，你把事件發回去（`ui_press`、`ui_input`、`ui_select`），Mod 的回呼就會執行。
+
+普通使用者用不到這一頁；它是給 SDK / 前端開發者的。基礎的 stream-json 會話見 [agent-sdk.md](agent-sdk.md)。
+
+</details>
 
 ## 快速上手：拿到一个 Mod 的界面
 

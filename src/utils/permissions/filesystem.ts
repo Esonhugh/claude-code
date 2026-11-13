@@ -1042,12 +1042,13 @@ function getPatternsByRoot(
     // A deny or ask rule written on a symlinked directory also guards the
     // directory's real location (official 2.1.268). Allow rules do not get a
     // twin: a swapped symlink must not widen what they grant.
-    // A relative pattern with an inner slash is anchored at the cwd.
+    // A relative pattern with an inner slash is anchored at the directory
+    // the session started in.
     const anchored =
       root !== null
         ? { root, pattern: relativePattern }
         : relativePattern.slice(0, -1).includes(DIR_SEP)
-          ? { root: getCwd(), pattern: `${DIR_SEP}${relativePattern}` }
+          ? { root: getOriginalCwd(), pattern: `${DIR_SEP}${relativePattern}` }
           : null
     if (behavior !== 'allow' && anchored !== null) {
       const twin = physicalTwinPattern(anchored.root, anchored.pattern)
@@ -1203,29 +1204,36 @@ export function matchingRuleForInput(
 
     const ig = ignore().add([...originalByAdjusted.keys()])
 
-    // Use cross-platform relative path helper for POSIX-style patterns
-    const relativePathStr = relativePath(
-      root ?? getCwd(),
-      fileAbsolutePath ?? getCwd(),
-    )
+    // A pattern without a root is relative to the working directory. A deny
+    // or ask rule keeps guarding the directory the session started in after
+    // the shell has cd'd elsewhere.
+    const roots =
+      root !== null
+        ? [root]
+        : behavior === 'allow'
+          ? [getCwd()]
+          : [...new Set([getCwd(), getOriginalCwd()])]
+    for (const candidateRoot of roots) {
+      // Use cross-platform relative path helper for POSIX-style patterns
+      const relativePathStr = relativePath(
+        candidateRoot,
+        fileAbsolutePath ?? getCwd(),
+      )
 
-    if (relativePathStr.startsWith(`..${DIR_SEP}`)) {
-      // The path is outside the root, so ignore it
-      continue
-    }
+      // Outside the root: ignore. ig.test also throws on an empty string.
+      if (relativePathStr.startsWith(`..${DIR_SEP}`) || !relativePathStr) {
+        continue
+      }
 
-    // Important: ig.test throws if you give it an empty string
-    if (!relativePathStr) {
-      continue
-    }
+      const igResult = ig.test(relativePathStr)
 
-    const igResult = ig.test(relativePathStr)
-
-    if (igResult.ignored && igResult.rule) {
-      // Map the matched pattern back to the original rule
-      const originalPattern =
-        originalByAdjusted.get(igResult.rule.pattern) ?? igResult.rule.pattern
-      return patternMap.get(originalPattern) ?? null
+      if (igResult.ignored && igResult.rule) {
+        // Map the matched pattern back to the original rule
+        const originalPattern =
+          originalByAdjusted.get(igResult.rule.pattern) ??
+          igResult.rule.pattern
+        return patternMap.get(originalPattern) ?? null
+      }
     }
   }
 

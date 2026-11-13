@@ -1,5 +1,7 @@
 # Claude Web（本地网页界面）
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`web-ui` · 领域：界面与交互 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -15,6 +17,45 @@
 - 分派一批任务：建一个“项目”，让协调者把活拆给多个 worker 并行做，见 [Claude Web 项目](web-projects.md)。
 
 想先看一遍实际界面，见按操作顺序截图的 [Claude Web 界面导览](web-ui-tour.md)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `web-ui` · Area: UI and interaction · [Back to index](README.md)
+
+## What it is
+
+`claude web` starts a web server on your machine and opens the browser, so you can use Claude Code there: the session list and extensions on the left, the conversation in the middle, and panels such as Status, Files, Agents and Terminals on the right. Behind the page it is still your local claude: each session is a `claude -p` child process with the same tools, permissions, MCP servers, skills, plugins and hooks as in the terminal, and credentials stay on your machine where the browser cannot reach them.
+
+Compared with the terminal, the web UI is better for:
+
+- Reading long replies: Markdown tables, highlighted code, LaTeX math and Mermaid diagrams render as web content, and Edit / Write show diffs directly.
+- Looking at files: upload or reference PDF, Word, Excel, CSV, Markdown, HTML and images, and preview them on the right with one click.
+- Watching background work: subagents, workflows, team members, terminals, Monitor and background shells are all in the right panel, where you can message an agent or type into a terminal.
+- Managing many sessions: pin, group by directory, hover for details, right-click to rename, archive or delete.
+- Handing out a batch of tasks: create a project and let the coordinator split the work across several workers, see [Claude Web projects](web-projects.md).
+
+To see the real UI first, read the step-by-step [Claude Web tour](web-ui-tour.md).
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`web-ui` · 領域：介面與互動 · [返回功能索引](README.md)
+
+## 這是什麼
+
+`claude web` 在本機起一個網頁服務並開啟瀏覽器，在瀏覽器裡用 Claude Code：左邊是會話列表和擴充入口，中間是對話，右邊是 Status、Files、Agents、Terminals 等面板。頁面背後跑的還是本機的 claude：每個會話是一個 `claude -p` 子程序，工具、權限、MCP、skills、插件、hooks 和終端裡一樣，憑據只留在本機，瀏覽器拿不到。
+
+和終端相比，網頁適合這些事：
+
+- 讀長回覆：Markdown 表格、程式碼高亮、LaTeX 公式、Mermaid 圖按網頁渲染，Edit / Write 直接顯示 diff。
+- 看檔案：上傳或引用 PDF、Word、Excel、CSV、Markdown、HTML、圖片，點一下在右側預覽。
+- 看後台：subagent、workflow、team 成員、終端、Monitor 和後台 shell 都在右側面板裡，可以直接給 agent 發訊息、往終端裡打字。
+- 管多個會話：置頂、按目錄分組、懸停看詳情、右鍵重新命名 / 封存 / 刪除。
+- 分派一批任務：建一個“專案”，讓協調者把活拆給多個 worker 並行做，見 [Claude Web 專案](web-projects.md)。
+
+想先看一遍實際介面，見按操作順序截圖的 [Claude Web 介面導覽](web-ui-tour.md)。
+
+</details>
 
 ## 什么时候用
 
@@ -42,7 +83,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![审批](images/web-tour-approval.png)
 
-**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
+**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。MCP 工具如果带 `ui://` 界面（MCP Apps），卡片下方直接显示这个页面，见 [MCP Apps](mcp.md#mcp-apps工具自带界面)。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
 
 ![对话、工具卡片和 diff](images/web-tour-chat.png)
 
@@ -87,7 +128,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ## 左侧栏
 
-从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
+从上到下：品牌、`+ 新会话`、搜索，MCP / Skills / 插件 / 记忆 / Hooks 五个入口（点开是对应的管理弹窗，记忆弹窗可以搜索全部记忆文件；Channels 是 MCP 弹窗里的页签，Mods 是 Hooks 弹窗里的页签；Hooks 弹窗和终端 `/hooks` 一样只读，增改 hook 请编辑 settings.json 或让 Claude 改），然后是 **置顶**、**项目**、**临时对话**、**最近目录**（按目录分组，最近改过的目录在前）。插件弹窗的市场列表里 Esonhugh-Marketplace 排第一（`claude web` 首次启动时和终端一样自动安装它，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1` 关闭）；用 ChatGPT 账号登录（OpenAI 模式）时多一个“ChatGPT 应用”页签，可以逐个开关 Codex 应用。Channels 页签可以给当前会话开启开发频道（本地开发中的 channel 插件或 MCP server），会先显示一次本地开发警告，再点一次才开启。每段标题可以折叠。每行一行标题；没有标题的会话显示最后一条消息，再没有就显示 session id。正在运行的会话前面有绿点，未读的加粗并带蓝点。
 
 鼠标停在一行上会出现提示卡片：标题、最近修改、目录、状态、改动的文件数、ID（拿不到的字段不显示）。鼠标可以移进卡片，选中里面的文字复制。行右侧的按钮置顶 / 取消置顶。
 
@@ -149,7 +190,7 @@ Mod 画在终端里的东西在网页里也有对应位置：输入框上方的�
 | 输入框 | 空输入框里 `↑` / `↓` | 调出之前发过的消息，再往前是终端里在同一目录输入过的（与 CLI 共用 `~/.claude/history.jsonl`） |
 | 对话 | `Esc` | 回合进行中时中断；排队中的消息连同图片放回输入框 |
 | 审批 | `1`–`3`、`↑` `↓` + `Enter`、`Esc` | 直接选一项、移动后确认、拒绝 |
-| 页面 | `Ctrl+K` | 搜索历史会话（窄屏时先打开左侧抽屉） |
+| 页面 | `Ctrl+K` | 搜索历史会话，每个匹配的会话列一行（窄屏时先打开左侧抽屉） |
 | 页面 | `Ctrl+Shift+O` | 新会话 |
 | 页面 | `Ctrl+.` | 打开右侧 Status |
 | 页面 | `?` | 快捷键帮助 |
@@ -163,6 +204,10 @@ Mod 画在终端里的东西在网页里也有对应位置：输入框上方的�
 | --- | --- |
 | 用户消息上的“↶ 回退” | 回退到这条消息之前（只回退对话，或连文件改动一起还原，并显示还原了几个文件），原消息放回输入框；只出现在引擎能回退的消息上（本地命令、回合中途发的消息和压缩前的消息没有） |
 | 回复下方的 复制 / 重试 / 从这里分支 / 回退 | 复制这条回复；重发上一条提示（带原来的图片）；从这里分出一个新会话；回退到这条回复对应的提示之前 |
+| 回复下方的 token 数（如 `22k tok`） | 这一轮用了多少 token；鼠标停上去显示输入、缓存读、缓存写和输出 |
+| 核准框的“总是允许”选项 | 文字写明规则存到哪里：本会话、本项目或所有项目 |
+| `apply_patch` 卡片 | 列出改动的每个文件，各自显示 Update / Delete / Write 的 diff |
+| 团队面板里的队友状态 | 队友一空闲就显示 idle，不用等负责人读到空闲通知 |
 | 顶栏“上下文” | 上下文分类明细和自动压缩阈值，可以立即 `/compact` |
 | 顶栏“导出” | 把当前对话存成 Markdown，或用浏览器打印成 PDF |
 | 输入框下方左边 / 右边 | 权限模式菜单 / 模型和思考强度菜单 |
@@ -198,6 +243,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
            [--idle-timeout <ms>] [--max-sessions <n>]
            [--dangerously-allow-local-network] [--trusted-host <host>...]
            [--tls-cert <file> --tls-key <file>] [--preview-origin <url>...]
+           [--plugin-dir <path>...]
 ```
 
 | 参数 | 默认值 | 作用 |
@@ -208,6 +254,7 @@ claude web [--port <n>] [--host <ip>] [--workspace <dir>] [--no-open]
 | `--no-open` | 打开浏览器 | 只打印地址（SSH 会话里自动不打开） |
 | `--idle-timeout <ms>` | `600000`（10 分钟） | 没有标签页连着的会话多久后结束；`0` 表示不结束 |
 | `--max-sessions <n>` | `8` | 同时运行的会话上限；`0` 表示不限 |
+| `--plugin-dir <path>` | 无 | 每个会话都加载这个插件目录或 .zip（可重复）。写在 `web` 前的 `--plugin-dir`、`--plugin-url`、`--settings`、`--setting-sources` 也会传给每个会话，相对路径按启动目录解析 |
 | `--dangerously-allow-local-network` | 关闭 | 监听所有网卡，接受局域网来源的连接；token 登录仍然需要 |
 | `--trusted-host <host>` | 无 | 额外接受的 Host 头（可重复），例如反向代理或自定义域名 |
 | `--tls-cert <file>` / `--tls-key <file>` | 无 | PEM 证书和私钥，必须同时给；给了以后只走 https / wss，cookie 加 `Secure` |
@@ -224,6 +271,7 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 - **CSP**：`script-src 'self'`，不允许内联脚本和外部来源，`frame-ancestors 'none'`，并加 `nosniff`。服务端未捕获的错误只返回纯 JSON 500，不暴露源码和路径。
 - **文件 API**：只给出本会话上传目录、会话工作目录里的文件和这个会话的工具读写过的文件，符号链接解析后再判断；claude 配置目录（`~/.claude/web` 除外）和 `.env`、`*.pem`、`*.key`、`.credentials.json` 等凭据文件永远不给。HTML、SVG、JS 一律按纯文本返回，不会作为本站页面执行。
 - **账号接口**：`GET /api/account` 不返回 key，只返回末 4 位；Base URL 只接受不带账号、查询串和片段的 http / https 地址。
+- **MCP Apps**：MCP 工具的 `ui://` 页面跑在沙箱 iframe 里（不透明 origin，读不到本站 cookie 和 API），未在资源里声明 CSP 时不能联网；页面只能调用同一个 server 的工具，只给页面用或只读的工具直接执行，其他先确认。
 - **会话权限**：网页里的会话和终端里一样走权限确认；以 root 运行（没有 `IS_SANDBOX`）时不提供 bypass 模式。打开浏览器的子进程不继承 API key 等环境变量。
 
 ## 体积

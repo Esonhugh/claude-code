@@ -28,6 +28,7 @@ import { getFsImplementation, safeResolvePath } from '../fsOperations.js'
 import { addFileGlobRuleToGitignore } from '../git/gitignore.js'
 import { safeParseJSON } from '../json.js'
 import { logError } from '../log.js'
+import { withLockSync } from '../lockfile.js'
 import { getPlatform } from '../platform.js'
 import { clone, jsonStringify } from '../slowOperations.js'
 import { profileCheckpoint } from '../startupProfiler.js'
@@ -44,13 +45,16 @@ import {
 import { getHkcuSettings, getMdmSettings } from './mdm/settings.js'
 import {
   acceptSettingsFile,
+  areOutsideEditsReviewed,
   getCachedParsedFile,
   getCachedSettingsForSource,
   getPluginSettingsBase,
   getSessionSettingsCache,
+  isBlockedSettingsCandidate,
   isSettingsFileRetained,
   type ParsedSettings,
   resetSettingsCache,
+  retainSettingsSnapshot,
   setCachedParsedFile,
   setCachedSettingsForSource,
   setSessionSettingsCache,
@@ -620,7 +624,9 @@ export function getPolicySettingsOrigin():
  */
 export function updateSettingsForSource(
   source: EditableSettingSource,
-  settings: SettingsJson,
+  // An updater is called under the lock with the current settings, for
+  // changes computed from them (e.g. adding to a rule list).
+  settings: SettingsJson | ((existing: SettingsJson) => SettingsJson),
   options?: { atomicOnly?: boolean },
 ): { error: Error | null } {
   if (
@@ -639,77 +645,114 @@ export function updateSettingsForSource(
   try {
     getFsImplementation().mkdirSync(dirname(filePath))
 
-    // Try to get existing settings with validation. Bypass the per-source
-    // cache — mergeWith below mutates its target (including nested refs),
-    // and mutating the cached object would leak unpersisted state if the
-    // write fails before resetSettingsCache().
-    let existingSettings = getSettingsForSourceUncached(source)
+    // Hold a cross-process lock from the read to the write, so that two CLIs
+    // updating the same file (e.g. parallel `plugin install`) don't drop each
+    // other's keys.
+    const lockedError = withLockSync(
+      filePath,
+      () => {
+        // Merge onto the file as it is on disk now, not this session's parse
+        // of it: another process may have written it since.
+        const accepted = getCachedParsedFile(filePath)
+        const onDisk = readSettingsFile(filePath)
+        // An outside edit this session has not accepted: one the watcher will
+        // review, or one under ConfigChange review right now.
+        const outsideEdit =
+          accepted !== undefined &&
+          accepted.identity !== onDisk.identity &&
+          (isSettingsFileRetained(filePath) || areOutsideEditsReviewed())
+        // A candidate its ConfigChange hook blocked is dropped: the write
+        // builds on the accepted snapshot instead.
+        const dropOutsideEdit =
+          outsideEdit && isBlockedSettingsCandidate(filePath, onDisk.identity)
+        let existingSettings = dropOutsideEdit
+          ? getSettingsForSourceUncached(source)
+          : onDisk.settings
 
-    // If validation failed, check if file exists with a JSON syntax error
-    if (!existingSettings && !isSettingsFileRetained(filePath)) {
-      let content: string | null = null
-      try {
-        content = readFileSync(filePath)
-      } catch (e) {
-        if (!isENOENT(e)) {
-          throw e
-        }
-        // File doesn't exist — fall through to merge with empty settings
-      }
-      if (content !== null) {
-        const rawData = safeParseJSON(content)
-        if (rawData === null) {
-          // JSON syntax error - return validation error instead of overwriting
-          // safeParseJSON will already log the error, so we'll just return the error here
-          return {
-            error: new Error(
-              `Invalid JSON syntax in settings file at ${filePath}`,
-            ),
+        // If validation failed, check if file exists with a JSON syntax error
+        if (!existingSettings && !dropOutsideEdit) {
+          let content: string | null = null
+          try {
+            content = readFileSync(filePath)
+          } catch (e) {
+            if (!isENOENT(e)) {
+              throw e
+            }
+            // File doesn't exist — fall through to merge with empty settings
+          }
+          if (content !== null) {
+            const rawData = safeParseJSON(content)
+            if (rawData === null) {
+              // JSON syntax error - return validation error instead of overwriting
+              // safeParseJSON will already log the error, so we'll just return the error here
+              return new Error(
+                `Invalid JSON syntax in settings file at ${filePath}`,
+              )
+            }
+            if (rawData && typeof rawData === 'object') {
+              existingSettings = rawData as SettingsJson
+              logForDebugging(
+                `Using raw settings from ${filePath} due to validation failure`,
+              )
+            }
           }
         }
-        if (rawData && typeof rawData === 'object') {
-          existingSettings = rawData as SettingsJson
-          logForDebugging(
-            `Using raw settings from ${filePath} due to validation failure`,
-          )
-        }
-      }
-    }
 
-    const updatedSettings = mergeWith(
-      existingSettings || {},
-      settings,
-      (
-        _objValue: unknown,
-        srcValue: unknown,
-        key: string | number | symbol,
-        object: Record<string | number | symbol, unknown>,
-      ) => {
-        // Handle undefined as deletion
-        if (srcValue === undefined && object && typeof key === 'string') {
-          delete object[key]
+        const mergeUpdate = (
+          _objValue: unknown,
+          srcValue: unknown,
+          key: string | number | symbol,
+          object: Record<string | number | symbol, unknown>,
+        ) => {
+          // Handle undefined as deletion
+          if (srcValue === undefined && object && typeof key === 'string') {
+            delete object[key]
+            return undefined
+          }
+          // For arrays, always replace with the provided array
+          // This puts the responsibility on the caller to compute the desired final state
+          if (Array.isArray(srcValue)) {
+            return srcValue
+          }
+          // For non-arrays, let lodash handle the default merge behavior
           return undefined
         }
-        // For arrays, always replace with the provided array
-        // This puts the responsibility on the caller to compute the desired final state
-        if (Array.isArray(srcValue)) {
-          return srcValue
+        const update = (base: SettingsJson) =>
+          typeof settings === 'function' ? settings(clone(base)) : settings
+        const base = existingSettings || {}
+        const updatedSettings = mergeWith(base, update(base), mergeUpdate)
+
+        const content = jsonStringify(updatedSettings, null, 2) + '\n'
+        writeFileSyncAndFlush_DEPRECATED(filePath, content, {
+          encoding: 'utf-8',
+          atomicOnly: options?.atomicOnly,
+        })
+        if (outsideEdit && !dropOutsideEdit) {
+          // The detector reviews the merged file like any outside edit. Until
+          // then the session sees its accepted settings plus this update.
+          retainSettingsSnapshot(filePath, {
+            ...accepted,
+            settings: mergeWith(
+              clone(accepted.settings ?? {}),
+              update(accepted.settings ?? {}),
+              mergeUpdate,
+            ),
+          })
+          return null
         }
-        // For non-arrays, let lodash handle the default merge behavior
-        return undefined
+        // The synchronous write has completed before a watcher callback can run.
+        markInternalWrite(filePath, content)
+
+        resetSettingsCache()
+        acceptSettingsFile(filePath, readSettingsFile(filePath, Buffer.from(content)))
+        return null
       },
+      reason =>
+        logForDebugging(`Settings write to ${filePath} ran unlocked: ${reason}`),
     )
-
-    const content = jsonStringify(updatedSettings, null, 2) + '\n'
-    writeFileSyncAndFlush_DEPRECATED(filePath, content, {
-      encoding: 'utf-8',
-      atomicOnly: options?.atomicOnly,
-    })
-    // The synchronous write has completed before a watcher callback can run.
-    markInternalWrite(filePath, content)
-
-    resetSettingsCache()
-    acceptSettingsFile(filePath, readSettingsFile(filePath, Buffer.from(content)))
+    if (lockedError) {
+      return { error: lockedError }
+    }
 
     if (source === 'localSettings') {
       // Okay to add to gitignore async without awaiting

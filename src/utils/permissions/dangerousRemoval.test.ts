@@ -456,7 +456,7 @@ if (process.env[childFlag] !== '1') {
   })
 
   test('preserves critical path coverage, explicit deny, and ordinary removal', async () => {
-    for (const command of ['rm -rf /tmp', `rm -rf "${homedir()}"`, 'rm -rf ./out/*', 'rmdir /etc', 'timeout 10 rm -rf /']) {
+    for (const command of ['rm -rf /tmp', `rm -rf "${homedir()}"`, 'rm -rf ./*', 'rmdir /etc', 'timeout 10 rm -rf /']) {
       const result = await hasPermissionsToUseTool(
         BashTool, { command }, contextForPermissionCheck(), undefined as never, 'critical-path',
       )
@@ -472,6 +472,17 @@ if (process.env[childFlag] !== '1') {
       }),
     }, undefined as never, 'denied-removal')
     expect(denied.behavior).toBe('deny')
+    // Unresolved removals that need no prompt still meet deny rules inside loops.
+    for (const command of ['for f in v; do rm $f; done', 'for f in *.o; do rm -f "$f"; done']) {
+      const loopDenied = await hasPermissionsToUseTool(BashTool, { command }, {
+        ...context,
+        getAppState: () => ({
+          ...state,
+          toolPermissionContext: { ...state.toolPermissionContext, alwaysDenyRules: { session: ['Bash(rm:*)'] } },
+        }),
+      }, undefined as never, 'denied-loop-removal')
+      expect(loopDenied.behavior).toBe('deny')
+    }
     for (const mode of ['bypassPermissions', 'acceptEdits'] as const) {
       const result = await hasPermissionsToUseTool(BashTool, { command: 'rm -rf ./dist' }, {
         ...context,

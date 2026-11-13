@@ -1,5 +1,7 @@
 # MCP 配置与认证
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`mcp` · 领域：插件与扩展 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -10,6 +12,35 @@ server 有两种接法：
 
 - **本地命令（stdio）**：Claude 启动一个进程，通过标准输入输出通信；
 - **远程网址（http / sse）**：连到一个 URL，通常需要 OAuth 登录。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `mcp` · Area: Plugins and extensions · [Back to index](README.md)
+
+## What it is
+
+MCP (Model Context Protocol) is a standard way to give Claude external tools. An MCP server is a small program or URL that tells Claude "I provide these tools", for example weather lookup, database queries or browser control. Once connected, its tools can be called like the built-in Read and Bash, with names of the form `mcp__<server>__<tool>`.
+
+There are two ways to connect a server:
+
+- **Local command (stdio)**: Claude starts a process and talks to it over standard input and output.
+- **Remote URL (http / sse)**: connect to a URL, usually with an OAuth sign-in.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`mcp` · 領域：插件與擴充 · [返回功能索引](README.md)
+
+## 這是什麼
+
+MCP（Model Context Protocol）是一種「給 Claude 裝外部工具」的標準。一個 MCP server 是一個小程式或網址，它告訴 Claude「我提供這些工具」，例如查天氣、查資料庫、操作瀏覽器。接上後，這些工具和內建的 Read、Bash 一樣可以被 Claude 呼叫，名字形如 `mcp__<server>__<工具>`。
+
+server 有兩種接法：
+
+- **本地命令（stdio）**：Claude 啟動一個程序，通過標準輸入輸出通訊；
+- **遠端網址（http / sse）**：連到一個 URL，通常需要 OAuth 登入。
+
+</details>
 
 ## 快速上手：给项目接一个 MCP server
 
@@ -120,6 +151,17 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 | `bareElicitationCapability` | `true` | 只声明最基础的 elicitation 能力，兼容不支持新字段的 server |
 
 配置来源：项目 `.mcp.json`、用户 `~/.claude.json`（`-s user`）、本地（`-s local`，只对当前项目的你生效）、插件、`--mcp-config` 参数。
+
+## MCP Apps（工具自带界面）
+
+有些 MCP server 的工具会在 `_meta.ui.resourceUri` 里指向一个 `ui://` 页面（MCP Apps，SEP-1865）。`claude web` 会把这个页面显示在工具卡片下方：
+
+![claude web 显示 MCP App](images/mcp-apps-web.png)
+
+- 页面跑在沙箱 frame 里，origin 是不透明的，读不到网页的登录状态，也调不了网页的 API。默认不能联网，只有 server 在资源的 `_meta.ui.csp` 里声明过的域名可以连。
+- 页面能收到工具的输入和结果，能读同一个 server 的 `ui://` 资源，也能调用同一个 server 的工具。只给页面用的工具（`visibility: ["app"]`）和只读工具直接执行，其他工具要你先确认。
+- `visibility` 里没有 `"model"` 的工具不会发给模型。`ListMcpResourcesTool` 的列表里也不列出 `ui://` 页面和 MIME 为 `text/html;profile=mcp-app` 的资源，模型知道 URI 的话仍然可以直接读。
+- 终端界面不显示这些页面，只显示文字结果，和官方一致。`mcp_status` 的工具总会带上 `_meta.ui`（system init 的 capabilities 含 `mcp_tool_ui_meta_v1` 时可用）。SDK 客户端要显示页面时，启动 CLI 前设置 `CLAUDE_CODE_MCP_APPS_HOST=1`，CLI 会向 server 声明 `io.modelcontextprotocol/ui` 扩展，客户端再用 `mcp_read_resource` 和 `mcp_call` 读页面、调工具。
 
 ## 说明
 

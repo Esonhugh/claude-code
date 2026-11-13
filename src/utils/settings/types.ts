@@ -434,6 +434,14 @@ export const SettingsSchema = lazySchema(() =>
             })
             .optional()
             .describe('Codex-style compact options.'),
+          keepRecentRatio: z
+            .number()
+            .min(0)
+            .max(0.5)
+            .optional()
+            .describe(
+              'Fraction of the effective context window kept verbatim as the most recent API rounds when auto-compacting (dsh keeps 0.16). Unset keeps only the last round.',
+            ),
         })
         .optional()
         .describe('Conversation compact strategy configuration'),
@@ -894,6 +902,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
+      openaiEditTools: z
+        .enum(['all', 'apply_patch'])
+        .optional()
+        .describe(
+          'File editing tools offered to OpenAI models. "apply_patch" (default) offers only apply_patch, like Codex; "all" also offers Edit and Write.',
+        ),
       daybreak: z
         .enum(['blue', 'red', 'off'])
         .optional()

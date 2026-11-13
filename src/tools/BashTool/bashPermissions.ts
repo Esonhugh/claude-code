@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
-import { basename } from 'path'
+import { basename, resolve } from 'path'
+import { expandTilde } from '../../utils/path.js'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -12,6 +13,7 @@ import type { PendingClassifierCheck } from '../../types/permissions.js'
 import { count } from '../../utils/array.js'
 import {
   checkSemantics,
+  containsAnyPlaceholder,
   nodeTypeId,
   type ParseForSecurityResult,
   parseForSandboxFromAst,
@@ -25,7 +27,7 @@ import {
   getCommandSubcommandPrefix,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { parseCommandRawForRemoval, type Node, type PARSE_ABORTED } from '../../utils/bash/parser.js'
+import { parseCommandRawForRemoval, type Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -83,6 +85,7 @@ import { checkDangerousRemoval, inlineShellRemovals } from './dangerousRemoval.j
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import * as bashPathValidation from './pathValidation.js'
+import { isParsedCommandReadOnly } from './readOnlyValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -437,7 +440,45 @@ const SAFE_ENV_VARS = new Set([
   'TIME_STYLE', // time display format for ls
   'BLOCK_SIZE', // block size for du/df
   'BLOCKSIZE', // alternative block size
+
+  // Terminal size, color and non-interactive switches
+  'COLUMNS',
+  'LINES',
+  'CLICOLOR',
+  'CLICOLOR_FORCE',
+  'CI',
+  'DEBIAN_FRONTEND',
+  'GIT_TERMINAL_PROMPT',
 ])
+
+const LOCALE_ENV_VARS = new Set(['LANG', 'LC_ALL', 'LC_CTYPE'])
+const LOCALE_VALUE_RE = /^(['"]?)(C|POSIX|UTF-?8|[\w-]+\.UTF-?8(@\w+)?)\1$/i
+const PATH_LIKE_VALUE_RE =
+  /^[.~]*[/\\]|[/\\][/\\]|:[/\\.]|(?:^|[/\\])\.\.(?:[/\\]|$)/
+
+/**
+ * A `NAME=value` prefix that can be dropped before matching or read-only
+ * checks: the name is allowlisted, the value is not path-like (a path in TZ,
+ * LANG and the like makes the program read that file), and locale values are
+ * real locale names.
+ */
+export function isSafeEnvAssignment(name: string, value: string): boolean {
+  if (
+    !SAFE_ENV_VARS.has(name) &&
+    !(isAnt() && ANT_ONLY_SAFE_ENV_VARS.has(name))
+  ) {
+    return false
+  }
+  if (containsAnyPlaceholder(value)) return false
+  if (
+    LOCALE_ENV_VARS.has(name) &&
+    !LOCALE_VALUE_RE.test(value) &&
+    !(name === 'LANG' && value === '')
+  ) {
+    return false
+  }
+  return !PATH_LIKE_VALUE_RE.test(value.replace(/["']/g, ''))
+}
 
 /**
  * ANT-ONLY environment variables that are safe to strip from commands.
@@ -552,6 +593,10 @@ export function stripSafeWrappers(command: string): string {
     /^timeout[ \t]+(?:(?:--(?:foreground|preserve-status|verbose)|--(?:kill-after|signal)=[A-Za-z0-9_.+-]+|--(?:kill-after|signal)[ \t]+[A-Za-z0-9_.+-]+|-v|-[ks][ \t]+[A-Za-z0-9_.+-]+|-[ks][A-Za-z0-9_.+-]+)[ \t]+)*(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+/,
     /^time[ \t]+(?:--[ \t]+)?/,
     /^builtin[ \t]+(?:--[ \t]+)?/,
+    // `command -v` / `-V` only look a name up, so a flag after `command`
+    // other than -p stops the strip.
+    /^command(?:[ \t]+-p+)*(?:[ \t]+--)?[ \t]+(?!-)/,
+    /^noglob[ \t]+(?!-)/,
     // SECURITY: keep in sync with checkSemantics wrapper-strip (ast.ts
     // ~:1990-2080) AND stripWrappersFromArgv (pathValidation.ts ~:1260).
     // Previously this pattern REQUIRED `-n N`; checkSemantics already handled
@@ -596,13 +641,8 @@ export function stripSafeWrappers(command: string): string {
     stripped = stripCommentLines(stripped)
 
     const envVarMatch = stripped.match(ENV_VAR_PATTERN)
-    if (envVarMatch) {
-      const varName = envVarMatch[1]!
-      const isAntOnlySafe =
-        isAnt() && ANT_ONLY_SAFE_ENV_VARS.has(varName)
-      if (SAFE_ENV_VARS.has(varName) || isAntOnlySafe) {
-        stripped = stripped.replace(ENV_VAR_PATTERN, '')
-      }
+    if (envVarMatch && isSafeEnvAssignment(envVarMatch[1]!, envVarMatch[2]!)) {
+      stripped = stripped.replace(ENV_VAR_PATTERN, '')
     }
   }
 
@@ -803,15 +843,28 @@ function filterRulesByContentsMatchingInput(
   {
     stripAllEnvVars = false,
     skipCompoundCheck = false,
-  }: { stripAllEnvVars?: boolean; skipCompoundCheck?: boolean } = {},
+    words,
+  }: {
+    stripAllEnvVars?: boolean
+    skipCompoundCheck?: boolean
+    /** quotedCommand() of the parsed command, tried by allow rules. */
+    words?: string
+  } = {},
 ): PermissionRule[] {
   const command = input.command.trim()
 
   // Strip output redirections for permission matching
   // This allows rules like Bash(python:*) to match "python script.py > output.txt"
   // Security validation of redirection targets happens separately in checkPathConstraints
+  // The stripped form is rebuilt from shell-quote tokens, which also drops a
+  // mid-word `#...` and a trailing backslash. Deny and ask rules may match
+  // that looser reading; an allow rule only uses it when a redirection was
+  // actually removed, so `Bash(ls:*)` does not allow a command named `ls#x`.
+  const extracted = extractOutputRedirections(command)
   const commandWithoutRedirections =
-    extractOutputRedirections(command).commandWithoutRedirections
+    stripAllEnvVars || extracted.redirections.length > 0
+      ? extracted.commandWithoutRedirections
+      : command
 
   // For exact matching, try both the original command (to preserve quotes)
   // and the command without redirections (to allow rules without redirections to match)
@@ -824,7 +877,10 @@ function filterRulesByContentsMatchingInput(
   // Strip safe wrapper commands (timeout, time, nice, nohup) and env vars for matching
   // This allows rules like Bash(npm install:*) to match "timeout 10 npm install foo"
   // or "GOOS=linux go build"
-  const commandsToTry = commandsForMatching.flatMap(cmd => {
+  const commandsToTry = [
+    ...commandsForMatching,
+    ...(words === undefined ? [] : [words]),
+  ].flatMap(cmd => {
     const strippedCommand = stripSafeWrappers(cmd)
     return strippedCommand !== cmd ? [cmd, strippedCommand] : [cmd]
   })
@@ -981,7 +1037,10 @@ function matchingRulesForInput(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   matchMode: 'exact' | 'prefix',
-  { skipCompoundCheck = false }: { skipCompoundCheck?: boolean } = {},
+  {
+    skipCompoundCheck = false,
+    words,
+  }: { skipCompoundCheck?: boolean; words?: string } = {},
 ) {
   const denyRuleByContents = getRuleByContentsForTool(
     toolPermissionContext,
@@ -1018,7 +1077,7 @@ function matchingRulesForInput(
     input,
     allowRuleByContents,
     matchMode,
-    { skipCompoundCheck },
+    { skipCompoundCheck, words },
   )
 
   return {
@@ -1090,6 +1149,16 @@ export const bashToolCheckExactMatchPermission = (
   }
 }
 
+/** The command as the parser read it, with each word quoted where needed. */
+function quotedCommand(command: SimpleCommand): string {
+  const quote = (word: string) =>
+    /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`
+  return [
+    ...command.envVars.map(({ name, value }) => `${name}=${quote(value)}`),
+    ...command.argv.map(quote),
+  ].join(' ')
+}
+
 export const bashToolCheckPermission = (
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
@@ -1120,6 +1189,7 @@ export const bashToolCheckPermission = (
   const { matchingDenyRules, matchingAskRules, matchingAllowRules } =
     matchingRulesForInput(input, toolPermissionContext, 'prefix', {
       skipCompoundCheck: astCommand !== undefined,
+      words: astCommand && quotedCommand(astCommand),
     })
 
   // 2a. Deny if command has a deny rule
@@ -1195,14 +1265,36 @@ export const bashToolCheckPermission = (
     return sedConstraintResult
   }
 
-  // 6. Check for mode-specific permission handling
-  const modeResult = checkPermissionMode(input, toolPermissionContext)
-  if (modeResult.behavior !== 'passthrough') {
-    return modeResult
+  // The read-only check tokenizes the text itself and reads some words
+  // differently than the shell (`a#b` as a comment, `'x` as an open quote).
+  // Official judges the parsed words; do the same by also trying them, quoted.
+  const quoted =
+    astCommand &&
+    ![...astCommand.argv, ...astCommand.envVars.map(v => v.value)].some(
+      word => /[*?[\]{}~$`]/.test(word) || containsAnyPlaceholder(word),
+    )
+      ? { command: quotedCommand(astCommand) }
+      : undefined
+
+  // 6. Check for mode-specific permission handling. Like official, an edit
+  // that runs inside `$(...)` is not auto-allowed by the mode.
+  if (!astCommand?.inSubstitution) {
+    const modeResult = checkPermissionMode(
+      input,
+      toolPermissionContext,
+      astCommand !== undefined,
+    )
+    if (modeResult.behavior !== 'passthrough') {
+      return modeResult
+    }
   }
 
   // 7. Check read-only rules
-  if (BashTool.isReadOnly(input)) {
+  if (
+    BashTool.isReadOnly(input) ||
+    (astCommand && isParsedCommandReadOnly(astCommand)) ||
+    (quoted && BashTool.isReadOnly(quoted))
+  ) {
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -1439,7 +1531,13 @@ function filterCdCwdSubcommands(
   const astCommandsByIdx: (SimpleCommand | undefined)[] = []
   for (let i = 0; i < rawSubcommands.length; i++) {
     const cmd = rawSubcommands[i]!
-    if (cmd === `cd ${cwd}` || cmd === `cd ${cwdMingw}`) continue
+    if (
+      cmd === `cd ${cwd}` ||
+      cmd === `cd ${cwdMingw}` ||
+      cmd === 'cd .' ||
+      cmd === 'cd ./'
+    )
+      continue
     subcommands.push(cmd)
     astCommandsByIdx.push(astCommands?.[i])
   }
@@ -1454,8 +1552,23 @@ function filterCdCwdSubcommands(
 function checkEarlyPathDeny(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
 ): PermissionResult | null {
-  const pathResult = checkPathConstraints(input, getCwd(), toolPermissionContext)
+  // Use the parsed words where there are any: read as text, `cat a#b` would
+  // name the file `a`.
+  const parsed =
+    root && typeof root !== 'symbol'
+      ? parseForSecurityFromAst(input.command, root)
+      : undefined
+  const commands = parsed?.kind === 'simple' ? parsed.commands : undefined
+  const pathResult = checkPathConstraints(
+    input,
+    getCwd(),
+    toolPermissionContext,
+    undefined,
+    commands?.flatMap(command => command.redirects),
+    commands,
+  )
   return pathResult.behavior === 'deny' ? pathResult : null
 }
 
@@ -1475,7 +1588,7 @@ function checkUnanalyzableCommand(
   const reason =
     command.length > MAX_ANALYZABLE_COMMAND_LENGTH
       ? `Command is longer than ${MAX_ANALYZABLE_COMMAND_LENGTH} characters and cannot be fully analyzed`
-      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|?)$/.test(command)
+      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|)$/.test(command)
         ? 'Command has a dangling &&, || or | operator'
         : null
   if (reason === null) return null
@@ -1520,7 +1633,16 @@ function checkEarlyExitDeny(
     input,
     toolPermissionContext,
   )
-  if (exactMatchResult.behavior !== 'passthrough') {
+  // Like official: a command the analyzer could not read is only allowed by a
+  // rule that spells it out in full. Exact matching also tries the command
+  // with redirections stripped, a rewrite that drops a trailing backslash, so
+  // `echo \` would otherwise equal the prefix of `Bash(echo:*)`.
+  const allowedByOtherText =
+    exactMatchResult.behavior === 'allow' &&
+    (exactMatchResult.decisionReason?.type !== 'rule' ||
+      exactMatchResult.decisionReason.rule.ruleValue.ruleContent !==
+        input.command.trim())
+  if (exactMatchResult.behavior !== 'passthrough' && !allowedByOtherText) {
     return exactMatchResult
   }
   const denyMatch = matchingRulesForInput(
@@ -1824,6 +1946,7 @@ function checkRemovalPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   root: Node | null | typeof PARSE_ABORTED,
+  isPipeSegment: boolean,
 ): PermissionResult | null {
   try {
     // Same variables the Bash child receives; never evaluated through a shell.
@@ -1841,8 +1964,28 @@ function checkRemovalPermission(
         }
       }
     }
-    if (removal.behavior !== 'ask') return checkInlineShellRemovalDeny(input, toolPermissionContext, root)
-    if (getDenyRules(toolPermissionContext).length === 0) return removal
+    // Like official: a `$(`, `${` or `((` that never closes makes the shell
+    // read on, so the parsed command is not what would run. A pipe segment is
+    // cut out of a command that was already checked whole: a `|` inside
+    // `$(a | b)` leaves each half unclosed without the shell reading on.
+    if (removal.behavior !== 'ask' && !isPipeSegment && root && typeof root !== 'symbol' && root.type === 'ERROR') {
+      removal = {
+        behavior: 'ask',
+        message: 'This command could not be checked for dangerous rm operations: the shell may read it differently than it was parsed. This requires explicit approval.',
+        decisionReason: {
+          type: 'safetyCheck',
+          reason: 'Dangerous rm operation not ruled out — the shell may read this command differently than it was parsed',
+          classifierApprovable: false, bypassImmune: true,
+        },
+        suggestions: [],
+      }
+    }
+    // A removal that needs no prompt still meets deny rules on each inner
+    // command (loop bodies, substitutions), as the prompt path below does.
+    const allowed = () =>
+      removal.behavior === 'ask' ? removal : checkInlineShellRemovalDeny(input, toolPermissionContext, root)
+    if (removal.behavior !== 'ask' && !/\b(?:rm|rmdir|unlink)\b/.test(input.command)) return allowed()
+    if (getDenyRules(toolPermissionContext).length === 0) return allowed()
 
     const commands = [input.command]
     const pathNodes: Node[] = []
@@ -1889,7 +2032,7 @@ function checkRemovalPermission(
       )
       if (denied.behavior === 'deny') return denied
     }
-    return removal
+    return allowed()
   } catch (error) {
     if (error instanceof AbortError || error instanceof APIUserAbortError) throw error
     logForDebugging(`Removal safety check failed: ${String(error)}`)
@@ -1899,6 +2042,54 @@ function checkRemovalPermission(
       decisionReason: { type: 'other', reason: 'Removal safety check failed' },
     }
   }
+}
+
+// Like official, a Bash deny or ask rule applies to every command in the
+// script: nested ones ($(...), backticks, subshells, groups, loop bodies,
+// process substitution) and ones named by path (/bin/rm matches Bash(rm:*)).
+function checkNestedCommandRule(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
+  behavior: 'deny' | 'ask',
+): PermissionResult | null {
+  const rules = getRuleByContentsForTool(toolPermissionContext, BashTool, behavior)
+  if (rules.size === 0) return null
+  const commands = [input.command]
+  const pending = root && typeof root !== 'symbol' ? [root] : []
+  while (pending.length) {
+    const node = pending.pop()!
+    if (node.type === 'command' || node.type === 'declaration_command') {
+      commands.push(node.text)
+      const parsed = parseForSecurityFromAst(node.text, node)
+      // Wrappers like sudo come before the program, so name every word by basename.
+      for (const command of parsed.kind === 'simple' ? parsed.commands : []) {
+        if (command.argv.some(word => /\/[^/]/.test(word)))
+          commands.push(command.argv.map(word => /\/[^/]/.test(word) ? basename(word) : word).join(' '))
+      }
+    }
+    pending.push(...node.children)
+  }
+  for (const command of commands) {
+    const rule = filterRulesByContentsMatchingInput(
+      { ...input, command }, rules, 'prefix',
+      { stripAllEnvVars: true, skipCompoundCheck: true },
+    )[0]
+    if (!rule) continue
+    const decisionReason = { type: 'rule' as const, rule }
+    return behavior === 'deny'
+      ? {
+          behavior,
+          message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+          decisionReason,
+        }
+      : {
+          behavior,
+          message: createPermissionRequestMessage(BashTool.name, decisionReason),
+          decisionReason,
+        }
+  }
+  return null
 }
 
 // Like official, a deny rule that matches a removal inside a `sh -c` script
@@ -1926,6 +2117,20 @@ function checkInlineShellRemovalDeny(
     }
   }
   return null
+}
+
+/** A `&` that backgrounds a command (not `&&`, not inside `[[ ]]`), or a parse error. */
+function hasBackgroundOperator(node: Node): boolean {
+  for (const child of node.children) {
+    if (!child) continue
+    if (child.type === 'ERROR') return true
+    if (child.type === '&') {
+      if (node.type !== 'binary_expression') return true
+      continue
+    }
+    if (hasBackgroundOperator(child)) return true
+  }
+  return false
 }
 
 function isAllowedByRule(result: PermissionResult): boolean {
@@ -1982,6 +2187,30 @@ export async function bashToolHasPermission(
     context,
     getCommandSubcommandPrefixFn,
   )
+  const isSandboxAutoAllow =
+    result.decisionReason?.type === 'other' &&
+    result.decisionReason.reason ===
+      'Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)'
+  if (
+    result.behavior === 'allow' &&
+    input.command.includes('&') &&
+    !isSandboxAutoAllow
+  ) {
+    const root = await parseCommandRawForRemoval(input.command)
+    if (root !== null && (root === PARSE_ABORTED || hasBackgroundOperator(root))) {
+      const decisionReason: PermissionDecisionReason = {
+        type: 'safetyCheck',
+        reason:
+          'This command uses the `&` background operator, which defers execution past approval-time safety checks. Approve only if you trust it.',
+        classifierApprovable: false,
+      }
+      return {
+        behavior: 'ask',
+        decisionReason,
+        message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      }
+    }
+  }
   // A value set earlier in the command is only as safe as every way the
   // command could have set it, so such a command is never auto-allowed,
   // unless the user allowed this exact command or the sandbox contains it.
@@ -2015,6 +2244,7 @@ async function checkBashCommandPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
   getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
+  isPipeSegment = false,
 ): Promise<PermissionResult> {
   let appState = context.getAppState()
 
@@ -2038,8 +2268,10 @@ async function checkBashCommandPermission(
   // Inspect the original tree before the security walker rewrites command text.
   const rawRoot = await parseCommandRawForRemoval(input.command)
   const removalPermission =
-    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
-    checkEarlyPathDeny(input, appState.toolPermissionContext) ??
+    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot, isPipeSegment) ??
+    checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'deny') ??
+    checkEarlyPathDeny(input, appState.toolPermissionContext, rawRoot) ??
+    checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'ask') ??
     checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
   let astRoot = !injectionCheckDisabled &&
@@ -2337,7 +2569,7 @@ async function checkBashCommandPermission(
   const commandOperatorResult = await checkCommandOperatorPermissions(
     input,
     (i: z.infer<typeof BashTool.inputSchema>) =>
-      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn),
+      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn, true),
     { isNormalizedCdCommand, isNormalizedGitCommand },
     astRoot,
   )
@@ -2626,6 +2858,35 @@ async function checkBashCommandPermission(
           ]),
         ),
       },
+    }
+  }
+
+  // After `cd dir` (or `pushd dir`), relative paths in the other subcommands
+  // name files under dir: check Read/Edit deny rules there too.
+  const changesDir = (cmd: SimpleCommand | undefined) =>
+    cmd?.argv[0] === 'cd' || cmd?.argv[0] === 'pushd'
+  const cdTarget = astCommandsByIdx.find(
+    cmd => changesDir(cmd) && cmd?.argv.length === 2,
+  )?.argv[1]
+  if (cdTarget !== undefined) {
+    const cwdAfterCd = resolve(getCwd(), expandTilde(cdTarget))
+    for (const [i, command] of subcommands.entries()) {
+      const astCommand = astCommandsByIdx[i]
+      if (astCommand === undefined || changesDir(astCommand)) continue
+      const afterCdResult = checkPathConstraints(
+        { command },
+        cwdAfterCd,
+        appState.toolPermissionContext,
+        false,
+        astCommand.redirects,
+        [astCommand],
+      )
+      if (
+        afterCdResult.behavior === 'deny' &&
+        afterCdResult.decisionReason?.type === 'rule'
+      ) {
+        return afterCdResult
+      }
     }
   }
 

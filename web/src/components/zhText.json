@@ -1,6 +1,22 @@
 {
 "en": [
 [
+"此列表只读。要添加或修改 hook，请编辑 settings.json 或让 Claude 修改。",
+"This menu is read-only. To add or change a hook, edit settings.json or ask Claude."
+],
+[
+"全部 hooks 已停用（disableAllHooks）",
+"All hooks are disabled (disableAllHooks)"
+],
+[
+"还没有 hook",
+"No hooks yet"
+],
+[
+" 个文件",
+" files"
+],
+[
 "启用后才在本会话启动它的 MCP 服务器",
 "Its MCP server starts in this session once enabled"
 ],
@@ -89,10 +105,6 @@
 "No apps are connected in ChatGPT yet."
 ],
 [
-"临时关掉所有 hook，配置保留",
-"Turn every hook off for now; the config is kept"
-],
-[
 "输入至少 2 个字搜索历史会话。",
 "Type at least 2 characters to search past sessions."
 ],
@@ -127,10 +139,6 @@
 [
 "开发版 channel",
 "Development channel"
-],
-[
-"已停用全部 hooks",
-"All hooks disabled"
 ],
 [
 "每日输出 tokens",
@@ -173,6 +181,14 @@
 "No plugins in your marketplaces yet."
 ],
 [
+"此文件还不存在。",
+"This file does not exist yet."
+],
+[
+"此文件为空。",
+"This file is empty."
+],
+[
 "第一次搜索时建立索引",
 "Built on the first search"
 ],
@@ -193,10 +209,6 @@
 "Output tokens"
 ],
 [
-"已启用 hooks",
-"Hooks enabled"
-],
-[
 "新会话不再默认启用",
 "New sessions no longer enable it by default"
 ],
@@ -215,14 +227,6 @@
 [
 "已在新标签页打开",
 "Opened the sign-in page for"
-],
-[
-"已保存 hook",
-"Hook saved"
-],
-[
-"已删除 hook",
-"Hook deleted"
 ],
 [
 "已保存并重新加载",
@@ -247,10 +251,6 @@
 [
 "已重新加载插件",
 "Plugins reloaded"
-],
-[
-"添加 hook",
-"Add hook"
 ],
 [
 "保存并重新加载",
@@ -859,6 +859,18 @@
 ],
 "hant": [
 [
+"此列表只读。要添加或修改 hook，请编辑 settings.json 或让 Claude 修改。",
+"此列表唯讀。要新增或修改 hook，請編輯 settings.json 或讓 Claude 修改。"
+],
+[
+"全部 hooks 已停用（disableAllHooks）",
+"全部 hooks 已停用（disableAllHooks）"
+],
+[
+"还没有 hook",
+"還沒有 hook"
+],
+[
 "用 ChatGPT 账号登录后，这里会列出你在 ChatGPT 里连好的应用；API key 用不了。",
 "用 ChatGPT 賬號登入後，這裡會列出你在 ChatGPT 裡連好的應用；API key 用不了。"
 ],
@@ -889,10 +901,6 @@
 [
 "ChatGPT 里还没有连好的应用。",
 "ChatGPT 裡還沒有連好的應用。"
-],
-[
-"临时关掉所有 hook，配置保留",
-"臨時關掉所有 hook，配置保留"
 ],
 [
 "输入至少 2 个字搜索历史会话。",
@@ -931,10 +939,6 @@
 "ChatGPT 應用"
 ],
 [
-"已启用 hooks",
-"已啟用 hooks"
-],
-[
 "新会话不再默认启用",
 "新會話不再預設啟用"
 ],
@@ -955,14 +959,6 @@
 "已在新標籤頁開啟"
 ],
 [
-"已保存 hook",
-"已儲存 hook"
-],
-[
-"已删除 hook",
-"已刪除 hook"
-],
-[
 "已保存并重新加载",
 "已儲存並重新載入"
 ],
@@ -981,10 +977,6 @@
 [
 "已重新加载插件",
 "已重新載入外掛"
-],
-[
-"添加 hook",
-"新增 hook"
 ],
 [
 "保存并重新加载",

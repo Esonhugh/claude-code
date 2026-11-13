@@ -1,5 +1,11 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
@@ -170,6 +176,50 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('Bash deny rules reach nested and path-qualified commands in default and bypass modes', async () => {
+    const rules = { deny: ['Bash(rm:*)'] }
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const command of [
+        '/bin/rm src/x.ts',
+        '/usr/bin/rm src/x.ts',
+        'sudo /bin/rm src/x.ts',
+        'echo $(rm src/x.ts)',
+        'echo `rm src/x.ts`',
+        '(rm src/x.ts)',
+        '{ rm src/x.ts; }',
+        'cat <(rm src/x.ts)',
+        'echo hi > >(rm src/x.ts)',
+        'for f in src/x.ts; do rm $f; done',
+        'x=$(echo hi; rm src/x.ts)',
+      ]) {
+        await expectBehavior(command, mode, rules, 'deny')
+      }
+    }
+    for (const command of ['echo $(echo rm)', 'echo "rm src/x.ts"', '/bin/echo rm']) {
+      const result = await decide(command, 'bypassPermissions', rules)
+      expect({ command, behavior: result.behavior }).toEqual({
+        command,
+        behavior: 'allow',
+      })
+    }
+  })
+
+  test('Bash ask rules reach nested and path-qualified commands in bypass mode', async () => {
+    const rules = { ask: ['Bash(rm:*)'] }
+    for (const command of [
+      '/bin/rm src/x.ts',
+      'echo $(rm src/x.ts)',
+      '(rm src/x.ts)',
+      'cat <(rm src/x.ts)',
+      'rm src/x.ts',
+    ]) {
+      const result = await expectBehavior(command, 'bypassPermissions', rules, 'ask')
+      expect(result.decisionReason?.type).toBe('rule')
+    }
+    await expectBehavior('echo rm', 'bypassPermissions', rules, 'allow')
+    await expectBehavior('echo $(rm src/x.ts)', 'default', { ...rules, deny: ['Bash(echo:*)'] }, 'deny')
+  })
+
   test('bypass mode still asks for a dangerous rm inside a shell -c script', async () => {
     for (const command of [
       "sh -c 'rm -rf /'",
@@ -289,8 +339,26 @@ if (process.env[childFlag] !== '1') {
     const allow = { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }
     await expectBehavior('echo ' + 'a'.repeat(10001), 'default', allow, 'ask')
     await expectBehavior('echo ' + 'a'.repeat(9000), 'default', allow, 'allow')
-    for (const command of ['ls &&', 'ls ||', 'ls |', 'ls && ']) {
+    for (const command of ['ls &&', 'ls ||', 'ls && ']) {
       await expectBehavior(command, 'default', allow, 'ask')
+    }
+    // A trailing `|` is allowed, as in official.
+    await expectBehavior('ls |', 'default', {}, 'allow')
+    if (process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH') {
+      for (const command of [
+        'echo hi && # c',
+        'echo "unterminated',
+        'echo "a$',
+        'ls "a',
+        'ls "a" "',
+      ]) {
+        await expectBehavior(command, 'default', allow, 'ask')
+        await expectBehavior(command, 'acceptEdits', allow, 'ask')
+        await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      }
+      for (const command of ['echo hi | # c', 'echo "a" ""', "ls 'a"]) {
+        await expectBehavior(command, 'default', allow, 'allow')
+      }
     }
     await expectBehavior(
       'rm -rf build &&',
@@ -298,6 +366,75 @@ if (process.env[childFlag] !== '1') {
       { deny: ['Bash(rm:*)'] },
       'deny',
     )
+  })
+
+  test('Read and Edit deny rules hold through cp/mv, cd and symlinks, also in bypass', async () => {
+    mkdirSync(join(project, 'locked'), { recursive: true })
+    mkdirSync(join(project, 'open'), { recursive: true })
+    writeFileSync(join(project, 'locked/s'), 's')
+    symlinkSync('locked', join(project, 'ln-locked'))
+    symlinkSync('../locked/s', join(project, 'open/ln-s'))
+    const rules = { deny: ['Read(./locked/**)', 'Edit(./locked/**)'] }
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      'cp locked/s open/c',
+      'cp -r locked open/cr',
+      'mv -f locked/s open/m',
+      'cp -f src/x.ts locked/c',
+      'cp -t locked src/x.ts',
+      'cp src/x.ts --target-directory=locked',
+      'cat open/ln-s',
+      'cat ln-locked/s',
+      'touch ln-locked/t',
+      'echo x > ln-locked/e',
+      // Following the cd needs the parsed command.
+      ...(treeSitter
+        ? [
+            'cd locked && touch t',
+            'cd locked && cat s',
+            'pushd locked && cat s',
+            'cd open && cat ../locked/s',
+            'cd locked && echo x > r',
+          ]
+        : []),
+    ]) {
+      await expectBehavior(command, 'bypassPermissions', rules, 'deny')
+      await expectBehavior(command, 'default', { ...rules, allow: ['Bash'] }, 'deny')
+    }
+    for (const command of [
+      'cp src/x.ts open/c',
+      'cp -r open open2',
+      'cd open && touch t',
+      'cd open && cat ln-s2',
+    ]) {
+      await expectBehavior(command, 'bypassPermissions', rules, 'allow')
+    }
+  })
+
+  test('noglob is a transparent wrapper, as in official', async () => {
+    for (const command of ['noglob ls', 'noglob ls *', 'noglob echo hi']) {
+      await expectBehavior(command, 'default', {}, 'allow')
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    const allow = { allow: ['Bash(touch:*)'] }
+    await expectBehavior('noglob touch n1', 'default', {}, 'ask')
+    await expectBehavior('noglob touch n1', 'default', allow, 'allow')
+    await expectBehavior('noglob touch n1', 'acceptEdits', {}, 'ask')
+    await expectBehavior('noglob rm src/x.ts', 'default', {}, 'ask')
+    await expectBehavior(
+      'noglob rm src/x.ts',
+      'bypassPermissions',
+      { deny: ['Bash(rm:*)'] },
+      'deny',
+    )
+    await expectBehavior(
+      'noglob rm src/x.ts',
+      'bypassPermissions',
+      { ask: ['Bash(rm:*)'] },
+      'ask',
+    )
+    await expectBehavior('nocorrect ls', 'default', {}, 'ask')
   })
 
   async function expectAskMessage(command: string, rules: Rules) {
@@ -354,6 +491,229 @@ if (process.env[childFlag] !== '1') {
     ).toContain(
       "Output redirection to '" + join(project, 'out.txt') + "' needs approval. The path is inside the working directories",
     )
+  })
+
+  test('Bash allow rules see through command/builtin, test brackets and cd .', async () => {
+    const allow = ['Bash(touch:*)']
+    for (const command of [
+      'command touch tl-x',
+      'builtin command touch tl-x',
+      'command -p touch tl-x',
+      'cd . && touch tl-x',
+      '[ -n x ]',
+      // The legacy splitter asks for any && after a bracket test.
+      ...(process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+        ? [
+            '[ -n x ] && touch tl-x',
+            '[[ -n x ]] && touch tl-x',
+            '[[ -f x ]] || touch tl-x',
+            'if [ -n x ]; then touch tl-x; fi',
+          ]
+        : []),
+    ]) {
+      await expectBehavior(command, 'default', { allow }, 'allow')
+    }
+    for (const command of [
+      'command -v ls && touch tl-x',
+      'cd src && touch tl-x',
+      'cd .. && touch tl-x',
+      '[ -f *.ts ] && touch tl-x',
+      'command touch /opt/cc-path-ask-x',
+    ]) {
+      await expectBehavior(command, 'default', { allow }, 'ask')
+    }
+    await expectBehavior(
+      'command rm -rf src',
+      'default',
+      { allow, deny: ['Bash(rm:*)'] },
+      'deny',
+    )
+  })
+
+  test('auto-allow decisions match official for globs, $HOME, printf, & and runtime paths', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      'ls *',
+      'cat *.ts',
+      'grep x *',
+      'grep -rn x --include=*.ts .',
+      'head -1 ?',
+      'echo $HOME',
+      'echo $HOME/x',
+      'printf hi',
+      'printf -- x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'sort *',
+      'find *',
+      'ls src/../*',
+      'echo $PATH',
+      'printf -v v hi',
+      'getconf PATH',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+
+    const allow = ['Bash(touch:*)', 'Bash(ls:*)']
+    await expectBehavior('ls && pwd', 'default', { allow }, 'allow')
+    if (treeSitter) {
+      for (const command of ['ls & pwd', 'touch tl-x &', 'touch "$PWD/tl-x"']) {
+        await expectBehavior(command, 'default', { allow }, 'ask')
+        await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      }
+    }
+
+    for (const command of [
+      'touch tl-x',
+      'touch tl-x tl-y',
+      'touch tl\\-x',
+      'sed -n 1p src/x.ts',
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      'touch -d now tl-x',
+      'touch -- tl-x',
+      'TZ=UTC touch tl-x',
+      // The legacy splitter unescapes the command name before this check.
+      ...(treeSitter ? ['\\touch tl-x'] : []),
+    ]) {
+      await expectBehavior(command, 'acceptEdits', {}, 'ask')
+    }
+  })
+
+  test('read-only allowlist matches official for env prefixes, flags, git formats and printf', async () => {
+    for (const command of [
+      'NODE_ENV=prod ls',
+      'CI=true ls',
+      'LANG=C.UTF-8 ls',
+      'LANG= ls',
+      'GIT_TERMINAL_PROMPT=0 git status',
+      'timeout 5 ls',
+      'command ls',
+      'which ls',
+      'test -f src/x.ts',
+      'test 1 -eq 2',
+      '[ -v X ]',
+      '[[ -v X ]]',
+      '[ 1 -eq 2 ]',
+      'grep -I x src/x.ts',
+      'egrep x src/x.ts',
+      'help -d cd',
+      'man -k a/b',
+      'man -S 1,8 ls',
+      'ss state established',
+      'git log --pretty=oneline -1',
+      'git log --format=%H -1',
+      'git ls-remote --tags',
+      'printf %s',
+      "printf '%x' 255",
+      "printf '%5s' a",
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of [
+      'NODE_ENV=../x ls',
+      'TZ=/etc/localtime date',
+      'LANG=foo ls',
+      'FOO=1 ls',
+      'jq -nf prog.jq',
+      `jq -n 'include "x"; .'`,
+      'find . -files0-from list',
+      'which -i ls',
+      'test -v X',
+      'test a -a b',
+      '[ a -eq 2 ]',
+      '[[ -t x ]]',
+      'file -f list',
+      'file -z f',
+      'rg -z x f',
+      'help -m cd',
+      'help a/b',
+      'man -l f',
+      "man -S 'x/y' ls",
+      'man ./x.1',
+      'ss -r',
+      'ss dst example.com',
+      'git log --pretty=%GS -1',
+      'git log --pretty=foo -1',
+      'git rev-list --format=%GS HEAD',
+      'git ls-remote origin',
+      'git log ~root',
+      'echo ~root',
+      'info ls',
+      'pyright --version',
+      "printf '%d' abc",
+      "printf '%s %d' a b",
+      'printf -x a',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    const allow = ['Bash(ls:*)']
+    await expectBehavior('NODE_ENV=prod ls -la', 'default', { allow }, 'allow')
+    await expectBehavior('NODE_ENV=../x ls -la', 'default', { allow }, 'ask')
+  })
+
+  test('read-only checks match official for [[ ]], arithmetic, redirects and flag callbacks', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    for (const command of [
+      '[[ -n x && -f src/x.ts ]]',
+      '[[ -f a || -d b ]] && ls',
+      // The legacy checks refuse every `$(` and `<`.
+      ...(treeSitter
+        ? [
+            'echo $((1+2))',
+            'echo $((0-1))',
+            'cat src/x$((1+2))',
+            'cat < src/x.ts',
+            'cat <<< hi',
+          ]
+        : []),
+      'echo "a\\"b"',
+      'ps -ef',
+      'date --iso-8601=date',
+      'git remote show -n origin',
+      'git reflog show',
+      'lsof -i :80',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of [
+      '[[ -n x && -f a ]] && touch q',
+      'echo $((x+1))',
+      'cat < /etc/passwd',
+      'cat < ~root/x',
+      'cat <<< "$X"',
+      'ps -eo pid',
+      'ps e',
+      'date --iso-8601 x',
+      'git remote show origin',
+      'git reflog HEAD',
+      'git reflog expire',
+      'git tag --format=%GS',
+      'git branch --format=%GS',
+      'git blame -- -x',
+      'git ls-remote --sort x',
+      'lsof -i @example.com',
+      'docker logs -fH x c',
+      'docker inspect ~x',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    if (treeSitter) {
+      await expectBehavior(
+        'cat src/x$((1+2))',
+        'default',
+        { deny: ['Read(./src/x3)'] },
+        'deny',
+      )
+    }
+    await expectBehavior('cat < /etc/passwd', 'bypassPermissions', {}, 'allow')
   })
 
   test('a compound command with several output redirects asks in default mode', async () => {
@@ -498,6 +858,107 @@ if (process.env[childFlag] !== '1') {
     } finally {
       mocks.forEach(mock => mock.mockRestore())
     }
+  })
+
+  test('odd quoting, trailing backslashes and unclosed expansions match official', async () => {
+    const treeSitter =
+      process.env.CLAUDE_CODE_BASH_HARDENING_PARSER === 'TREE_SITTER_BASH'
+    // An unclosed `$(`, `${`, `$((` or `$[` asks in every mode, bypass included.
+    for (const command of ['echo $(', 'echo ${x', 'x=$(', 'echo $((1+', 'echo "$(ls" hi', 'echo $[1+1', 'for ((i=0;i<1;i++']) {
+      for (const mode of ['default', 'acceptEdits', 'bypassPermissions'] as const) {
+        await expectBehavior(command, mode, { allow: ['Bash(echo:*)'] }, 'ask')
+      }
+    }
+    for (const command of ['echo $(ls)', 'echo ${x}', 'echo $((1+1))', "echo '$('"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+    }
+    await expectBehavior('echo $(', 'bypassPermissions', { deny: ['Bash(echo:*)'] }, 'deny')
+
+    // An empty removal operand asks even in bypass; `'f` is read as empty.
+    for (const command of ["rm ''", 'rm -rf ""', "rm f ''", "rmdir ''", "rm 'f"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'ask')
+    }
+    for (const command of ["rm 'fg", "rm f'", "unlink ''"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+    }
+
+    if (!treeSitter) return
+    // A prefix rule does not cover a command the parser could not read, even
+    // when dropping the trailing backslash leaves exactly the rule's prefix.
+    const allow = ['Bash(echo:*)', 'Bash(ls:*)', 'Bash(ls -la:*)']
+    for (const command of ['echo \\', 'ls \\', 'ls -la \\', 'echo > out \\', 'echo a\\']) {
+      await expectBehavior(command, 'default', { allow }, 'ask')
+    }
+    // Words are judged as the shell reads them: `a#b` is one word, not a
+    // comment, so the flags after it still count.
+    for (const command of ['echo a#b', 'echo "a"#b', "echo 'x", "echo it's ok", 'cat src/x.ts#y', 'echo a#b | cat', '\\ls']) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    for (const command of ['sort a#b -o out', 'tee a#b', 'touch a#b', 'FOO=1 echo a#b', 'echo a#b; touch t1']) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    for (const command of ['touch a#b', 'echo a#b; touch t1']) {
+      await expectBehavior(command, 'acceptEdits', {}, 'allow')
+    }
+    for (const command of ['rm x$((1))', 'mkdir d$((1))', 'touch x$((1))']) {
+      await expectBehavior(command, 'acceptEdits', {}, 'ask')
+    }
+    // Rules match the words the parser read: `ls#x` is not `ls`, `\\touch` is.
+    await expectBehavior('ls#x', 'default', { allow }, 'ask')
+    await expectBehavior('\\touch t1', 'default', { allow: ['Bash(touch:*)'] }, 'allow')
+    await expectBehavior('\\rm f', 'bypassPermissions', { deny: ['Bash(rm:*)'] }, 'deny')
+    await expectBehavior('cat a#b', 'bypassPermissions', { deny: ['Read(./a)'] }, 'allow')
+    await expectBehavior('cat a #b', 'bypassPermissions', { deny: ['Read(./a)'] }, 'deny')
+  })
+
+  test('quoted or escaped shell characters in a read-only command do not prompt', async () => {
+    // A `|` inside `$(...)` is not an unclosed expansion: bypass still runs it.
+    for (const command of ['x=$(ls | wc -l)', 'echo "a: $(ls | wc -l)"']) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    if (process.env.CLAUDE_CODE_BASH_HARDENING_PARSER !== 'TREE_SITTER_BASH') {
+      return
+    }
+    // Official judges the words the parser read, so these run without a rule.
+    for (const command of [
+      'echo a \\\\',
+      'echo a\\\\',
+      'echo \\${x',
+      'echo a#*',
+      "ls 'a && touch t7",
+      'echo "a\\\\b"',
+      'ls "a&b"',
+      "cat 'a|b'",
+      "find . -name 'a;b'",
+      'find . -name \\*.ts',
+      '[ -f "a;b" ]',
+      '[[ -f "a;b" ]]',
+      'echo "a: $(ls)"',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'allow')
+    }
+    if (process.platform !== 'win32') {
+      await expectBehavior('stat -c %s src/x.ts', 'default', {}, 'allow')
+    }
+    // What the words say still counts.
+    for (const command of [
+      "find . -name 'a;b' -delete",
+      'find . -fprint out',
+      '[ 1 -eq "a[0]" ]',
+      'ls src/../*',
+      'echo ~root',
+      'echo a#* > out',
+      'echo "a: $(touch t1)"',
+      'echo "a$(ls)"',
+      'echo " $(ls)"',
+      '[[ -f a',
+    ]) {
+      await expectBehavior(command, 'default', {}, 'ask')
+    }
+    // acceptEdits does not auto-allow an edit that runs inside `$(...)`.
+    await expectBehavior('echo "a: $(touch t1)"', 'acceptEdits', {}, 'ask')
+    await expectBehavior('touch t1 && echo "a: $(ls)"', 'acceptEdits', {}, 'allow')
   })
 
   test('cleanup', () => {

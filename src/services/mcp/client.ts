@@ -158,8 +158,13 @@ import {
   wrapFetchWithStepUpDetection,
 } from './auth.js'
 import { markClaudeAiMcpConnected } from './claudeai.js'
-import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import { getAllMcpConfigs, isCcrProxyUrl, isMcpServerDisabled } from './config.js'
 import { isChannelAllowlisted } from './channelAllowlist.js'
+import {
+  isToolHiddenFromModel,
+  mcpAppsClientExtensions,
+  toolUiMeta,
+} from './mcpApps.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
 import type {
@@ -525,9 +530,23 @@ export function getConnectionTimeoutMs(): number {
   return parseInt(process.env.MCP_TIMEOUT || '', 10) || 30000
 }
 
+// A StdioClientTransport subclass makes the SDK probe server/discover on the
+// server process itself instead of a throwaway sibling, so a stdio server
+// starts once, as in official 2.1.322; a server that exits on the probe is
+// started again with the legacy handshake (see connectToServer).
+class InBandProbeStdioTransport extends StdioClientTransport {}
+
 // Clients that completed initialize and have not closed; they receive
 // notifications/roots/list_changed.
 const liveMcpClients = new Set<Client>()
+// stderr a stdio server wrote after connecting, to say why it went away.
+const stdioStderrAfterConnect = new WeakMap<Client, () => string>()
+
+/** Why a stdio server's connection closed: the last lines of its stderr. */
+export function stdioCloseReason(client: Client): string | undefined {
+  const stderr = stdioStderrAfterConnect.get(client)?.()
+  return (stderr && stderrFailureReason(stderr)) || undefined
+}
 // Additional working directories reported in roots/list. Published by
 // notifyMcpRootsListChanged when the permission context changes; until then
 // the --add-dir directories from startup apply.
@@ -692,8 +711,8 @@ export function getMcpVersionNegotiation(
     )
     return { mode: 'legacy' }
   }
-  // Fork: the stdio probe runs a sibling server process that an approved channel
-  // plugin (fakechat, telegram) outlives, keeping its port or bot poll from the real one.
+  // Fork: an approved channel plugin (fakechat, telegram) skips the probe, so a
+  // server that exits on it is never started twice for its port or bot poll.
   if (transport === 'stdio' && isChannelAllowlisted(serverRef?.pluginSource)) {
     return { mode: 'legacy' }
   }
@@ -704,7 +723,12 @@ function getMcpClientCapabilities(
   serverRef: ScopedMcpServerConfig,
   bareElicitation: boolean,
 ) {
-  const capabilities = { roots: { listChanged: true }, elicitation: {} }
+  const extensions = mcpAppsClientExtensions()
+  const capabilities = {
+    roots: { listChanged: true },
+    elicitation: {},
+    ...(extensions && { extensions }),
+  }
   const type = serverRef.type
   if (
     bareElicitation ||
@@ -1008,7 +1032,7 @@ export const connectToServer = memoize(
     },
     // Internal: set on the single reconnect after a server rejected the
     // {form, url} elicitation capability at initialize.
-    options: { bareElicitation?: boolean } = {},
+    options: { bareElicitation?: boolean; legacyHandshake?: boolean } = {},
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer:
@@ -1030,9 +1054,12 @@ export const connectToServer = memoize(
     try {
       let transport
 
-      // If we have the session ingress JWT, we will connect via the session ingress rather than
-      // to remote MCP's directly.
-      const sessionIngressToken = getSessionIngressAuthToken()
+      // The session ingress JWT authenticates to the CCR proxy only; any other
+      // server (a repo's .mcp.json, say) must never receive it.
+      const sessionIngressToken =
+        'url' in serverRef && typeof serverRef.url === 'string' && isCcrProxyUrl(serverRef.url)
+          ? getSessionIngressAuthToken()
+          : null
 
       if (isHostOwnedCodexAppsConfig(serverRef)) {
         transport = createCodexAppsTransport(serverRef)
@@ -1317,7 +1344,7 @@ export const connectToServer = memoize(
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
           : [...serverRef.args]
-        transport = new StdioClientTransport({
+        transport = new InBandProbeStdioTransport({
           command: finalCommand,
           args: finalArgs,
           env: {
@@ -1375,10 +1402,9 @@ export const connectToServer = memoize(
               serverRef,
               options.bareElicitation === true,
             ),
-            versionNegotiation: getMcpVersionNegotiation(
-              negotiationTransport,
-              serverRef,
-            ),
+            versionNegotiation: options.legacyHandshake
+              ? { mode: 'legacy' }
+              : getMcpVersionNegotiation(negotiationTransport, serverRef),
           },
         )
         newClient.setRequestHandler('roots/list', async () => {
@@ -1585,7 +1611,25 @@ export const connectToServer = memoize(
           )
           connectToServer.cache.delete(getServerCacheKey(name, serverRef))
           return connectToServer(name, serverRef, serverStats, {
+            ...options,
             bareElicitation: true,
+          })
+        }
+        if (
+          !options.legacyHandshake &&
+          transport instanceof InBandProbeStdioTransport &&
+          error instanceof SdkError &&
+          (error.code === SdkErrorCode.EraNegotiationFailed ||
+            error.code === SdkErrorCode.ConnectionClosed)
+        ) {
+          logMCPDebug(
+            name,
+            'server exited after the server/discover probe; starting it again with the legacy handshake',
+          )
+          connectToServer.cache.delete(getServerCacheKey(name, serverRef))
+          return connectToServer(name, serverRef, serverStats, {
+            ...options,
+            legacyHandshake: true,
           })
         }
         // "Connection closed" alone hides why a stdio server died (e.g. a
@@ -1598,6 +1642,7 @@ export const connectToServer = memoize(
       }
 
       liveMcpClients.add(client)
+      if (stderrHandler) stdioStderrAfterConnect.set(client, () => stderrOutput)
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
       const instructions = getMcpServerInstructions(client.getInstructions(), name)
@@ -2349,6 +2394,7 @@ export const fetchToolsForClient = memoizeWithLRU(
             : undefined
           const fullyQualifiedName =
             appsNames?.name ?? buildMcpToolName(client.name, tool.name)
+          const uiMeta = toolUiMeta(tool._meta)
           return {
             ...MCPTool,
             // In skip-prefix mode, use the original name for model invocation so MCP tools
@@ -2364,6 +2410,8 @@ export const fetchToolsForClient = memoizeWithLRU(
               ...(appsNames && {
                 permissionToolName: appsNames.permissionToolName,
               }),
+              ...(uiMeta && { uiMeta }),
+              ...(isToolHiddenFromModel(tool._meta) && { hiddenFromModel: true }),
             },
             ...(connectorInfo && { connectorInfo }),
             isMcp: true,

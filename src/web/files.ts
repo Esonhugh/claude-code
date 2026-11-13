@@ -15,7 +15,8 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
 }
 
 // Credentials never leave the machine through the file API, wherever they are.
-const DENIED_NAME = /^(\.credentials\.json|\.env(\..*)?|.*\.(key|pem|p12|pfx))$/i
+const DENIED_NAME =
+  /^(\.credentials\.json|\.claude\.json(\..*)?|\.env(\..*)?|\.netrc|\.git-credentials|\.npmrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)|.*\.(key|pem|p12|pfx))$/i
 
 /** Keeps the last path segment and drops control characters. */
 export function safeUploadName(name: string): string {
@@ -105,12 +106,21 @@ export async function transcriptFileScope(
   if (!log) return { cwd: found.projectPath, files: [] }
   const files = new Set<string>()
   let cwd: string | undefined
-  for (const m of log.messages as unknown as Record<string, unknown>[]) {
-    cwd ??= typeof m.cwd === 'string' ? m.cwd : undefined
+  type Block = { type?: string; id?: string; tool_use_id?: string; is_error?: boolean; input?: Record<string, unknown> }
+  const contentOf = (m: Record<string, unknown>) => {
     const content = (m.message as { content?: unknown } | undefined)?.content
-    if (m.type !== 'assistant' || !Array.isArray(content)) continue
-    for (const block of content as { type?: string; input?: Record<string, unknown> }[]) {
-      if (block.type !== 'tool_use' || !block.input) continue
+    return Array.isArray(content) ? (content as Block[]) : []
+  }
+  const messages = log.messages as unknown as Record<string, unknown>[]
+  // Only calls that ran: a call the user refused (or that failed) must not open its file here.
+  const ran = new Set(
+    messages.flatMap(m => contentOf(m).filter(b => b.type === 'tool_result' && b.is_error !== true).map(b => b.tool_use_id)),
+  )
+  for (const m of messages) {
+    cwd ??= typeof m.cwd === 'string' ? m.cwd : undefined
+    if (m.type !== 'assistant') continue
+    for (const block of contentOf(m)) {
+      if (block.type !== 'tool_use' || !block.input || !ran.has(block.id)) continue
       for (const key of ['file_path', 'notebook_path']) {
         const value = block.input[key]
         if (typeof value === 'string') files.add(value)
@@ -123,7 +133,7 @@ export async function transcriptFileScope(
 /**
  * Resolves `path` to a real file a session may show: inside one of `roots`
  * (after symlinks are resolved) or one of `files` exactly, never inside the
- * claude config dir except `claude web`'s own folder, never a credential.
+ * claude config dir except `claude web`'s uploads and temporary chats, never a credential.
  */
 export async function resolveAllowedFile(
   path: string,
@@ -132,8 +142,11 @@ export async function resolveAllowedFile(
   const target = await real(path)
   if (!target || DENIED_NAME.test(basename(target))) return undefined
   const configDir = await real(scope.configDir)
-  const webDir = configDir && (await real(join(configDir, 'web')))
-  if (configDir && within(target, configDir) && !(webDir && within(target, webDir))) {
+  // Not the rest of `web/`: server.json there holds the key that signs the sign-in cookie.
+  const shared = configDir
+    ? await Promise.all(['uploads', 'temp'].map(name => real(join(configDir, 'web', name))))
+    : []
+  if (configDir && within(target, configDir) && !shared.some(dir => dir && within(target, dir))) {
     return undefined
   }
   const info = await stat(target).catch(() => undefined)

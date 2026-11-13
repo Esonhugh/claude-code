@@ -1,5 +1,7 @@
 import { getSettingsForSource } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
+import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
+import { logForDebugging } from '../debug.js'
 import type { MarketplaceSource } from './schemas.js'
 import { PluginMarketplaceSchema } from './schemas.js'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -7,6 +9,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import isEqual from 'lodash-es/isEqual.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { isENOENT } from '../errors.js'
+import { stripBOM } from '../jsonRead.js'
 
 function sameDirectory(a: string, b: string): boolean {
   return isAbsolute(a) && isAbsolute(b) && resolve(a) === resolve(b)
@@ -56,7 +59,7 @@ export async function getInPlacePluginSource(
   if (source.source !== 'directory' || !isAbsolute(source.path)) return undefined
   const location=registered?.installLocation ?? source.path
   const root=await realpath(location)
-  const catalog=PluginMarketplaceSchema().parse(JSON.parse(await readFile(join(root,'.claude-plugin','marketplace.json'),'utf8')))
+  const catalog=PluginMarketplaceSchema().parse(JSON.parse(stripBOM(await readFile(join(root,'.claude-plugin','marketplace.json'),'utf8'))))
   if (catalog.name !== marketplace) return undefined
   const entry=catalog.plugins.find(plugin=>plugin.name===name)
   if (!entry || typeof entry.source !== 'string' || isAbsolute(entry.source)) return undefined
@@ -71,7 +74,24 @@ export async function getInPlacePluginSource(
   if (child==='..' || child.startsWith(`..${sep}`) || isAbsolute(child) || !(await stat(path)).isDirectory()) return undefined
   const managedSource=policy?.enabledPlugins?.[pluginId]===true && policySource?.source==='directory' &&
     sameDirectory(source.path,location) && sameDirectory(source.path,policySource.path)
-  return {entry,path,source,managedSource}
+  return {entry,path,source,managedSource,root}
+}
+
+/**
+ * For a plugin loaded in place, the error for a component path that resolves
+ * outside its marketplace directory; such a path must not be read.
+ */
+export async function getInPlaceEscapeError(
+  plugin: Pick<LoadedPlugin, 'name' | 'source' | 'containmentRoot'>,
+  path: string,
+  component: string,
+): Promise<PluginError | undefined> {
+  const root = plugin.containmentRoot
+  if (root === undefined) return undefined
+  const real = await realpath(path).catch(() => resolve(path))
+  if (real === root || real.startsWith(root + sep)) return undefined
+  logForDebugging(`Plugin ${plugin.name}: did not read ${path}: it resolves to ${real}, outside ${root}`, { level: 'error' })
+  return { type: 'generic-error', source: plugin.source, plugin: plugin.name, error: `Path escapes plugin directory: ${path} (${component})` }
 }
 
 

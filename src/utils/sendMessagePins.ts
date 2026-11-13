@@ -122,6 +122,44 @@ export function restoreSendMessagePins(messages: readonly Message[]): SendMessag
   return Object.fromEntries(pins)
 }
 
+const spawnReceipt = z.union([
+  z.object({ agentId: z.string() }),
+  z.object({ agent_id: z.string() }),
+])
+
+/**
+ * Like official, a resumed conversation keeps addressing the agents it named:
+ * each successful named Agent spawn maps its name back to the spawned agent
+ * id, so SendMessage({to: name}) can resume it. Names already registered win.
+ */
+export function restoreAgentNames(
+  messages: readonly Message[],
+  names: AppState['agentNameRegistry'],
+): Map<string, AgentId> | null {
+  const namedUses = new Map<string, string>()
+  const restored = new Map<string, AgentId>()
+  for (const message of messages) {
+    if (message.type === 'assistant' && Array.isArray(message.message.content)) {
+      for (const block of message.message.content) {
+        if (block.type !== 'tool_use' || block.name !== 'Agent' || typeof block.id !== 'string') continue
+        const name = (block.input as { name?: unknown } | undefined)?.name
+        if (typeof name === 'string' && name !== '' && !names.has(name)) namedUses.set(block.id, name)
+      }
+    } else if (message.type === 'user' && Array.isArray(message.message.content)) {
+      const results = message.message.content.filter(block => block.type === 'tool_result')
+      const [result, ...rest] = results
+      if (!result || rest.length > 0 || result.is_error) continue
+      const name = namedUses.get(result.tool_use_id)
+      if (name === undefined) continue
+      const receipt = spawnReceipt.safeParse(message.toolUseResult)
+      if (!receipt.success) continue
+      const id = toAgentId('agentId' in receipt.data ? receipt.data.agentId : receipt.data.agent_id)
+      if (id) restored.set(name, id)
+    }
+  }
+  return restored.size > 0 ? new Map([...names, ...restored]) : null
+}
+
 export function retainLiveAgentNames(names: AppState['agentNameRegistry'], tasks: AppState['tasks']): Map<string, AgentId> {
   return new Map([...names].filter(([, id]) => {
     const task = tasks[id] ?? Object.values(tasks).find(task => task.type === 'in_process_teammate' && 'resumableAgentId' in task.identity && task.identity.resumableAgentId === id)

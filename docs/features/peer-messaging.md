@@ -1,5 +1,7 @@
 # 独立会话通信
 
+<!-- lang: zh-Hans -->
+
 > 英文名：`peer-messaging` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
 ## 这是什么
@@ -11,6 +13,37 @@
 - 对方收到后显示 `Peer · <发送者>`，像收到一条新输入一样处理。
 
 只在同一台机器、同一个配置目录内有效（Unix socket / Windows named pipe），不跨机器。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `peer-messaging` · Area: Agents and orchestration · [Back to index](README.md)
+
+## What it is
+
+You may have several Claude windows open at once: one changing code, one running tests, one writing docs. Peer messaging lets them **know about each other and send plain-text messages**:
+
+- `/peers` lists the other sessions on this machine;
+- Claude uses `SendMessage` to message another session;
+- the receiver shows `Peer · <sender>` and handles it like a new input.
+
+It works only on the same machine and the same config directory (Unix socket / Windows named pipe), not across machines.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`peer-messaging` · 領域：Agent 與編排 · [返回功能索引](README.md)
+
+## 這是什麼
+
+你可能同時開著好幾個 Claude 視窗：一個在改程式碼，一個在跑測試，一個在寫文件。獨立會話通訊讓它們**互相知道彼此存在，並能發純文本訊息**：
+
+- `/peers` 列出同機其他會話；
+- Claude 用 `SendMessage` 給另一個會話發訊息；
+- 對方收到後顯示 `Peer · <发送者>`，像收到一條新輸入一樣處理。
+
+只在同一台機器、同一個配置目錄內有效（Unix socket / Windows named pipe），不跨機器。
+
+</details>
 
 ## 快速上手
 

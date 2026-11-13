@@ -234,6 +234,23 @@ export const FileWriteTool = buildTool({
         message:
           'File is in a directory that is denied by your permission settings.',
         errorCode: 1,
+        deniedByPermissionRule: true,
+      }
+    }
+    if (
+      matchingRuleForInput(
+        fullFilePath,
+        appState.toolPermissionContext,
+        'read',
+        'deny',
+      ) !== null
+    ) {
+      return {
+        result: false,
+        message:
+          'File is covered by a Read deny rule in your permission settings and cannot be written.',
+        errorCode: 13,
+        deniedByPermissionRule: true,
       }
     }
 

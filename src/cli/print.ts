@@ -17,7 +17,7 @@ import { SDKControlUIResponseSchemas } from '../entrypoints/sdk/modsControlSchem
 import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
-import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { restoreAgentNames, restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname, join, resolve } from 'path'
@@ -348,12 +348,14 @@ import {
   runElicitationResultHooks,
 } from 'src/services/mcp/elicitationHandler.js'
 import { executeDirectoryAddedHooks, executeNotificationHooks } from 'src/utils/hooks.js'
-import { getMcpPrefix, mcpInfoFromString } from 'src/services/mcp/mcpStringUtils.js'
+import { mcpInfoFromString } from 'src/services/mcp/mcpStringUtils.js'
 import { normalizeNameForMCP } from 'src/services/mcp/normalization.js'
 import {
   commandBelongsToServer,
   filterToolsByServer,
+  mcpToolKey,
   isMcpTool,
+  isToolOfServer,
 } from 'src/services/mcp/utils.js'
 import { setupVscodeSdkMcp } from 'src/services/mcp/vscodeSdkMcp.js'
 import { getAllMcpConfigs } from 'src/services/mcp/config.js'
@@ -482,7 +484,10 @@ import {
   isShutdownApproved,
   capIdleResultsInDrain,
 } from '../utils/teammateMailbox.js'
-import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
+import {
+  findApprovedTeammateId,
+  handleTeammateShutdownApproved,
+} from '../utils/swarm/teammateShutdown.js'
 import { registerLeaderHeadlessCanUseTool } from '../utils/swarm/leaderPermissionBridge.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
@@ -493,8 +498,10 @@ import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js
 import { isMainSessionTask } from '../tasks/LocalMainSessionTask.js'
 import { isTerminalTask } from '../tasks/TerminalTask.js'
 import { hostTerminalInputSchema } from '../tools/TerminalTool/actionSchemas.js'
+import { askApplyPatchPerFile, isApplyPatchRule } from '../tools/ApplyPatchTool/askPerFile.js'
+import { APPLY_PATCH_TOOL_NAME } from '../tools/ApplyPatchTool/prompt.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
-import { drainSdkOutput, getTaskRunId } from '../utils/sdkEventQueue.js'
+import { drainSdkOutput, getTaskRunId, setSdkEventListener } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
@@ -614,11 +621,19 @@ export function joinPromptValues(values: PromptValue[]): PromptValue {
   return values.flatMap(toBlocks)
 }
 
+// Official 2.1.322: a queued slash command runs on its own turn.
+function isSlashPromptValue(value: PromptValue): boolean {
+  if (typeof value === 'string') return value.trim().startsWith('/')
+  const last = value.at(-1)
+  return last?.type === 'text' && last.text.trim().startsWith('/')
+}
+
 /**
  * Whether `next` can be batched into the same ask() call as `head`. Only
  * prompt-mode commands batch, and only when the workload tag matches (so the
  * combined turn is attributed correctly) and the input-processing flags match.
  * Attributed messages stay separate so each message retains its provenance.
+ * Slash commands never batch.
  */
 export function canBatchWith(
   head: QueuedCommand,
@@ -635,7 +650,9 @@ export function canBatchWith(
     next.workload === head.workload &&
     next.isMeta === head.isMeta &&
     next.skipSlashCommands === head.skipSlashCommands &&
-    next.skipAttachments === head.skipAttachments
+    next.skipAttachments === head.skipAttachments &&
+    !isSlashPromptValue(head.value) &&
+    !isSlashPromptValue(next.value)
   )
 }
 
@@ -946,7 +963,11 @@ export async function runHeadless(
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
 
-  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages) }))
+  setAppState(prev => ({
+    ...prev,
+    sendMessagePins: restoreSendMessagePins(initialMessages),
+    agentNameRegistry: restoreAgentNames(initialMessages, prev.agentNameRegistry) ?? prev.agentNameRegistry,
+  }))
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
@@ -1795,7 +1816,7 @@ function runHeadlessStreaming(
             ...prev.mcp.tools.filter(
               t =>
                 !allSdkNames.some(name =>
-                  t.name.startsWith(getMcpPrefix(name)),
+                  isToolOfServer(t, name),
                 ),
             ),
             ...sdkTools,
@@ -1951,7 +1972,7 @@ function runHeadlessStreaming(
               ...prev.mcp.tools.filter(
                 t =>
                   !allSdkNames.some(name =>
-                    t.name.startsWith(getMcpPrefix(name)),
+                    isToolOfServer(t, name),
                   ),
               ),
               ...sdkTools,
@@ -1997,7 +2018,6 @@ function runHeadlessStreaming(
     // @ts-ignore - recovered code
     const result = await reconnectMcpServerImpl(serverName, config)
     // @ts-ignore - recovered code
-    const prefix = getMcpPrefix(serverName)
     setAppState(prev => ({
       ...prev,
       mcp: {
@@ -2006,7 +2026,7 @@ function runHeadlessStreaming(
           c.name === serverName ? result.client : c,
         ),
         tools: [
-          ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+          ...reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
           ...result.tools,
         ],
         commands: [
@@ -2031,7 +2051,7 @@ function runHeadlessStreaming(
           c.name === serverName ? result.client : c,
         ),
         tools: [
-          ...dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+          ...dynamicMcpState.tools.filter(t => !isToolOfServer(t, serverName)),
           ...result.tools,
         ],
       }
@@ -2056,9 +2076,10 @@ function runHeadlessStreaming(
   function buildMcpServerStatuses(): McpServerStatus[] {
     const currentAppState = getAppState()
     const currentMcpClients = currentAppState.mcp.clients
+    // Two servers (or tools) can normalize to one name (`a.b` and `a_b`); each still lists its own.
     const allMcpTools = uniqBy(
       [...currentAppState.mcp.tools, ...dynamicMcpState.tools],
-      'name',
+      mcpToolKey,
     )
     const existingNames = new Set([
       ...currentMcpClients.map(c => c.name),
@@ -2107,6 +2128,7 @@ function runHeadlessStreaming(
                 destructive: tool.isDestructive?.({}) || undefined,
                 openWorld: tool.isOpenWorld?.({}) || undefined,
               },
+              ...(tool.mcpInfo?.uiMeta && { _meta: tool.mcpInfo.uiMeta }),
             }))
           : undefined
       // Capabilities passthrough with allowlist pre-filter. The IDE reads
@@ -2694,6 +2716,17 @@ function runHeadlessStreaming(
           if (typeof modelOverride === 'string') {
             activeUserSpecifiedModel = modelOverride
           }
+          // ask() yields nothing while a tool runs; stream task events (a
+          // background agent or teammate finishing) as they are queued.
+          let sdkFlushScheduled = false
+          setSdkEventListener(() => {
+            if (sdkFlushScheduled) return
+            sdkFlushScheduled = true
+            queueMicrotask(() => {
+              sdkFlushScheduled = false
+              for (const event of drainSdkOutput()) output.enqueue(event)
+            })
+          })
           try {
             await runWithWorkload(cmd.workload ?? options.workload, async () => {
               for await (const message of ask({
@@ -2819,6 +2852,7 @@ function runHeadlessStreaming(
             for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
           } finally {
+            setSdkEventListener(undefined)
             sendNowRunningToolUseIds.clear()
             if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
           }
@@ -2985,6 +3019,17 @@ function runHeadlessStreaming(
                     await stopTask(task.id, { getAppState, setAppState }).catch(error => {
                       if (!(error instanceof StopTaskError)) logError(toError(error))
                     })
+                    if (task.type === 'local_workflow') {
+                      // The workflow's runner enqueues its 'stopped'
+                      // notification only after it unwinds.
+                      const notifiedBy = Date.now() + 5_000
+                      while (
+                        Date.now() < notifiedBy &&
+                        getAppState().tasks[task.id]?.notified !== true
+                      ) {
+                        await sleep(50)
+                      }
+                    }
                   }
                 }
                 continue
@@ -3164,11 +3209,11 @@ function runHeadlessStreaming(
                 )
 
                 // Find the teammate ID by name
-                const teammateId = refreshedState.teamContext?.teammates
-                  ? Object.entries(refreshedState.teamContext.teammates).find(
-                      ([, t]) => t.name === teammateToRemove,
-                    )?.[0]
-                  : undefined
+                const teammateId = findApprovedTeammateId(
+                  refreshedState.teamContext?.teammates,
+                  teammateToRemove,
+                  m.timestamp,
+                )
 
                 if (teammateId) {
                   await handleTeammateShutdownApproved({
@@ -4435,18 +4480,33 @@ function runHeadlessStreaming(
             sendControlResponseError(message, `Not a fully-qualified MCP tool name: ${tool}`)
             continue
           }
+          // A known tool names its server exactly; parsing the name splits at the first "__",
+          // which picks the wrong server when a server name itself contains "__".
+          const owners = uniqBy(
+            [...getAppState().mcp.tools, ...dynamicMcpState.tools].filter(t => t.name === tool && t.mcpInfo),
+            mcpToolKey,
+          )
+          // The caller checked one of them; running whichever comes first could be the other.
+          if (owners.length > 1) {
+            sendControlResponseError(
+              message,
+              `mcp_call: ${tool} names more than one MCP tool (${owners.map(t => `${t.mcpInfo!.serverName}/${t.mcpInfo!.toolName}`).join(', ')})`,
+            )
+            continue
+          }
+          const mcpTool = owners[0]
+          const serverName = mcpTool?.mcpInfo?.serverName
           const connection = [...getAppState().mcp.clients, ...dynamicMcpState.clients]
-            .find(c => normalizeNameForMCP(c.name) === info.serverName)
+            .find(c => serverName !== undefined ? c.name === serverName : normalizeNameForMCP(c.name) === info.serverName)
           if (connection?.type !== 'connected') {
-            sendControlResponseError(message, `MCP server not connected: ${info.serverName}`)
+            sendControlResponseError(message, `MCP server not connected: ${serverName ?? info.serverName}`)
             continue
           }
           if (connection.config.type === 'sdk') {
             sendControlResponseError(message, `mcp_call does not support SDK MCP servers. SDK servers are caller-provided — invoke ${info.serverName} directly.`)
             continue
           }
-          const toolName = [...getAppState().mcp.tools, ...dynamicMcpState.tools]
-            .find(t => t.name === tool)?.mcpInfo?.toolName ?? info.toolName
+          const toolName = mcpTool?.mcpInfo?.toolName ?? info.toolName
           void (async () => {
             try {
               const result = await callMCPToolWithUrlElicitationRetry({
@@ -4534,7 +4594,6 @@ function runHeadlessStreaming(
             const result = await reconnectMcpServerImpl(serverName, config)
             // Update appState.mcp with the new client, tools, commands, and resources
             // @ts-ignore - recovered code
-            const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
               mcp: {
@@ -4543,7 +4602,7 @@ function runHeadlessStreaming(
                   c.name === serverName ? result.client : c,
                 ),
                 tools: [
-                  ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                  ...reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
                   ...result.tools,
                 ],
                 commands: [
@@ -4572,7 +4631,7 @@ function runHeadlessStreaming(
                 ),
                 tools: [
                   ...dynamicMcpState.tools.filter(
-                    t => !t.name?.startsWith(prefix),
+                    t => !isToolOfServer(t, serverName),
                   ),
                   ...result.tools,
                 ],
@@ -4619,7 +4678,6 @@ function runHeadlessStreaming(
             }
             // Update appState.mcp to reflect disabled status and remove tools/commands/resources
             // @ts-ignore - recovered code
-            const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
               mcp: {
@@ -4629,7 +4687,7 @@ function runHeadlessStreaming(
                     ? { name: serverName, type: 'disabled' as const, config }
                     : c,
                 ),
-                tools: reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                tools: reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
                 commands: reject(prev.mcp.commands, c =>
                   // @ts-ignore - recovered code
                   commandBelongsToServer(c, serverName),
@@ -4717,13 +4775,12 @@ function runHeadlessStreaming(
               setAllowedChannels(started.prior)
               await clearServerCache(serverName, started.config)
               const disabled = { name: serverName, type: 'disabled' as const, config: started.config }
-              const prefix = getMcpPrefix(serverName)
               setAppState(prev => ({
                 ...prev,
                 mcp: {
                   ...prev.mcp,
                   clients: prev.mcp.clients.map(c => (c.name === serverName ? disabled : c)),
-                  tools: reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                  tools: reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
                   commands: reject(prev.mcp.commands, c => commandBelongsToServer(c, serverName)),
                   resources: omit(prev.mcp.resources, serverName),
                 },
@@ -4731,7 +4788,7 @@ function runHeadlessStreaming(
               dynamicMcpState = {
                 ...dynamicMcpState,
                 clients: dynamicMcpState.clients.map(c => (c.name === serverName ? disabled : c)),
-                tools: dynamicMcpState.tools.filter(t => !t.name?.startsWith(prefix)),
+                tools: dynamicMcpState.tools.filter(t => !isToolOfServer(t, serverName)),
               }
             }
           }
@@ -4831,7 +4888,6 @@ function runHeadlessStreaming(
                     config,
                   )
                   // @ts-ignore - recovered code
-                  const prefix = getMcpPrefix(serverName)
                   setAppState(prev => ({
                     ...prev,
                     mcp: {
@@ -4841,7 +4897,7 @@ function runHeadlessStreaming(
                       ),
                       tools: [
                         ...reject(prev.mcp.tools, t =>
-                          t.name?.startsWith(prefix),
+                          isToolOfServer(t, serverName),
                         ),
                         ...result.tools,
                       ],
@@ -4874,7 +4930,7 @@ function runHeadlessStreaming(
                     ],
                     tools: [
                       ...dynamicMcpState.tools.filter(
-                        t => !t.name?.startsWith(prefix),
+                        t => !isToolOfServer(t, serverName),
                       ),
                       ...result.tools,
                     ],
@@ -5131,7 +5187,6 @@ function runHeadlessStreaming(
             // @ts-ignore - recovered code
             const result = await reconnectMcpServerImpl(serverName, config)
             // @ts-ignore - recovered code
-            const prefix = getMcpPrefix(serverName)
             setAppState(prev => ({
               ...prev,
               mcp: {
@@ -5140,7 +5195,7 @@ function runHeadlessStreaming(
                   c.name === serverName ? result.client : c,
                 ),
                 tools: [
-                  ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                  ...reject(prev.mcp.tools, t => isToolOfServer(t, serverName)),
                   ...result.tools,
                 ],
                 commands: [
@@ -5962,6 +6017,19 @@ export function createCanUseToolWithPermissionPrompt(
       mainPermissionResult.behavior === 'deny'
     ) {
       return mainPermissionResult
+    }
+
+    // The host knows Edit and Write, not patches: ask file by file.
+    if (tool.name === APPLY_PATCH_TOOL_NAME && !isApplyPatchRule(mainPermissionResult)) {
+      // A hook's ask holds for every file; rules and the mode must not allow it.
+      const hookAsk = mainPermissionResult.decisionReason?.type === 'hook' ? mainPermissionResult : undefined
+      const perFile = await askApplyPatchPerFile(
+        input,
+        toolUseContext.options.tools,
+        (fileTool, fileInput) =>
+          canUseTool(fileTool, fileInput, toolUseContext, assistantMessage, toolUseId, hookAsk),
+      )
+      if (perFile) return perFile
     }
 
     const hookDecision = await runPrintPermissionRequestHooks(
@@ -7461,8 +7529,7 @@ export async function handleMcpSetServers(
         await client.cleanup()
       }
       newSdkClients = newSdkClients.filter(c => c.name !== name)
-      const prefix = getMcpPrefix(name)
-      newSdkTools = newSdkTools.filter(t => !t.name.startsWith(prefix))
+      newSdkTools = newSdkTools.filter(t => !isToolOfServer(t, name))
       delete newSdkConfigs[name]
       sdkRemoved.push(name)
     }
@@ -7558,8 +7625,7 @@ export async function reconcileMcpServers(
     }
 
     // Remove tools from this server
-    const prefix = getMcpPrefix(name)
-    newTools = newTools.filter(t => !t.name.startsWith(prefix))
+    newTools = newTools.filter(t => !isToolOfServer(t, name))
 
     // Remove from clients list
     newClients = newClients.filter(c => c.name !== name)
@@ -7636,7 +7702,7 @@ export async function reconcileMcpServers(
     // Remove old dynamic tools
     const nonDynamicTools = prev.mcp.tools.filter(t => {
       for (const serverName of allDynamicServerNames) {
-        if (t.name.startsWith(getMcpPrefix(serverName))) {
+        if (isToolOfServer(t, serverName)) {
           return false
         }
       }

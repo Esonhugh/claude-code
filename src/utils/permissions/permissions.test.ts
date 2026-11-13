@@ -183,3 +183,13 @@ test('a subagent that cannot prompt is told which agent was denied and why', asy
     'Permission to use Bash has been denied: the general-purpose agent cannot ask for approval because this session has no permission dialog (non-interactive -p or SDK run). ',
   )
 })
+
+test('a blanket Edit or Write deny also removes apply_patch, which does their work', () => {
+  for (const deny of ['Edit', 'Write']) {
+    const toolPermissionContext = context({ deny: [deny] }).getAppState().toolPermissionContext
+    const names = filterToolsByDenyRules([fakeTool('apply_patch'), fakeTool('Edit'), fakeTool('Write')], toolPermissionContext).map(t => t.name)
+    expect(names).toEqual(['Edit', 'Write'].filter(name => name !== deny))
+  }
+  const pathDeny = context({ deny: ['Edit(secret/**)'] }).getAppState().toolPermissionContext
+  expect(filterToolsByDenyRules([fakeTool('apply_patch')], pathDeny).map(t => t.name)).toEqual(['apply_patch'])
+})

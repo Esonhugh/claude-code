@@ -14,7 +14,8 @@ if (process.env[childFlag] !== '1') {
   const config = await mkdtemp(join(tmpdir(),'mailbox-ack-'))
   process.env.CLAUDE_CONFIG_DIR = config
   afterAll(async()=>{await rm(config,{recursive:true,force:true})})
-  mock.module('./lockfile.js',()=>({lock:async()=>async()=>{throw Object.assign(Error('release fixture'),{code:'ERELEASED'})}}))
+  const lockfile = { ...(await import('./lockfile.js')) }
+  mock.module('./lockfile.js',()=>({...lockfile,lock:async()=>async()=>{throw Object.assign(Error('release fixture'),{code:'ERELEASED'})}}))
   const { writeToMailbox,readMailbox,getInboxPath } = await import('./teammateMailbox.js')
   test('C17 committed real mailbox remains acknowledged when releasing the lock reports a failure', async () => {
     const row = {from:'fixture-lead',text:'private fixture',timestamp:'2026-10-05T00:00:00.000Z'}
