@@ -115,7 +115,7 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-14
+          - macos-latest
           - windows-latest
     env:
       CLAUDE_CODE_VERSION: ${{ needs.validate-tag.outputs.version }}
