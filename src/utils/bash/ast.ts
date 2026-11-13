@@ -38,6 +38,8 @@ export type SimpleCommand = {
   redirects: Redirect[]
   /** Original source span for this command (for UI display) */
   text: string
+  /** The command runs inside `$(...)` or backticks. */
+  inSubstitution?: true
 }
 
 export type ParseForSecurityResult =
@@ -77,7 +79,7 @@ const SEPARATOR_TYPES = new Set(['&&', '||', '|', ';', '&', '|&', '\n'])
  * the outer argv clean (no multi-line heredoc bodies polluting path
  * extraction or triggering newline checks).
  */
-const CMDSUB_PLACEHOLDER = '__CMDSUB_OUTPUT__'
+export const CMDSUB_PLACEHOLDER = '__CMDSUB_OUTPUT__'
 
 /**
  * Placeholder for simple_expansion ($VAR) references to variables set earlier
@@ -1540,6 +1542,7 @@ function collectCommandSubstitution(
   // but vars set INSIDE don't leak out. Pass a COPY of the outer scope so
   // inner assignments don't mutate the outer map.
   const innerScope = new Map(varScope)
+  const outerCount = innerCommands.length
   // command_substitution children: `$(` or `` ` ``, inner statement(s), `)`
   for (const child of csNode.children) {
     if (!child) continue
@@ -1554,6 +1557,9 @@ function collectCommandSubstitution(
     }
     const err = collectCommands(child, innerCommands, innerScope)
     if (err) return err
+  }
+  for (const command of innerCommands.slice(outerCount)) {
+    command.inSubstitution = true
   }
   return null
 }

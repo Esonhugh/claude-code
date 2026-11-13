@@ -85,6 +85,7 @@ import { checkDangerousRemoval, inlineShellRemovals } from './dangerousRemoval.j
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import * as bashPathValidation from './pathValidation.js'
+import { isParsedCommandReadOnly } from './readOnlyValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -1275,18 +1276,25 @@ export const bashToolCheckPermission = (
       ? { command: quotedCommand(astCommand) }
       : undefined
 
-  // 6. Check for mode-specific permission handling
-  const modeResult = checkPermissionMode(
-    input,
-    toolPermissionContext,
-    astCommand !== undefined,
-  )
-  if (modeResult.behavior !== 'passthrough') {
-    return modeResult
+  // 6. Check for mode-specific permission handling. Like official, an edit
+  // that runs inside `$(...)` is not auto-allowed by the mode.
+  if (!astCommand?.inSubstitution) {
+    const modeResult = checkPermissionMode(
+      input,
+      toolPermissionContext,
+      astCommand !== undefined,
+    )
+    if (modeResult.behavior !== 'passthrough') {
+      return modeResult
+    }
   }
 
   // 7. Check read-only rules
-  if (BashTool.isReadOnly(input) || (quoted && BashTool.isReadOnly(quoted))) {
+  if (
+    BashTool.isReadOnly(input) ||
+    (astCommand && isParsedCommandReadOnly(astCommand)) ||
+    (quoted && BashTool.isReadOnly(quoted))
+  ) {
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -1938,6 +1946,7 @@ function checkRemovalPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   root: Node | null | typeof PARSE_ABORTED,
+  isPipeSegment: boolean,
 ): PermissionResult | null {
   try {
     // Same variables the Bash child receives; never evaluated through a shell.
@@ -1956,8 +1965,10 @@ function checkRemovalPermission(
       }
     }
     // Like official: a `$(`, `${` or `((` that never closes makes the shell
-    // read on, so the parsed command is not what would run.
-    if (removal.behavior !== 'ask' && root && typeof root !== 'symbol' && root.type === 'ERROR') {
+    // read on, so the parsed command is not what would run. A pipe segment is
+    // cut out of a command that was already checked whole: a `|` inside
+    // `$(a | b)` leaves each half unclosed without the shell reading on.
+    if (removal.behavior !== 'ask' && !isPipeSegment && root && typeof root !== 'symbol' && root.type === 'ERROR') {
       removal = {
         behavior: 'ask',
         message: 'This command could not be checked for dangerous rm operations: the shell may read it differently than it was parsed. This requires explicit approval.',
@@ -2233,6 +2244,7 @@ async function checkBashCommandPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
   getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
+  isPipeSegment = false,
 ): Promise<PermissionResult> {
   let appState = context.getAppState()
 
@@ -2256,7 +2268,7 @@ async function checkBashCommandPermission(
   // Inspect the original tree before the security walker rewrites command text.
   const rawRoot = await parseCommandRawForRemoval(input.command)
   const removalPermission =
-    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
+    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot, isPipeSegment) ??
     checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'deny') ??
     checkEarlyPathDeny(input, appState.toolPermissionContext, rawRoot) ??
     checkNestedCommandRule(input, appState.toolPermissionContext, rawRoot, 'ask') ??
@@ -2557,7 +2569,7 @@ async function checkBashCommandPermission(
   const commandOperatorResult = await checkCommandOperatorPermissions(
     input,
     (i: z.infer<typeof BashTool.inputSchema>) =>
-      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn),
+      checkBashCommandPermission(i, context, getCommandSubcommandPrefixFn, true),
     { isNormalizedCdCommand, isNormalizedGitCommand },
     astRoot,
   )
