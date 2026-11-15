@@ -1,0 +1,384 @@
+import { replWorkerMain, type ReplHostMessage, type ReplWorkerMessage, type ReplWorkerToolSpec } from './worker.js'
+
+export type ReplRunOptions = {
+  /** Script time limit; default 30000, max 600000. Time spent awaiting callTool is not counted. */
+  timeoutMs?: number
+  /** Hard cap counting everything, tool waits included (permission-asking modes: 600000). */
+  totalCapMs?: number
+  signal: AbortSignal
+  tools: readonly { name: string; scriptName: string; aliases: string[] }[]
+  callTool: (name: string, input: unknown) => Promise<unknown>
+  describeTool?: (name: string) => string | undefined
+  searchTools?: (query: string) => unknown
+}
+
+export type ReplRunResult = {
+  /** Wrapped, escaped and truncated `<repl-output>` text. */
+  output: string
+  /** Inspected last-expression value. */
+  value?: string
+  error?: string
+  timedOut?: boolean
+  interrupted?: boolean
+  /** This run started in a fresh context because the previous one was lost. */
+  contextReset?: boolean
+}
+
+export type ReplExecutor = {
+  run(code: string, o: ReplRunOptions): Promise<ReplRunResult>
+  interrupt(): void
+  release(): void
+}
+
+export const REPL_DEFAULT_TIMEOUT_MS = 30_000
+export const REPL_MAX_TIMEOUT_MS = 600_000
+/** Per-part cap (DVn in 2.1.325). */
+export const REPL_OUTPUT_PART_CHARS = 30_000
+/** REPL maxResultSizeChars in 2.1.325. */
+export const REPL_OUTPUT_TOTAL_CHARS = 100_000
+
+const INTERRUPTED = 'Interrupted'
+const SYNTAX_ERROR = 'Syntax error, so nothing ran'
+const IMPORT_KINDS: Record<string, string> = {
+  'import-statement': 'import',
+  'dynamic-import': 'import',
+  'require-call': 'require',
+}
+
+function headLength(max: number): number {
+  return Math.floor(max * 0.6)
+}
+
+/** Official `en()`: keep the first 60% and the last 40% of `max`. */
+export function elide(text: string, max: number): string {
+  if (text.length <= max) return text
+  const head = text.slice(0, headLength(max))
+  const tail = text.slice(text.length - (max - headLength(max)))
+  return `${head}\n... [${text.length - head.length - tail.length} chars elided] ...\n${tail}`
+}
+
+/** Keeps exactly what `elide(all, max)` needs without holding the whole stream. */
+class HeadTail {
+  private head = ''
+  private tail = ''
+  private total = 0
+  constructor(private readonly max: number) {}
+  push(text: string): void {
+    this.total += text.length
+    const room = headLength(this.max) - this.head.length
+    if (room > 0) {
+      this.head += text.slice(0, room)
+      text = text.slice(room)
+    }
+    if (text) this.tail = (this.tail + text).slice(-(this.max - headLength(this.max)))
+  }
+  render(): string {
+    const elided = this.total - this.head.length - this.tail.length
+    const text = elided > 0 ? `${this.head}\n... [${elided} chars elided] ...\n${this.tail}` : this.head + this.tail
+    return text.endsWith('\n') ? text.slice(0, -1) : text
+  }
+  get empty(): boolean {
+    return this.total === 0
+  }
+}
+
+function escapeOutput(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+/** Official `Ls()`: seconds under a minute, otherwise minutes and seconds. */
+export function formatReplDuration(ms: number): string {
+  if (ms < 60_000) return `${Number((ms / 1000).toFixed(3))}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Number(((ms % 60_000) / 1000).toFixed(1))
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
+}
+
+export function replTimeoutMessage(ms: number): string {
+  return `Timed out after ${formatReplDuration(ms)}, not counting time spent in tool calls`
+}
+
+export function replTotalCapMessage(ms: number): string {
+  return `REPL execution exceeded hard wall-clock limit of ${ms}ms. An inner tool call may be hung \u2014 try a shorter timeout on the tool itself, or split the work.`
+}
+
+/** Escaped text of `raw`, elided as needed so it is at most `budget` chars. */
+function fitEscaped(raw: string, budget: number, cap: number): string {
+  let max = Math.min(raw.length, cap)
+  for (let i = 0; i < 8; i++) {
+    const escaped = escapeOutput(elide(raw, max))
+    if (escaped.length <= budget) return escaped
+    max = Math.max(0, Math.floor((max * budget) / escaped.length) - 64)
+  }
+  return escapeOutput(elide(raw, 0))
+}
+
+/** stdout/stderr arrive already elided to the part cap (console buffers); error and value are capped here. */
+export function formatReplOutput(parts: { stdout?: string; stderr?: string; error?: string; value?: string }): string {
+  const items: { tag: string; text: string; cap: number }[] = []
+  if (parts.stdout) items.push({ tag: 'log', text: parts.stdout, cap: Infinity })
+  if (parts.stderr) items.push({ tag: 'log', text: `[stderr] ${parts.stderr}`, cap: Infinity })
+  if (parts.error !== undefined) items.push({ tag: 'error', text: parts.error, cap: REPL_OUTPUT_PART_CHARS })
+  else items.push({ tag: 'result', text: parts.value ?? '', cap: REPL_OUTPUT_PART_CHARS })
+  const render = (budget: number) =>
+    items
+      .map(({ tag, text, cap }) => {
+        const escaped = fitEscaped(text, budget, cap)
+        return escaped === '' ? `<${tag}/>` : `<${tag}>${escaped}</${tag}>`
+      })
+      .join('\n')
+  let body = render(Infinity)
+  // Escaping can grow a part past its share; shrink every part to fit the total.
+  if (body.length > REPL_OUTPUT_TOTAL_CHARS) body = render(Math.floor(REPL_OUTPUT_TOTAL_CHARS / items.length) - 32)
+  return `<repl-output>\n${body}\n</repl-output>`
+}
+
+let transpiler: InstanceType<typeof Bun.Transpiler> | undefined
+
+/** Top-level await and last-expression value via Bun's REPL transform; import/require rejected before anything runs. */
+export function transpileReplCode(source: string): { code: string } | { error: string } {
+  transpiler ??= new Bun.Transpiler({ loader: 'js', replMode: true })
+  const stripped = source.replace(/^#!.*/, '')
+  let code: string
+  try {
+    code = transpiler.transformSync(stripped)
+  } catch (error) {
+    return { error: `${SYNTAX_ERROR}\n${error instanceof Error ? error.message : String(error)}` }
+  }
+  let imports: { kind: string }[] = []
+  try {
+    imports = transpiler.scanImports(stripped)
+  } catch {}
+  for (const { kind } of imports) {
+    const label = IMPORT_KINDS[kind]
+    if (!label) continue
+    return {
+      error:
+        `Module loading (${label}) is not available in REPL \u2014 the vm context is sealed. ` +
+        "Use the tool globals instead: await Read({file_path: '...'}), await Glob({pattern: '...'}), the registered shell tool, etc.",
+    }
+  }
+  return { code }
+}
+
+function toReplyJson(value: unknown): string {
+  if (value === undefined) return '{"ok":true}'
+  try {
+    const json = JSON.stringify(value)
+    if (json !== undefined) return `{"ok":true,"value":${json}}`
+  } catch {}
+  return JSON.stringify({ ok: true, value: String(value) })
+}
+
+function toErrorJson(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  const reply: Record<string, unknown> = { ok: false, message }
+  if (error instanceof Error && error.name !== 'Error') reply.name = error.name
+  const detail = error && typeof error === 'object' ? (error as { detail?: unknown }).detail : undefined
+  if (detail !== undefined) {
+    try {
+      reply.detail = JSON.parse(JSON.stringify(detail))
+    } catch {
+      reply.detail = String(detail)
+    }
+  }
+  return JSON.stringify(reply)
+}
+
+let workerUrl: string | undefined
+
+function startWorker(): Worker {
+  workerUrl ??= URL.createObjectURL(new Blob([`(${replWorkerMain.toString()})()`], { type: 'text/javascript' }))
+  return new Worker(workerUrl)
+}
+
+type RunEnd = { value?: string; error?: string; timedOut?: boolean; interrupted?: boolean }
+
+type ActiveRun = {
+  id: number
+  onMessage(message: ReplWorkerMessage): void
+  finish(end: RunEnd): void
+}
+
+function clampTimeout(ms: number | undefined): number {
+  if (ms === undefined || !Number.isFinite(ms)) return REPL_DEFAULT_TIMEOUT_MS
+  return Math.min(Math.max(1, Math.floor(ms)), REPL_MAX_TIMEOUT_MS)
+}
+
+/**
+ * One persistent vm context in a Worker. A timeout, abort or interrupt
+ * terminates the Worker, which is the only way to stop a synchronous loop;
+ * the next run starts a fresh context and reports `contextReset`.
+ */
+export function createReplExecutor(): ReplExecutor {
+  let worker: Worker | undefined
+  let lost = false
+  let released = false
+  let nextRunId = 1
+  let active: ActiveRun | undefined
+  let queue: Promise<unknown> = Promise.resolve()
+
+  const kill = () => {
+    if (!worker) return
+    worker.terminate()
+    worker = undefined
+    lost = true
+  }
+
+  const ensureWorker = (): { worker: Worker; contextReset: boolean } => {
+    if (worker) return { worker, contextReset: false }
+    const contextReset = lost
+    lost = false
+    const started = startWorker()
+    // An idle context must not keep the CLI alive; a run holds its own timers.
+    ;(started as Worker & { unref?: () => void }).unref?.()
+    started.onmessage = (event: MessageEvent<ReplWorkerMessage>) => {
+      if (worker === started && active?.id === event.data.runId) active.onMessage(event.data)
+    }
+    started.onerror = (event: ErrorEvent) => {
+      if (worker !== started) return
+      event.preventDefault?.()
+      kill()
+      active?.finish({ error: `REPL worker crashed: ${event.message}` })
+    }
+    worker = started
+    return { worker: started, contextReset }
+  }
+
+  const execute = (code: string, o: ReplRunOptions): Promise<ReplRunResult> => {
+    if (released) return Promise.reject(new Error('REPL executor released'))
+    if (o.signal.aborted) return Promise.resolve({ output: formatReplOutput({ error: INTERRUPTED }), error: INTERRUPTED, interrupted: true })
+    const transpiled = transpileReplCode(code)
+    if ('error' in transpiled) return Promise.resolve({ output: formatReplOutput({ error: transpiled.error }), error: transpiled.error })
+
+    const { worker: target, contextReset } = ensureWorker()
+    const timeoutMs = clampTimeout(o.timeoutMs)
+    const stdout = new HeadTail(REPL_OUTPUT_PART_CHARS)
+    const stderr = new HeadTail(REPL_OUTPUT_PART_CHARS)
+    const specs: ReplWorkerToolSpec[] = o.tools.map(tool => ({
+      name: tool.name,
+      names: [...new Set([tool.scriptName, tool.name, ...tool.aliases])],
+    }))
+    const descriptions: Record<string, string> = {}
+    for (const tool of o.tools) {
+      try {
+        const description = o.describeTool?.(tool.name)
+        if (description !== undefined) descriptions[tool.name] = description
+      } catch {}
+    }
+
+    return new Promise<ReplRunResult>(resolve => {
+      const id = nextRunId++
+      // Script time: wall time while no tool call is pending.
+      let used = 0
+      let since: number | undefined = performance.now()
+      let pendingCalls = 0
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined
+      let capTimer: ReturnType<typeof setTimeout> | undefined
+      let settled = false
+
+      const arm = () => {
+        clearTimeout(budgetTimer)
+        if (since === undefined) return
+        const remaining = timeoutMs - used - (performance.now() - since)
+        budgetTimer = setTimeout(() => run.finish({ error: replTimeoutMessage(timeoutMs), timedOut: true }), Math.max(0, remaining))
+      }
+      const pause = () => {
+        if (since !== undefined) used += performance.now() - since
+        since = undefined
+        clearTimeout(budgetTimer)
+      }
+      const resume = () => {
+        since = performance.now()
+        arm()
+      }
+      const onAbort = () => run.finish({ error: INTERRUPTED, interrupted: true })
+
+      const answer = (callId: number, work: () => unknown) => {
+        if (pendingCalls++ === 0) pause()
+        void Promise.resolve()
+          .then(work)
+          .then(toReplyJson, toErrorJson)
+          .then(json => {
+            if (settled || worker !== target) return
+            if (--pendingCalls === 0) resume()
+            target.postMessage({ t: 'reply', id: callId, json } satisfies ReplHostMessage)
+          })
+      }
+
+      const run: ActiveRun = {
+        id,
+        onMessage(message) {
+          if (settled) return
+          if (message.t === 'log') (message.stream === 1 ? stderr : stdout).push(`${message.text}\n`)
+          else if (message.t === 'done') run.finish({ value: message.value, error: message.error })
+          else if (message.t === 'call') {
+            const input = message.input === undefined ? undefined : JSON.parse(message.input)
+            if (message.kind === 'search') {
+              answer(message.id, () => {
+                if (!o.searchTools) throw new Error('searchTools is not available in this REPL call')
+                return o.searchTools(input as string)
+              })
+            } else answer(message.id, () => o.callTool(message.name, input))
+          }
+        },
+        finish(end) {
+          if (settled) return
+          settled = true
+          clearTimeout(budgetTimer)
+          clearTimeout(capTimer)
+          o.signal.removeEventListener('abort', onAbort)
+          if (active === run) active = undefined
+          // The only way to stop the script; the context goes with it.
+          if (end.timedOut || end.interrupted) kill()
+          const output = formatReplOutput({
+            stdout: stdout.empty ? undefined : stdout.render(),
+            stderr: stderr.empty ? undefined : stderr.render(),
+            error: end.error,
+            value: end.value,
+          })
+          resolve({
+            output,
+            ...(end.value === undefined ? {} : { value: end.value }),
+            ...(end.error === undefined ? {} : { error: end.error }),
+            ...(end.timedOut ? { timedOut: true } : {}),
+            ...(end.interrupted ? { interrupted: true } : {}),
+            ...(contextReset ? { contextReset: true } : {}),
+          })
+        },
+      }
+
+      active = run
+      o.signal.addEventListener('abort', onAbort, { once: true })
+      if (o.totalCapMs !== undefined) {
+        const cap = Math.max(1, o.totalCapMs)
+        capTimer = setTimeout(() => run.finish({ error: replTotalCapMessage(cap), timedOut: true }), cap)
+      }
+      arm()
+      target.postMessage({
+        t: 'run',
+        runId: id,
+        code: transpiled.code,
+        tools: JSON.stringify(specs),
+        descriptions: JSON.stringify(descriptions),
+        search: o.searchTools !== undefined,
+      } satisfies ReplHostMessage)
+    })
+  }
+
+  return {
+    run(code, o) {
+      const result = queue.then(() => execute(code, o))
+      queue = result.catch(() => {})
+      return result
+    },
+    interrupt() {
+      active?.finish({ error: INTERRUPTED, interrupted: true })
+    },
+    release() {
+      released = true
+      active?.finish({ error: INTERRUPTED, interrupted: true })
+      kill()
+    },
+  }
+}
