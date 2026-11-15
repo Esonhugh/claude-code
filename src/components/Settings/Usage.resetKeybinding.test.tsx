@@ -4,6 +4,7 @@ import { Readable, Writable } from 'node:stream'
 import { spyOn } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
+import type { ChatGPTUsageCredits } from '../../services/api/usage.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -21,6 +22,7 @@ let omitDetails = false
 let longList = false
 let finishDetails: (() => void) | undefined
 let usageSource: 'chatgpt' | 'claude' = 'chatgpt'
+let credits: ChatGPTUsageCredits | null | undefined = { balance: 1234.5, has_credits: true }
 const resetCredit = {
   id: 'fixture-credit',
   reset_type: 'codex_rate_limits',
@@ -75,6 +77,7 @@ const mocks = [
     fetchCount += 1
     return {
       source: usageSource,
+      credits,
       chatgpt_limits: [{ title: 'ChatGPT Codex weekly usage', limit: { utilization: 25, resets_at: null } }],
       rate_limit_reset_credits: { available_count: 1 },
     }
@@ -188,6 +191,7 @@ try {
   await settle()
   const initialOutput = stripAnsi(stdout.output)
   assert.match(initialOutput, /2 available/)
+  assert.match(initialOutput, /1,234\.5 credits remaining/)
   assert.match(initialOutput, /█[^\n]* 25% used/)
   assert.ok(initialOutput.split('\n').some(line => line.includes('Usage details') && line.includes('Reset credits')), 'wide layout must show both headings on the same row')
   assert.ok(initialOutput.includes(`Granted: ${formatTime(resetCredit.granted_at)}`))
@@ -261,6 +265,7 @@ try {
   await settle()
   assert.equal(detailsFetchCount, 4)
   assert.doesNotMatch(stripAnsi(stdout.output), /Reset credits|Use this reset|Used reset history/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /credits remaining/)
 
   usageSource = 'chatgpt'
   omitDetails = true
@@ -341,6 +346,31 @@ try {
   await settle()
   assert.equal(backgroundInputCount, 0)
   assert.deepEqual(consumedIds, ['second-credit'])
+
+  longList = false
+  const creditCases = [
+    { value: { balance: 0, has_credits: false }, expected: /0 credits remaining/ },
+    { value: { unlimited: true, balance: 42 }, expected: /Unlimited/ },
+    { value: { has_credits: false }, expected: /No credits available/ },
+    { value: { has_credits: true, balance: null }, expected: /Balance unavailable/ },
+    { value: { balance: 5, overage_limit_reached: true }, expected: /Overage limit reached/ },
+    { value: null, expected: null },
+    { value: undefined, expected: null },
+  ]
+  for (const [index, scenario] of creditCases.entries()) {
+    credits = scenario.value
+    stdout.output = ''
+    const requestsBefore = fetchCount
+    instance.rerender(<Usage key={`credits-${index}`} />)
+    await waitFor(() => fetchCount > requestsBefore, 'credits usage was not requested')
+    await settle()
+    const output = stripAnsi(stdout.output)
+    if (scenario.expected) assert.match(output, scenario.expected)
+    else assert.doesNotMatch(output, /credits remaining|No credits available|Balance unavailable|Unlimited/)
+    assert.match(output, /ChatGPT Codex weekly usage/)
+    assert.match(output, /Reset credits/)
+    assert.deepEqual(consumedIds, ['second-credit'], 'displaying credits must not consume resets')
+  }
 } finally {
   instance.unmount()
   instance.cleanup()

@@ -445,6 +445,24 @@ export function Usage({
       <Text bold color="permission">Usage details</Text>
       {accountLine && <Text dimColor>{accountLine}</Text>}
 
+      {utilization.source === 'chatgpt' && utilization.credits && (
+        <Box flexDirection="column">
+          <Text bold>Credits</Text>
+          <Text>
+            {utilization.credits.unlimited
+              ? 'Unlimited'
+              : typeof utilization.credits.balance === 'number'
+                ? `${utilization.credits.balance.toLocaleString('en-US')} credits remaining`
+                : utilization.credits.has_credits === false
+                  ? 'No credits available'
+                  : 'Balance unavailable'}
+          </Text>
+          {utilization.credits.overage_limit_reached && (
+            <Text color="warning">Overage limit reached</Text>
+          )}
+        </Box>
+      )}
+
       {hasPlanUsage || (
         <Text dimColor>/usage is only available for subscription plans.</Text>
       )}
