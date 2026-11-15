@@ -23,12 +23,12 @@
 
 ## 3. 测试工具（先做）
 
-1. **官方字符串抽取脚本** `scripts/code-mode/extract-official.ts`：解包 2.1.325，抽出 REPL/Poll 的 prompt、input schema、错误和提示文案、常量（超时、上限、并发），输出 JSON。不进仓库产物，只进 `/tmp/cmx`。
+1. **官方字符串抽取脚本** `extract-official.ts`：解包 2.1.325，抽出 REPL/Poll 的 prompt、input schema、错误和提示文案、常量（超时、上限、并发），输出 JSON。不进仓库产物，只进 `/tmp/cmx`。
 2. **mock API**：本地 HTTP 服务，按场景文件依次返回 assistant 消息（含 REPL tool_use），把每次收到的请求体存成 JSONL。两边二进制共用。
 3. **场景驱动**：tmux 启动二进制，独立 `HOME` 和 `CLAUDE_CONFIG_DIR`，跑完收集 transcript、debug log、请求体。headless 场景用 `-p --output-format stream-json`。
 4. **对比报告生成**：把 L1 JSON、请求体、transcript 规整后做 diff，生成一张表。
 
-工具放在 `scripts/code-mode/`，验证结束后决定留不留；证据放 `/tmp/cmx/conformance/`，任何日志写盘前过一遍密钥脱敏。
+工具放在 skill `.claude/skills/code-mode-conformance/scripts/`，执行流程见该 skill；证据放 `/tmp/cmx/conformance/`，任何日志写盘前过一遍密钥脱敏。
 
 ## 4. 验证维度
 
