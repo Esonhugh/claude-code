@@ -51,6 +51,8 @@ version: 0.1.0
 
 以 `docs/plan/code-mode.md` 的 D1–D5 和"Phase 3 遗留"为准，执行前重读。截至 2026-11-15：
 
+- 开关只有 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` 环境变量；不移植官方的 GrowthBook gate `tengu_rustling_blossom`，也不加 settings 或 `/config` 开关。
+- 支持 API billing（API key）：不移植官方的 provider、credentials、订阅类拒绝原因，自定义 `ANTHROPIC_BASE_URL` 下也能开启。
 - D2：超时、Esc 后 vm context 丢失，下次结果提示 `contextReset`；官方保留。
 - D3：开关拒绝原因只有少数几种；teammate 拿普通工具。ant 构建例外。
 - D4：mods 的 tool.call hook 照常触发；官方装了这类 mod 拒绝开启。
