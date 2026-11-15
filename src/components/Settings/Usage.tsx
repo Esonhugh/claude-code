@@ -435,6 +435,12 @@ export function Usage({
         ...getModelScopedUsageLimits(utilization.limits),
       ]
   const accountLine = formatOpenAIAccountLine(utilization.openai_account)
+  const creditBalance = utilization.credits?.balance
+  const numericCreditBalance = typeof creditBalance === 'string' && creditBalance.trim() !== ''
+    ? Number(creditBalance)
+    : typeof creditBalance === 'number' ? creditBalance : NaN
+  const displayedCreditBalance = Number.isFinite(numericCreditBalance) && numericCreditBalance >= 0
+    ? numericCreditBalance : 0
 
   const hasPlanUsage = limits.some(({ limit }) => typeof limit?.utilization === 'number')
   // API-key and gateway users get no plan limits; show only the session cost.
@@ -445,19 +451,16 @@ export function Usage({
       <Text bold color="permission">Usage details</Text>
       {accountLine && <Text dimColor>{accountLine}</Text>}
 
-      {utilization.source === 'chatgpt' && utilization.credits && (
+      {utilization.source === 'chatgpt' && (
         <Box flexDirection="column">
           <Text bold>Credits</Text>
           <Text>
-            {utilization.credits.unlimited
-              ? 'Unlimited'
-              : typeof utilization.credits.balance === 'number'
-                ? `${utilization.credits.balance.toLocaleString('en-US')} credits remaining`
-                : utilization.credits.has_credits === false
-                  ? 'No credits available'
-                  : 'Balance unavailable'}
+            {utilization.credits?.unlimited
+              ? 'Credits: Unlimited, USD: N/A'
+              : `Credits: ${displayedCreditBalance.toLocaleString('en-US', { maximumFractionDigits: 20 })}, USD: $${(displayedCreditBalance / 25).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </Text>
-          {utilization.credits.overage_limit_reached && (
+          <Text dimColor>Reference only (25 credits/USD), not session cost</Text>
+          {utilization.credits?.overage_limit_reached && (
             <Text color="warning">Overage limit reached</Text>
           )}
         </Box>

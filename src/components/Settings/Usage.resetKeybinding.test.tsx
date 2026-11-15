@@ -191,7 +191,7 @@ try {
   await settle()
   const initialOutput = stripAnsi(stdout.output)
   assert.match(initialOutput, /2 available/)
-  assert.match(initialOutput, /1,234\.5 credits remaining/)
+  assert.match(initialOutput, /Credits: 1,234\.5, USD: \$49\.38/)
   assert.match(initialOutput, /█[^\n]* 25% used/)
   assert.ok(initialOutput.split('\n').some(line => line.includes('Usage details') && line.includes('Reset credits')), 'wide layout must show both headings on the same row')
   assert.ok(initialOutput.includes(`Granted: ${formatTime(resetCredit.granted_at)}`))
@@ -265,7 +265,7 @@ try {
   await settle()
   assert.equal(detailsFetchCount, 4)
   assert.doesNotMatch(stripAnsi(stdout.output), /Reset credits|Use this reset|Used reset history/)
-  assert.doesNotMatch(stripAnsi(stdout.output), /credits remaining/)
+  assert.doesNotMatch(stripAnsi(stdout.output), /Credits:|25 credits\/USD/)
 
   usageSource = 'chatgpt'
   omitDetails = true
@@ -349,13 +349,22 @@ try {
 
   longList = false
   const creditCases = [
-    { value: { balance: 0, has_credits: false }, expected: /0 credits remaining/ },
-    { value: { unlimited: true, balance: 42 }, expected: /Unlimited/ },
-    { value: { has_credits: false }, expected: /No credits available/ },
-    { value: { has_credits: true, balance: null }, expected: /Balance unavailable/ },
+    { value: { balance: '1234.56789', has_credits: true }, expected: /Credits: 1,234\.56789, USD: \$49\.38/ },
+    { value: { balance: 12500 }, expected: /Credits: 12,500, USD: \$500\.00/ },
+    { value: { balance: '62500' }, expected: /Credits: 62,500, USD: \$2,500\.00/ },
+    { value: { balance: 0.125 }, expected: /Credits: 0\.125, USD: \$0\.01/ },
+    { value: { balance: '0', has_credits: false }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { balance: '', has_credits: true }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { balance: 'invalid', has_credits: true }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { balance: 'Infinity', has_credits: true }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { balance: '-1', has_credits: true }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { balance: 0, has_credits: false }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { unlimited: true, balance: 42 }, expected: /Credits: Unlimited, USD: N\/A/ },
+    { value: { has_credits: false }, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: { has_credits: true, balance: null }, expected: /Credits: 0, USD: \$0\.00/ },
     { value: { balance: 5, overage_limit_reached: true }, expected: /Overage limit reached/ },
-    { value: null, expected: null },
-    { value: undefined, expected: null },
+    { value: null, expected: /Credits: 0, USD: \$0\.00/ },
+    { value: undefined, expected: /Credits: 0, USD: \$0\.00/ },
   ]
   for (const [index, scenario] of creditCases.entries()) {
     credits = scenario.value
@@ -365,10 +374,10 @@ try {
     await waitFor(() => fetchCount > requestsBefore, 'credits usage was not requested')
     await settle()
     const output = stripAnsi(stdout.output)
-    if (scenario.expected) assert.match(output, scenario.expected)
-    else assert.doesNotMatch(output, /credits remaining|No credits available|Balance unavailable|Unlimited/)
+    assert.match(output, scenario.expected)
     assert.match(output, /ChatGPT Codex weekly usage/)
     assert.match(output, /Reset credits/)
+    assert.match(output, /Reference only \(25 credits\/USD\), not session cost/)
     assert.deepEqual(consumedIds, ['second-credit'], 'displaying credits must not consume resets')
   }
 } finally {
