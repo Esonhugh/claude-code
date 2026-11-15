@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - **类型**：实施计划
-- **状态**：实施中。D1–D5 按建议方案执行；Phase 0–2 已完成（2026-11-15）
+- **状态**：实施中。D1–D5 按建议方案执行；Phase 0–3 已完成（2026-11-15），Phase 4–5 未开始
 - **日期**：2026-11-15
 - **对照版本**：官方 2.1.325，分析见 [`research/code-mode-325-20261115.md`](../research/code-mode-325-20261115.md)，模块备份在 [`recover/claude-v2.1.325-code-mode/`](../../recover/claude-v2.1.325-code-mode/README.md)
 - **证据边界**：官方行为来自静态阅读，没有用真实账号运行过 Code Mode；本地调用点按 2026-11-15 的工作树核对，实施前要重新检查
@@ -129,9 +129,9 @@
 3. 其他 prompt 段：更新 `src/constants/prompts.ts:284` 的 REPL 分支；memory 段把 "with the Write tool" 换成 `write(path, content)`；Chrome 段改成 Code Mode 下不可用的说明。
 4. 会话：每个 agent 一个 context，key 是 `agentId ?? "main"`。compaction、resume、fork 之后重建，第一次结果附上官方的提示。
 5. helper：`file`/`write`/`edit`（Write 因未读失败时先读再重试）、`$`、`preview`。
-6. transcript：确认 `sessionStorage.ts` 的外部 transcript 转换和 `collapseReadSearch.ts` 的渲染能处理 Phase 1 产生的虚拟消息。
+6. transcript：照官方 `j4e`，Code Mode 会话保留 REPL 外壳和虚拟消息，不做外部 transcript 转换；写入 `repl-mode` 元数据（last-wins），缺失时用 `<repl-output` 推断；开关关闭时 resume 注入 "Do not call REPL or Poll…" 提醒。见 `docs/research/code-mode-compat-20261115.md`。
 
-测试：prompt 快照；变量跨调用保留；compaction 后的提示；resume 后的 transcript 是原生工具调用形式；auto mode 下分类器收到整段 `code`。
+测试：prompt 快照；变量跨调用保留；compaction 后的提示；resume 后保留 REPL 外壳和虚拟消息；auto mode 下分类器收到整段 `code`。
 
 ### Phase 4 后台执行与 Poll
 
@@ -165,6 +165,14 @@ Phase 3 完成后开始，用 `./official-claude`（先 `make download-claude` �
 
 官方的 GrowthBook gate 在没有资格的账号上会拒绝，这时只能比较请求体和 prompt 文本，不能比较运行结果。
 
+Phase 3 遗留：
+
+- 主线程 `--agent` 启动时，脚本内可调用工具没有按 agent 定义限定（`REPL.tsx`、`print.ts`）。
+- 子 agent 结束时没有调用 `releaseReplSession(agentId)`。
+- compaction 附件里列出脚本全局变量；官方 prompt 的 `repl_working` 段未移植。
+- Remote Control 在会话中途开启时，开关不会重新判定。
+- 超时后上下文重置的提示文案是自拟的，不是官方原文。
+
 ## 6. 风险
 
 - **auto mode 的分类器只看一次**：脚本里的每次调用仍然走权限判定，但 auto mode 下分类器只审整段 `code`。确认对话框必须说清这一点（D3）。
@@ -179,7 +187,7 @@ Phase 3 完成后开始，用 `./official-claude`（先 `make download-claude` �
 
 ## 8. 未决问题
 
-- D1–D5 的选择。
-- 官方的 `$`（shell helper）和 `preview` 的确切语义，要在 Phase 3 前从备份模块里核对。
+- `$` 目前是官方 shell helper 的子集：没有 spill 文件、后台 `running` 和非沙箱重试。
+- 官方 REPL 实际运行没有观察到：自定义 `ANTHROPIC_BASE_URL` 时官方以 `provider` 拒绝开启，本机连不上 firstParty（ECONNRESET）。第 5 节的对照需要能直连 Anthropic API 的环境。
 - 官方主循环是否也调用 `Fi()` 里的 `ron`、`oon`、`z_t`：静态阅读还没确认，这影响 D1 中“与官方一致”的程度。
 - Code Mode 下 agent/team helper（`spawnContext` 等）是否真的不安装：现有结论是推断，Phase 3 前要再核对。
