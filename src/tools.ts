@@ -16,10 +16,6 @@ import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-const REPLTool =
-  isAnt()
-    ? require('./tools/REPLTool/REPLTool.js').REPLTool
-    : null
 const SuggestBackgroundPRTool =
   isAnt()
     ? require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
@@ -144,12 +140,33 @@ import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
 import {
   REPL_TOOL_NAME,
-  REPL_ONLY_TOOLS,
+  CODE_MODE_ONLY_TOOLS,
   isReplModeEnabled,
 } from './tools/REPLTool/constants.js'
+import { isCodeModeEnabled } from './tools/REPLTool/codeModeGate.js'
 import { isAnt } from 'src/utils/userType.js'
 
-export { REPL_ONLY_TOOLS }
+export { CODE_MODE_ONLY_TOOLS }
+/* eslint-disable @typescript-eslint/no-require-imports */
+let replTool: Tool | null | undefined
+/**
+ * REPL loads only when Code Mode (or the ant REPL default) asks for it. The
+ * module may be absent: a source run throws on require, and the release
+ * build's missing-module shim hands back a Proxy whose `name` is a function,
+ * so only a real tool with a string name counts.
+ */
+export function getREPLTool(): Tool | null {
+  if (replTool !== undefined) return replTool
+  if (!isAnt() && !isCodeModeEnabled()) return null
+  try {
+    const tool = (require('./tools/REPLTool/REPLTool.js') as { REPLTool?: Tool }).REPLTool
+    replTool = typeof tool?.name === 'string' ? tool : null
+  } catch {
+    replTool = null
+  }
+  return replTool
+}
+/* eslint-enable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-require-imports */
 const getPowerShellTool = () => {
   if (!isPowerShellToolEnabled()) return null
@@ -238,7 +255,7 @@ export function getAllBaseTools(
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
-    ...(isAnt() && REPLTool ? [REPLTool] : []),
+    ...(getREPLTool() ? [getREPLTool()!] : []),
     ...getWorkflowTools(),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
@@ -291,9 +308,10 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     // --bare + REPL mode: REPL wraps Bash/Read/Edit/etc inside the VM, so
     // return REPL instead of the raw primitives. Matches the non-bare path
-    // below which also hides REPL_ONLY_TOOLS when REPL is enabled.
-    if (isReplModeEnabled() && REPLTool) {
-      const replSimple: Tool[] = [REPLTool]
+    // below which also hides CODE_MODE_ONLY_TOOLS when REPL is enabled.
+    const repl = isReplModeEnabled() ? getREPLTool() : null
+    if (repl) {
+      const replSimple: Tool[] = [repl]
       if (permissionContext.mode === 'plan') replSimple.push(ExitPlanModeV2Tool)
       if (
         feature('COORDINATOR_MODE') &&
@@ -343,7 +361,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     )
     if (replEnabled) {
       allowedTools = allowedTools.filter(
-        tool => !REPL_ONLY_TOOLS.has(tool.name),
+        tool => !CODE_MODE_ONLY_TOOLS.has(tool.name),
       )
     }
   }

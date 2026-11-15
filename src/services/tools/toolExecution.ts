@@ -42,6 +42,7 @@ import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall } from '../../tools/REPLTool/codeModeGate.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
@@ -474,6 +475,8 @@ export function unknownToolSuffix(
   sessionToolNames: readonly string[] = [],
   embeddedSearch = hasEmbeddedSearchTools(),
 ): string {
+  const codeModeOnly = codeModeOnlyToolSuffix(toolName, sessionToolNames)
+  if (codeModeOnly) return codeModeOnly
   if (embeddedSearch && (toolName === 'Glob' || toolName === 'Grep')) {
     if (!sessionToolNames.includes(BASH_TOOL_NAME))
       return `. ${toolName} is disabled for this session.`
@@ -578,6 +581,9 @@ export async function* runToolUse(
     toolName,
     toolUseContext.options.mcpClients,
   )
+
+  // Code Mode: a tool hidden from the API answers as missing to a model call.
+  if (tool && codeModeRefusesDirectCall(tool, currentTools, toolUseContext)) tool = undefined
 
   // Check if the tool exists
   if (!tool) {

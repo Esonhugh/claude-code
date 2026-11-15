@@ -278,8 +278,8 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
     enabledTools.has(n),
   )
 
-  // In REPL mode, Read/Write/Edit/Glob/Grep/Bash/Agent are hidden from direct
-  // use (REPL_ONLY_TOOLS). The "prefer dedicated tools over Bash" guidance is
+  // In REPL mode, the REPL primitives are hidden from direct use
+  // (REPL_PRIMITIVE_TOOL_NAMES). The "prefer dedicated tools over Bash" guidance is
   // irrelevant — REPL's own prompt covers how to call them from scripts.
   if (isReplModeEnabled()) {
     const items = [

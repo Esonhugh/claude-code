@@ -1,0 +1,89 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { getEmptyToolPermissionContext } from './Tool.js'
+import { getIsInteractive, setIsInteractive } from './bootstrap/state.js'
+import { resetSettingsCache, setSessionSettingsCache } from './utils/settings/settingsCache.js'
+
+;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+  VERSION: 'test',
+  ISSUES_EXPLAINER: 'report an issue',
+}
+
+const { getAllBaseTools, getREPLTool, getTools } = await import('./tools.js')
+const { hideCodeModeOnlyTools, resetCodeModeGateForTesting } = await import('./tools/REPLTool/codeModeGate.js')
+const { isReplModeEnabled } = await import('./tools/REPLTool/constants.js')
+const { getReplPrimitiveTools } = await import('./tools/REPLTool/primitiveTools.js')
+
+const envKeys = [
+  'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SIMPLE',
+  'CLAUDE_CODE_REPL',
+  'CLAUDE_REPL_MODE',
+] as const
+const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
+const savedInteractive = getIsInteractive()
+
+const names = (tools: readonly { name: string }[]) => tools.map(tool => tool.name)
+
+beforeEach(() => {
+  for (const key of envKeys) delete process.env[key]
+  setSessionSettingsCache({ settings: {}, errors: [] })
+  setIsInteractive(true)
+  process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
+  resetCodeModeGateForTesting()
+})
+
+afterEach(() => {
+  for (const key of envKeys) {
+    if (savedEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[key]
+  }
+  setIsInteractive(savedInteractive)
+  resetSettingsCache()
+  resetCodeModeGateForTesting()
+})
+
+describe('tool pool with Code Mode off', () => {
+  test('keeps the ordinary tools and adds no REPL', () => {
+    expect(isReplModeEnabled()).toBe(false)
+    expect(getREPLTool()).toBeNull()
+    const pool = getTools(getEmptyToolPermissionContext())
+    const poolNames = names(pool)
+    expect(poolNames).not.toContain('REPL')
+    for (const name of ['Read', 'Write', 'Edit', 'Bash', 'NotebookEdit'])
+      expect(poolNames).toContain(name)
+    expect(names(getAllBaseTools())).not.toContain('REPL')
+    // The API list is the pool itself, by identity.
+    expect(hideCodeModeOnlyTools(pool)).toBe(pool)
+  })
+
+  test('simple mode keeps Bash, Read and Edit', () => {
+    process.env.CLAUDE_CODE_SIMPLE = '1'
+    expect(names(getTools(getEmptyToolPermissionContext()))).toEqual(
+      expect.arrayContaining(['Bash', 'Read', 'Edit']),
+    )
+    expect(names(getTools(getEmptyToolPermissionContext()))).not.toContain('REPL')
+  })
+})
+
+describe('tool pool with Code Mode on but no REPL module yet', () => {
+  test('leaves the pool as it is when REPLTool cannot be loaded', () => {
+    const before = names(getTools(getEmptyToolPermissionContext()))
+    resetCodeModeGateForTesting()
+    process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    expect(isReplModeEnabled()).toBe(true)
+    expect(getREPLTool()).toBeNull()
+    const pool = getTools(getEmptyToolPermissionContext())
+    expect(names(pool)).toEqual(before)
+    expect(hideCodeModeOnlyTools(pool)).toBe(pool)
+  })
+})
+
+describe('REPL primitives', () => {
+  test('carry no Agent tool', () => {
+    expect(names(getReplPrimitiveTools())).not.toContain('Agent')
+    expect(names(getReplPrimitiveTools())).toEqual(
+      expect.arrayContaining(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'NotebookEdit']),
+    )
+  })
+})
