@@ -31,6 +31,6 @@ describe('REPLTool module isolation', () => {
       new URL('./codeModeGate.ts', import.meta.url).pathname,
       'm.isCodeModeEnabled(), m.codeModeOnlyToolError("Read")',
     )
-    expect(out).toBe('false Read is only available inside REPL. Use REPL with code: await Read({...})')
+    expect(out).toBe('false Read is only available inside REPL. Use REPL with code: await Read({...}).')
   }, 30_000)
 })

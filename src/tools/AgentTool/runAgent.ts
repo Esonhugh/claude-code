@@ -124,8 +124,10 @@ import {
   filterToolsForExactAgent,
   findUnresolvedToolUses,
   isToolDisallowedForAgent,
+  primitiveToolGrant,
   resolveAgentTools,
 } from './agentToolUtils.js'
+import { isCodeModeEnabled, withoutCodeModeTools } from '../REPLTool/codeModeGate.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import {
   capAgentPermissionMode,
@@ -804,11 +806,17 @@ export async function* runAgent({
     }
   }
 
+  // An in-process teammate starts from the leader's pool but keeps the
+  // ordinary tools when the leader runs Code Mode (D3).
+  const agentAvailableTools = withoutCodeModeTools(
+    availableTools,
+    appState.toolPermissionContext,
+  )
   const resolvedTools = useExactTools
-    ? filterToolsForExactAgent(availableTools)
+    ? filterToolsForExactAgent(agentAvailableTools)
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
-        availableTools,
+        agentAvailableTools,
         filterToolsAsAsync,
         false,
         // Same depth the Agent tool's call-time limit check reads.
@@ -1160,6 +1168,14 @@ export async function* runAgent({
   // Preserve tool use results for subagents with viewable transcripts (in-process teammates)
   if (preserveToolUseResults) {
     agentToolUseContext.preserveToolUseResults = true
+  }
+
+  // A fork keeps its parent's grant; any other agent gets the primitives its
+  // own tools list names (official VQt).
+  if (isCodeModeEnabled()) {
+    agentToolUseContext.primitiveToolGrant = useExactTools
+      ? toolUseContext.primitiveToolGrant
+      : primitiveToolGrant(agentDefinition)
   }
 
   // Record initial messages before the query loop starts, plus the agentType

@@ -91,6 +91,13 @@ import {
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import {
+  CODE_MODE_ONLY_TOOLS,
+  POLL_TOOL_NAME,
+  REPL_PRIMITIVE_TOOL_NAMES,
+  REPL_TOOL_NAME,
+} from '../REPLTool/constants.js'
+import { isCodeModeEnabled } from '../REPLTool/codeModeGate.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { APPLY_PATCH_TOOL_NAME } from '../ApplyPatchTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
@@ -281,7 +288,7 @@ export function resolveAgentTools(
       hasWildcard: true,
       validTools: [],
       invalidTools: [],
-      resolvedTools: allowedAvailableTools,
+      resolvedTools: withoutOrphanPoll(allowedAvailableTools, isMainThread),
     }
   }
 
@@ -289,6 +296,7 @@ export function resolveAgentTools(
   for (const tool of allowedAvailableTools) {
     availableToolMap.set(tool.name, tool)
   }
+  const replTool = isCodeModeEnabled() ? availableToolMap.get(REPL_TOOL_NAME) : undefined
 
   const validTools: string[] = []
   const invalidTools: string[] = []
@@ -364,18 +372,53 @@ export function resolveAgentTools(
         resolved.push(tool)
         resolvedToolsSet.add(tool)
       }
+    } else if (replTool && CODE_MODE_ONLY_TOOLS.has(toolName)) {
+      // Code Mode took Read, Bash, ... out of the pool; the agent reaches them
+      // through REPL, limited by its primitiveToolGrant (official yM).
+      validTools.push(toolSpec)
+      if (!resolvedToolsSet.has(replTool)) {
+        resolved.push(replTool)
+        resolvedToolsSet.add(replTool)
+      }
     } else {
       invalidTools.push(toolSpec)
     }
+  }
+
+  const pollTool = availableToolMap.get(POLL_TOOL_NAME)
+  if (replTool && resolvedToolsSet.has(replTool) && pollTool && !resolvedToolsSet.has(pollTool)) {
+    resolved.push(pollTool)
   }
 
   return {
     hasWildcard: false,
     validTools,
     invalidTools,
-    resolvedTools: resolved,
+    resolvedTools: withoutOrphanPoll(resolved, isMainThread),
     allowedAgentTypes,
   }
+}
+
+/** Poll only answers REPL runs, so a subagent left without REPL loses it too (official Ma). */
+function withoutOrphanPoll(tools: Tools, isMainThread: boolean): Tools {
+  if (isMainThread || !isCodeModeEnabled() || tools.some(tool => toolMatchesName(tool, REPL_TOOL_NAME))) {
+    return tools
+  }
+  return tools.filter(tool => !toolMatchesName(tool, POLL_TOOL_NAME))
+}
+
+/**
+ * The Code Mode primitives an agent's REPL scripts may call: its tools list
+ * resolved against REPL_PRIMITIVE_TOOL_NAMES, so a wildcard or no list grants
+ * all of them and disallowedTools takes some away (official VQt).
+ */
+export function primitiveToolGrant(
+  agentDefinition: Pick<AgentDefinition, 'tools' | 'disallowedTools' | 'source' | 'permissionMode'>,
+): ReadonlySet<string> {
+  const primitives = [...REPL_PRIMITIVE_TOOL_NAMES].map(name => ({ name }) as Tool)
+  return new Set(
+    resolveAgentTools(agentDefinition, primitives, false, true).resolvedTools.map(tool => tool.name),
+  )
 }
 
 export const agentToolResultSchema = lazySchema(() =>

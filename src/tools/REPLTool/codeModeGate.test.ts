@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import type { Tool } from '../../Tool.js'
+import { getEmptyToolPermissionContext, type Tool } from '../../Tool.js'
 import { getIsInteractive, getIsRemoteMode, setIsInteractive, setIsRemoteMode } from '../../bootstrap/state.js'
 import { clearDynamicTeamContext, setDynamicTeamContext } from '../../utils/teammate.js'
+import { createTeammateContext, runWithTeammateContext } from '../../utils/teammateContext.js'
 import {
+  codeModeChromeUnavailableText,
   codeModeOnlyToolError,
   codeModeOnlyToolSuffix,
   codeModeRefusesDirectCall,
@@ -11,6 +13,8 @@ import {
   hideCodeModeOnlyTools,
   isCodeModeEnabled,
   resetCodeModeGateForTesting,
+  settleCodeModeGate,
+  withoutCodeModeTools,
 } from './codeModeGate.js'
 import { CODE_MODE_ONLY_TOOLS, isReplModeEnabled, REPL_PRIMITIVE_TOOL_NAMES } from './constants.js'
 
@@ -32,6 +36,17 @@ function turnOn(): void {
   process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
   process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
   setIsInteractive(true)
+}
+
+function teammateContext() {
+  return createTeammateContext({
+    agentId: 'w@t',
+    agentName: 'w',
+    teamName: 't',
+    planModeRequired: false,
+    parentSessionId: 'leader',
+    abortController: new AbortController(),
+  })
 }
 
 function tool(name: string, extra: Partial<Tool> = {}): Tool {
@@ -85,10 +100,35 @@ describe('isCodeModeEnabled', () => {
     expect(isReplModeEnabled()).toBe(false)
   })
 
-  test('memoizes the first decision', () => {
-    turnOn()
+  test('decides afresh until startup settles it', () => {
+    process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
+    expect(isCodeModeEnabled()).toBe(false)
+    setIsInteractive(true)
     expect(isCodeModeEnabled()).toBe(true)
+  })
+
+  test('pins the decision once startup settles it', () => {
+    turnOn()
+    expect(settleCodeModeGate({ remoteControl: false, remote: false })).toEqual({ enabled: true })
     delete process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE
+    expect(isCodeModeEnabled()).toBe(true)
+  })
+
+  test('the Remote Control ask and --remote refuse it at settle time', () => {
+    turnOn()
+    expect(settleCodeModeGate({ remoteControl: true, remote: false })).toEqual({ enabled: false, reason: 'unattended' })
+    expect(settleCodeModeGate({ remoteControl: false, remote: true })).toEqual({ enabled: false, reason: 'entrypoint' })
+  })
+
+  test('in-process teammates are refused per context while the leader keeps it', async () => {
+    turnOn()
+    settleCodeModeGate({ remoteControl: false, remote: false })
+    const inTeammate = await runWithTeammateContext(teammateContext(), async () => {
+      await Promise.resolve()
+      return getCodeModeState()
+    })
+    expect(inTeammate).toEqual({ enabled: false, reason: 'unattended' })
     expect(isCodeModeEnabled()).toBe(true)
   })
 
@@ -173,28 +213,61 @@ describe('hiding', () => {
     expect(hideCodeModeOnlyTools(pool)).toBe(pool)
   })
 
-  test('answers a direct call to a removed or hidden tool', () => {
+  test('answers a direct call only for a tool Code Mode removed (official)', () => {
     turnOn()
     const names = pool.map(t => t.name)
-    expect(codeModeOnlyToolError('Write')).toBe('Write is only available inside REPL. Use REPL with code: await Write({...})')
-    expect(codeModeOnlyToolSuffix('Read', names)).toBe('. Read is only available inside REPL. Use REPL with code: await Read({...})')
-    expect(codeModeOnlyToolSuffix('Write', names)).toBe('. Write is only available inside REPL. Use REPL with code: await Write({...})')
+    expect(codeModeOnlyToolError('Read')).toBe('Read is only available inside REPL. Use REPL with code: await Read({...}).')
+    expect(codeModeOnlyToolSuffix('Read', names)).toBe('. Read is only available inside REPL. Use REPL with code: await Read({...}).')
+    expect(codeModeOnlyToolSuffix('Bash', names)).toBe('. Bash is only available inside REPL. Use REPL with code: await Bash({...}).')
+    expect(codeModeOnlyToolSuffix('Write', names)).toBe('')
+    expect(codeModeOnlyToolSuffix('mcp__srv__q', names)).toBe('')
     expect(codeModeOnlyToolSuffix('Nope', names)).toBe('')
     expect(codeModeOnlyToolSuffix('Poll', names)).toBe('')
     expect(codeModeOnlyToolSuffix('Read', names.filter(n => n !== 'REPL'))).toBe('')
   })
 
-  test('refuses a model call to a hidden pool tool, but not script or Mods calls', () => {
+  test('refuses a model call only to a Code Mode only tool; Write, Edit and MCP still run', () => {
     turnOn()
-    const write = pool[3]!
-    expect(codeModeRefusesDirectCall(write, pool, {})).toBe(true)
-    expect(codeModeRefusesDirectCall(write, pool, { innerCall: true })).toBe(false)
-    expect(codeModeRefusesDirectCall(write, pool, { modToolCallResult: () => {} })).toBe(false)
+    const read = tool('Read')
+    const withRead = [...pool, read]
+    expect(codeModeRefusesDirectCall(read, withRead, {})).toBe(true)
+    expect(codeModeRefusesDirectCall(read, withRead, { innerCall: true })).toBe(false)
+    expect(codeModeRefusesDirectCall(read, withRead, { modToolCallResult: () => {} })).toBe(false)
+    expect(codeModeRefusesDirectCall(pool[3]!, pool, {})).toBe(false)
+    expect(codeModeRefusesDirectCall(pool[4]!, pool, {})).toBe(false)
+    expect(codeModeRefusesDirectCall(pool[7]!, pool, {})).toBe(false)
     expect(codeModeRefusesDirectCall(repl, pool, {})).toBe(false)
   })
 
   test('refuses nothing and adds no suffix when Code Mode is off', () => {
-    expect(codeModeRefusesDirectCall(pool[3]!, pool, {})).toBe(false)
+    expect(codeModeRefusesDirectCall(tool('Read'), [...pool, tool('Read')], {})).toBe(false)
     expect(codeModeOnlyToolSuffix('Read', pool.map(t => t.name))).toBe('')
   })
+})
+
+describe('teammate pool', () => {
+  const pool = [tool('REPL'), tool('Poll'), tool('Write'), tool('Edit'), tool('mcp__srv__q', { isMcp: true })]
+
+  test('an in-process teammate gets the ordinary tools back', async () => {
+    turnOn()
+    settleCodeModeGate({ remoteControl: false, remote: false })
+    expect(withoutCodeModeTools(pool, getEmptyToolPermissionContext())).toBe(pool)
+    const names = await runWithTeammateContext(teammateContext(), async () =>
+      withoutCodeModeTools(pool, getEmptyToolPermissionContext()).map(t => t.name))
+    expect(names).not.toContain('REPL')
+    expect(names).not.toContain('Poll')
+    expect(names).toEqual(expect.arrayContaining(['Write', 'Edit', 'mcp__srv__q', 'Read', 'Bash']))
+  })
+
+  test('changes nothing when the process is not in Code Mode', async () => {
+    const names = await runWithTeammateContext(teammateContext(), async () =>
+      withoutCodeModeTools(pool, getEmptyToolPermissionContext()))
+    expect(names).toBe(pool)
+  })
+})
+
+test('the Chrome stand-in text follows the official wording', () => {
+  expect(codeModeChromeUnavailableText()).toBe(
+    'Claude in Chrome and computer use are not available while this session is in Code Mode (experimental), where the API does not yet add its safety rules for them. If the user asks for either, tell them why, and this: To use them, exit and start a new session with Code Mode off: CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 claude (add --chrome, if you started with it). This conversation can only be continued in Code Mode.',
+  )
 })

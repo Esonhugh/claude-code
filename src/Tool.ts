@@ -188,6 +188,8 @@ export type ToolUseContext = {
   innerCall?: boolean
   /** Tool call made from a Code Mode REPL script; the result goes back to the script, not the model. */
   replScriptCall?: boolean
+  /** Code Mode primitives this agent's REPL scripts may call; undefined means all of them. */
+  primitiveToolGrant?: ReadonlySet<string>
   diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSession?: import('./services/mods/session.js').ModsSession

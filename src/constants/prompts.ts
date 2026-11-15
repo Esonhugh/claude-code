@@ -44,7 +44,8 @@ import {
   getScratchpadDir,
 } from '../utils/permissions/filesystem.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
-import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
+import { isReplModeEnabled, REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
+import { codeModeHidesTools } from '../tools/REPLTool/codeModeGate.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { shouldUseGlobalCacheScope } from '../utils/betas.js'
@@ -60,7 +61,7 @@ import {
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
-import { loadMemoryPrompt, loadStaticMemoryPrompt } from '../memdir/memdir.js'
+import { loadMemoryPrompt, loadStaticMemoryPrompt, memoryPromptForTools } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import {
   resolvePromptSections,
@@ -281,7 +282,8 @@ export function getUsingYourToolsSection(enabledTools: Set<string>): string {
   // In REPL mode, the REPL primitives are hidden from direct use
   // (REPL_PRIMITIVE_TOOL_NAMES). The "prefer dedicated tools over Bash" guidance is
   // irrelevant — REPL's own prompt covers how to call them from scripts.
-  if (isReplModeEnabled()) {
+  // A pool without REPL keeps its primitives, so it keeps the ordinary text.
+  if (isReplModeEnabled() && enabledTools.has(REPL_TOOL_NAME)) {
     const items = [
       taskToolName
         ? `Break down and manage your work with the ${taskToolName} tool. These tools are helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with the task. Do not batch up multiple tasks before marking them as completed.`
@@ -488,7 +490,7 @@ export async function getSystemPrompt(
 ${CYBER_RISK_INSTRUCTION}`,
       },
       { name: 'system_reminders', text: getSystemRemindersSection() },
-      { name: 'memory', text: await loadMemoryPrompt() },
+      { name: 'memory', text: memoryPromptForTools(await loadMemoryPrompt(), tools) },
       { name: 'env_info_simple', text: envInfo },
       { name: 'language', text: getLanguageSection(settings.language) },
       { name: 'mcp_instructions', text: null },
@@ -508,7 +510,9 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection(lean ? 'session_guidance:L' : 'session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections, lean),
     ),
-    ...(excludeDynamicSections ? [] : [systemPromptSection('memory', () => loadMemoryPrompt())]),
+    // Code Mode rewrites the section, so it gets its own cache entry.
+    ...(excludeDynamicSections ? [] : [systemPromptSection(codeModeHidesTools(tools) ? 'memory:repl' : 'memory', async () =>
+      memoryPromptForTools(await loadMemoryPrompt(), tools))]),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),

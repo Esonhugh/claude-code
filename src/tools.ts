@@ -156,8 +156,10 @@ let replTool: Tool | null | undefined
  * so only a real tool with a string name counts.
  */
 export function getREPLTool(): Tool | null {
-  if (replTool !== undefined) return replTool
+  // The gate is per context: an in-process teammate of a Code Mode leader
+  // gets null even after the leader cached the tool.
   if (!isAnt() && !isCodeModeEnabled()) return null
+  if (replTool !== undefined) return replTool
   try {
     const tool = (require('./tools/REPLTool/REPLTool.js') as { REPLTool?: Tool }).REPLTool
     replTool = typeof tool?.name === 'string' ? tool : null

@@ -91,6 +91,7 @@ import {
   isSyntheticOutputToolEnabled,
 } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { getAllBaseTools, getTools } from './tools.js'
+import { settleCodeModeGate } from './tools/REPLTool/codeModeGate.js'
 import {
   canUserConfigureAdvisor,
   getInitialAdvisorSetting,
@@ -2261,6 +2262,17 @@ async function run(): Promise<CommanderCommand> {
         remoteControlOption.length > 0
           ? remoteControlOption
           : undefined
+
+      // Code Mode decides here: interactivity is set and the Remote Control
+      // ask is known, before the Chrome prompt and the first tool pool. The
+      // bridge entitlement check comes later, so the ask decides.
+      settleCodeModeGate({
+        remoteControl:
+          remoteControlOption !== undefined ||
+          getRemoteControlAtStartup() ||
+          kairosEnabled,
+        remote: remote !== null,
+      })
 
       // Validate session ID if provided
       if (sessionId) {

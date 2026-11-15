@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { toolMatchesName, type Tool, type ToolUseContext, type Tools } from '../../Tool.js'
+import {
+  toolMatchesName,
+  type Tool,
+  type ToolPermissionContext,
+  type ToolUseContext,
+  type Tools,
+} from '../../Tool.js'
 import type { Message, UserMessage } from '../../types/message.js'
 import type { REPLToolCallProgress } from '../../types/tools.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -54,22 +60,36 @@ export function toScriptName(name: string): string {
   return /^[0-9]/.test(safe) ? `_${safe}` : safe
 }
 
-function callableFrom(tools: Tools, context: ToolUseContext): Tools {
+/** The REPL-callable set for a tool pool, also used for the prompt's declarations. */
+export function replCallableToolsFrom(
+  tools: Tools,
+  permissionContext: ToolPermissionContext,
+  grant?: ReadonlySet<string>,
+): Tools {
   const seen = new Set<string>()
   const result: Tool[] = []
-  for (const tool of [...tools, ...getReplPrimitiveTools()]) {
+  // The grant narrows only the added primitives; the session's own tools
+  // already went through the agent's tool resolution (official On()).
+  const primitives = grant === undefined
+    ? getReplPrimitiveTools()
+    : getReplPrimitiveTools().filter(tool => grant.has(tool.name))
+  for (const tool of [...tools, ...primitives]) {
     if (seen.has(tool.name) || toolMatchesName(tool, REPL_TOOL_NAME)) continue
     seen.add(tool.name)
     if (tool.name === POWERSHELL_TOOL_NAME && !isPowerShellToolEnabled()) continue
     result.push(tool)
   }
   // Also drops apply_patch when Edit or Write is denied.
-  return filterToolsByDenyRules(result, context.getAppState().toolPermissionContext)
+  return filterToolsByDenyRules(result, permissionContext)
 }
 
 /** Tools a REPL script may call: the session's tools without REPL, plus the primitives. */
 export function getReplCallableTools(context: ToolUseContext): Tools {
-  return callableFrom(context.options.tools, context)
+  return replCallableToolsFrom(
+    context.options.tools,
+    context.getAppState().toolPermissionContext,
+    context.primitiveToolGrant,
+  )
 }
 
 function resultText(block: ToolResultBlockParam): string {
@@ -151,7 +171,11 @@ export function createReplToolHost(opts: {
     Math.min(configured > 0 ? configured : REPL_MAX_CONCURRENCY, REPL_MAX_CONCURRENCY),
   )
   const refreshTools = () =>
-    callableFrom(context.options.refreshTools?.() ?? context.options.tools, context)
+    replCallableToolsFrom(
+      context.options.refreshTools?.() ?? context.options.tools,
+      context.getAppState().toolPermissionContext,
+      context.primitiveToolGrant,
+    )
   let messages: Message[] = []
   let callCount = 0
   let stopped = false
