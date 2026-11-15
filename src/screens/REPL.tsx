@@ -478,6 +478,8 @@ import {
   saveAiGeneratedTitle,
 } from '../utils/sessionStorage.js'
 import { deserializeMessages } from '../utils/conversationRecovery.js'
+import { planCodeModeResume } from '../utils/codeModeResume.js'
+import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
 import {
   extractReadFilesFromMessages,
   extractBashToolsFromMessages,
@@ -3061,6 +3063,8 @@ export function REPL({
         // Deserialize messages to properly clean up the conversation
         // This filters unresolved tool uses and adds a synthetic assistant message if needed
         const messages = deserializeMessages(log.messages)
+        const codeModePlan = planCodeModeResume(log.replMode, messages, isCodeModeEnabled())
+        messages.push(...codeModePlan.messages)
 
         // Match coordinator/normal mode to the resumed session
         if (feature('COORDINATOR_MODE')) {
@@ -3199,7 +3203,7 @@ export function REPL({
         // a session without an agent name would inherit the previous session's
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
-        restoreSessionMetadata(log)
+        restoreSessionMetadata({ ...log, replMode: codeModePlan.replMode })
         restoreSessionCosts(log)
         const resumedPermissionContext = restorePermissionModeForResume(
           store.getState().toolPermissionContext,

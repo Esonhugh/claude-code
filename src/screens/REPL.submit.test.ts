@@ -972,6 +972,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
   const log = { sessionId: 'same-id', messages: [] }
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    planCodeModeResume: () => ({ messages: [], replMode: undefined }), isCodeModeEnabled: () => false,
     getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
     processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
     mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
@@ -2835,6 +2836,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
   const log = { sessionId: 'same-id', messages: [] }
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    planCodeModeResume: () => ({ messages: [], replMode: undefined }), isCodeModeEnabled: () => false,
     getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
     processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
     mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
