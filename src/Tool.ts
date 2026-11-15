@@ -186,6 +186,8 @@ export type ManagedSSHRemotePermissions = {
 export type ToolUseContext = {
   /** Host script invocation; distinct from a model tool call in a headless child. */
   innerCall?: boolean
+  /** Tool call made from a Code Mode REPL script; the result goes back to the script, not the model. */
+  replScriptCall?: boolean
   diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSession?: import('./services/mods/session.js').ModsSession

@@ -1080,11 +1080,14 @@ async function checkPermissionsAndCallTool(
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
 
-    const schemaHint = buildSchemaNotSentHint(
-      tool,
-      toolUseContext.messages,
-      toolUseContext.options.tools,
-    )
+    // A REPL script cannot call ToolSearch, so the hint would mislead it.
+    const schemaHint = toolUseContext.replScriptCall
+      ? null
+      : buildSchemaNotSentHint(
+          tool,
+          toolUseContext.messages,
+          toolUseContext.options.tools,
+        )
     if (schemaHint) {
       logEvent('tengu_deferred_tool_schema_not_sent', {
         toolName: sanitizeToolNameForAnalytics(tool.name),
@@ -1977,7 +1980,8 @@ async function checkPermissionsAndCallTool(
       // don't modify the output), otherwise map from scratch.
       // Mods choose the final result after this pipeline returns. Persisting a
       // discarded branch here would occupy the tool-use ID's write-once file.
-      const mappedBlock = executionRecord
+      // A REPL script receives the value itself, so nothing is written to disk.
+      const mappedBlock = executionRecord || toolUseContext.replScriptCall
         ? preMappedBlock ??
           tool.mapToolResultToToolResultBlockParam(toolUseResult, toolUseID)
         : preMappedBlock
