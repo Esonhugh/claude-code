@@ -8,13 +8,24 @@ export type ReplRunOptions = {
   signal: AbortSignal
   tools: readonly { name: string; scriptName: string; aliases: string[] }[]
   callTool: (name: string, input: unknown) => Promise<unknown>
-  describeTool?: (name: string) => string | undefined
-  searchTools?: (query: string) => unknown
+  /** What describeTool(name) resolves for a tool; computed before the run, as the context can't call back synchronously. */
+  describeTool?: (name: string) => ReplToolDescription | undefined
+  searchTools?: (query: string, max?: number) => unknown
+  /** Script run once in each new context before its first script (helper globals). */
+  prelude?: string
+}
+
+export type ReplToolDescription = {
+  description: string
+  inputSchema: Record<string, unknown>
 }
 
 export type ReplRunResult = {
   /** Wrapped, escaped and truncated `<repl-output>` text. */
   output: string
+  /** What the script logged (self.log) and what its timers reported on stderr, each elided to the part cap. */
+  stdout?: string
+  stderr?: string
   /** Inspected last-expression value. */
   value?: string
   error?: string
@@ -148,7 +159,9 @@ export function transpileReplCode(source: string): { code: string } | { error: s
   let imports: { kind: string }[] = []
   try {
     imports = transpiler.scanImports(stripped)
-  } catch {}
+  } catch {
+    // transformSync already accepted the code; the sealed context still refuses imports.
+  }
   for (const { kind } of imports) {
     const label = IMPORT_KINDS[kind]
     if (!label) continue
@@ -166,7 +179,9 @@ function toReplyJson(value: unknown): string {
   try {
     const json = JSON.stringify(value)
     if (json !== undefined) return `{"ok":true,"value":${json}}`
-  } catch {}
+  } catch {
+    // Not JSON-safe (cycle, BigInt): fall back to the string form below.
+  }
   return JSON.stringify({ ok: true, value: String(value) })
 }
 
@@ -259,12 +274,14 @@ export function createReplExecutor(): ReplExecutor {
       name: tool.name,
       names: [...new Set([tool.scriptName, tool.name, ...tool.aliases])],
     }))
-    const descriptions: Record<string, string> = {}
+    const descriptions: Record<string, ReplToolDescription> = {}
     for (const tool of o.tools) {
       try {
         const description = o.describeTool?.(tool.name)
         if (description !== undefined) descriptions[tool.name] = description
-      } catch {}
+      } catch {
+        // A tool without a description is still callable.
+      }
     }
 
     return new Promise<ReplRunResult>(resolve => {
@@ -317,7 +334,8 @@ export function createReplExecutor(): ReplExecutor {
             if (message.kind === 'search') {
               answer(message.id, () => {
                 if (!o.searchTools) throw new Error('searchTools is not available in this REPL call')
-                return o.searchTools(input as string)
+                const { query, max } = input as { query: string; max?: number }
+                return o.searchTools(query, max)
               })
             } else answer(message.id, () => o.callTool(message.name, input))
           }
@@ -331,14 +349,18 @@ export function createReplExecutor(): ReplExecutor {
           if (active === run) active = undefined
           // The only way to stop the script; the context goes with it.
           if (end.timedOut || end.interrupted) kill()
+          const logged = stdout.empty ? '' : stdout.render()
+          const errors = stderr.empty ? '' : stderr.render()
           const output = formatReplOutput({
-            stdout: stdout.empty ? undefined : stdout.render(),
-            stderr: stderr.empty ? undefined : stderr.render(),
+            stdout: logged || undefined,
+            stderr: errors || undefined,
             error: end.error,
             value: end.value,
           })
           resolve({
             output,
+            stdout: logged,
+            stderr: errors,
             ...(end.value === undefined ? {} : { value: end.value }),
             ...(end.error === undefined ? {} : { error: end.error }),
             ...(end.timedOut ? { timedOut: true } : {}),
@@ -362,6 +384,7 @@ export function createReplExecutor(): ReplExecutor {
         tools: JSON.stringify(specs),
         descriptions: JSON.stringify(descriptions),
         search: o.searchTools !== undefined,
+        ...(o.prelude === undefined ? {} : { prelude: o.prelude }),
       } satisfies ReplHostMessage)
     })
   }

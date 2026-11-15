@@ -104,10 +104,12 @@ describe('REPL executor', () => {
 
   test('describeTool and searchTools reach the host', async () => {
     const { run } = setup({
-      describeTool: name => (name === 'Read' ? 'Reads a file' : undefined),
+      describeTool: name => (name === 'Read' ? { description: 'Reads a file', inputSchema: { type: 'object' } } : undefined),
       searchTools: query => [{ name: 'Read', query }],
     })
-    expect((await run('[describeTool("Read"), describeTool("Nope")]')).value).toBe("[ 'Reads a file', undefined ]")
+    expect((await run('JSON.stringify([await describeTool("Read"), await describeTool("Nope")])')).value).toBe(
+      '[{"name":"Read","description":"Reads a file","inputSchema":{"type":"object"}},{"error":"No tool is named Nope: tools.list() gives the names"}]',
+    )
     expect((await run('(await searchTools("file"))[0].query')).value).toBe('file')
   })
 
@@ -154,7 +156,7 @@ describe('REPL executor', () => {
   test('interrupt clears timers and ignores pending tool results', async () => {
     let resolveCall: (value: unknown) => void = () => {}
     const { executor, run } = setup({ callTool: () => new Promise(resolve => { resolveCall = resolve }) })
-    const pending = run('setInterval(() => console.log("tick"), 10)\nawait Read({})\n"never"')
+    const pending = run('setInterval(() => self.log("tick"), 10)\nawait Read({})\n"never"')
     await sleep(60)
     executor.interrupt()
     const result = await pending
@@ -174,17 +176,38 @@ describe('REPL executor', () => {
     expect((await run('await new Promise(r => setTimeout(() => r(7), 10))')).value).toBe('7')
   })
 
-  test('console output is escaped and split by stream', async () => {
+  test('self.log output is escaped and uncaught timer errors go to stderr', async () => {
     const { run } = setup()
-    const result = await run('console.log("<b>&</b>", {x: 1})\nconsole.error("bad")\n"<ok>"')
+    const result = await run('self.log("<b>&</b>", {x: 1})\nsetTimeout(() => { throw new Error("bad") }, 0)\nawait new Promise(r => setTimeout(r, 10))\n"<ok>"')
     expect(result.output).toBe(
-      '<repl-output>\n<log>&lt;b&gt;&amp;&lt;/b&gt; { x: 1 }</log>\n<log>[stderr] bad</log>\n<result>&lt;ok&gt;</result>\n</repl-output>',
+      '<repl-output>\n<log>&lt;b&gt;&amp;&lt;/b&gt; { x: 1 }</log>\n<log>[stderr] Uncaught Error: bad</log>\n<result>&lt;ok&gt;</result>\n</repl-output>',
     )
+  })
+
+  test('console goes to a ring that console.tail reads back, across runs', async () => {
+    const { run } = setup()
+    const first = await run('for (let i = 0; i < 1005; i++) console.log("n", i)\nconsole.error("last")')
+    expect(first.output).not.toContain('last')
+    expect((await run('console.tail(2)')).value).toBe('n 1004\nlast')
+    expect((await run('console.tail(5000).split("\\n").length')).value).toBe('1000')
+    expect((await run('[console.buffer().split("\\n").length, console.dropped()]')).value).toBe('[ 1000, 6 ]')
+  })
+
+  test('promises inside a returned object or array are awaited', async () => {
+    const { run } = setup()
+    expect((await run('({a: Promise.resolve(1), b: 2, c: {then: r => r(3)}})')).value).toBe('{ a: 1, b: 2, c: 3 }')
+    expect((await run('[Promise.resolve("x"), 1]')).value).toBe("[ 'x', 1 ]")
+  })
+
+  test('the prelude runs once per context', async () => {
+    const { run } = setup({ prelude: 'globalThis.runs = (globalThis.runs ?? 0) + 1' })
+    await run('1')
+    expect((await run('runs')).value).toBe('1')
   })
 
   test('long output is elided per part and in total', async () => {
     const { run } = setup()
-    const result = await run('for (let i = 0; i < 5000; i++) console.log("line " + i + " " + "x".repeat(20))\n"<".repeat(80000)')
+    const result = await run('for (let i = 0; i < 5000; i++) self.log("line " + i + " " + "x".repeat(20))\n"<".repeat(80000)')
     expect(result.output.length).toBeLessThanOrEqual(REPL_OUTPUT_TOTAL_CHARS + 40)
     expect(result.output).toMatch(/<log>line 0 [\s\S]*\n\.\.\. \[\d+ chars elided\] \.\.\.\n[\s\S]*line 4999 x+<\/log>/)
     expect(result.output).toMatch(/<result>(&lt;)+\n\.\.\. \[\d+ chars elided\] \.\.\.\n(&lt;)+<\/result>/)

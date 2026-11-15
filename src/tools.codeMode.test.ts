@@ -10,7 +10,7 @@ import { resetSettingsCache, setSessionSettingsCache } from './utils/settings/se
 
 const { getAllBaseTools, getREPLTool, getTools } = await import('./tools.js')
 const { hideCodeModeOnlyTools, resetCodeModeGateForTesting } = await import('./tools/REPLTool/codeModeGate.js')
-const { isReplModeEnabled } = await import('./tools/REPLTool/constants.js')
+const { CODE_MODE_ONLY_TOOLS, isReplModeEnabled } = await import('./tools/REPLTool/constants.js')
 const { getReplPrimitiveTools } = await import('./tools/REPLTool/primitiveTools.js')
 
 const envKeys = [
@@ -66,16 +66,21 @@ describe('tool pool with Code Mode off', () => {
   })
 })
 
-describe('tool pool with Code Mode on but no REPL module yet', () => {
-  test('leaves the pool as it is when REPLTool cannot be loaded', () => {
-    const before = names(getTools(getEmptyToolPermissionContext()))
-    resetCodeModeGateForTesting()
+describe('tool pool with Code Mode on', () => {
+  test('loads the real REPL and takes CODE_MODE_ONLY_TOOLS out of the pool', () => {
     process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    resetCodeModeGateForTesting()
     expect(isReplModeEnabled()).toBe(true)
-    expect(getREPLTool()).toBeNull()
+    const repl = getREPLTool()
+    expect(repl?.name).toBe('REPL')
+    expect(repl?.aliases).toEqual(['Eval'])
     const pool = getTools(getEmptyToolPermissionContext())
-    expect(names(pool)).toEqual(before)
-    expect(hideCodeModeOnlyTools(pool)).toBe(pool)
+    const poolNames = names(pool)
+    expect(poolNames).toContain('REPL')
+    for (const name of CODE_MODE_ONLY_TOOLS) expect(poolNames).not.toContain(name)
+    // Write and Edit stay in the pool; the API list carries only REPL (and Poll, StructuredOutput).
+    expect(poolNames).toEqual(expect.arrayContaining(['Write', 'Edit']))
+    expect(names(hideCodeModeOnlyTools(pool))).toEqual(['REPL'])
   })
 })
 

@@ -23,6 +23,8 @@ export type ReplHostMessage =
       /** JSON of Record<name, description> */
       descriptions: string
       search: boolean
+      /** Script evaluated once per context before its first run (the helper globals). */
+      prelude?: string
     }
   | { t: 'reply'; id: number; json: string }
 
@@ -129,7 +131,7 @@ export function replWorkerMain(): void {
   // Context-side kernel: built from the context's own intrinsics before any
   // script runs. Its arguments are worker functions that take and return
   // primitives only.
-  const KERNEL = `((bridge, schedule, cancel, sink, b64) => {
+  const KERNEL = `((bridge, schedule, cancel, sink, b64, fmt) => {
     'use strict';
     const parse = JSON.parse, stringify = JSON.stringify, define = Object.defineProperty;
     const freeze = Object.freeze, keys = Object.keys, ErrorCtor = Error, TypeErrorCtor = TypeError;
@@ -150,10 +152,17 @@ export function replWorkerMain(): void {
       if ('detail' in reply) error.detail = reply.detail;
       throw error;
     }
+    // console.* goes to a bounded ring, not the output; console.tail(n) reads it back.
+    const ring = [];
+    let dropped = 0;
+    const record = (...args) => { ring.push(fmt(args)); if (ring.length > 1000) { ring.shift(); dropped++ } };
     const console = freeze({
-      log: (...args) => sink(0, args), info: (...args) => sink(0, args), debug: (...args) => sink(0, args),
-      warn: (...args) => sink(1, args), error: (...args) => sink(1, args),
+      log: record, info: record, debug: record, warn: record, error: record,
+      tail: (n = 20) => ring.slice(-Math.max(0, Number(n) || 0)).join('\\n'),
+      buffer: () => ring.join('\\n'),
+      dropped: () => dropped,
     });
+    const log = (...args) => sink(0, args);
     function addTimer(fn, ms, args, repeat) {
       if (typeof fn !== 'function') throw new TypeErrorCtor('The callback must be a function');
       const id = nextTimer++;
@@ -162,8 +171,18 @@ export function replWorkerMain(): void {
       return id;
     }
     function clearTimer(id) { if (timers.delete(id)) cancel(id) }
+    function describeError(e) {
+      let name = 'Error', message = '';
+      try { const v = e?.name; if (typeof v === 'string') name = v } catch {}
+      try {
+        const v = e?.message;
+        if (typeof v === 'string') message = v;
+        else if (e === null || (typeof e !== 'object' && typeof e !== 'function')) { name = 'Uncaught'; message = String(e) }
+      } catch {}
+      return name + ': ' + message;
+    }
     const globals = {
-      console, log: console.log,
+      console, log, self: globalThis,
       setTimeout: (fn, ms, ...args) => addTimer(fn, ms, args, false),
       setInterval: (fn, ms, ...args) => addTimer(fn, ms, args, true),
       clearTimeout: clearTimer, clearInterval: clearTimer,
@@ -193,10 +212,14 @@ export function replWorkerMain(): void {
         tools.list = () => specs.map(s => s.name);
         const extra = {
           tools: freeze(tools),
-          describeTool: name => { const real = byName[name]; return real === undefined ? undefined : descriptions[real] },
-          searchTools: query => {
+          describeTool: async name => {
+            const real = byName[String(name)];
+            if (real === undefined || descriptions[real] === undefined) return { error: 'No tool is named ' + String(name) + ': tools.list() gives the names' };
+            return { name: real, description: descriptions[real].description, inputSchema: descriptions[real].inputSchema };
+          },
+          searchTools: (query, max) => {
             if (!search) return Promise.reject(new ErrorCtor('searchTools is not available in this REPL call'));
-            return call('search', '', query);
+            return call('search', '', { query: String(query ?? ''), ...(max === undefined ? {} : { max: Number(max) }) });
           },
         };
         for (const k of keys(extra)) {
@@ -208,19 +231,26 @@ export function replWorkerMain(): void {
         const timer = timers.get(id);
         if (!timer) return;
         if (!timer.repeat) timers.delete(id);
-        try { timer.fn(...timer.args) } catch (e) { sink(1, ['Uncaught', e]) }
+        try { timer.fn(...timer.args) } catch (e) { sink(1, ['Uncaught ' + describeError(e)]) }
       },
       clearTimers() { for (const id of timers.keys()) cancel(id); timers.clear() },
-      describeError(e) {
-        let name = 'Error', message = '';
-        try { const v = e?.name; if (typeof v === 'string') name = v } catch {}
-        try {
-          const v = e?.message;
-          if (typeof v === 'string') message = v;
-          else if (e === null || (typeof e !== 'object' && typeof e !== 'function')) { name = 'Uncaught'; message = String(e) }
-        } catch {}
-        return name + ': ' + message;
+      // Promises (and thenables such as $ results) inside a returned object or array are awaited.
+      async settle(value) {
+        const isThen = v => v !== null && (typeof v === 'object' || typeof v === 'function') && typeof v.then === 'function';
+        if (isThen(value)) value = await value;
+        if (value === null || typeof value !== 'object') return value;
+        const proto = Object.getPrototypeOf(value);
+        if (Array.isArray(value)) {
+          if (!value.some(isThen)) return value;
+          return Promise.all(value);
+        }
+        if (proto !== Object.prototype && proto !== null) return value;
+        const entries = Object.entries(value);
+        if (!entries.some(([, v]) => isThen(v))) return value;
+        const settled = await Promise.all(entries.map(([, v]) => v));
+        return Object.fromEntries(entries.map(([k], i) => [k, settled[i]]));
       },
+      describeError,
     });
   })`
 
@@ -241,6 +271,7 @@ export function replWorkerMain(): void {
     install(tools: string, descriptions: string, search: boolean): void
     fire(id: number): void
     clearTimers(): void
+    settle(value: unknown): Promise<unknown>
     describeError(error: unknown): string
   }
   const kernel = (vm.runInContext(KERNEL, context) as (...args: unknown[]) => Kernel)(
@@ -266,7 +297,11 @@ export function replWorkerMain(): void {
     (direction: 0 | 1, text: string) => {
       try { return direction === 0 ? atob(text) : btoa(text) } catch { return null }
     },
+    (args: unknown[]) => {
+      try { return Array.from(args, inspect).join(' ') } catch { return '[unprintable]' }
+    },
   )
+  let preludeRan = false
 
   // A rejection nobody handled must not take the worker (and the context) down.
   proc.on('unhandledRejection', reason => {
@@ -281,13 +316,16 @@ export function replWorkerMain(): void {
     runId = message.runId
     try {
       kernel.install(message.tools, message.descriptions, message.search)
+      if (message.prelude !== undefined && !preludeRan) {
+        preludeRan = true
+        vm.runInContext(message.prelude, context, { filename: 'repl-helpers.js' })
+      }
       const script = new vm.Script(message.code, {
         filename: 'repl-tool-code.js',
         importModuleDynamically: rejectImport as never,
       })
       const completion = (await script.runInContext(context)) as { value?: unknown } | undefined
-      let value = completion?.value
-      if (util.types.isPromise(value)) value = await value
+      const value = await kernel.settle(completion?.value)
       post({ t: 'done', runId: message.runId, ...(value === undefined ? {} : { value: inspect(value) }) })
     } catch (error) {
       post({ t: 'done', runId: message.runId, error: kernel.describeError(error) })
