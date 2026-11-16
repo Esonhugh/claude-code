@@ -5,6 +5,8 @@ import {
   formatReplOutput,
   REPL_OUTPUT_PART_CHARS,
   REPL_OUTPUT_TOTAL_CHARS,
+  scriptDeadline,
+  type DeadlineClock,
   type ReplExecutor,
   type ReplRunOptions,
 } from './host.js'
@@ -332,6 +334,84 @@ describe('REPL executor, scriptGlobalNames', () => {
     expect(await executor.scriptGlobalNames()).toBeUndefined()
     executor.interrupt()
     await busy
+  })
+})
+
+describe('scriptDeadline (official 325 ic)', () => {
+  function fakeClock() {
+    let now = 0
+    let timer: { at: number; fire: () => void } | undefined
+    const clock: DeadlineClock = {
+      now: () => now,
+      setTimeout: (fire, ms) => {
+        const own = { at: now + ms, fire }
+        timer = own
+        return () => {
+          if (timer === own) timer = undefined
+        }
+      },
+    }
+    // Moves the clock to `to` and fires the timer if it is due by then, however late;
+    // with `stalled` the timer has not had its turn yet.
+    const advance = (to: number, stalled = false) => {
+      now = to
+      const due = stalled ? undefined : timer
+      if (due && due.at <= now) {
+        timer = undefined
+        due.fire()
+      }
+    }
+    return { clock, advance, armedFor: () => (timer ? timer.at - now : undefined) }
+  }
+
+  test('an on-time timer ends the budget', () => {
+    const { clock, advance } = fakeClock()
+    let expired = 0
+    scriptDeadline(1_000, () => expired++, clock).start()
+    advance(1_000)
+    expect(expired).toBe(1)
+  })
+
+  test('a timer more than 1000 ms late gives 5000 ms more once', () => {
+    const { clock, advance, armedFor } = fakeClock()
+    let expired = 0
+    scriptDeadline(1_000, () => expired++, clock).start()
+    advance(2_001)
+    expect(expired).toBe(0)
+    expect(armedFor()).toBe(5_000)
+    advance(9_000)
+    expect(expired).toBe(1)
+  })
+
+  test('a timer at most 1000 ms late ends the budget', () => {
+    const { clock, advance } = fakeClock()
+    let expired = 0
+    scriptDeadline(1_000, () => expired++, clock).start()
+    advance(2_000)
+    expect(expired).toBe(1)
+  })
+
+  test('tool calls pause it, and a stall seen at a call start gets the grace too', () => {
+    const { clock, advance, armedFor } = fakeClock()
+    let expired = 0
+    const deadline = scriptDeadline(1_000, () => expired++, clock)
+    deadline.start()
+    advance(400)
+    deadline.onToolStart()
+    expect(armedFor()).toBeUndefined()
+    advance(10_000)
+    deadline.onToolEnd()
+    expect(armedFor()).toBe(600)
+    // The timer is due at 10600 but the loop stalls; a call starting at 12000 finds it.
+    advance(12_000, true)
+    deadline.onToolStart()
+    expect(armedFor()).toBeUndefined()
+    advance(13_000)
+    deadline.onToolEnd()
+    expect(armedFor()).toBe(5_000)
+    // The grace is given once: a second late timer ends the budget.
+    advance(20_000)
+    expect(expired).toBe(1)
   })
 })
 

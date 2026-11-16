@@ -271,6 +271,84 @@ function clampTimeout(ms: number | undefined): number {
   return Math.min(Math.max(1, Math.floor(ms)), REPL_MAX_TIMEOUT_MS)
 }
 
+/** Official `J1r` and `Q1r`. */
+const DEADLINE_LATE_MS = 1_000
+const DEADLINE_GRACE_MS = 5_000
+
+export type DeadlineClock = { now(): number; setTimeout(fire: () => void, ms: number): () => void }
+
+const wallClock: DeadlineClock = {
+  now: () => Date.now(),
+  setTimeout: (fire, ms) => {
+    const timer = setTimeout(fire, ms)
+    return () => clearTimeout(timer)
+  },
+}
+
+/**
+ * Official 325 `ic`: the script-time budget, which runs while no tool call is
+ * pending. Time charged more than DEADLINE_LATE_MS past what was left (a late
+ * timer: the machine slept or the event loop stalled) wasn't the script's, so
+ * once per script the budget becomes DEADLINE_GRACE_MS instead of running out.
+ */
+export function scriptDeadline(ms: number, onExpire: () => void, clock: DeadlineClock = wallClock) {
+  let pending = 0
+  let remaining = ms
+  let armedAt = 0
+  let graced = false
+  let started = false
+  let ended = false
+  let cancelTimer: (() => void) | undefined
+  const charge = (elapsed: number) => {
+    if (!graced && elapsed - remaining > DEADLINE_LATE_MS) {
+      graced = true
+      remaining = DEADLINE_GRACE_MS
+    } else remaining -= elapsed
+  }
+  const arm = () => {
+    if (!started || ended || cancelTimer !== undefined || pending > 0) return
+    if (remaining <= 0) {
+      ended = true
+      onExpire()
+      return
+    }
+    armedAt = clock.now()
+    cancelTimer = clock.setTimeout(fire, remaining)
+  }
+  function fire() {
+    cancelTimer = undefined
+    charge(Math.max(clock.now() - armedAt, remaining))
+    arm()
+  }
+  const update = () => {
+    if (pending > 0 && cancelTimer !== undefined) {
+      cancelTimer()
+      cancelTimer = undefined
+      charge(clock.now() - armedAt)
+    }
+    arm()
+  }
+  return {
+    start() {
+      started = true
+      arm()
+    },
+    onToolStart() {
+      pending++
+      update()
+    },
+    onToolEnd() {
+      pending--
+      update()
+    },
+    cancel() {
+      ended = true
+      cancelTimer?.()
+      cancelTimer = undefined
+    },
+  }
+}
+
 /**
  * One persistent vm context in a Worker. A timeout, abort or interrupt
  * terminates the Worker, which is the only way to stop a synchronous loop;
@@ -358,42 +436,22 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
 
     return new Promise<ReplRunResult>(resolve => {
       const id = nextRunId++
-      // Script time: wall time while no tool call is pending.
-      let used = 0
-      let since: number | undefined = performance.now()
-      let pendingCalls = 0
-      let budgetTimer: ReturnType<typeof setTimeout> | undefined
       let capTimer: ReturnType<typeof setTimeout> | undefined
       let settled = false
-
-      const arm = () => {
-        clearTimeout(budgetTimer)
-        if (since === undefined) return
-        const remaining = timeoutMs - used - (performance.now() - since)
-        budgetTimer = setTimeout(() => run.finish({ error: replTimeoutMessage(timeoutMs), timedOut: true }), Math.max(0, remaining))
-      }
-      const pause = () => {
-        if (since !== undefined) used += performance.now() - since
-        since = undefined
-        clearTimeout(budgetTimer)
-      }
-      const resume = () => {
-        since = performance.now()
-        arm()
-      }
+      const deadline = scriptDeadline(timeoutMs, () => run.finish({ error: replTimeoutMessage(timeoutMs), timedOut: true }))
       const onAbort = () => {
         const report = o.interruptedError?.()
         run.finish({ error: report ?? INTERRUPTED, interrupted: true, ...(report !== undefined && { report: true }) })
       }
 
       const answer = (callId: number, work: () => unknown) => {
-        if (pendingCalls++ === 0) pause()
+        deadline.onToolStart()
         void Promise.resolve()
           .then(work)
           .then(toReplyJson, toErrorJson)
           .then(json => {
             if (settled || worker !== target) return
-            if (--pendingCalls === 0) resume()
+            deadline.onToolEnd()
             target.postMessage({ t: 'reply', id: callId, json } satisfies ReplHostMessage)
           })
       }
@@ -426,7 +484,7 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
         finish(end) {
           if (settled) return
           settled = true
-          clearTimeout(budgetTimer)
+          deadline.cancel()
           clearTimeout(capTimer)
           o.signal.removeEventListener('abort', onAbort)
           active.delete(id)
@@ -462,7 +520,7 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
         capTimer = setTimeout(() => run.finish({ error: o.totalCapError?.(cap) ?? replTotalCapMessage(cap), timedOut: true }), cap)
       }
       void o.failure?.then(error => run.finish({ error, timedOut: true }))
-      arm()
+      deadline.start()
       o.onStart?.()
       target.postMessage({
         t: 'run',
