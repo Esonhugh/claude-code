@@ -480,6 +480,9 @@ import {
 import { deserializeMessages } from '../utils/conversationRecovery.js'
 import { planCodeModeResume } from '../utils/codeModeResume.js'
 import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
+import { abortPendingReplEvals, findReplSession, MAIN_REPL_SESSION } from '../tools/REPLTool/sessions.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useIsOverlayActive } from '../context/overlayContext.js'
 import {
   extractReadFilesFromMessages,
   extractBashToolsFromMessages,
@@ -750,6 +753,34 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0
     ? Math.round((sorted[mid - 1]! + sorted[mid]!) / 2)
     : sorted[mid]!
+}
+
+/**
+ * Esc at an empty prompt between turns stops the main thread's dispatched
+ * REPL scripts. Official 325 stops them with `ReplSessions.interrupt([qx])`
+ * during a turn, and between turns through the background task each eval
+ * registers (`Rds`; stopping it calls `kge.abort(…, "person")`), both with
+ * the reason "user-cancel". Capture phase so it runs before PromptInput's
+ * double-Esc; with nothing pending it returns false and the key falls through.
+ * Must be rendered inside KeybindingSetup to access keybinding context.
+ */
+function ReplEvalCancelHandler({ isActive }: { isActive: boolean }): null {
+  const isOverlayActive = useIsOverlayActive()
+  const isViewingTeammate = useAppState(s => s.viewSelectionMode) === 'viewing-agent'
+  const stopDispatchedReplEvals = useCallback(() => {
+    const session = findReplSession(MAIN_REPL_SESSION)
+    if (!session || session.pending.size === 0) return false
+    logEvent('tengu_cancel', {
+      source: 'escape' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    abortPendingReplEvals(session, 'user-cancel')
+  }, [])
+  useKeybinding('chat:cancel', stopDispatchedReplEvals, {
+    context: 'Chat',
+    isActive: isActive && !isOverlayActive && !isViewingTeammate,
+    capture: true,
+  })
+  return null
 }
 
 /**
@@ -7477,6 +7508,17 @@ export function REPL({
         />
       ) : null}
       <CancelRequestHandler {...cancelRequestProps} />
+      <ReplEvalCancelHandler
+        isActive={
+          !isLoading &&
+          !inputValue &&
+          !focusedInputDialog &&
+          !toolJSX &&
+          !isMessageSelectorVisible &&
+          !isSearchingHistory &&
+          !isHelpOpen
+        }
+      />
       <MCPConnectionManager
         key={remountKey}
         dynamicMcpConfig={dynamicMcpConfig}
