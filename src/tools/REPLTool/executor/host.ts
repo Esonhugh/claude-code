@@ -1,4 +1,10 @@
-import { replWorkerMain, type ReplHostMessage, type ReplWorkerMessage, type ReplWorkerToolSpec } from './worker.js'
+import {
+  replWorkerMain,
+  type ReplHostMessage,
+  type ReplRunningRow,
+  type ReplWorkerMessage,
+  type ReplWorkerToolSpec,
+} from './worker.js'
 
 export type ReplRunOptions = {
   /** Script time limit; default 30000, max 600000. Time spent awaiting callTool is not counted. */
@@ -22,6 +28,8 @@ export type ReplRunOptions = {
   onDetach?: () => void
   /** Called when the script starts, after the scripts queued before it let it. */
   onStart?: () => void
+  /** The async-lane eval number, which running() marks as self. */
+  evalId?: number
   /** The error for a signal abort, read as the signal fires; INTERRUPTED when it gives none. */
   interruptedError?: () => string | undefined
   /** The error at the wall-clock limit; replTotalCapMessage when not given. */
@@ -54,6 +62,8 @@ export type ReplRunResult = {
 
 export type ReplExecutor = {
   run(code: string, o: ReplRunOptions): Promise<ReplRunResult>
+  /** The rows scripts' running() gives from now on. */
+  publishRunning(rows: ReplRunningRow[]): void
   interrupt(): void
   release(): void
   /**
@@ -253,8 +263,9 @@ function clampTimeout(ms: number | undefined): number {
  * terminates the Worker, which is the only way to stop a synchronous loop;
  * the next run starts a fresh context and reports `contextReset`.
  */
-export function createReplExecutor(): ReplExecutor {
+export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number) => void } = {}): ReplExecutor {
   let worker: Worker | undefined
+  let runningJson = '[]'
   let lost = false
   let released = false
   let nextRunId = 1
@@ -290,6 +301,7 @@ export function createReplExecutor(): ReplExecutor {
       if (worker !== started) return
       const message = event.data
       if (message.t === 'globals') globalsReplies.get(message.id)?.(message.names)
+      else if (message.t === 'abort') onAbortEval?.(message.id)
       else active.get(message.runId)?.onMessage(message)
     }
     started.onerror = (event: ErrorEvent) => {
@@ -298,6 +310,7 @@ export function createReplExecutor(): ReplExecutor {
       finishAll({ error: `REPL worker crashed: ${event.message}` })
       kill()
     }
+    if (runningJson !== '[]') started.postMessage({ t: 'running', json: runningJson } satisfies ReplHostMessage)
     worker = started
     return { worker: started, contextReset }
   }
@@ -440,6 +453,7 @@ export function createReplExecutor(): ReplExecutor {
         descriptions: JSON.stringify(descriptions),
         search: o.searchTools !== undefined,
         ...(o.prelude === undefined ? {} : { prelude: o.prelude }),
+        ...(o.evalId === undefined ? {} : { evalId: o.evalId }),
       } satisfies ReplHostMessage)
     })
   }
@@ -491,6 +505,10 @@ export function createReplExecutor(): ReplExecutor {
         globalsReplies.set(id, reply)
         target.postMessage({ t: 'globals', id } satisfies ReplHostMessage)
       })
+    },
+    publishRunning(rows) {
+      runningJson = JSON.stringify(rows)
+      worker?.postMessage({ t: 'running', json: runningJson } satisfies ReplHostMessage)
     },
     release() {
       released = true

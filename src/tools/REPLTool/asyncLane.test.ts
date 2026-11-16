@@ -232,6 +232,25 @@ describe('REPL splice wait (official NUe)', () => {
     expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
   })
 
+  test('running() lists the session\u2019s evals and marks the caller; abort() cancels one still waiting', async () => {
+    const context = contextFor()
+    await run(
+      'await sleep(30); const rows = running(); rows[2].abort(); ' +
+        '[rows.map(({ id, state, self, settled }) => [id, state, self, settled].join()), typeof rows[0].ageMs, self.running === running]',
+      context,
+    )
+    await run('"second"', context)
+    await run('"third"', context)
+    let text = ''
+    for (let i = 0; i < 3 && (text.match(/<event nonce/g) ?? []).length < 3; i++) text += (await poll(context)).text
+    const results = new Map([...text.matchAll(/ eval="(\d)"[^>]*>\n?([\s\S]*?)\n?<\/event>/g)].map(([, id, body]) => [id, body]))
+    expect(results.get('1')).toBe(
+      "<result>[\n  [\n    '1,running,true,false',\n    '2,waiting,false,false',\n    '3,waiting,false,false'\n  ],\n  'number',\n  true\n]</result>",
+    )
+    expect(results.get('2')).toBe('<result>second</result>')
+    expect(results.get('3')).toContain('cancelled before start \u2014 a script aborted this eval (self.running().abort()) while it waited for its turn; it never ran')
+  })
+
   test('without Poll the outcome is queued as a waking repl-eval event for its thread', async () => {
     const context = contextFor('auto')
     await run(sleepCode(50, 'later'), context)
@@ -574,10 +593,13 @@ describe('async-lane prompt', () => {
     for (const mode of ['default', 'bypassPermissions'] as PermissionMode[]) {
       const prompt = promptFor(mode)
       expect(prompt).toContain('Your two tools are `REPL` and `Poll`; there are no other tools.')
-      expect(prompt).toContain('returns `(dispatched #N)` instead, runs on, and no longer holds up the scripts after it')
-      expect(prompt).toContain('in a `Poll` result or before your next turn')
+      expect(prompt).toContain('A `REPL` call only dispatches its script and returns `(dispatched #N)` at once.')
+      expect(prompt).toContain('comes back in the `Poll` result of your reply')
       expect(prompt).toContain('The user can change the permission mode at any time.')
       expect(prompt).not.toContain("A call's result is a `<repl-output>` element")
+      expect(prompt).toContain("\nHow output arrives: after your reply's tool calls, if a script you sent in it is still running")
+      expect(prompt).toContain('declare function running(): {\n    id: number;')
+      expect(prompt).toContain('    abort(): true;\n}[];\n')
       expect(prompt).toContain('A command with no timeout of its own is awaited for up to 600000 ms; give it a longer one (at most 7200000 ms)')
       expect(prompt).not.toContain('Timeouts cap at 600000 ms')
       // Official Vl: with Poll in the list, interface Tools drops run_in_background from the shell tools.

@@ -25,16 +25,25 @@ export type ReplHostMessage =
       search: boolean
       /** Script evaluated once per context before its first run (the helper globals). */
       prelude?: string
+      /** The script's async-lane eval number, what running() marks as self. */
+      evalId?: number
     }
   | { t: 'reply'; id: number; json: string }
   /** Asks for the globals scripts defined (not the built-in, helper or tool ones). */
   | { t: 'globals'; id: number }
+  /** JSON of ReplRunningRow[]: the session's evals, for running(). */
+  | { t: 'running'; json: string }
+
+/** A session eval as `running()` shows it; the worker adds `ageMs`, `self` and `abort`. */
+export type ReplRunningRow = { id: number; snippet: string; startedAt: number | null; state: string; settled: boolean }
 
 export type ReplWorkerMessage =
   | { t: 'call'; runId: number; id: number; kind: 'tool' | 'search'; name: string; input?: string }
   | { t: 'log'; runId: number; stream: 0 | 1; text: string }
   | { t: 'done'; runId: number; value?: string; error?: string }
   | { t: 'globals'; id: number; names: string[] }
+  /** A script called abort() on a running() row. */
+  | { t: 'abort'; id: number }
 
 export function replWorkerMain(): void {
   type Builtins = {
@@ -136,7 +145,7 @@ export function replWorkerMain(): void {
   // Context-side kernel: built from the context's own intrinsics before any
   // script runs. Its arguments are worker functions that take and return
   // primitives only.
-  const KERNEL = `((bridge, schedule, cancel, sink, b64, fmt) => {
+  const KERNEL = `((bridge, schedule, cancel, sink, b64, fmt, ledger, abortEval) => {
     'use strict';
     const parse = JSON.parse, stringify = JSON.stringify, define = Object.defineProperty;
     const freeze = Object.freeze, keys = Object.keys, ErrorCtor = Error, TypeErrorCtor = TypeError;
@@ -187,8 +196,10 @@ export function replWorkerMain(): void {
       } catch {}
       return name + ': ' + message;
     }
+    // Official running(): the session's evals; abort() stops one.
+    const running = () => parse(ledger()).map(row => freeze({ ...row, abort: () => (abortEval(row.id), true) }));
     const globals = {
-      console, log, self: globalThis,
+      console, log, self: globalThis, running,
       setTimeout: (fn, ms, ...args) => addTimer(fn, ms, args, false),
       setInterval: (fn, ms, ...args) => addTimer(fn, ms, args, true),
       clearTimeout: clearTimer, clearInterval: clearTimer,
@@ -275,6 +286,9 @@ export function replWorkerMain(): void {
   const runIdNow = () => owner.getStore() ?? lastRunId
   let nextCall = 1
   const pending = new Map<number, (json: string) => void>()
+  // What running() reads: the host's latest snapshot, and each run's eval number.
+  let runningJson = '[]'
+  const evalIds = new Map<number, number>()
   const handles = new Map<number, { handle: ReturnType<typeof setTimeout>; runId: number }>()
   const clearHandle = (id: number) => {
     const entry = handles.get(id)
@@ -315,6 +329,18 @@ export function replWorkerMain(): void {
     (args: unknown[]) => {
       try { return Array.from(args, inspect).join(' ') } catch { return '[unprintable]' }
     },
+    () => {
+      const self = evalIds.get(runIdNow())
+      const now = Date.now()
+      return JSON.stringify(
+        (JSON.parse(runningJson) as ReplRunningRow[]).map(({ startedAt, ...row }) => ({
+          ...row,
+          ageMs: startedAt === null ? 0 : now - startedAt,
+          self: row.id === self,
+        })),
+      )
+    },
+    (id: number) => post({ t: 'abort', id: Number(id) }),
   )
   let preludeRan = false
   // Taken before any script can redefine it; only strings come back.
@@ -343,6 +369,7 @@ export function replWorkerMain(): void {
 
   async function run(message: Extract<ReplHostMessage, { t: 'run' }>) {
     lastRunId = message.runId
+    if (message.evalId !== undefined) evalIds.set(message.runId, message.evalId)
     try {
       kernel.install(message.tools, message.descriptions, message.search)
       toolNames = new Set((JSON.parse(message.tools) as ReplWorkerToolSpec[]).flatMap(spec => [spec.name, ...spec.names]))
@@ -368,6 +395,7 @@ export function replWorkerMain(): void {
       post({ t: 'done', runId: message.runId, error: kernel.describeError(error) })
     } finally {
       clearRunTimers(message.runId)
+      evalIds.delete(message.runId)
     }
   }
 
@@ -377,6 +405,7 @@ export function replWorkerMain(): void {
       const names = Array.from(ownNames(), String).filter(name => !builtinNames.has(name) && !toolNames.has(name))
       post({ t: 'globals', id: data.id, names })
     }
+    else if (data.t === 'running') runningJson = data.json
     else if (data.t === 'reply') {
       const resolve = pending.get(data.id)
       pending.delete(data.id)

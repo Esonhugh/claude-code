@@ -12,16 +12,20 @@ const DOC_CHARS = 120
 /** MCP servers named before "and N more" (official `Gl`). */
 const MCP_SERVERS_LISTED = 40
 const SKILL_TOOL_PREFIX = 'skill__'
-/** Official replSettleWindowMs (TWt); REPLTool.ts holds the same value, which can't be imported here without a cycle. */
-const SETTLE_WINDOW_SECONDS = 30
+/** Official replDetachAfterMs (`Z1r()`): a script running this long no longer holds up the ones after it. */
+const DETACH_AFTER_SECONDS = 30
 /** Official Aun (REPL_MAX_TIMEOUT_MS). */
 const MAX_SCRIPT_MS = 600_000
 
-/** Official async-lane text (2.1.325 chunk-g61t94xb.js:1573-1575), XML event variant. */
+/** Official `zl()` (2.1.325 chunk-g61t94xb.js) under `NUe()`, XML event variant: every script is dispatched, and its outcome is spliced in after the reply's tool calls. */
 const ASYNC_OUTPUT = `
-How output arrives: a script that finishes within about ${SETTLE_WINDOW_SECONDS} s comes back as the \`${REPL_TOOL_NAME}\` call's own result, a \`<repl-output eval="N">\` element holding \`<log>\` lines and the \`<result>\` (or \`<error>\`). One still running by then returns \`(dispatched #N)\` instead, runs on, and no longer holds up the scripts after it: its output arrives as an \`<event kind="repl-eval" eval="N">\` element with the same children, in a \`${POLL_TOOL_NAME}\` result or before your next turn, with an \`<event kind="repl-status">\` line meanwhile saying what is still pending. A receipt means the script is running, so issuing it again would run it twice. Scripts start in call order.
+How scripts run: your scripts run in one persistent VM and start in the order you send them; a script starts when the one before it ends or has run for about ${DETACH_AFTER_SECONDS} s. A script still running by then is \`detached\`: it keeps running beside the scripts after it, and they share variables. So put steps that depend on each other in one script, or send the second script only after the first one's outcome has come back. A \`${REPL_TOOL_NAME}\` call only dispatches its script and returns \`(dispatched #N)\` at once. A receipt means the script is queued or running, so sending it again would run it twice. If a \`${REPL_TOOL_NAME}\` call returns its script's output instead, calls in this session run until their script ends, and anything a script starts without awaiting, such as a build or a dev server, is stopped when the script ends.
 
-Waiting: \`${POLL_TOOL_NAME}\` returns as soon as something arrives; while a script or a background task (a context, say) is still running, a wait with nothing to deliver ends just before the prompt cache would expire (about 5 minutes, or about an hour on a 1-hour cache) in a status line saying what is still pending, so you can poll again. Sent in the same turn as a \`${REPL_TOOL_NAME}\` call it waits for that call's script: a long one (a test suite, a build) then costs no extra round trip, and one that has already come back ends the wait at once. When nothing else needs doing while a long script or a context runs, ending your turn works too: its result or notification starts your next turn when it lands, and waiting that way costs nothing. A shell command with no timeout of its own moves to the background after 10 minutes, so give a long build a longer timeout (up to 2 hours) to await it.
+How output arrives: after your reply's tool calls, if a script you sent in it is still running, the harness waits before continuing, until the script ends or something else arrives, such as a message from the user; things that arrive close together come together. What arrived then comes back in the \`${POLL_TOOL_NAME}\` result of your reply, in the order it arrived: the script's \`<event kind="repl-eval" eval="N">\` (its \`<log>\` lines and its \`<result>\` or \`<error>\`), other events, and an \`<event kind="repl-status">\` line naming any script still running. A message the user sent follows the tool results as the user's own text. You don't need to call \`${POLL_TOOL_NAME}\` after a \`${REPL_TOOL_NAME}\` call. Output a script logs after it has ended arrives the same way, as late output under its number.
+
+So waiting inside a script costs you no turns and keeps no one waiting on you: anything addressed to you ends the wait within a few seconds. Put all the work this turn can do into one script, including awaiting a build or a test run and acting on its exit code, and come back when the next step needs your judgment about a result. A long command that a script awaits runs until it ends or reaches its timeout (10 minutes if you gave it none), when it moves to the background (see \`$\`). To keep something running while you do other things (a dev server, a build you'll check later), start it without awaiting it (\`const build = $\`npm run build\`.nothrow()\`) and let the script end.
+
+Waiting at other times: \`${POLL_TOOL_NAME}\` waits until a script ends or an event arrives, and says what is still running. When nothing needs doing, ending your turn works too: results start your next turn when they land.
 `
 
 const SYNC_OUTPUT = "\nA call's result is a `<repl-output>` element: `<log>` lines, then the `<result>` (or `<error>`).\n"
@@ -177,9 +181,8 @@ function toolsGlobal(declared: string): string[] {
 
 /**
  * Official `qo({asyncLane})` picks the async build of the helper declarations
- * when the async lane is described (`j7()`). Of its differences only the `$`
- * timeout sentence applies here: the async build's `running()` global and its
- * `self.running` doc have no counterpart in this worker.
+ * when the async lane is described (`j7()`): the `$` timeout sentence, and
+ * `self.running` with the `running()` global.
  */
 const SYNC_SHELL_TIMEOUT =
   'Timeouts cap at 600000 ms: past that the command keeps running in the background, and running names the task and the file its output streams to, so that file can be read'
@@ -190,13 +193,29 @@ const SYNC_TIMEOUT_SENTENCE = `${SYNC_SHELL_TIMEOUT} instead of running the comm
 const CODE_MODE_SYNC_TIMEOUT_SENTENCE =
   'A script is stopped 600000 ms after it starts, counting the time spent waiting on permission prompts, and a command still running then is stopped too and its output is lost. So give a long command a timeout that ends well before that. At its own timeout a command moves to the background and keeps running (one that starts with sleep is stopped instead, and so is every command if background tasks are disabled): the await resolves without throwing, with exitCode null, and running names the task and the file its output streams to, so read that file instead of running the command again.'
 
+const SYNC_SELF = '/** globalThis, so self.log is log. */\ndeclare const self: typeof globalThis;'
+const ASYNC_SELF_AND_RUNNING = `/** globalThis, so self.log and self.running are log and running. */
+declare const self: typeof globalThis;
+/** Scripts still holding work (settled: returned, with calls it did not await still running; self: true for the script that is asking); abort() stops one: its shell commands are killed and its body ends interrupted, and one still waiting for its turn never starts. A command a script started and did not await keeps running after the script returns, and what its .then(self.log) logs arrives later under that eval's number as late output. A shell command that has moved to the background (its output's running field is set) is no longer the script's work: its await has resolved, and abort() does not stop it. */
+declare function running(): {
+    id: number;
+    snippet: string;
+    ageMs: number;
+    state: 'waiting' | 'running' | 'detached' | 'late';
+    settled: boolean;
+    self: boolean;
+    abort(): true;
+}[];`
+
 /** Official `Al`: Code Mode has no unsandboxed retry, so ShellOutput loses the field and its doc line. */
 const UNSANDBOXED_RETRY =
   /(?: {4}\/\*\* the sandbox blocked the command, so this is its retry outside the sandbox;[^\n]*\n)? {4}unsandboxedRetry\?: \{\n {8}violation: string;\n {4}\};\n/g
 
 function helpers(asyncLane: boolean, codeMode: boolean): string {
   const text = helperDeclarations.trimEnd()
-  const laned = asyncLane ? text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT) : text
+  const laned = asyncLane
+    ? text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT).replace(SYNC_SELF, () => ASYNC_SELF_AND_RUNNING)
+    : text
   if (!codeMode) return laned
   // Official xl(): a replacer function, so `$` in the sentence stays literal.
   return laned.replace(SYNC_TIMEOUT_SENTENCE, () => CODE_MODE_SYNC_TIMEOUT_SENTENCE).replace(UNSANDBOXED_RETRY, '')

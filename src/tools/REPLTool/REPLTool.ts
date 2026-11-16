@@ -433,6 +433,7 @@ export const REPLTool = buildTool({
         },
         ...(asyncLane && {
           detachAfterMs: asyncTiming.settleMs,
+          evalId,
           onDetach: () => detachReplEval(session, evalId!),
           onStart: () => {
             began = true

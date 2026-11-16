@@ -108,7 +108,7 @@ export function getReplSession(key: string): ReplSession {
   if (existing && existing.epoch === epoch) return existing
   existing?.executor.release()
   const session: ReplSession = {
-    executor: createReplExecutor(),
+    executor: createReplExecutor({ onAbortEval: id => abortReplEval(session, id) }),
     epoch,
     used: false,
     nextEvalId: 1,
@@ -219,7 +219,31 @@ export function replCancelledBeforeStartText(reason: unknown): string {
 }
 
 function ledgerChanged(session: ReplSession): void {
+  session.executor.publishRunning(
+    [...session.ledger].map(([id, entry]) => ({
+      id,
+      snippet: entry.snippet,
+      startedAt: entry.startedAt ?? null,
+      state: ledgerState(entry),
+      settled: entry.late,
+    })),
+  )
   for (const listener of [...session.ledgerListeners]) listener()
+}
+
+function ledgerState(entry: ReplLedgerEval): ReplEvalState {
+  return entry.late ? 'late' : entry.startedAt === undefined ? 'waiting' : entry.detached ? 'detached' : 'running'
+}
+
+/**
+ * Official registry `abort(id)`, what a script's `running()[i].abort()` calls:
+ * an eval still waiting for its turn is cancelled for 'script', a running one
+ * is stopped as the user would stop it.
+ */
+export function abortReplEval(session: ReplSession, id: number): void {
+  const pending = session.pending.get(id)
+  if (!pending) return
+  pending.abort(session.ledger.get(id)?.startedAt === undefined ? 'script' : 'user-cancel')
 }
 
 /** Official `dispatch`: the eval is waiting for its turn, unwaited and undelivered until its outcome goes out. */
@@ -280,7 +304,7 @@ export function markReplEvalDelivered(session: ReplSession, id: number): void {
 export function replLedger(session: ReplSession, now = Date.now()): ReplLedgerRow[] {
   return [...session.ledger].map(([id, entry]) => ({
     id,
-    state: entry.late ? 'late' : entry.startedAt === undefined ? 'waiting' : entry.detached ? 'detached' : 'running',
+    state: ledgerState(entry),
     runningMs: entry.startedAt === undefined ? 0 : now - entry.startedAt,
     snippet: entry.snippet,
     notYetStarted: entry.readNotYetStarted?.() ?? [],
