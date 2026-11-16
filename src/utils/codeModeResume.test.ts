@@ -68,3 +68,28 @@ describe('planCodeModeResume', () => {
     expect(planCodeModeResume(undefined, codeModeTranscript, false).replMode).toBe(false)
   })
 })
+
+describe('the Code Mode taken-out texts', () => {
+  test('the notice names Code Mode (experimental), as 2.1.325', () => {
+    expect(CODE_MODE_TAKEN_OUT_NOTICE).toBe(
+      "This session was started in Code Mode (experimental), which isn't available where it runs now. It continues with the ordinary tools and stays out of Code Mode from now on.",
+    )
+  })
+
+  test('the reminder lists each dispatched eval whose outcome never arrived', () => {
+    const messages = [
+      use('t1', 'REPL'),
+      result('t1', '(dispatched #1)'),
+      use('t2', 'REPL'),
+      result('t2', '(dispatched #2)'),
+      use('p1', 'Poll'),
+      result('p1', '<event kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="1" ms="5" status="ok">done</event>'),
+    ]
+    const text = (planCodeModeResume(true, messages, false).messages[0] as { message: { content: string } }).message
+      .content
+    expect(text).toContain(
+      '- The variables and functions that your earlier scripts defined are gone.\n- eval #2 never settled: the process that was running it exited. Its result is lost and the script is no longer running; a command it had started may have run on.\n- If this conversation',
+    )
+    expect(text).not.toContain('eval #1 never settled')
+  })
+})
