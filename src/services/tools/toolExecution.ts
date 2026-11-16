@@ -42,8 +42,9 @@ import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
-import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall } from '../../tools/REPLTool/codeModeGate.js'
-import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall, isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
+import { POLL_TOOL_NAME, REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { getAgentContext } from '../../utils/agentContext.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
@@ -482,9 +483,12 @@ export function unknownToolSuffix(
   context: ToolPermissionContext,
   sessionToolNames: readonly string[] = [],
   embeddedSearch = hasEmbeddedSearchTools(),
+  subagent = getAgentContext() !== undefined,
 ): string {
   const codeModeOnly = codeModeOnlyToolSuffix(toolName, sessionToolNames)
   if (codeModeOnly) return codeModeOnly
+  if (isCodeModeEnabled() && subagent && toolName === POLL_TOOL_NAME)
+    return `. ${toolName} is not available to this agent. Complete the task with the tools provided and return findings to the orchestrator.`
   if (embeddedSearch && (toolName === 'Glob' || toolName === 'Grep')) {
     if (!sessionToolNames.includes(BASH_TOOL_NAME))
       return `. ${toolName} is disabled for this session.`
