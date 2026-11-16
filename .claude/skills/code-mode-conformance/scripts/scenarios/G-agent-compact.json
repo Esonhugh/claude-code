@@ -1,0 +1,202 @@
+{
+ "name": "G-agent-compact",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Agent"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "agents": {
+  "SUBKEY": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "6 * 7",
+       "description": "sub probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "sub-final-{{last}}"
+   }
+  ]
+ },
+ "side": [
+  {
+   "match": "summar",
+   "text": "<analysis>a</analysis>\n<summary>conformance summary: SETG set cx and cy.</summary>"
+  }
+ ],
+ "commands": {
+  "SUB": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Agent({description: 'sub probe', subagent_type: 'general-purpose', prompt: 'SUBKEY compute 6*7 in REPL'})\nJSON.stringify(r).slice(0, 600)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} sub"
+   }
+  ],
+  "SETG": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "globalThis.cx = 7; var cy = 8; 'g'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} setg"
+   }
+  ],
+  "SETG:notif": [
+   {
+    "text": "<analysis>a</analysis>\n<summary>conformance summary: SETG set cx and cy.</summary>"
+   }
+  ],
+  "AFTER_COMPACT": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "cx + cy",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} after-compact"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "turn": "SUB",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "subagent request carries REPL (Code Mode in subagent)",
+    "role": "^agent:SUBKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)REPL(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "subagent tools hide Bash/Read (Code Mode only tools)",
+    "role": "^agent:SUBKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(Bash|Read)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "subagent REPL ran: 6*7",
+    "role": "^agent:SUBKEY$",
+    "step": 1,
+    "match": "<result>42</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "Agent() inside REPL launches (fork async default)",
+    "cmd": "SUB",
+    "step": 1,
+    "match": "async_launched"
+   }
+  },
+  {
+   "wait_req": {
+    "role": "^main:SUB:notif$",
+    "timeout": 60
+   }
+  },
+  {
+   "expect": {
+    "name": "subagent answer reaches main as task-notification",
+    "role": "^main:SUB:notif$",
+    "field": "lastUser",
+    "match": "<task-notification>[\\s\\S]*sub-final-"
+   }
+  },
+  {
+   "turn": "SETG"
+  },
+  {
+   "keys": [
+    "C-u"
+   ]
+  },
+  {
+   "type": "/compact"
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "wait_pane": "Compacted|compacted|Conversation compacted",
+   "timeout": 90
+  },
+  {
+   "capture": "after-compact"
+  },
+  {
+   "turn": "AFTER_COMPACT",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "compact: REPL state note lists the bindings",
+    "cmd": "AFTER_COMPACT",
+    "step": 0,
+    "field": "messages",
+    "match": "Your REPL VM state was kept across this compaction\\. These bindings are still defined: [^\"]*`cx`"
+   }
+  },
+  {
+   "expect": {
+    "name": "compact: globals survive (no reset notice)",
+    "cmd": "AFTER_COMPACT",
+    "step": 1,
+    "match": "^<repl-output[^>]*>\\s*<result>15</result>"
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

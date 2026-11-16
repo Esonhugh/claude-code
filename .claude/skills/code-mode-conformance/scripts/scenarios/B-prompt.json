@@ -1,0 +1,173 @@
+{
+ "name": "B-prompt",
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "commands": {
+  "ON": [
+   {
+    "text": "DONE {{nonce}} on"
+   }
+  ],
+  "OFF_UNSET": [
+   {
+    "text": "DONE {{nonce}} off"
+   }
+  ],
+  "OFF_ZERO": [
+   {
+    "text": "DONE {{nonce}} off0"
+   }
+  ],
+  "ON_BYPASS": [
+   {
+    "text": "DONE {{nonce}} bypass"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+     "CLAUDE_CODE_MODEL_CAPABILITIES": "-lean_prompt"
+    }
+   }
+  },
+  {
+   "turn": "ON"
+  },
+  {
+   "expect": {
+    "name": "on, full prompt: tools REPL(+Poll)",
+    "cmd": "ON",
+    "field": "tools",
+    "match": "^(Poll,)?REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "on, full prompt: repl_working section",
+    "cmd": "ON",
+    "field": "system",
+    "match": "Few, full scripts"
+   }
+  },
+  {
+   "expect": {
+    "name": "on: system prompt names write(path, content)",
+    "cmd": "ON",
+    "field": "system",
+    "match": "write\\(path"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "bypassPermissions",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+     "CLAUDE_CODE_MODEL_CAPABILITIES": "-lean_prompt"
+    }
+   }
+  },
+  {
+   "turn": "ON_BYPASS"
+  },
+  {
+   "expect": {
+    "name": "on, bypass: tools Poll,REPL",
+    "cmd": "ON_BYPASS",
+    "field": "tools",
+    "match": "^Poll,REPL$"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "env": {
+     "CLAUDE_CODE_MODEL_CAPABILITIES": "-lean_prompt"
+    }
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "off (unset): no Code Mode notice",
+    "match": "Code Mode",
+    "absent": true
+   }
+  },
+  {
+   "turn": "OFF_UNSET"
+  },
+  {
+   "expect": {
+    "name": "off (unset): no REPL/Poll in tools",
+    "cmd": "OFF_UNSET",
+    "field": "tools",
+    "match": "(^|,)(REPL|Poll)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "off (unset): Bash/Read sent directly",
+    "cmd": "OFF_UNSET",
+    "field": "tools",
+    "match": "Bash.*Read|Read.*Bash"
+   }
+  },
+  {
+   "expect": {
+    "name": "off (unset): no repl_working text",
+    "cmd": "OFF_UNSET",
+    "field": "system",
+    "match": "Few, full scripts|REPL",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "0",
+     "CLAUDE_CODE_MODEL_CAPABILITIES": "-lean_prompt"
+    }
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "off (=0): no Code Mode notice",
+    "match": "Code Mode",
+    "absent": true
+   }
+  },
+  {
+   "turn": "OFF_ZERO"
+  },
+  {
+   "expect_same": {
+    "name": "=0 and unset send the same tools and system prompt",
+    "a": "OFF_UNSET",
+    "b": "OFF_ZERO",
+    "fields": [
+     "tools",
+     "sysSha",
+     "sysLen"
+    ]
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

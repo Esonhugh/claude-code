@@ -1,0 +1,234 @@
+{
+ "name": "B-async",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "commands": {
+  "ASYNC": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Bash({command: 'sleep 40 && echo late-ok', timeout: 120000})\nr.stdout.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} async"
+   }
+  ],
+  "POLL": [
+   {
+    "tools": [
+     {
+      "name": "Poll",
+      "input": {}
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} poll"
+   }
+  ],
+  "AUTO": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Bash({command: 'sleep 36 && echo auto-ok', timeout: 120000})\nr.stdout.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} auto"
+   }
+  ],
+  "AUTO:notif": [
+   {
+    "text": "NOTIF {{nonce}} auto"
+   }
+  ],
+  "ESC_BG": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Bash({command: 'sleep 100 && echo never', timeout: 200000})\nr.stdout.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} esc-bg"
+   }
+  ],
+  "ESC_BG:notif": [
+   {
+    "text": "NOTIF {{nonce}} esc"
+   }
+  ],
+  "POLL2": [
+   {
+    "tools": [
+     {
+      "name": "Poll",
+      "input": {}
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} poll2"
+   }
+  ],
+  "QUICK": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "'quick-ok'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} quick"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions"
+   }
+  },
+  {
+   "turn": "QUICK"
+  },
+  {
+   "expect": {
+    "name": "bypass: short script returns inline",
+    "cmd": "QUICK",
+    "step": 1,
+    "match": "<repl-output eval=\"\\d+\">.*quick-ok|<repl-output>.*quick-ok"
+   }
+  },
+  {
+   "turn": "ASYNC",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "async: receipt (dispatched #N)",
+    "cmd": "ASYNC",
+    "step": 1,
+    "match": "^\\(dispatched #\\d+\\)"
+   }
+  },
+  {
+   "expect_gap": {
+    "name": "async: dispatched at ~30 s",
+    "cmd": "ASYNC",
+    "min": 29,
+    "max": 36
+   }
+  },
+  {
+   "turn": "POLL",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "Poll returns the repl-eval event with the result",
+    "cmd": "POLL",
+    "step": 1,
+    "match": "<event kind=\"repl-eval\"[^>]*status=\"[a-z]+\">.*late-ok"
+   }
+  },
+  {
+   "turn": "AUTO",
+   "timeout": 90
+  },
+  {
+   "wait_req": {
+    "role": "main:AUTO:notif",
+    "timeout": 30
+   }
+  },
+  {
+   "expect": {
+    "name": "idle: event wakes the model as a notification",
+    "role": "main:AUTO:notif",
+    "field": "lastUser",
+    "match": "<event kind=\"repl-eval\".*auto-ok"
+   }
+  },
+  {
+   "sleep": 2
+  },
+  {
+   "turn": "ESC_BG",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "esc-bg: receipt",
+    "cmd": "ESC_BG",
+    "step": 1,
+    "match": "^\\(dispatched #\\d+\\)"
+   }
+  },
+  {
+   "sleep": 2
+  },
+  {
+   "keys": [
+    "Escape"
+   ]
+  },
+  {
+   "sleep": 6
+  },
+  {
+   "capture": "esc-bg-after"
+  },
+  {
+   "turn": "POLL2",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "Esc between turns: user-stop report reaches the model",
+    "cmd": "POLL2",
+    "step": 1,
+    "field": "messages",
+    "match": "The user interrupted this script, so it stopped\\. STOP what you are doing"
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc between turns: no late result",
+    "cmd": "POLL2",
+    "step": 1,
+    "field": "messages",
+    "match": "<result>never</result>",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

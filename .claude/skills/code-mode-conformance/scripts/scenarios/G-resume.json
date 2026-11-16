@@ -1,0 +1,210 @@
+{
+ "name": "G-resume",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "commands": {
+  "FIRST": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "globalThis.rx = 5; (await Read({file_path: '{{work}}/hello.txt'})).file.content.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} first"
+   }
+  ],
+  "ON_AGAIN": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "typeof rx",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} on-again"
+   }
+  ],
+  "OFF_TEXT": [
+   {
+    "text": "DONE {{nonce}} off-text"
+   }
+  ],
+  "OFF_REPL": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "1 + 1",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} off-repl"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "turn": "FIRST"
+  },
+  {
+   "exit": true
+  },
+  {
+   "expect_transcript": {
+    "name": "transcript records repl-mode entry",
+    "match": "\"type\":\"repl-mode\""
+   }
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume {{session}}"
+   }
+  },
+  {
+   "capture": "resume-on"
+  },
+  {
+   "expect_pane": {
+    "name": "resume on: no taken-out notice",
+    "match": "This session was started in Code Mode",
+    "absent": true
+   }
+  },
+  {
+   "turn": "ON_AGAIN"
+  },
+  {
+   "expect": {
+    "name": "resume on: tools are Code Mode tools",
+    "cmd": "ON_AGAIN",
+    "step": 0,
+    "field": "tools",
+    "match": "^(Poll,)?REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "resume on: history kept",
+    "cmd": "ON_AGAIN",
+    "step": 0,
+    "field": "messages",
+    "match": "@@ \\S+ FIRST"
+   }
+  },
+  {
+   "expect": {
+    "name": "resume on: no off reminder",
+    "cmd": "ON_AGAIN",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "resume on: new VM context (globals gone, D-notice)",
+    "cmd": "ON_AGAIN",
+    "step": 1,
+    "match": "This REPL context is new[\\s\\S]*<result>undefined</result>"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume {{session}}",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null
+    }
+   }
+  },
+  {
+   "capture": "resume-off"
+  },
+  {
+   "expect_pane": {
+    "name": "resume off: taken-out notice shown",
+    "match": "This session was started in Code Mode, which isn.t available where it runs now"
+   }
+  },
+  {
+   "turn": "OFF_TEXT"
+  },
+  {
+   "expect": {
+    "name": "resume off: ordinary tools",
+    "cmd": "OFF_TEXT",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "resume off: REPL/Poll not offered",
+    "cmd": "OFF_TEXT",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(REPL|Poll)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "resume off: off reminder in messages",
+    "cmd": "OFF_TEXT",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session\\.\\\\n- Do not call REPL or Poll"
+   }
+  },
+  {
+   "turn": "OFF_REPL"
+  },
+  {
+   "expect": {
+    "name": "resume off: a REPL call is refused",
+    "cmd": "OFF_REPL",
+    "step": 1,
+    "match": "No such tool available: REPL"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "expect_transcript": {
+    "name": "transcript records repl-mode false",
+    "match": "\"type\":\"repl-mode\"[^\\n]*false|false[^\\n]*\"type\":\"repl-mode\""
+   }
+  }
+ ]
+}
