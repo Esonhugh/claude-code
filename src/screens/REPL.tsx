@@ -3235,8 +3235,10 @@ export function REPL({
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
         restoreSessionMetadata({ ...log, replMode: codeModePlan.replMode })
-        // Official qKa runs once the restored session is the current one.
-        void reportLostReplEvals(messages)
+        // Official qKa runs once the restored session is the current one; interactive, it starts no turn.
+        void reportLostReplEvals(messages, { startsTurn: false }).then(rows => {
+          if (rows.length > 0) setMessages(prev => [...prev, ...rows])
+        })
         restoreSessionCosts(log)
         const resumedPermissionContext = restorePermissionModeForResume(
           store.getState().toolPermissionContext,
@@ -3399,8 +3401,10 @@ export function REPL({
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
       restoreReadFileState(initialMessages, getOriginalCwd())
-      // After launch, so event delivery for this session is known (official qKa).
-      void reportLostReplEvals(initialMessages)
+      // After launch, so event delivery for this session is known (official qKa); interactive, it starts no turn.
+      void reportLostReplEvals(initialMessages, { startsTurn: false }).then(rows => {
+        if (rows.length > 0) setMessages(prev => [...prev, ...rows])
+      })
       void restoreRemoteAgentTasks({
         abortController: new AbortController(),
         getAppState: () => store.getState(),

@@ -10,7 +10,7 @@ import {
   planCodeModeResume,
   reportLostReplEvals,
 } from './codeModeResume.js'
-import { getCommandQueueSnapshot, resetCommandQueue } from './messageQueueManager.js'
+import { getCommandQueueSnapshot, pollEventWakes, resetCommandQueue } from './messageQueueManager.js'
 import { createAssistantMessage, createUserMessage, REJECT_MESSAGE } from './messages.js'
 import {
   getSessionSettingsCache,
@@ -136,11 +136,11 @@ describe('reportLostReplEvals (official qKa)', () => {
   })
 
   const earlier = (message: Message): Message => ({ ...message, timestamp: '2020-01-01T00:00:00.000Z' }) as Message
-  const notifications = () => getCommandQueueSnapshot().filter(cmd => cmd.mode === 'task-notification')
+  const events = () => getCommandQueueSnapshot().filter(cmd => cmd.mode === 'poll-event')
 
-  test('each eval an earlier process left unsettled gets a lost event', async () => {
+  test('each eval an earlier process left unsettled gets a lost event and a row', async () => {
     noteReplLaunchPermissionMode('bypassPermissions')
-    await reportLostReplEvals([
+    const rows = await reportLostReplEvals([
       use('t1', 'REPL'),
       earlier(result('t1', '(dispatched #1)')),
       use('t2', 'REPL'),
@@ -148,20 +148,33 @@ describe('reportLostReplEvals (official qKa)', () => {
       use('p1', 'Poll'),
       result('p1', '<event kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="1" ms="5" status="settled">done</event>'),
     ])
-    const texts = notifications().map(cmd => cmd.value)
-    expect(texts).toHaveLength(1)
-    expect(texts[0]).toMatch(
-      /^<event kind="repl-eval" at="[^"]+" eval="2" status="lost">eval #2 never settled: the process that was running it exited\. Its result is lost and the script is no longer running; a command it had started may have run on\.<\/event>$/,
+    const queued = events()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]!.value).toMatch(
+      /^<event nonce="[\w-]+" kind="repl-eval" at="[^"]+" eval="2" status="lost">eval #2 never settled: the process that was running it exited\. Its result is lost and the script is no longer running; a command it had started may have run on\.<\/event>$/,
     )
+    expect(pollEventWakes(queued[0]!.pollEvent!)).toBe(true)
+    expect(rows.map(row => row.type)).toEqual(['assistant', 'user'])
+    expect(rows.every(row => (row as { isVirtual?: boolean }).isVirtual)).toBe(true)
+    expect(JSON.stringify(rows[1])).toContain('"content":"Lost: Claude Code exited before this finished","is_error":true')
+  })
+
+  test('the interactive caller queues it without starting a turn', async () => {
+    noteReplLaunchPermissionMode('bypassPermissions')
+    await reportLostReplEvals([use('t1', 'REPL'), earlier(result('t1', '(dispatched #1)'))], { startsTurn: false })
+    const queued = events()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]!.pollEvent!.startsTurn).toBe(false)
+    expect(pollEventWakes(queued[0]!.pollEvent!)).toBe(false)
   })
 
   test('receipts from this process, or no event delivery, queue nothing', async () => {
     noteReplLaunchPermissionMode('bypassPermissions')
-    await reportLostReplEvals([use('t1', 'REPL'), result('t1', '(dispatched #1)')])
-    expect(notifications()).toHaveLength(0)
+    expect(await reportLostReplEvals([use('t1', 'REPL'), result('t1', '(dispatched #1)')])).toEqual([])
+    expect(events()).toHaveLength(0)
     resetCodeModeGateForTesting()
     noteReplLaunchPermissionMode('default')
-    await reportLostReplEvals([use('t1', 'REPL'), earlier(result('t1', '(dispatched #1)'))])
-    expect(notifications()).toHaveLength(0)
+    expect(await reportLostReplEvals([use('t1', 'REPL'), earlier(result('t1', '(dispatched #1)'))])).toEqual([])
+    expect(events()).toHaveLength(0)
   })
 })

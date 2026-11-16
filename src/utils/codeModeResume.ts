@@ -1,8 +1,10 @@
+import { randomUUID } from 'crypto'
 import { CODE_MODE_ONLY_TOOLS, POLL_TOOL_NAME, REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import type { Message } from '../types/message.js'
 import { logForDebugging } from './debug.js'
 import {
   CANCEL_MESSAGE,
+  createAssistantMessage,
   createSystemMessage,
   createUserMessage,
   INTERRUPT_MESSAGE_FOR_TOOL_USE,
@@ -105,41 +107,69 @@ export function lostEvalText(id: number): string {
   return `eval #${id} never settled: the process that was running it exited. Its result is lost and the script is no longer running; a command it had started may have run on.`
 }
 
+/** Official `uJt`: the row a lost eval shows, an errored Code call of its own (virtual, not sent to the API). */
+function lostEvalRow(text: string): Message[] {
+  const id = `repl_lost_${randomUUID()}`
+  const assistant = createAssistantMessage({
+    content: [{ type: 'tool_use', id, name: REPL_TOOL_NAME, input: {} }] as never,
+    isVirtual: true,
+  })
+  const user = createUserMessage({
+    content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: true }],
+    toolUseResult: { error: text, shownOnCall: true },
+    isVirtual: true,
+    sourceToolAssistantUUID: assistant.uuid,
+  })
+  return [assistant, user]
+}
+
 /**
  * Official `qKa` (`reportLostReplEvals`): on a Code Mode resume, answers each
- * eval an earlier process dispatched and never settled with a lost event, so
- * the model stops waiting for it. Runs after launch, once the session id and
- * event delivery are settled. Official queues it without starting a turn in
- * an interactive session; our notifications always wake the model at idle.
+ * eval an earlier process dispatched and never settled with a lost poll
+ * event, so the model stops waiting for it. Runs after launch, once the
+ * session id and event delivery are settled. The interactive caller passes
+ * `startsTurn: false`: the event waits for the next delivery. Returns the
+ * rows the transcript shows for the lost evals (official `displayRows`).
  */
-export async function reportLostReplEvals(messages: readonly Message[]): Promise<void> {
+export async function reportLostReplEvals(
+  messages: readonly Message[],
+  { startsTurn = true }: { startsTurn?: boolean } = {},
+): Promise<Message[]> {
   const { isCodeModeEnabled, isReplEventDeliveryEnabled } = await import('../tools/REPLTool/codeModeGate.js')
-  if (!isCodeModeEnabled()) return
+  if (!isCodeModeEnabled()) return []
   const lost = unsettledEvals(messages).filter(entry => Date.parse(entry.recordedAt) < performance.timeOrigin)
-  if (lost.length === 0) return
+  if (lost.length === 0) return []
   if (!isReplEventDeliveryEnabled()) {
     logForDebugging(
       `resume: ${lost.length} async REPL eval(s) never settled, and poll-event delivery is off, so no lost event is queued`,
       { level: 'warn' },
     )
-    return
+    return []
   }
   logForDebugging(
     `resume: ${lost.length} async REPL eval(s) never settled (${lost.map(entry => `#${entry.evalId}`).join(', ')}); answering each with a lost event`,
   )
-  const { deliverReplEvent, formatReplLostEvent, getReplSession, MAIN_REPL_SESSION } = await import(
-    '../tools/REPLTool/sessions.js'
-  )
-  const session = getReplSession(MAIN_REPL_SESSION)
+  const { formatReplLostEvent } = await import('../tools/REPLTool/sessions.js')
+  const { enqueuePollEvent, REPL_EVAL_EVENT_KIND } = await import('./messageQueueManager.js')
+  const rows: Message[] = []
   for (const { evalId } of lost) {
-    await deliverReplEvent(session, { id: evalId, text: formatReplLostEvent(evalId, lostEvalText(evalId)) }, []).catch(
-      (error: unknown) =>
-        logForDebugging(
-          `async REPL lost event for eval #${evalId} not queued: ${error instanceof Error ? error.message : 'non-Error rejection'}`,
-          { level: 'warn' },
-        ),
-    )
+    const refused = (error: unknown) =>
+      logForDebugging(
+        `async REPL lost event for eval #${evalId} not queued: ${error instanceof Error ? error.message : 'non-Error rejection'}`,
+        { level: 'warn' },
+      )
+    try {
+      enqueuePollEvent({
+        kind: REPL_EVAL_EVENT_KIND,
+        element: formatReplLostEvent(evalId, lostEvalText(evalId)),
+        ...(!startsTurn && { startsTurn: false }),
+      }).catch(refused)
+      rows.push(...lostEvalRow('Lost: Claude Code exited before this finished'))
+    } catch (error) {
+      refused(error)
+    }
   }
+  return rows
 }
 
 /** Official `M()`, with a line for each eval left unsettled (official `_so`). */
