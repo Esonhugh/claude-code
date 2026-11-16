@@ -6,6 +6,7 @@ import { query } from './query.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
 import { buildTool, type ToolUseContext } from './Tool.js'
 import { formatPollDelivery } from './tools/PollTool/delivery.js'
+import { resetToolsUsedForTesting } from './tools/PollTool/toolsUsed.js'
 import { noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './tools/REPLTool/codeModeGate.js'
 import type { AgentId } from './types/ids.js'
 import type { Message } from './types/message.js'
@@ -40,6 +41,7 @@ beforeAll(() => {
   setIsInteractive(true)
   resetCodeModeGateForTesting()
   noteReplLaunchPermissionMode('bypassPermissions')
+  resetToolsUsedForTesting()
 })
 afterAll(() => {
   restore('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE', savedCodeMode)
@@ -49,7 +51,10 @@ afterAll(() => {
   resetSettingsCache()
   if (originalSettings) setSessionSettingsCache(originalSettings)
 })
-afterEach(() => resetCommandQueue())
+afterEach(() => {
+  resetCommandQueue()
+  resetToolsUsedForTesting()
+})
 
 const element = (n: number) => `<event kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="${n}" ms="1" status="settled">\n<result>${n}</result>\n</event>`
 

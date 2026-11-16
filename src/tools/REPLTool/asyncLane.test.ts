@@ -20,6 +20,7 @@ import {
 } from '../../utils/settings/settingsCache.js'
 import { NO_PENDING_EVENTS } from '../PollTool/prompt.js'
 import { PollTool, setPollWaitForTesting } from '../PollTool/PollTool.js'
+import { resetToolsUsedForTesting } from '../PollTool/toolsUsed.js'
 import { isCodeModeEnabled, noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './codeModeGate.js'
 import { getReplPrompt } from './prompt.js'
 import { REPL_ASYNC_WALL_CAP_MS, REPL_MAX_PENDING_EVALS, REPLTool, setReplAsyncTimingForTesting } from './REPLTool.js'
@@ -52,6 +53,7 @@ beforeAll(() => {
   resetCodeModeGateForTesting()
   // A session launched in bypassPermissions: Poll and event delivery are on (official HR, NUe).
   noteReplLaunchPermissionMode('bypassPermissions')
+  resetToolsUsedForTesting()
 })
 afterAll(() => {
   releaseAllReplSessions()
@@ -69,6 +71,7 @@ afterEach(() => {
   resetCommandQueue()
   setReplAsyncTimingForTesting({ detachMs: 100 })
   setPollWaitForTesting()
+  resetToolsUsedForTesting()
 })
 
 const allow: CanUseToolFn = async () => ({ behavior: 'allow' })
