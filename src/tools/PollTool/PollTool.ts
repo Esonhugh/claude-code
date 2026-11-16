@@ -3,7 +3,7 @@ import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import { getExtendedCacheTtlEnabled } from '../../services/api/claude.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCommandQueueSnapshot, subscribeToCommandQueue } from '../../utils/messageQueueManager.js'
-import { isCodeModeEnabled } from '../REPLTool/codeModeGate.js'
+import { isReplEventDeliveryEnabled } from '../REPLTool/codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from '../REPLTool/constants.js'
 import { isMainThreadSubagent, stopPendingOnAbort } from '../REPLTool/REPLTool.js'
 import {
@@ -137,7 +137,8 @@ export const PollTool = buildTool({
     return outputSchema()
   },
   isEnabled() {
-    return isCodeModeEnabled()
+    // Official HR(): only a session launched in auto or bypassPermissions.
+    return isReplEventDeliveryEnabled()
   },
   isConcurrencySafe() {
     return true

@@ -135,7 +135,7 @@
 
 ### Phase 4 后台执行与 Poll
 
-只在 `auto` 和 `bypassPermissions` 模式下启用。
+只在 `auto` 和 `bypassPermissions` 模式下启用。`Poll`、async 文本、MODE_CHANGE 段、async d.ts 和去掉 `run_in_background` 看会话启动时的模式（官方 `t8t` → `ownEventsRequested`）；每次调用是否走 async lane 再看当时的模式（官方 `Xu`）。启动于其他模式的会话只有 `REPL`，切到 auto 也不变。
 
 1. 脚本 30 s 后未结束就转后台，返回 `(dispatched #N)`，墙钟上限 7200000 ms。
 2. 新建 `Poll` 工具，输入为空，返回 `<event kind="repl-eval">` 事件。

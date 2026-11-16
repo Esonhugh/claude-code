@@ -9,7 +9,9 @@ import { resetSettingsCache, setSessionSettingsCache } from './utils/settings/se
 }
 
 const { getAllBaseTools, getREPLTool, getTools } = await import('./tools.js')
-const { hideCodeModeOnlyTools, resetCodeModeGateForTesting } = await import('./tools/REPLTool/codeModeGate.js')
+const { hideCodeModeOnlyTools, noteReplLaunchPermissionMode, resetCodeModeGateForTesting } = await import(
+  './tools/REPLTool/codeModeGate.js'
+)
 const { CODE_MODE_ONLY_TOOLS, isReplModeEnabled } = await import('./tools/REPLTool/constants.js')
 const { getReplPrimitiveTools } = await import('./tools/REPLTool/primitiveTools.js')
 
@@ -78,11 +80,25 @@ describe('tool pool with Code Mode on', () => {
     const pool = getTools(getEmptyToolPermissionContext())
     const poolNames = names(pool)
     expect(poolNames).toContain('REPL')
-    expect(poolNames).toContain('Poll')
+    expect(poolNames).not.toContain('Poll')
     for (const name of CODE_MODE_ONLY_TOOLS) expect(poolNames).not.toContain(name)
     // Write and Edit stay in the pool; the API list carries only REPL (and Poll, StructuredOutput).
     expect(poolNames).toEqual(expect.arrayContaining(['Write', 'Edit']))
-    expect(names(hideCodeModeOnlyTools(pool))).toEqual(['REPL', 'Poll'])
+    expect(names(hideCodeModeOnlyTools(pool))).toEqual(['REPL'])
+  })
+
+  test('Poll joins only a session launched in auto or bypassPermissions', () => {
+    process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    resetCodeModeGateForTesting()
+    for (const mode of ['default', 'acceptEdits', 'plan'] as const) noteReplLaunchPermissionMode(mode)
+    expect(names(hideCodeModeOnlyTools(getTools(getEmptyToolPermissionContext())))).toEqual(['REPL'])
+    noteReplLaunchPermissionMode('bypassPermissions')
+    expect(names(hideCodeModeOnlyTools(getTools(getEmptyToolPermissionContext())))).toEqual(['REPL', 'Poll'])
+  })
+
+  test('the launch mode asks for nothing with Code Mode off', () => {
+    noteReplLaunchPermissionMode('auto')
+    expect(names(getTools(getEmptyToolPermissionContext()))).not.toContain('Poll')
   })
 })
 

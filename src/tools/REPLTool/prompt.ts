@@ -2,7 +2,7 @@ import helperDeclarations from '../../../assets/code-mode-2.1.325.bash.d.ts.txt'
 import type { Tool, ToolPermissionContext, Tools } from '../../Tool.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../ToolSearchTool/constants.js'
-import { codeModeHidesTools, isCodeModeEnabled } from './codeModeGate.js'
+import { codeModeHidesTools, isReplEventDeliveryEnabled } from './codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from './constants.js'
 import { REPL_OUTPUT_PART_CHARS } from './executor/host.js'
 import { replCallableToolsFrom } from './toolWrappers.js'
@@ -139,11 +139,22 @@ export function replDeclaredTools(tools: Tools, permissionContext: ToolPermissio
   )
 }
 
-function toolsInterface(tools: Tools): string {
+const SHELL_TOOL_NAMES = new Set(['Bash', 'PowerShell'])
+
+/** Official `Vl`: with the async lane described, a shell tool's schema loses run_in_background. */
+function declaredSchema(tool: Tool, dropBackground: boolean): Record<string, unknown> {
+  const schema = toolInputSchema(tool)
+  const properties = schema.properties
+  if (!dropBackground || !SHELL_TOOL_NAMES.has(tool.name) || !properties || typeof properties !== 'object') return schema
+  const { run_in_background: _dropped, ...rest } = properties as Record<string, unknown>
+  return { ...schema, properties: rest }
+}
+
+function toolsInterface(tools: Tools, dropBackground: boolean): string {
   if (tools.length === 0) return ''
   const lines = tools.map(tool => {
     const name = IDENTIFIER.test(tool.name) ? tool.name : JSON.stringify(tool.name)
-    return `  ${name}(input: ${schemaToTypeScript(toolInputSchema(tool), '  ')}): Promise<unknown>`
+    return `  ${name}(input: ${schemaToTypeScript(declaredSchema(tool, dropBackground), '  ')}): Promise<unknown>`
   })
   return `interface Tools {\n${lines.join('\n')}\n}`
 }
@@ -166,29 +177,35 @@ function toolsGlobal(declared: string): string[] {
 
 /**
  * Official `qo({asyncLane})` picks the async build of the helper declarations
- * when Code Mode is on (`j7()`). Of its differences only the `$` timeout
- * sentence applies here: the async build's `running()` global and its
+ * when the async lane is described (`j7()`). Of its differences only the `$`
+ * timeout sentence applies here: the async build's `running()` global and its
  * `self.running` doc have no counterpart in this worker.
  */
 const SYNC_SHELL_TIMEOUT =
   'Timeouts cap at 600000 ms: past that the command keeps running in the background, and running names the task and the file its output streams to, so that file can be read'
 const ASYNC_SHELL_TIMEOUT =
   'A command with no timeout of its own is awaited for up to 600000 ms; give it a longer one (at most 7200000 ms) to await a long build. Past its timeout the command moves to the background (one that starts with sleep is stopped instead): the await resolves without throwing, with exitCode null and running naming the task and the file its output streams to, and the script goes on. So check running before using its output or exit code, and read that file'
+/** Official `Ol` and `Pl`: Code Mode's sync build says how the script cap and a command's own timeout interact. */
+const SYNC_TIMEOUT_SENTENCE = `${SYNC_SHELL_TIMEOUT} instead of running the command again.`
+const CODE_MODE_SYNC_TIMEOUT_SENTENCE =
+  'A script is stopped 600000 ms after it starts, counting the time spent waiting on permission prompts, and a command still running then is stopped too and its output is lost. So give a long command a timeout that ends well before that. At its own timeout a command moves to the background and keeps running (one that starts with sleep is stopped instead, and so is every command if background tasks are disabled): the await resolves without throwing, with exitCode null, and running names the task and the file its output streams to, so read that file instead of running the command again.'
 
-function helpers(asyncLane: boolean): string {
+function helpers(asyncLane: boolean, codeMode: boolean): string {
   const text = helperDeclarations.trimEnd()
-  return asyncLane ? text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT) : text
+  if (asyncLane) return text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT)
+  // Official xl(): a replacer function, so `$` in the sentence stays literal.
+  return codeMode ? text.replace(SYNC_TIMEOUT_SENTENCE, () => CODE_MODE_SYNC_TIMEOUT_SENTENCE) : text
 }
 
-function declarations(declared: Tools): string {
-  const tools = toolsInterface(declared)
+function declarations(declared: Tools, asyncLane: boolean, codeMode: boolean, dropBackground: boolean): string {
+  const tools = toolsInterface(declared, dropBackground)
   return (
     '```ts\n' +
     [
       tools === ''
         ? "// The globals of a REPL script, as TypeScript declarations. The session's tools are not listed here: searchTools finds them."
         : "// The globals of a REPL script, as TypeScript declarations. interface Tools covers the built-in tools a script can call that aren't in your tool list; long doc lines are cut short, and describeTool(name) returns a tool's description and full input schema. searchTools finds the others, such as MCP tools.",
-      helpers(isCodeModeEnabled()),
+      helpers(asyncLane, codeMode),
       ...toolsGlobal(tools),
     ].join('\n') +
     '\n```'
@@ -205,14 +222,16 @@ function mcpLine(tools: Tools, codeMode: boolean): string {
 
 /**
  * The REPL tool's prompt, as official 2.1.325 `ts()` without the skill
- * listing. The async-lane text depends on Code Mode (where Poll exists), not
- * on the current mode, as official `j7()`, so the prompt stays the same
- * across mode changes.
+ * listing. The async-lane text depends on the mode the session was launched
+ * in (where Poll exists), not on the current mode, as official `j7()`, so the
+ * prompt stays the same across mode changes.
  */
 export function getReplPrompt(tools: Tools, permissionContext: ToolPermissionContext): string {
   const codeMode = codeModeHidesTools(tools)
+  const asyncLane = isReplEventDeliveryEnabled()
+  const dropBackground = asyncLane && tools.some(tool => tool.isMcp !== true && tool.name === POLL_TOOL_NAME)
   const opening = codeMode
-    ? 'Your one tool is `REPL`; there are no other tools. Everything you do \u2014 shell commands, file reads and edits, code search, web fetches, MCP calls \u2014 happens as JavaScript inside a `REPL` call, through the globals below.'
+    ? `${asyncLane ? `Your two tools are \`${REPL_TOOL_NAME}\` and \`${POLL_TOOL_NAME}\`` : 'Your one tool is `REPL`'}; there are no other tools. Everything you do \u2014 shell commands, file reads and edits, code search, web fetches, MCP calls \u2014 happens as JavaScript inside a \`REPL\` call, through the globals below.`
     : 'Everything you do to investigate \u2014 shell commands, file reads, code search \u2014 happens as JavaScript inside a `REPL` call, through the globals below; the other tools in your list are also callable from a script, by name.'
   const partCap = ` Each part of what a script returns (each key of a returned object, what it logged) is shown cut to about ${REPL_OUTPUT_PART_CHARS.toLocaleString('en-US')} characters, head and tail kept, with a marker where the middle went.`
   const escaping =
@@ -227,9 +246,9 @@ What a \`REPL\` call costs: each call is a full model round-trip \u2014 the whol
 A script's output is its last expression's value plus anything it \`self.log(...)\`s along the way. What it returns is added to your context and stays there; the value itself stays in the REPL whether you return it or not. So return what you want to read now, and keep the rest in variables to slice or search later.${partCap}${escaping} Promise values inside a returned object are awaited for you (\`({status: $\`git status\`, branches: $\`git branch\`})\` needs no awaits); a promise used inline \u2014 concatenated, interpolated, passed to another call \u2014 needs \`await\`. \`console.*\` goes to a bounded in-memory ring rather than into your context; \`console.tail(n)\` reads it back.
 
 To keep a long output out of your context, return \`preview(out)\` or \`preview(out, 2000)\` instead of the output itself: it gives the first characters, and when \`out\` is an awaited \`$\` result (not its \`.text()\` string) whose output the shell tool saved to a file, it starts with the output's size and the file's path.
-${isCodeModeEnabled() ? `${ASYNC_OUTPUT}${MODE_CHANGE}` : SYNC_OUTPUT}
+${asyncLane ? `${ASYNC_OUTPUT}${MODE_CHANGE}` : SYNC_OUTPUT}
 ${EXAMPLE}
 ## Declarations
-${declarations(replDeclaredTools(tools, permissionContext))}
+${declarations(replDeclaredTools(tools, permissionContext), asyncLane, codeMode, dropBackground)}
 ${mcpLine(tools, codeMode)}`
 }

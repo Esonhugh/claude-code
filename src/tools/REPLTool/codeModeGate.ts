@@ -3,6 +3,7 @@ import { getIsNonInteractiveSession, getIsRemoteMode } from '../../bootstrap/sta
 import { logForDebugging } from '../../utils/debug.js'
 import { getPlatform } from '../../utils/platform.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
+import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { CODE_MODE_ONLY_TOOLS, POLL_TOOL_NAME, REPL_TOOL_NAME } from './constants.js'
 
 export const CODE_MODE_ENV = 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE'
@@ -156,9 +157,31 @@ export function isCodeModeEnabled(): boolean {
   return getCodeModeState().enabled
 }
 
+let ownEventsRequested = false
+
+/**
+ * Official t8t: launching the terminal REPL in auto or bypassPermissions mode
+ * asks for event delivery (`mrr({entrypoint:"terminal", ownEventsRequested:
+ * x0o(mode)})`). It is decided once, from the mode the session starts in.
+ */
+export function noteReplLaunchPermissionMode(mode: PermissionMode): void {
+  if (isCodeModeEnabled() && (mode === 'auto' || mode === 'bypassPermissions')) ownEventsRequested = true
+}
+
+/**
+ * Official `HR()` / `j7()` under Code Mode: Poll exists, and the REPL prompt
+ * and declarations describe the async lane, only in a session that started in
+ * auto or bypassPermissions. A session started in another mode keeps the
+ * sync lane even after a switch to auto.
+ */
+export function isReplEventDeliveryEnabled(): boolean {
+  return ownEventsRequested && isCodeModeEnabled()
+}
+
 export function resetCodeModeGateForTesting(): void {
   startup = undefined
   settled = undefined
+  ownEventsRequested = false
 }
 
 function hasName(tool: Pick<Tool, 'name' | 'aliases'>, name: string): boolean {

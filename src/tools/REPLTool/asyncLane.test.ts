@@ -14,7 +14,7 @@ import {
 } from '../../utils/settings/settingsCache.js'
 import { NO_PENDING_EVENTS } from '../PollTool/prompt.js'
 import { PollTool, setPollWaitForTesting } from '../PollTool/PollTool.js'
-import { isCodeModeEnabled, resetCodeModeGateForTesting } from './codeModeGate.js'
+import { isCodeModeEnabled, noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './codeModeGate.js'
 import { getReplPrompt } from './prompt.js'
 import { REPL_ASYNC_WALL_CAP_MS, REPL_MAX_PENDING_EVALS, REPLTool, setReplAsyncTimingForTesting } from './REPLTool.js'
 import {
@@ -416,15 +416,51 @@ describe('outside the async lane', () => {
 })
 
 describe('async-lane prompt', () => {
-  test('Code Mode carries the official async text and the mode-change note, in every mode', () => {
+  const fakeBash = buildTool({
+    name: 'Bash',
+    inputSchema: z.object({ command: z.string(), run_in_background: z.boolean().optional() }),
+    maxResultSizeChars: Infinity,
+    isConcurrencySafe: () => true,
+    description: async () => 'Bash fake',
+    prompt: async () => 'Bash fake prompt',
+    renderToolUseMessage: () => null,
+    call: async () => ({ data: '' }),
+    mapToolResultToToolResultBlockParam: (data: unknown, id: string) => ({ type: 'tool_result', tool_use_id: id, content: String(data) }),
+  } as Parameters<typeof buildTool>[0]) as Tool
+  const promptFor = (mode: PermissionMode) =>
+    getReplPrompt([REPLTool, PollTool, fakeRead, fakeBash], { ...getEmptyToolPermissionContext(), mode })
+  afterAll(() => resetCodeModeGateForTesting())
+
+  test('a session launched in auto or bypassPermissions gets the async text and the mode-change note, in every mode', () => {
+    resetCodeModeGateForTesting()
+    noteReplLaunchPermissionMode('auto')
     for (const mode of ['default', 'bypassPermissions'] as PermissionMode[]) {
-      const prompt = getReplPrompt([REPLTool, PollTool, fakeRead], { ...getEmptyToolPermissionContext(), mode })
+      const prompt = promptFor(mode)
+      expect(prompt).toContain('Your two tools are `REPL` and `Poll`; there are no other tools.')
       expect(prompt).toContain('returns `(dispatched #N)` instead, runs on, and no longer holds up the scripts after it')
       expect(prompt).toContain('in a `Poll` result or before your next turn')
-      expect(prompt).toContain('The script is stopped 600000 ms after it starts')
+      expect(prompt).toContain('The user can change the permission mode at any time.')
       expect(prompt).not.toContain("A call's result is a `<repl-output>` element")
       expect(prompt).toContain('A command with no timeout of its own is awaited for up to 600000 ms; give it a longer one (at most 7200000 ms)')
       expect(prompt).not.toContain('Timeouts cap at 600000 ms')
+      // Official Vl: with Poll in the list, interface Tools drops run_in_background from the shell tools.
+      expect(prompt).toContain('Bash(input: {')
+      expect(prompt).not.toContain('run_in_background')
+    }
+  })
+
+  test('a session launched in another mode gets the sync text, even after a switch to auto', () => {
+    resetCodeModeGateForTesting()
+    noteReplLaunchPermissionMode('default')
+    for (const mode of ['default', 'auto'] as PermissionMode[]) {
+      const prompt = promptFor(mode)
+      expect(prompt).toContain('Your one tool is `REPL`; there are no other tools.')
+      expect(prompt).toContain("\nA call's result is a `<repl-output>` element: `<log>` lines, then the `<result>` (or `<error>`).\n")
+      expect(prompt).not.toContain('dispatched #')
+      expect(prompt).not.toContain('The user can change the permission mode at any time.')
+      expect(prompt).toContain('A script is stopped 600000 ms after it starts, counting the time spent waiting on permission prompts')
+      expect(prompt).not.toContain('Timeouts cap at 600000 ms')
+      expect(prompt).toContain('run_in_background')
     }
   })
 })
