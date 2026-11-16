@@ -84,6 +84,20 @@ describe('decide', () => {
     expect(decide({ tools: [], messages: [user('title?')] }, scenario).reply.text).toBe('ok')
   })
 
+  test('spliced Poll results are not steps, and a turn woken by one uses <CMD>:wake', () => {
+    const splice = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'poll_a1', content: '<event nonce="N1" kind="repl-eval">' }] }
+    const withSplice = {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'x', content: '(dispatched #1)' }, { type: 'tool_result', tool_use_id: 'poll_a1', content: 'late' }],
+    }
+    const stepped = [user('@@ n1 EXPR'), asst, withSplice]
+    expect(decide({ tools: tool, messages: stepped }, scenario)).toMatchObject({ role: 'main:EXPR', step: 1, reply: { text: 'DONE n1 late' } })
+    const woke = [user('@@ n1 EXPR'), asst, result('2'), { role: 'assistant', content: 'DONE' }, splice]
+    expect(decide({ tools: tool, messages: woke }, scenario)).toMatchObject({ role: 'main:EXPR:wake', step: 1, reply: { text: 'WAKE n1' } })
+    const sub = { tools: tool, messages: [user('do SUBKEY now'), asst, withSplice] }
+    expect(decide(sub, scenario)).toMatchObject({ role: 'agent:SUBKEY', step: 1 })
+  })
+
   test('an unknown command answers DONE so the driver does not hang', () => {
     expect(decide({ tools: tool, messages: [user('@@ n3 NOPE')] }, scenario).reply.text).toBe('DONE n3 unknown-command')
   })

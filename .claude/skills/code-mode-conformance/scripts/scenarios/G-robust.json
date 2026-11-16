@@ -150,11 +150,6 @@
    {
     "text": "DONE {{nonce}} after-crash"
    }
-  ],
-  "SUB529:notif": [
-   {
-    "text": "NOTIF {{nonce}} sub529"
-   }
   ]
  },
  "drive": [
@@ -179,17 +174,12 @@
    }
   },
   {
-   "wait_req": {
-    "role": "^main:SUB529:notif$",
-    "timeout": 60
-   }
-  },
-  {
    "expect": {
-    "name": "529 in a subagent started by the script: failure arrives as an understandable task-notification",
-    "role": "^main:SUB529:notif$",
-    "field": "lastUser",
-    "match": "<status>failed</status>[\\s\\S]*API Error: 529[\\s\\S]*overloaded_error"
+    "name": "529 in a subagent started by the script: failure arrives in the same turn as an understandable task-notification event",
+    "cmd": "SUB529",
+    "step": 1,
+    "match": "<status>failed</status>[\\s\\S]*API Error: 529",
+    "field": "messages"
    }
   },
   {

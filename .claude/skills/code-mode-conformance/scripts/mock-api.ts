@@ -2,8 +2,11 @@
 //
 // Main-thread user turns look like "@@ <nonce> <CMD>". The reply is
 // scenario.commands[CMD][step], where step counts tool_results since that
-// turn (the last entry repeats). A turn woken by a notification uses
-// commands["<CMD>:notif"] or "NOTIF <nonce>". Subagents (first message has no
+// turn (the last entry repeats), leaving out the `poll_` results of spliced
+// Poll deliveries, so that step 1 still means "after the first tool call".
+// A turn woken by a notification uses commands["<CMD>:notif"] or
+// "NOTIF <nonce>"; one woken by a poll event (the last user message holds only
+// `poll_` results) uses commands["<CMD>:wake"] or "WAKE <nonce>". Subagents (first message has no
 // "@@") match scenario.agents by regex on their first message; requests with
 // no tools (titles, compaction) match scenario.side, else answer "ok".
 //
@@ -52,6 +55,10 @@ const ownText = (m: any): string =>
   Array.isArray(m?.content) ? text(m.content.filter((b: any) => b?.type !== 'tool_result')) : text(m?.content)
 export const toolResults = (msgs: any[]): any[] =>
   msgs.flatMap((m: any) => (Array.isArray(m?.content) ? m.content.filter((b: any) => b?.type === 'tool_result') : []))
+/** A spliced Poll delivery (official `poll_<attachment uuid>`), not a tool call the model made. */
+const isPollSplice = (b: any): boolean => typeof b?.tool_use_id === 'string' && b.tool_use_id.startsWith('poll_')
+/** The tool results a step counts: the model's own tool calls. */
+export const stepResults = (msgs: any[]): any[] => toolResults(msgs).filter(b => !isPollSplice(b))
 const CMD = /^@@ (\S+) ([A-Z][A-Z0-9_]*)\b/m
 
 function pick(list: Reply[] | undefined, step: number): Reply | undefined {
@@ -81,7 +88,7 @@ export function decide(body: any, scenario: Scenario, work = '/tmp'): Decision {
   }
   const first = text(msgs[0]?.content)
   if (!msgs.some(m => m.role === 'user' && CMD.test(ownText(m)))) {
-    const steps = toolResults(msgs).length
+    const steps = stepResults(msgs).length
     for (const [key, list] of Object.entries(scenario.agents ?? {})) {
       if (new RegExp(key).test(first)) {
         const reply = pick(list, steps)!
@@ -99,11 +106,16 @@ export function decide(body: any, scenario: Scenario, work = '/tmp'): Decision {
   }
   const [, nonce, cmd] = ownText(msgs[idx]).match(CMD)!
   const tail = msgs.slice(idx + 1)
-  const step = toolResults(tail).length
+  const step = stepResults(tail).length
   const last = msgs[msgs.length - 1]
   if (idx !== msgs.length - 1 && last?.role === 'user' && ownText(last).trim() !== '') {
     const reply = pick(scenario.commands?.[`${cmd}:notif`], 0) ?? { text: 'NOTIF {{nonce}}' }
     return { role: `main:${cmd}:notif`, cmd, step, nonce, reply: fill(reply, vars(nonce, tail)) }
+  }
+  const lastResults = last?.role === 'user' ? toolResults([last]) : []
+  if (idx !== msgs.length - 1 && lastResults.length > 0 && lastResults.every(isPollSplice)) {
+    const reply = pick(scenario.commands?.[`${cmd}:wake`], 0) ?? { text: 'WAKE {{nonce}}' }
+    return { role: `main:${cmd}:wake`, cmd, step, nonce, reply: fill(reply, vars(nonce, tail)) }
   }
   const reply = pick(scenario.commands?.[cmd], step) ?? { text: 'DONE {{nonce}} unknown-command' }
   return { role: `main:${cmd}`, cmd, step, nonce, reply: fill(reply, vars(nonce, tail)) }

@@ -20,7 +20,7 @@ Actions (one key each):
   {"expect": {"name": N, "cmd": C, "step": k, "field": F, "match": RE, "absent": bool}}
       F: lastResult | lastUser | tools | lastResultBlocks | lastResultIsError | system | messages | out
          | tool:NAME (that tool's description and input schema)
-      "role": RE instead of "cmd" matches subagent/side/notif requests (wait_req too); "nth": i picks one (default -1)
+      "role": RE instead of "cmd" matches subagent/side/notif/wake requests (wait_req too); "nth": i picks one (default -1)
   {"expect_same": {"name": N, "a": CMD, "b": CMD, "step": k, "fields": [...]}}  two requests agree
   {"expect_gap": {"name": N, "cmd": C, "from": 0, "to": 1, "min": s, "max": s}}  seconds between two steps
   {"expect_pane": {"name": N, "match": RE, "absent": bool}}
@@ -164,7 +164,7 @@ class Run:
             return hits[nth] if -len(hits) <= nth < len(hits) else None
         nonce = self.nonces.get(cmd) if latest_nonce else None
         hits = [r for r in self.reqs() if r.get('cmd') == cmd and (step is None or r.get('step') == step)
-                and (nonce is None or r.get('nonce') == nonce) and not r.get('role', '').endswith(':notif')]
+                and (nonce is None or r.get('nonce') == nonce) and not r.get('role', '').endswith((':notif', ':wake'))]
         return hits[-1] if hits else None
 
     def body_of(self, r):

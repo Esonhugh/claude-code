@@ -52,11 +52,6 @@
     "text": "DONE {{nonce}} auto"
    }
   ],
-  "AUTO:notif": [
-   {
-    "text": "NOTIF {{nonce}} auto"
-   }
-  ],
   "ESC_BG": [
    {
     "tools": [
@@ -71,11 +66,6 @@
    },
    {
     "text": "DONE {{nonce}} esc-bg"
-   }
-  ],
-  "ESC_BG:notif": [
-   {
-    "text": "NOTIF {{nonce}} esc"
    }
   ],
   "POLL2": [
@@ -119,10 +109,19 @@
   },
   {
    "expect": {
-    "name": "bypass: short script returns inline",
+    "name": "bypass: the REPL call returns its receipt at once",
     "cmd": "QUICK",
     "step": 1,
-    "match": "<repl-output eval=\"\\d+\">.*quick-ok|<repl-output>.*quick-ok"
+    "field": "lastUser",
+    "match": "^\\(dispatched #\\d+\\)"
+   }
+  },
+  {
+   "expect": {
+    "name": "bypass: the result comes in the Poll splice of the same step",
+    "cmd": "QUICK",
+    "step": 1,
+    "match": "<event (nonce=\"[^\"]+\" )?kind=\"repl-eval\"[^>]*>\\s*<result>quick-ok</result>"
    }
   },
   {
@@ -134,15 +133,24 @@
     "name": "async: receipt (dispatched #N)",
     "cmd": "ASYNC",
     "step": 1,
+    "field": "lastUser",
     "match": "^\\(dispatched #\\d+\\)"
    }
   },
   {
    "expect_gap": {
-    "name": "async: dispatched at ~30 s",
+    "name": "async: the turn waits for the result (~40 s)",
     "cmd": "ASYNC",
-    "min": 29,
-    "max": 36
+    "min": 39,
+    "max": 46
+   }
+  },
+  {
+   "expect": {
+    "name": "async: the late result arrives in the same turn",
+    "cmd": "ASYNC",
+    "step": 1,
+    "match": "<event (nonce=\"[^\"]+\" )?kind=\"repl-eval\"[^>]*status=\"[a-z]+\">\\s*<result>late-ok</result>"
    }
   },
   {
@@ -151,10 +159,10 @@
   },
   {
    "expect": {
-    "name": "Poll returns the repl-eval event with the result",
+    "name": "Poll after the result was delivered: nothing pending",
     "cmd": "POLL",
     "step": 1,
-    "match": "<event kind=\"repl-eval\"[^>]*status=\"[a-z]+\">.*late-ok"
+    "match": "^\\(no pending events\\)$"
    }
   },
   {
@@ -162,36 +170,28 @@
    "timeout": 90
   },
   {
+   "expect": {
+    "name": "auto: the result arrives in step 1 of the same turn",
+    "cmd": "AUTO",
+    "step": 1,
+    "match": "<event (nonce=\"[^\"]+\" )?kind=\"repl-eval\".*auto-ok"
+   }
+  },
+  {
+   "sleep": 2
+  },
+  {
+   "send": "ESC_BG"
+  },
+  {
    "wait_req": {
-    "role": "main:AUTO:notif",
+    "cmd": "ESC_BG",
+    "step": 0,
     "timeout": 30
    }
   },
   {
-   "expect": {
-    "name": "idle: event wakes the model as a notification",
-    "role": "main:AUTO:notif",
-    "field": "lastUser",
-    "match": "<event kind=\"repl-eval\".*auto-ok"
-   }
-  },
-  {
-   "sleep": 2
-  },
-  {
-   "turn": "ESC_BG",
-   "timeout": 90
-  },
-  {
-   "expect": {
-    "name": "esc-bg: receipt",
-    "cmd": "ESC_BG",
-    "step": 1,
-    "match": "^\\(dispatched #\\d+\\)"
-   }
-  },
-  {
-   "sleep": 2
+   "sleep": 3
   },
   {
    "keys": [
@@ -199,31 +199,15 @@
    ]
   },
   {
-   "sleep": 6
+   "sleep": 10
   },
   {
    "capture": "esc-bg-after"
   },
   {
-   "wait_req": {
-    "role": "main:ESC_BG:notif",
-    "timeout": 30
-   }
-  },
-  {
    "expect": {
-    "name": "Esc between turns: user-stop report arrives as an idle event",
-    "role": "main:ESC_BG:notif",
-    "field": "lastUser",
-    "match": "<event kind=\"repl-eval\"[\\s\\S]*The user interrupted this script, so it stopped\\. STOP what you are doing"
-   }
-  },
-  {
-   "expect": {
-    "name": "Esc between turns: sleep was stopped (no late result in the event)",
-    "role": "main:ESC_BG:notif",
-    "field": "lastUser",
-    "match": "<result>never",
+    "name": "Esc: no turn starts by itself",
+    "role": "^main:.*:(notif|wake)$",
     "absent": true
    }
   },
@@ -233,18 +217,36 @@
   },
   {
    "expect": {
-    "name": "Esc between turns: user-stop report reaches the model",
+    "name": "Esc: the receipt reaches the model with the next prompt",
     "cmd": "POLL2",
-    "step": 1,
+    "step": 0,
+    "field": "messages",
+    "match": "\\(dispatched #\\d+\\)"
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc: user-stop report reaches the model",
+    "cmd": "POLL2",
+    "step": 0,
     "field": "messages",
     "match": "The user interrupted this script, so it stopped\\. STOP what you are doing"
    }
   },
   {
    "expect": {
-    "name": "Esc between turns: no late result",
+    "name": "Esc: the turn is marked interrupted",
     "cmd": "POLL2",
-    "step": 1,
+    "step": 0,
+    "field": "messages",
+    "match": "\\[Request interrupted by user\\]"
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc: sleep was stopped (no late result)",
+    "cmd": "POLL2",
+    "step": 0,
     "field": "messages",
     "match": "<result>never</result>",
     "absent": true
