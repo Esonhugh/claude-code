@@ -102,9 +102,15 @@ const jobClassifier = feature('TEMPLATES')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   remove as removeFromQueue,
+  consume as consumeFromQueue,
+  countRemainingWakePollEventsAfter,
   getCommandsByMaxPriority,
   isSlashCommand,
+  settlePollEventsDelivered,
+  takePollEventChunk,
 } from './utils/messageQueueManager.js'
+import { pollEventsAttachment } from './tools/PollTool/delivery.js'
+import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
@@ -530,6 +536,34 @@ export async function* query(
   return terminal
 }
 
+/**
+ * Official 2.1.325 poll-event absorption (`pCs`, then `Fp`): one chunk of the
+ * agent's queued poll events becomes a `poll_events` attachment and the events
+ * leave the queue as delivered. Nothing when the turn was aborted, so they stay
+ * queued for the next delivery.
+ */
+function foldPollEvents(
+  queued: readonly QueuedCommand[],
+  agentId: string | undefined,
+  signal: AbortSignal,
+  consumedCommandUuids: string[],
+): AttachmentMessage | undefined {
+  const chunk = takePollEventChunk(
+    queued.filter(cmd => cmd.mode === 'poll-event' && cmd.agentId === agentId),
+  )
+  const attachment = pollEventsAttachment(chunk, countRemainingWakePollEventsAfter(chunk))
+  if (!attachment || signal.aborted) return undefined
+  consumeFromQueue(chunk, { reason: 'absorbed_mid_turn' })
+  settlePollEventsDelivered(chunk)
+  for (const cmd of chunk) {
+    if (cmd.uuid) {
+      consumedCommandUuids.push(cmd.uuid)
+      notifyCommandLifecycle(cmd.uuid, 'started')
+    }
+  }
+  return createAttachmentMessage(attachment)
+}
+
 async function* queryLoop(
   params: QueryParams,
   consumedCommandUuids: string[],
@@ -795,6 +829,27 @@ async function* queryLoop(
         messagesForQuery.push(msg)
       }
       pendingMemoryPrefetch.consumedOnIteration = 0
+    }
+
+    // Official 2.1.325 turn-start fold: poll events queued while the agent
+    // was idle arrive with this turn's first request (a subagent's only in
+    // its own loop).
+    if (
+      turnCount === 1 &&
+      (querySource.startsWith('repl_main_thread') ||
+        querySource === 'sdk' ||
+        toolUseContext.agentId !== undefined)
+    ) {
+      const folded = foldPollEvents(
+        getCommandsByMaxPriority('next'),
+        toolUseContext.agentId,
+        toolUseContext.abortController.signal,
+        consumedCommandUuids,
+      )
+      if (folded) {
+        yield folded
+        messagesForQuery.push(folded)
+      }
     }
 
     let tracking = autoCompactTracking
@@ -2298,9 +2353,12 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
-    const queuedCommandsSnapshot = getCommandsByMaxPriority(
+    const queuedForDrain = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
-    ).filter((cmd) => {
+    )
+    const queuedCommandsSnapshot = queuedForDrain.filter((cmd) => {
+      // Poll events fold in on their own below.
+      if (cmd.mode === 'poll-event') return false
       if (cmd.admitted && (
         cmd.admitted.shouldQuery === false || cmd.admitted.admission?.drop !== undefined
       )) return false
@@ -2332,6 +2390,21 @@ async function* queryLoop(
     )) {
       yield attachment
       toolResults.push(attachment)
+    }
+
+    // Official 2.1.325 mid-turn fold: this agent's queued poll events, one chunk.
+    const foldedPollEvents =
+      isMainThread || currentAgentId !== undefined
+        ? foldPollEvents(
+            queuedForDrain,
+            currentAgentId,
+            toolUseContext.abortController.signal,
+            consumedCommandUuids,
+          )
+        : undefined
+    if (foldedPollEvents) {
+      yield foldedPollEvents
+      toolResults.push(foldedPollEvents)
     }
 
     // Memory prefetch consume: only if settled and not already consumed on

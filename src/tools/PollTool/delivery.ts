@@ -1,3 +1,6 @@
+import type { QueuedCommand } from '../../types/textInputTypes.js'
+import type { PollEventsAttachment } from '../../utils/attachments.js'
+
 /** Official `RKe`: the id prefix of a Poll call the harness made to deliver events. */
 export const POLL_SPLICE_ID_PREFIX = 'poll_'
 
@@ -38,4 +41,24 @@ export function formatPollDelivery(envelopes: readonly string[], remaining: numb
   lines.push(...envelopes)
   if (remaining > 0) lines.push(chunkNote(remaining))
   return lines.join('\n')
+}
+
+/**
+ * Official `pCs` (2.1.325 chunk-wqb2b4v0.js): the queued events of one chunk
+ * as the `poll_events` attachment a turn folds in, stamped with the last
+ * event's queue time; undefined when the commands hold no poll event.
+ */
+export function pollEventsAttachment(
+  commands: readonly QueuedCommand[],
+  remainingWakeCount: number,
+): PollEventsAttachment | undefined {
+  const events = commands.flatMap(cmd => (cmd.mode === 'poll-event' && cmd.pollEvent ? [cmd.pollEvent] : []))
+  if (events.length === 0) return undefined
+  return {
+    type: 'poll_events',
+    envelopes: events.map(event => event.envelope),
+    kinds: events.map(event => event.kind),
+    remainingWakeCount,
+    timestamp: events.at(-1)!.timestamp,
+  }
 }

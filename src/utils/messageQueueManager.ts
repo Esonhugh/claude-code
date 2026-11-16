@@ -40,7 +40,12 @@ export function setQueueRecordRewriter(rewriter: QueueRecordRewriter | undefined
   queueRecordRewriter = rewriter
 }
 
-function logOperation(operation: QueueOperation, content?: string, origin?: QueuedCommand['origin']): void {
+function logOperation(
+  operation: QueueOperation,
+  content?: string,
+  origin?: QueuedCommand['origin'],
+  removal?: { reason: string; commandUuid?: string },
+): void {
   const sessionId = getSessionId()
   const queueOp: QueueOperationMessage = {
     type: 'queue-operation',
@@ -48,6 +53,8 @@ function logOperation(operation: QueueOperation, content?: string, origin?: Queu
     timestamp: new Date().toISOString(),
     sessionId,
     ...(content !== undefined && { content }),
+    ...(removal && { reason: removal.reason }),
+    ...(removal?.commandUuid !== undefined && { commandUuid: removal.commandUuid }),
   }
   const rewritten = content === undefined ? undefined : queueRecordRewriter?.(content, origin)
   if (!rewritten && !pendingRecords) {
@@ -282,6 +289,7 @@ export function enqueuePollEvent(input: PollEventInput): Promise<void> {
     nonce,
     wake,
     ...(input.startsTurn === false && { startsTurn: false }),
+    timestamp: new Date().toISOString(),
     settleDelivered: () => resolve(),
     settleDropped: reject,
   }
@@ -485,6 +493,29 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
   for (const _cmd of removed) {
     logOperation('remove')
   }
+}
+
+/**
+ * Official 2.1.325 `consume`: takes commands a turn delivered out of the
+ * queue. Each `remove` record keeps the command's text, the reason and the
+ * command's uuid.
+ */
+export function consume(commands: readonly QueuedCommand[], { reason }: { reason: string }): QueuedCommand[] {
+  const removed: QueuedCommand[] = []
+  for (let i = commandQueue.length - 1; i >= 0; i--) {
+    if (commands.includes(commandQueue[i]!)) {
+      removed.unshift(commandQueue.splice(i, 1)[0]!)
+    }
+  }
+  if (removed.length === 0) return removed
+  notifySubscribers()
+  for (const cmd of removed) {
+    logOperation('remove', typeof cmd.value === 'string' ? cmd.value : undefined, cmd.origin, {
+      reason,
+      commandUuid: cmd.uuid,
+    })
+  }
+  return removed
 }
 
 /**

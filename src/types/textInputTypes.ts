@@ -431,6 +431,8 @@ export type QueuedPollEvent = {
   wake: boolean
   /** False: it never starts a turn itself (an eval the user stopped, its late output). */
   startsTurn?: false
+  /** When it was queued; a delivery is stamped with its last event's. */
+  timestamp: string
   settleDelivered?: () => void
   settleDropped?: (reason: Error) => void
 }
