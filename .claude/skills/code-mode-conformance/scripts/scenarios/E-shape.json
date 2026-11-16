@@ -46,8 +46,8 @@
   },
   {
    "expect_transcript": {
-    "name": "JSONL: REPL tool_result holds <repl-output>",
-    "match": "\"type\":\"user\"[^\\n]*<repl-output[^\\n]*shape-inner"
+    "name": "JSONL: the REPL result is recorded (<repl-output>, or the repl-eval event of a dispatched eval)",
+    "match": "(<repl-output|kind=\\\\\"repl-eval\\\\\")[^\\n]*<result>shape-inner"
    }
   },
   {
@@ -79,11 +79,11 @@
   },
   {
    "expect": {
-    "name": "resume: API gets the full <repl-output> of the REPL call",
+    "name": "resume: API gets the REPL result (<repl-output>, or the repl-eval event of a dispatched eval)",
     "cmd": "AFTER",
     "step": 0,
     "field": "messages",
-    "match": "<repl-output[\\s\\S]{0,60}shape-inner"
+    "match": "(<repl-output|kind=\\\\\"repl-eval\\\\\")[\\s\\S]{0,120}shape-inner"
    }
   },
   {

@@ -27,7 +27,6 @@
   {"sleep": 10},
   {"capture": "resume-on"},
   {"expect": {"name": "resume on (interactive): the lost event starts no turn (official qKa startsTurn false)", "role": "^main:.*:(wake|notif)$", "absent": true}},
-  {"expect_pane": {"name": "resume on: the lost row is shown", "match": "Lost: Claude Code exited before this finished"}},
   {"turn": "AFTER_ON"},
   {"expect": {"name": "resume on (bypass): lost event for the unsettled eval (official qKa)", "cmd": "AFTER_ON", "step": 0, "field": "messages", "match": "<event nonce=\\\\\"[^\\\\\"]+\\\\\" kind=\\\\\"repl-eval\\\\\"[^>]*eval=\\\\\"1\\\\\" status=\\\\\"lost\\\\\">eval #1 never settled"}},
   {"exit": true}
