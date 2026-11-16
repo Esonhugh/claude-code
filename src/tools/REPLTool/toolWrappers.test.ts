@@ -192,6 +192,16 @@ test('the permission check gets the original tool object, so the dialog matches 
   expect(asked[0]).toBe(tool)
 })
 
+test("a script call carries the REPL call's own tools for a fork", async () => {
+  const pools: unknown[] = []
+  const { host, context } = hostFor([fixtureTool('Fixture', async (input, context) => {
+    pools.push(context.replSessionTools)
+    return { data: input }
+  })])
+  await host.call('Fixture', { value: 'x' })
+  expect(pools).toEqual([context.options.tools])
+})
+
 test('the wall-clock error says a call was waiting to run, perhaps at a permission prompt', async () => {
   let answer!: () => void
   const asked = new Promise<void>(resolve => (answer = resolve))

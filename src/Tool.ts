@@ -201,6 +201,8 @@ export type ToolUseContext = {
   replScriptCall?: boolean
   /** Script call: runs when the tool's own call starts (arms the REPL watchdog). */
   onReplToolCall?: () => void
+  /** Script call: the REPL call's own tool pool (REPL, Poll), which a fork inherits. */
+  replSessionTools?: Tools
   /** Async REPL lane (official `shellWallCapMs`): the shell's wall cap; set only for script calls there. */
   shellWallCapMs?: number
   /**

@@ -411,6 +411,7 @@ export function createReplToolHost(opts: {
         fileReadingLimits: READ_LIMITS,
         globLimits: GLOB_LIMITS,
         onReplToolCall: onToolCall,
+        replSessionTools: context.replSessionTools ?? context.options.tools,
         options: { ...context.options, tools: refreshTools(), refreshTools },
         abortController,
       })) {
