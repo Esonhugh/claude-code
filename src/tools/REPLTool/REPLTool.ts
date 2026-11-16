@@ -372,6 +372,8 @@ export const REPLTool = buildTool({
     }
     if (outer.aborted) controller.abort(outer.reason)
     else outer.addEventListener('abort', stop, { once: true })
+    let hung!: (error: string) => void
+    const failure = new Promise<string>(resolve => (hung = resolve))
     const host = createReplToolHost({
       context,
       canUseTool,
@@ -379,6 +381,7 @@ export const REPLTool = buildTool({
       signal: controller.signal,
       asyncLane,
       codeMode: isCodeModeEnabled(),
+      onHung: error => hung(error),
       // The call has returned once dispatched: progress then has no row to go to.
       onProgress: data => {
         if (!dispatched) onProgress?.({ toolUseID: data.toolUseId, data })
@@ -405,6 +408,8 @@ export const REPLTool = buildTool({
         describeTool: name => descriptions.get(name),
         searchTools: (query, max) => searchReplTools(query, max, callable, descriptions),
         prelude: REPL_HELPERS_PRELUDE,
+        totalCapError: ms => host.wallClockError(ms),
+        failure,
         onScriptEnd: failed => host.scriptEnded(failed),
         // Official `qu`: only a call the executor waits on reports the stop,
         // listing the calls as they stood when it came.

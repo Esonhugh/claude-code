@@ -14,14 +14,18 @@ import { createAbortController } from '../../utils/abortController.js'
 import { AbortError } from '../../utils/errors.js'
 import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
 import { parsePDFPageRange } from '../../utils/pdfUtils.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { formatDuration } from '../../utils/format.js'
 import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js'
-import { getMaxBashTimeoutMs } from '../../utils/timeouts.js'
+import { getDefaultBashTimeoutMs, getMaxBashTimeoutMs } from '../../utils/timeouts.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
 import { POWERSHELL_TOOL_NAME } from '../PowerShellTool/toolName.js'
 import { filterToolsByDenyRules } from '../../tools.js'
 import { POLL_TOOL_NAME, REPL_ASYNC_WALL_CAP_MS, REPL_TOOL_NAME, SCRIPT_ASK_DECLINED } from './constants.js'
-import { elide } from './executor/host.js'
+import { elide, REPL_MAX_TIMEOUT_MS } from './executor/host.js'
 import { getReplPrimitiveTools } from './primitiveTools.js'
 import { type ReplImage, scriptValue } from './resultBlocks.js'
 import type { ReplCallRecord } from './stopReport.js'
@@ -47,6 +51,8 @@ export type ReplToolHost = {
   call(name: string, input: unknown): Promise<unknown>
   drainMessages(): Message[]
   stop(): void
+  /** Official `ju`: the error for a script stopped at its wall-clock limit of `ms`. */
+  wallClockError(ms: number): string
   /** The script returned or threw: lines its stderr gets about calls it did not await. */
   scriptEnded(failed: boolean): Promise<string[]>
   readonly callCount: number
@@ -87,6 +93,78 @@ function leftoverCallLines(left: readonly ReplCallRecord[], running: readonly Re
       call => `\u26a0 ${call.toolName} was still running when the script ended, and then failed. Add 'await' next time. Its error:\n${elide(call.error ?? '', 2000)}`,
     ),
   ]
+}
+
+/** Official `kr`: up to three tool names, then "other". */
+function toolNames(calls: readonly { toolName: string }[]): string {
+  const unique = [...new Set(calls.map(call => call.toolName))]
+  const names = unique.length > 3 ? [...unique.slice(0, 3), 'other'] : unique
+  return names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
+/**
+ * Official `ju`/`Fu`: which wall-clock text fits depends on whether calls were
+ * still waiting to run (perhaps at a permission prompt) and on what was running.
+ */
+function wallClockText(
+  ms: number,
+  waiting: readonly ReplCallRecord[],
+  executing: readonly ReplCallRecord[],
+  sync: boolean,
+): string {
+  const limit = formatDuration(ms, { hideTrailingZeros: true })
+  if (waiting.length > 0) {
+    const one = waiting.length === 1
+    const tail =
+      executing.length > 0
+        ? ' Another call was still running and may be hung \u2014 try a shorter timeout on the tool itself, or split the work.'
+        : ` Otherwise ${one ? 'it' : 'one of them'} may be hung in a hook or in a check of its directories.`
+    return `REPL execution exceeded its wall-clock limit of ${limit} while its ${toolNames(waiting)} ${one ? 'call was' : 'calls were'} waiting to run. ${one ? 'It' : 'They'} may have been waiting for the user to answer a permission prompt, which is now closed. If so, running ${one ? 'it' : 'them'} again will ask the user again.${tail}`
+  }
+  const shellCall =
+    sync &&
+    executing.length > 0 &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) &&
+    executing.every(call => call.toolName === BASH_TOOL_NAME || call.toolName === POWERSHELL_TOOL_NAME)
+  if (shellCall)
+    return `REPL execution exceeded its wall-clock limit of ${limit} before a shell call finished. The limit is on the whole script, and a command still running when it is reached is stopped with the script. A command whose own timeout ends before the limit moves to the background at that timeout and keeps running (one that starts with sleep is stopped instead), so give a long command a shorter timeout, or split the work.`
+  return `REPL execution exceeded hard wall-clock limit of ${ms}ms. An inner tool call may be hung \u2014 try a shorter timeout on the tool itself, or split the work.`
+}
+
+/** Official `ls`: built-ins whose calls have a 10 s timeout of their own. */
+const SHORT_TIMEOUT_TOOLS = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'Glob',
+  'Grep',
+  'NotebookEdit',
+  'TodoWrite',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskStop',
+  'TaskUpdate',
+])
+
+/** Official `hr`: the timeout a call has of its own, if any. */
+function nativeTimeoutMs(tool: Tool, input: unknown, asyncLane: boolean, codeMode: boolean): number | undefined {
+  if (tool.name === BASH_TOOL_NAME || tool.name === POWERSHELL_TOOL_NAME) {
+    const own = (input as { timeout?: unknown } | null)?.timeout
+    const timeout = typeof own === 'number' && own > 0 ? own : undefined
+    return asyncLane
+      ? Math.min(timeout ?? getMaxBashTimeoutMs(), REPL_ASYNC_WALL_CAP_MS)
+      : Math.min(timeout ?? getDefaultBashTimeoutMs(), getMaxBashTimeoutMs())
+  }
+  if (codeMode && (tool.name === GREP_TOOL_NAME || tool.name === GLOB_TOOL_NAME)) return undefined
+  return SHORT_TIMEOUT_TOOLS.has(tool.name) ? 10_000 : undefined
+}
+
+/** Official `dc`: a call is taken as hung at 1.5 times its own timeout plus 5 s, unless that passes the script cap. */
+function watchdogMs(native: number | undefined): number | undefined {
+  if (native === undefined) return undefined
+  const ms = Math.ceil(native * 1.5) + 5000
+  return ms >= REPL_MAX_TIMEOUT_MS ? undefined : ms
 }
 
 /** An MCP tool reported an error; `detail` is its text parsed as JSON when possible. */
@@ -229,8 +307,10 @@ export function createReplToolHost(opts: {
   /** Code Mode's sync lane ends a script as official `Ze` does. */
   codeMode?: boolean
   onProgress?: (p: REPLToolCallProgress) => void
+  /** Official watchdog: a call ran far past its own timeout; the script is to end with this error. */
+  onHung?: (error: string) => void
 }): ReplToolHost {
-  const { context, canUseTool, signal, asyncLane, codeMode, onProgress } = opts
+  const { context, canUseTool, signal, asyncLane, codeMode, onProgress, onHung } = opts
   const callable = getReplCallableTools(context)
   const byName = new Map<string, Tool>()
   const tools: ReplToolDescriptor[] = []
@@ -263,6 +343,10 @@ export function createReplToolHost(opts: {
   let afterStop = 0
   let noMoreCalls = false
   const callSettled = new Set<() => void>()
+  // Official phase `executing` starts at tool.call, after hooks and the permission prompt.
+  const inTool = new Set<ReplCallRecord>()
+  // Official `D.abort()`: a hung call stops every call of the script.
+  const hungStop = createAbortController()
 
   /** Official `Xe`: a refused built-in call resolves {error}; an MCP call throws. */
   function refusal(tool: Tool, text: string): { error: string } {
@@ -274,6 +358,7 @@ export function createReplToolHost(opts: {
     tool: Tool,
     input: unknown,
     toolUseId: string,
+    onToolCall: () => void,
   ): Promise<{ value: unknown; raw: unknown; mcpContent?: boolean; isError: boolean; declined?: { reason: unknown } }> {
     const block = {
       type: 'tool_use' as const,
@@ -284,7 +369,7 @@ export function createReplToolHost(opts: {
     }
     const assistant = createAssistantMessage({ content: [block], isVirtual: true })
     const abortController = createAbortController()
-    const parents = new Set([signal, context.abortController.signal])
+    const parents = new Set([signal, context.abortController.signal, hungStop.signal])
     const abort = () => {
       const parent = [...parents].find(parent => parent.aborted)
       if (parent) abortController.abort(parent.reason)
@@ -310,6 +395,20 @@ export function createReplToolHost(opts: {
       let result: ToolResultBlockParam | undefined
       // A paged Read sends its page images in a meta message after its result.
       const pageImages: ReplImage[] = []
+      // The tool itself still gets the caller's canUseTool.
+      const marked = (list: Tools): Tools =>
+        list.map(candidate =>
+          candidate.name === tool.name
+            ? ({
+                ...candidate,
+                call: (...args: Parameters<Tool['call']>) => {
+                  onToolCall()
+                  return candidate.call(...args)
+                },
+              } as Tool)
+            : candidate,
+        )
+      const markedTools = () => marked(refreshTools())
       for await (const update of runToolUse(block, assistant, canUseTool, {
         ...context,
         innerCall: true,
@@ -319,7 +418,7 @@ export function createReplToolHost(opts: {
         modToolCallResult: undefined,
         fileReadingLimits: READ_LIMITS,
         globLimits: GLOB_LIMITS,
-        options: { ...context.options, tools: refreshTools(), refreshTools },
+        options: { ...context.options, tools: markedTools(), refreshTools: markedTools },
         abortController,
       })) {
         // Progress and hook attachments stay inside the script call.
@@ -378,6 +477,11 @@ export function createReplToolHost(opts: {
     },
     stop() {
       stopped = true
+    },
+    wallClockError(ms) {
+      const waiting = started.filter(call => call.phase === 'start' || (call.phase === 'executing' && !inTool.has(call)))
+      const executing = started.filter(call => call.phase === 'executing' && inTool.has(call))
+      return wallClockText(ms, waiting, executing, !asyncLane)
     },
     async scriptEnded(failed) {
       const left = started.filter(call => call.phase === 'start' || call.phase === 'executing')
@@ -440,6 +544,7 @@ export function createReplToolHost(opts: {
         onProgress?.({ type: 'repl_tool_call', phase, toolName: tool.name, toolUseId })
       }
       progress('start')
+      let watchdog: ReturnType<typeof setTimeout> | undefined
       await slots.acquire()
       try {
         if (noMoreCalls) {
@@ -448,11 +553,21 @@ export function createReplToolHost(opts: {
           return refusal(tool, REPL_CALL_NOT_STARTED)
         }
         progress('executing')
-        const { value, raw, mcpContent, isError, declined } = await run(
-          tool,
-          asyncLane ? withAsyncShellTimeout(tool, input) : input,
-          toolUseId,
-        )
+        const callInput = asyncLane ? withAsyncShellTimeout(tool, input) : input
+        const native = nativeTimeoutMs(tool, callInput, asyncLane === true, codeMode === true)
+        const limit = watchdogMs(native)
+        const arm = () => {
+          clearTimeout(watchdog)
+          inTool.add(record)
+          if (limit === undefined) return
+          watchdog = setTimeout(() => {
+            onHung?.(
+              `REPL inner tool call ${tool.name} exceeded ${limit}ms watchdog (native timeout ${native ?? 'unset'}). The call may be hung \u2014 try a shorter timeout on the tool itself.`,
+            )
+            hungStop.abort()
+          }, limit)
+        }
+        const { value, raw, mcpContent, isError, declined } = await run(tool, callInput, toolUseId, arm)
         if (isError) record.error = (value as { error: string }).error
         else record.value = raw
         if (mcpContent) record.mcpContent = true
@@ -467,6 +582,8 @@ export function createReplToolHost(opts: {
         progress('error')
         throw error
       } finally {
+        clearTimeout(watchdog)
+        inTool.delete(record)
         slots.release()
         for (const notify of [...callSettled]) notify()
       }

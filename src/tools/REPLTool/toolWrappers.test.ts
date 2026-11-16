@@ -95,7 +95,13 @@ function contextFor(tools: Tool[], permissions = getEmptyToolPermissionContext()
 
 function hostFor(
   tools: Tool[],
-  options: { canUseTool?: CanUseToolFn; signal?: AbortSignal; asyncLane?: boolean; context?: ToolUseContext } = {},
+  options: {
+    canUseTool?: CanUseToolFn
+    signal?: AbortSignal
+    asyncLane?: boolean
+    context?: ToolUseContext
+    onHung?: (error: string) => void
+  } = {},
 ) {
   const context = options.context ?? contextFor(tools)
   const progress: REPLToolCallProgress[] = []
@@ -106,9 +112,28 @@ function hostFor(
     signal: options.signal ?? new AbortController().signal,
     asyncLane: options.asyncLane,
     onProgress: p => progress.push(p),
+    onHung: options.onHung,
   })
   return { host, context, progress }
 }
+
+/** A tool whose call runs until `release()` or its abort. */
+function heldTool(name: string) {
+  let release!: () => void
+  const released = new Promise<void>(resolve => (release = resolve))
+  const tool = fixtureTool(name, async (input, context) => {
+    await Promise.race([
+      released,
+      new Promise((_, reject) =>
+        context.abortController.signal.addEventListener('abort', () => reject(new AbortError()), { once: true }),
+      ),
+    ])
+    return { data: input }
+  })
+  return { tool, release }
+}
+
+const tick = () => new Promise(resolve => setTimeout(resolve, 20))
 
 function hook(event: 'PreToolUse' | 'PostToolUse', output: Record<string, unknown>) {
   registerHookCallbacks({
@@ -154,6 +179,49 @@ test("the caller's canUseTool reaches the permission check unchanged", async () 
   expect(received).toEqual([canUseTool])
   expect(received[0]).toBe(canUseTool)
 })
+
+test('the wall-clock error says a call was waiting to run, perhaps at a permission prompt', async () => {
+  let answer!: () => void
+  const asked = new Promise<void>(resolve => (answer = resolve))
+  const { tool } = heldTool('Bash')
+  const { host } = hostFor([tool], { canUseTool: async () => (await asked, { behavior: 'allow' }) as never })
+  void host.call('Bash', { value: 'x' })
+  await tick()
+  expect(host.wallClockError(600_000)).toBe(
+    'REPL execution exceeded its wall-clock limit of 10m while its Bash call was waiting to run. It may have been waiting for the user to answer a permission prompt, which is now closed. If so, running it again will ask the user again. Otherwise it may be hung in a hook or in a check of its directories.',
+  )
+  answer()
+})
+
+test('the wall-clock error tells a running shell call from other calls', async () => {
+  const bash = heldTool('Bash')
+  const other = heldTool('Fixture')
+  const { host } = hostFor([bash.tool, other.tool])
+  void host.call('Bash', { value: 'x' })
+  await tick()
+  expect(host.wallClockError(600_000)).toBe(
+    'REPL execution exceeded its wall-clock limit of 10m before a shell call finished. The limit is on the whole script, and a command still running when it is reached is stopped with the script. A command whose own timeout ends before the limit moves to the background at that timeout and keeps running (one that starts with sleep is stopped instead), so give a long command a shorter timeout, or split the work.',
+  )
+  void host.call('Fixture', { value: 'y' })
+  await tick()
+  expect(host.wallClockError(600_000)).toBe(
+    'REPL execution exceeded hard wall-clock limit of 600000ms. An inner tool call may be hung \u2014 try a shorter timeout on the tool itself, or split the work.',
+  )
+  bash.release()
+  other.release()
+})
+
+test('the watchdog stops a call that runs far past its own timeout', async () => {
+  const hung: string[] = []
+  const { tool } = heldTool('Bash')
+  const { host } = hostFor([tool], { onHung: error => hung.push(error) })
+  const call = host.call('Bash', { value: 'x', timeout: 1 }).catch((error: unknown) => error)
+  await new Promise(resolve => setTimeout(resolve, 5200))
+  expect(hung).toEqual([
+    'REPL inner tool call Bash exceeded 5002ms watchdog (native timeout 1). The call may be hung \u2014 try a shorter timeout on the tool itself.',
+  ])
+  expect(await call).toBeInstanceOf(AbortError)
+}, 10_000)
 
 test('a schema error inside REPL carries no ToolSearch hint', async () => {
   const previous = process.env.ENABLE_TOOL_SEARCH

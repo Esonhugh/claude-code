@@ -143,6 +143,14 @@ describe('REPL executor', () => {
     expect(result.error).toContain('hard wall-clock limit of 150ms')
   })
 
+  test('the host words the wall-clock error and can end the run with its own', async () => {
+    const { run } = setup({ callTool: () => new Promise(() => {}) })
+    const capped = await run('await Read({})', { totalCapMs: 100, totalCapError: ms => `cap ${ms}` })
+    expect(capped).toMatchObject({ error: 'cap 100', timedOut: true })
+    const failed = await run('await Read({})', { failure: sleep(50).then(() => 'hung') })
+    expect(failed).toMatchObject({ error: 'hung', timedOut: true, contextReset: true })
+  })
+
   test('aborting the signal interrupts the run', async () => {
     const controller = new AbortController()
     const { run } = setup()

@@ -22,6 +22,10 @@ export type ReplRunOptions = {
   onStart?: () => void
   /** The error for a signal abort, read as the signal fires; INTERRUPTED when it gives none. */
   interruptedError?: () => string | undefined
+  /** The error at the wall-clock limit; replTotalCapMessage when not given. */
+  totalCapError?: (ms: number) => string
+  /** Ends the script with its error, as the wall-clock limit does. */
+  failure?: Promise<string>
   /** Awaited once the script returns or throws; its lines follow what the script wrote to stderr. */
   onScriptEnd?: (failed: boolean) => Promise<string[]>
 }
@@ -421,8 +425,9 @@ export function createReplExecutor(): ReplExecutor {
       o.signal.addEventListener('abort', onAbort, { once: true })
       if (o.totalCapMs !== undefined) {
         const cap = Math.max(1, o.totalCapMs)
-        capTimer = setTimeout(() => run.finish({ error: replTotalCapMessage(cap), timedOut: true }), cap)
+        capTimer = setTimeout(() => run.finish({ error: o.totalCapError?.(cap) ?? replTotalCapMessage(cap), timedOut: true }), cap)
       }
+      void o.failure?.then(error => run.finish({ error, timedOut: true }))
       arm()
       o.onStart?.()
       target.postMessage({
