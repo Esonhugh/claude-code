@@ -190,11 +190,16 @@ const SYNC_TIMEOUT_SENTENCE = `${SYNC_SHELL_TIMEOUT} instead of running the comm
 const CODE_MODE_SYNC_TIMEOUT_SENTENCE =
   'A script is stopped 600000 ms after it starts, counting the time spent waiting on permission prompts, and a command still running then is stopped too and its output is lost. So give a long command a timeout that ends well before that. At its own timeout a command moves to the background and keeps running (one that starts with sleep is stopped instead, and so is every command if background tasks are disabled): the await resolves without throwing, with exitCode null, and running names the task and the file its output streams to, so read that file instead of running the command again.'
 
+/** Official `Al`: Code Mode has no unsandboxed retry, so ShellOutput loses the field and its doc line. */
+const UNSANDBOXED_RETRY =
+  /(?: {4}\/\*\* the sandbox blocked the command, so this is its retry outside the sandbox;[^\n]*\n)? {4}unsandboxedRetry\?: \{\n {8}violation: string;\n {4}\};\n/g
+
 function helpers(asyncLane: boolean, codeMode: boolean): string {
   const text = helperDeclarations.trimEnd()
-  if (asyncLane) return text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT)
+  const laned = asyncLane ? text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT) : text
+  if (!codeMode) return laned
   // Official xl(): a replacer function, so `$` in the sentence stays literal.
-  return codeMode ? text.replace(SYNC_TIMEOUT_SENTENCE, () => CODE_MODE_SYNC_TIMEOUT_SENTENCE) : text
+  return laned.replace(SYNC_TIMEOUT_SENTENCE, () => CODE_MODE_SYNC_TIMEOUT_SENTENCE).replace(UNSANDBOXED_RETRY, '')
 }
 
 function declarations(declared: Tools, asyncLane: boolean, codeMode: boolean, dropBackground: boolean): string {

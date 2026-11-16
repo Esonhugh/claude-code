@@ -503,6 +503,17 @@ describe('async-lane prompt', () => {
       expect(prompt).toContain('run_in_background')
     }
   })
+
+  test('Code Mode drops unsandboxedRetry from ShellOutput in both lanes', () => {
+    for (const launch of ['default', 'auto'] as PermissionMode[]) {
+      resetCodeModeGateForTesting()
+      noteReplLaunchPermissionMode(launch)
+      const prompt = promptFor('default')
+      expect(prompt).not.toContain('unsandboxedRetry')
+      expect(prompt).not.toContain('the sandbox blocked the command')
+      expect(prompt).toMatch(/ {4}error\?: string;\n {4}note\?: string;\n\}\n/)
+    }
+  })
 })
 
 /** The next turn's context: the same thread, a fresh abort controller. */
