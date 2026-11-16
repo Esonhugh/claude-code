@@ -9,7 +9,7 @@ under it), a git work dir, a fake API key and no proxy variables. Results go to
 OUT/result.json; mock requests to OUT/mock.jsonl, redacted bodies to OUT/req/.
 
 Actions (one key each):
-  {"launch": {"args": "...", "env": {...}, "mode": "default"}}   start in tmux; {{session}} in args = newest transcript id; env null unsets;
+  {"launch": {"args": "...", "env": {...}, "mode": "default"}}   start in tmux; {{session}} in args = newest transcript id ({{label}} in files = the run label); env null unsets;
       "may_exit": true accepts a binary that exits at startup (check the pane next)
   {"turn": "CMD", "timeout": 60}       type "@@ <nonce> CMD", wait for "DONE <nonce>"
   {"send": "CMD"}                      type it, don't wait
@@ -18,8 +18,9 @@ Actions (one key each):
   {"sleep": s} {"capture": "name"} {"exit": true}
   {"headless": {"prompt": "...", "args": "...", "env": {...}, "as": "name"}}
   {"expect": {"name": N, "cmd": C, "step": k, "field": F, "match": RE, "absent": bool}}
-      F: lastResult | lastUser | tools | lastResultBlocks | system | messages | out
-      "role": RE instead of "cmd" matches subagent/side/notif requests (wait_req too)
+      F: lastResult | lastUser | tools | lastResultBlocks | lastResultIsError | system | messages | out
+         | tool:NAME (that tool's description and input schema)
+      "role": RE instead of "cmd" matches subagent/side/notif requests (wait_req too); "nth": i picks one (default -1)
   {"expect_same": {"name": N, "a": CMD, "b": CMD, "step": k, "fields": [...]}}  two requests agree
   {"expect_gap": {"name": N, "cmd": C, "from": 0, "to": 1, "min": s, "max": s}}  seconds between two steps
   {"expect_pane": {"name": N, "match": RE, "absent": bool}}
@@ -62,7 +63,9 @@ class Run:
         os.makedirs(cfg_dir)
         os.makedirs(self.work)
         os.makedirs(f'{self.out}/req')
+        # {{label}} in a file's path or content is this run's label, for fixtures that name their own cwd.
         for rel, content in self.sc.get('files', {}).items():
+            rel, content = rel.replace('{{label}}', self.label), content.replace('{{label}}', self.label)
             p = f'{self.work}/{rel}'
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, 'w').write(content)
@@ -155,10 +158,10 @@ class Run:
                 pass
         return out
 
-    def find_req(self, cmd, step=None, latest_nonce=True, role=None):
-        if role is not None:  # subagent / side / notif requests, matched by role regex
+    def find_req(self, cmd, step=None, latest_nonce=True, role=None, nth=-1):
+        if role is not None:  # subagent / side / notif requests, matched by role regex; nth picks one (default last)
             hits = [r for r in self.reqs() if re.search(role, r.get('role', '')) and (step is None or r.get('step') == step)]
-            return hits[-1] if hits else None
+            return hits[nth] if -len(hits) <= nth < len(hits) else None
         nonce = self.nonces.get(cmd) if latest_nonce else None
         hits = [r for r in self.reqs() if r.get('cmd') == cmd and (step is None or r.get('step') == step)
                 and (nonce is None or r.get('nonce') == nonce) and not r.get('role', '').endswith(':notif')]
@@ -203,7 +206,8 @@ class Run:
         print(f'[{self.label}] {"PASS" if ok else "FAIL"} {name} {detail[:160]!r}', flush=True)
 
     def check(self, name, value, spec):
-        found = value is not None and re.search(spec['match'], value, re.S) is not None
+        # Without a pattern the check is only that the value exists.
+        found = value is not None and ('match' not in spec or re.search(spec['match'], value, re.S) is not None)
         ok = (not found) if spec.get('absent') else found
         self.record(name, ok, '' if ok else (value or '<none>')[:400])
     def transcripts(self):
@@ -239,7 +243,7 @@ class Run:
         elif k == 'headless':
             self.headless(v)
         elif k == 'expect':
-            r = self.find_req(v.get('cmd'), v.get('step'), role=v.get('role'))
+            r = self.find_req(v.get('cmd'), v.get('step'), role=v.get('role'), nth=v.get('nth', -1))
             field = v.get('field', 'lastResult')
             if r is None:
                 value = None
@@ -247,8 +251,12 @@ class Run:
                 value = self.system_of(r)
             elif field == 'messages':
                 value = json.dumps(self.body_of(r).get('messages'), ensure_ascii=False)
+            elif field.startswith('tool:'):
+                t = next((t for t in self.body_of(r).get('tools') or [] if t.get('name') == field[5:]), None)
+                value = None if t is None else t.get('description', '') + '\n' + json.dumps(t.get('input_schema'))
             else:
                 value = r.get(field)
+                value = str(value) if isinstance(value, bool) else value
                 value = ','.join(map(str, value)) if isinstance(value, list) else value
             self.check(v['name'], value, v)
         elif k == 'expect_same':
@@ -273,7 +281,8 @@ class Run:
             raise ValueError(f'unknown action {k}')
 
     def scan_secrets(self):
-        out = sh('rg', '-l', '-i', '-a', r'sk-ant-|authorization: bearer|"x-api-key": *"[^\[]', self.out)
+        # `Bearer $(...)` is a shell example in the auto mode classifier's prompt, not a token.
+        out = sh('rg', '-l', '-i', '-a', r'sk-ant-|authorization: bearer [^$]|"x-api-key": *"[^\[]', self.out)
         return [l for l in out.splitlines() if l]
 
     def run(self):

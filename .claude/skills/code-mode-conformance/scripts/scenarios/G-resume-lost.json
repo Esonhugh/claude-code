@@ -1,0 +1,30 @@
+{
+ "name": "G-resume-lost",
+ "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"},
+ "commands": {
+  "DISPATCH": [{"tools": [{"name": "REPL", "input": {"code": "const r = await Bash({command: 'sleep 100 && echo never', timeout: 200000})\nr.stdout.trim()", "description": "probe"}}]}, {"text": "DONE {{nonce}} dispatched"}],
+  "AFTER_OFF": [{"text": "DONE {{nonce}} after-off"}],
+  "AFTER_ON": [{"text": "DONE {{nonce}} after-on"}],
+  "AFTER_ON:notif": [{"text": "NOTIF {{nonce}} lost"}]
+ },
+ "drive": [
+  {"launch": {"mode": "bypassPermissions"}},
+  {"turn": "DISPATCH", "timeout": 90},
+  {"expect": {"name": "session 1: eval dispatched", "cmd": "DISPATCH", "step": 1, "match": "^\\(dispatched #1\\)"}},
+  {"exit": true},
+  {"launch": {"mode": "bypassPermissions", "args": "--resume {{session}}", "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null}}},
+  {"turn": "AFTER_OFF"},
+  {"expect": {"name": "resume off: reminder names the unsettled eval (official _so)", "cmd": "AFTER_OFF", "step": 0, "field": "messages", "match": "eval #1 never settled: the process that was running it exited\\. Its result is lost and the script is no longer running; a command it had started may have run on\\."}},
+  {"exit": true},
+  {"launch": {"mode": "bypassPermissions"}},
+  {"turn": "DISPATCH", "timeout": 90},
+  {"expect": {"name": "session 2: eval dispatched", "cmd": "DISPATCH", "step": 1, "match": "^\\(dispatched #1\\)"}},
+  {"exit": true},
+  {"launch": {"mode": "bypassPermissions", "args": "--resume {{session}}"}},
+  {"sleep": 8},
+  {"capture": "resume-on"},
+  {"turn": "AFTER_ON"},
+  {"expect": {"name": "resume on (bypass): lost event for the unsettled eval (official qKa)", "cmd": "AFTER_ON", "step": 0, "field": "messages", "match": "<event kind=\\\\\"repl-eval\\\\\"[^>]*eval=\\\\\"1\\\\\" status=\\\\\"lost\\\\\">eval #1 never settled"}},
+  {"exit": true}
+ ]
+}

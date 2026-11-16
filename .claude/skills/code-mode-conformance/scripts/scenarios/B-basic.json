@@ -155,11 +155,11 @@
   },
   {
    "expect": {
-    "name": "API tools are REPL (+Poll) only",
+    "name": "default start: API tools are REPL only",
     "cmd": "TOOLS",
     "step": 0,
     "field": "tools",
-    "match": "^(Poll,)?REPL$"
+    "match": "^REPL$"
    }
   },
   {

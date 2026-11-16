@@ -205,6 +205,29 @@
    "capture": "esc-bg-after"
   },
   {
+   "wait_req": {
+    "role": "main:ESC_BG:notif",
+    "timeout": 30
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc between turns: user-stop report arrives as an idle event",
+    "role": "main:ESC_BG:notif",
+    "field": "lastUser",
+    "match": "<event kind=\"repl-eval\"[\\s\\S]*The user interrupted this script, so it stopped\\. STOP what you are doing"
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc between turns: sleep was stopped (no late result in the event)",
+    "role": "main:ESC_BG:notif",
+    "field": "lastUser",
+    "match": "<result>never",
+    "absent": true
+   }
+  },
+  {
    "turn": "POLL2",
    "timeout": 60
   },

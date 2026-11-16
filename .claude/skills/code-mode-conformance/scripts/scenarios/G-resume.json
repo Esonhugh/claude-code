@@ -100,11 +100,11 @@
   },
   {
    "expect": {
-    "name": "resume on: tools are Code Mode tools",
+    "name": "resume on (default start): tools REPL only",
     "cmd": "ON_AGAIN",
     "step": 0,
     "field": "tools",
-    "match": "^(Poll,)?REPL$"
+    "match": "^REPL$"
    }
   },
   {
@@ -152,7 +152,7 @@
   {
    "expect_pane": {
     "name": "resume off: taken-out notice shown",
-    "match": "This session was started in Code Mode, which isn.t available where it runs now"
+    "match": "This session was started in Code Mode \\(experimental\\), which isn.t available where it runs now"
    }
   },
   {
