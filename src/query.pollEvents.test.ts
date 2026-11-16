@@ -116,7 +116,8 @@ async function run(messages: Message[], { settle = false, agentId }: { settle?: 
       },
     },
   })
-  while (!(await iterator.next()).done) {}
+  let step = await iterator.next()
+  while (!step.done) step = await iterator.next()
   return modelRequests
 }
 
