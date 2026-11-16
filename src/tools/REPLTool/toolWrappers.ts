@@ -339,6 +339,7 @@ export function createReplToolHost(opts: {
   let messages: Message[] = []
   const started: ReplCallRecord[] = []
   let callCount = 0
+  let callCapRefused = false
   let stopped = false
   let afterStop = 0
   let noMoreCalls = false
@@ -525,8 +526,14 @@ export function createReplToolHost(opts: {
       if (stopped && ++afterStop > REPL_CALLS_AFTER_STOP)
         throw new Error('The REPL script was stopped; no further tool calls are made')
       if (noMoreCalls) return refusal(tool, REPL_CALL_AFTER_SCRIPT_END)
-      if (callCount >= REPL_MAX_TOOL_CALLS)
-        throw new Error(`The REPL script reached the limit of ${REPL_MAX_TOOL_CALLS} tool calls`)
+      if (callCount >= REPL_MAX_TOOL_CALLS) {
+        // Official: only the first call past the cap hears why; later ones are left unanswered.
+        if (callCapRefused) return new Promise<never>(() => {})
+        callCapRefused = true
+        throw new Error(
+          `${name}: this script has made ${REPL_MAX_TOOL_CALLS.toLocaleString('en-US')} calls, its cap. The call was not made, and no later call of this script will be answered.`,
+        )
+      }
       callCount++
       if (
         asyncLane &&

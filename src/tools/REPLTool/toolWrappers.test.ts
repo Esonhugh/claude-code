@@ -26,6 +26,7 @@ import {
   getReplCallableTools,
   McpToolError,
   REPL_CALLS_AFTER_STOP,
+  REPL_MAX_TOOL_CALLS,
 } from './toolWrappers.js'
 
 const originalSettings = getSessionSettingsCache()
@@ -520,6 +521,18 @@ test(`after stop at most ${REPL_CALLS_AFTER_STOP} more calls run`, async () => {
   expect(host.call('Fixture', { value: 'late' })).rejects.toThrow('stopped')
   expect(host.callCount).toBe(REPL_CALLS_AFTER_STOP)
 })
+
+test(`a script's call past its ${REPL_MAX_TOOL_CALLS.toLocaleString('en-US')}th throws once, and later calls never settle`, async () => {
+  const { host } = hostFor([fixtureTool()])
+  for (let i = 0; i < REPL_MAX_TOOL_CALLS; i += 1000)
+    await Promise.all(Array.from({ length: 1000 }, () => host.call('Fixture', { value: 'x' })))
+  await expect(host.call('Fixture', { value: 'x' })).rejects.toThrow(
+    'Fixture: this script has made 50,000 calls, its cap. The call was not made, and no later call of this script will be answered.',
+  )
+  const late = await Promise.race([host.call('Fixture', { value: 'x' }), tick().then(() => 'unsettled')])
+  expect(late).toBe('unsettled')
+  expect(host.callCount).toBe(REPL_MAX_TOOL_CALLS)
+}, 120_000)
 
 const PNG = 'iVBORw0KGgo'
 const moved = (b64: string, kind = 'image') =>
