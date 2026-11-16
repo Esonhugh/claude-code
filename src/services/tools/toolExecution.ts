@@ -43,6 +43,7 @@ import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall } from '../../tools/REPLTool/codeModeGate.js'
+import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
@@ -275,6 +276,13 @@ function decisionReasonToOTelSource(
 
 // Like official 2.1.311, the SDK's tool_result_meta.non_execution_kind for a
 // call the permission check refused.
+/** Official `dje`: hooks after a stopped REPL call's kept result run under the wait's controller. */
+function stoppedHookContext(context: ToolUseContext, toolUseID: string): ToolUseContext {
+  if (!context.abortController.signal.aborted) return context
+  const wait = context.stoppedResultWait?.(toolUseID)
+  return wait?.kept === true ? { ...context, abortController: wait.hookController } : context
+}
+
 function toolDenialKindFor(decision: PermissionDecision): ToolDenialKind {
   if (decision.behavior === 'ask') return 'user-rejected'
   const reason = decision.decisionReason
@@ -688,6 +696,8 @@ export async function* runToolUse(
       yield update
     }
   } catch (error) {
+    // Official: a failed dispatch takes back a stopped result kept for the executor.
+    toolUseContext.stoppedResultWait?.(toolUse.id)?.withdraw()
     // A tool.call dispatch rejects with the abort reason (e.g. 'user-cancel')
     // when the user interrupts; report it as a cancel, not a tool failure.
     const { signal } = toolUseContext.abortController
@@ -915,7 +925,7 @@ function streamedCheckPermissionsAndCallTool(
       review: async (reviewInput, output, addedContext) => {
         const messages: MessageUpdateLazy[] = []
         for await (const result of runPostToolUseHooks(
-          context,
+          stoppedHookContext(context, toolUseID),
           tool,
           toolUseID,
           messageId,
@@ -969,7 +979,7 @@ function streamedCheckPermissionsAndCallTool(
         // Additive Mod context is also an output surface, reviewed separately.
         if (addedContext.length) {
           for await (const result of runPostToolUseHooks(
-            context,
+            stoppedHookContext(context, toolUseID),
             tool,
             toolUseID,
             messageId,
@@ -1793,6 +1803,14 @@ async function checkPermissionsAndCallTool(
     }
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
+    // Official `isStoppedReplResult`: a REPL call the user stopped hands its
+    // result to the executor waiting on it.
+    const stoppedWait =
+      toolUseContext.abortController.signal.aborted &&
+      tool.name === REPL_TOOL_NAME &&
+      (result.data as { stoppedBy?: unknown } | undefined)?.stoppedBy !== undefined
+        ? toolUseContext.stoppedResultWait?.(toolUseID)
+        : undefined
 
     // Log tool content/output as span event if enabled
     if (result.data && typeof result.data === 'object') {
@@ -2069,7 +2087,9 @@ async function checkPermissionsAndCallTool(
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
-      toolUseContext,
+      stoppedWait
+        ? { ...toolUseContext, abortController: stoppedWait.hookController }
+        : toolUseContext,
       tool,
       toolUseID,
       assistantMessage.message.id,
@@ -2198,6 +2218,10 @@ async function checkPermissionsAndCallTool(
     for (const hookResult of hookResults) {
       resultingMessages.push(hookResult)
     }
+    // Official keeps with `afterResultCommitted` as the commit; no local tool
+    // result has one, so there is nothing to run once it is sent.
+    if (stoppedWait && !stoppedWait.hookController.signal.aborted)
+      stoppedWait.keep(() => {})
     return resultingMessages
   } catch (error) {
     const durationMs = Date.now() - startTime

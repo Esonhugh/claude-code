@@ -2,7 +2,7 @@ import helperDeclarations from '../../../assets/code-mode-2.1.325.bash.d.ts.txt'
 import type { Tool, ToolPermissionContext, Tools } from '../../Tool.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../ToolSearchTool/constants.js'
-import { codeModeHidesTools } from './codeModeGate.js'
+import { codeModeHidesTools, isCodeModeEnabled } from './codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from './constants.js'
 import { REPL_OUTPUT_PART_CHARS } from './executor/host.js'
 import { replCallableToolsFrom } from './toolWrappers.js'
@@ -12,6 +12,24 @@ const DOC_CHARS = 120
 /** MCP servers named before "and N more"; the official cap is not known, this is a guess. */
 const MCP_SERVERS_LISTED = 10
 const SKILL_TOOL_PREFIX = 'skill__'
+/** Official replSettleWindowMs (TWt); REPLTool.ts holds the same value, which can't be imported here without a cycle. */
+const SETTLE_WINDOW_SECONDS = 30
+/** Official Aun (REPL_MAX_TIMEOUT_MS). */
+const MAX_SCRIPT_MS = 600_000
+
+/** Official async-lane text (2.1.325 chunk-g61t94xb.js:1573-1575), XML event variant. */
+const ASYNC_OUTPUT = `
+How output arrives: a script that finishes within about ${SETTLE_WINDOW_SECONDS} s comes back as the \`${REPL_TOOL_NAME}\` call's own result, a \`<repl-output eval="N">\` element holding \`<log>\` lines and the \`<result>\` (or \`<error>\`). One still running by then returns \`(dispatched #N)\` instead, runs on, and no longer holds up the scripts after it: its output arrives as an \`<event kind="repl-eval" eval="N">\` element with the same children, in a \`${POLL_TOOL_NAME}\` result or before your next turn, with an \`<event kind="repl-status">\` line meanwhile saying what is still pending. A receipt means the script is running, so issuing it again would run it twice. Scripts start in call order.
+
+Waiting: \`${POLL_TOOL_NAME}\` returns as soon as something arrives; while a script or a background task (a context, say) is still running, a wait with nothing to deliver ends just before the prompt cache would expire (about 5 minutes, or about an hour on a 1-hour cache) in a status line saying what is still pending, so you can poll again. Sent in the same turn as a \`${REPL_TOOL_NAME}\` call it waits for that call's script: a long one (a test suite, a build) then costs no extra round trip, and one that has already come back ends the wait at once. When nothing else needs doing while a long script or a context runs, ending your turn works too: its result or notification starts your next turn when it lands, and waiting that way costs nothing. A shell command with no timeout of its own moves to the background after 10 minutes, so give a long build a longer timeout (up to 2 hours) to await it.
+`
+
+const SYNC_OUTPUT = "\nA call's result is a `<repl-output>` element: `<log>` lines, then the `<result>` (or `<error>`).\n"
+
+/** Official Y: the lane follows the mode of each call, so the model hears how a permission-asking mode differs. */
+const MODE_CHANGE = `
+The user can change the permission mode at any time. In a mode that asks for permission, every \`${REPL_TOOL_NAME}\` call instead waits for its script and returns its output. The script is stopped ${MAX_SCRIPT_MS} ms after it starts, and that time includes time spent waiting at permission prompts.
+`
 
 const EXAMPLE = `One script can look in several places at once and then act on what it found, for example:
 \`\`\`js
@@ -146,6 +164,22 @@ function toolsGlobal(declared: string): string[] {
       ]
 }
 
+/**
+ * Official `qo({asyncLane})` picks the async build of the helper declarations
+ * when Code Mode is on (`j7()`). Of its differences only the `$` timeout
+ * sentence applies here: the async build's `running()` global and its
+ * `self.running` doc have no counterpart in this worker.
+ */
+const SYNC_SHELL_TIMEOUT =
+  'Timeouts cap at 600000 ms: past that the command keeps running in the background, and running names the task and the file its output streams to, so that file can be read'
+const ASYNC_SHELL_TIMEOUT =
+  'A command with no timeout of its own is awaited for up to 600000 ms; give it a longer one (at most 7200000 ms) to await a long build. Past its timeout the command moves to the background (one that starts with sleep is stopped instead): the await resolves without throwing, with exitCode null and running naming the task and the file its output streams to, and the script goes on. So check running before using its output or exit code, and read that file'
+
+function helpers(asyncLane: boolean): string {
+  const text = helperDeclarations.trimEnd()
+  return asyncLane ? text.replace(SYNC_SHELL_TIMEOUT, ASYNC_SHELL_TIMEOUT) : text
+}
+
 function declarations(declared: Tools): string {
   const tools = toolsInterface(declared)
   return (
@@ -154,7 +188,7 @@ function declarations(declared: Tools): string {
       tools === ''
         ? "// The globals of a REPL script, as TypeScript declarations. The session's tools are not listed here: searchTools finds them."
         : "// The globals of a REPL script, as TypeScript declarations. interface Tools covers the built-in tools a script can call that aren't in your tool list; long doc lines are cut short, and describeTool(name) returns a tool's description and full input schema. searchTools finds the others, such as MCP tools.",
-      helperDeclarations.trimEnd(),
+      helpers(isCodeModeEnabled()),
       ...toolsGlobal(tools),
     ].join('\n') +
     '\n```'
@@ -169,7 +203,12 @@ function mcpLine(tools: Tools, codeMode: boolean): string {
   return `MCP tools: connected servers are ${listed.join(', ')}${more > 0 ? ` and ${more} more` : ''}. Find a tool with \`searchTools\`, then call it with the input its match shows.\n`
 }
 
-/** The REPL tool's prompt, as official 2.1.325 `ts()` without the async lane and the skill listing. */
+/**
+ * The REPL tool's prompt, as official 2.1.325 `ts()` without the skill
+ * listing. The async-lane text depends on Code Mode (where Poll exists), not
+ * on the current mode, as official `j7()`, so the prompt stays the same
+ * across mode changes.
+ */
 export function getReplPrompt(tools: Tools, permissionContext: ToolPermissionContext): string {
   const codeMode = codeModeHidesTools(tools)
   const opening = codeMode
@@ -188,9 +227,7 @@ What a \`REPL\` call costs: each call is a full model round-trip \u2014 the whol
 A script's output is its last expression's value plus anything it \`self.log(...)\`s along the way. What it returns is added to your context and stays there; the value itself stays in the REPL whether you return it or not. So return what you want to read now, and keep the rest in variables to slice or search later.${partCap}${escaping} Promise values inside a returned object are awaited for you (\`({status: $\`git status\`, branches: $\`git branch\`})\` needs no awaits); a promise used inline \u2014 concatenated, interpolated, passed to another call \u2014 needs \`await\`. \`console.*\` goes to a bounded in-memory ring rather than into your context; \`console.tail(n)\` reads it back.
 
 To keep a long output out of your context, return \`preview(out)\` or \`preview(out, 2000)\` instead of the output itself: it gives the first characters, and when \`out\` is an awaited \`$\` result (not its \`.text()\` string) whose output the shell tool saved to a file, it starts with the output's size and the file's path.
-
-A call's result is a \`<repl-output>\` element: \`<log>\` lines, then the \`<result>\` (or \`<error>\`).
-
+${isCodeModeEnabled() ? `${ASYNC_OUTPUT}${MODE_CHANGE}` : SYNC_OUTPUT}
 ${EXAMPLE}
 ## Declarations
 ${declarations(replDeclaredTools(tools, permissionContext))}

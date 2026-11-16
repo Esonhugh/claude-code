@@ -11,6 +11,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import type { REPLToolCallProgress } from '../../types/tools.js'
 import { AbortError } from '../../utils/errors.js'
+import { createUserMessage, REJECT_MESSAGE } from '../../utils/messages.js'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { buildSchemaNotSentHint } from '../../services/tools/toolExecution.js'
 import {
@@ -19,7 +20,7 @@ import {
   setCachedSettingsForSource,
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
-import { REPL_TOOL_NAME } from './constants.js'
+import { REPL_TOOL_NAME, SCRIPT_ASK_DECLINED } from './constants.js'
 import {
   createReplToolHost,
   getReplCallableTools,
@@ -327,6 +328,43 @@ test('aborting the script signal aborts the inner tool and rejects', async () =>
   expect(host.call('Fixture', { value: 'y' })).rejects.toBeInstanceOf(AbortError)
 })
 
+/** A permission prompt the user declines with no feedback (PermissionContext `cancelAndAbort`). */
+const declineAndAbort: CanUseToolFn = async (_tool, _input, inner) => {
+  inner.abortController.abort()
+  return { behavior: 'ask', message: REJECT_MESSAGE }
+}
+
+for (const asyncLane of [false, true]) {
+  test(`a declined inner call stops the turn after its result${asyncLane ? ' (async lane: repl-ask-declined)' : ''}`, async () => {
+    const { host, context, progress } = hostFor([fixtureTool()], { canUseTool: declineAndAbort, asyncLane })
+    const value = await host.call('Fixture', { value: 'x' })
+    expect(value).toEqual({ error: expect.stringContaining("doesn't want to proceed") })
+    expect(host.calls().at(-1)).toMatchObject({ phase: 'error', declined: true })
+    expect(progress.at(-1)?.phase).toBe('error')
+    expect(context.abortController.signal.aborted).toBe(true)
+    const reason = context.abortController.signal.reason as DOMException
+    if (asyncLane) expect(reason).toBe(SCRIPT_ASK_DECLINED)
+    else {
+      const plain = new AbortController()
+      plain.abort()
+      expect([reason.name, reason.message]).toEqual(['AbortError', (plain.signal.reason as DOMException).message])
+    }
+  })
+}
+
+test('a call the tool itself aborts without a prompt is not a decline once its parent aborted', async () => {
+  const { host, context } = hostFor([fixtureTool('Fixture', async (_input, inner) => {
+    context.abortController.abort('user-cancel')
+    await Promise.resolve()
+    expect(inner.abortController.signal.aborted).toBe(true)
+    throw new AbortError()
+  })])
+  expect(host.call('Fixture', { value: 'x' })).rejects.toBeInstanceOf(AbortError)
+  await host.call('Fixture', { value: 'x' }).catch(() => {})
+  expect(host.calls().some(call => call.declined)).toBe(false)
+  expect(context.abortController.signal.reason).toBe('user-cancel')
+})
+
 test('an aborted session aborts the inner tool', async () => {
   const entered = Promise.withResolvers<void>()
   const { host, context } = hostFor([fixtureTool('Fixture', async (_input, inner) => {
@@ -413,4 +451,58 @@ test(`after stop at most ${REPL_CALLS_AFTER_STOP} more calls run`, async () => {
     expect(await host.call('Fixture', { value: String(i) })).toEqual({ value: String(i) })
   expect(host.call('Fixture', { value: 'late' })).rejects.toThrow('stopped')
   expect(host.callCount).toBe(REPL_CALLS_AFTER_STOP)
+})
+
+const PNG = 'iVBORw0KGgo'
+const moved = (b64: string, kind = 'image') =>
+  `[${b64.length} base64 chars — ${kind} bytes moved to the REPL result, subject to its per-result ${kind} cap]`
+
+function readTool(call: Tool['call']) {
+  return fixtureTool('Read', call, {
+    inputSchema: z.object({ file_path: z.string(), pages: z.string().optional() }),
+    outputSchema: z.any(),
+  } as Partial<Tool>)
+}
+
+test('an image Read hands the script a placeholder and keeps the base64 on the call record', async () => {
+  const image = { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 8 } }
+  const { host, context } = hostFor([readTool(async () => ({ data: image }))])
+  const value = await host.call('Read', { file_path: 'a.png' })
+  expect(value).toEqual({ ...image, file: { ...image.file, base64: moved(PNG) } })
+  expect(host.calls()[0]).toMatchObject({ phase: 'complete', value: image })
+  const virtual = host.drainMessages().find(m => m.type === 'user') as { toolUseResult?: unknown }
+  expect(virtual.toolUseResult).toEqual(value)
+  expect(context.abortController.signal.aborted).toBe(false)
+})
+
+test('a paged Read gets its page images as pages, the script seeing placeholders', async () => {
+  const parts = { type: 'parts', file: { filePath: 'a.pdf', originalSize: 9, count: 2, outputDir: '/x' } }
+  const page = (data: string) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg' as const, data } })
+  const { host } = hostFor([readTool(async () => ({
+    data: parts,
+    newMessages: [createUserMessage({ content: [page('AAAA'), page('BBBBBB')], isMeta: true })],
+  }))])
+  const value = await host.call('Read', { file_path: 'a.pdf', pages: '3-4' })
+  expect(value).toEqual({
+    ...parts,
+    firstPage: 3,
+    pages: [{ base64: moved('AAAA'), mediaType: 'image/jpeg' }, { base64: moved('BBBBBB'), mediaType: 'image/jpeg' }],
+  })
+  expect(host.calls()[0]?.value).toEqual({
+    ...parts,
+    firstPage: 3,
+    pages: [{ base64: 'AAAA', mediaType: 'image/jpeg' }, { base64: 'BBBBBB', mediaType: 'image/jpeg' }],
+  })
+})
+
+test('an MCP image block reaches the script as a placeholder, marked as MCP content', async () => {
+  const blocks = [{ type: 'text', text: 'shot' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }]
+  const mcp = fixtureTool('mcp__s__shot', async () => ({ data: blocks }), {
+    isMcp: true,
+    mapToolResultToToolResultBlockParam: (data: unknown, id: string) => ({ type: 'tool_result', tool_use_id: id, content: data }),
+  } as Partial<Tool>)
+  const { host } = hostFor([mcp])
+  const value = await host.call('mcp__s__shot', { value: 'x' })
+  expect(value).toEqual([blocks[0], { ...blocks[1], source: { ...blocks[1]!.source, data: moved(PNG) } }])
+  expect(host.calls()[0]).toMatchObject({ mcpContent: true, value: blocks })
 })

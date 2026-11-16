@@ -50,6 +50,7 @@ describe('tool pool with Code Mode off', () => {
     const pool = getTools(getEmptyToolPermissionContext())
     const poolNames = names(pool)
     expect(poolNames).not.toContain('REPL')
+    expect(poolNames).not.toContain('Poll')
     for (const name of ['Read', 'Write', 'Edit', 'Bash', 'NotebookEdit'])
       expect(poolNames).toContain(name)
     expect(names(getAllBaseTools())).not.toContain('REPL')
@@ -77,10 +78,11 @@ describe('tool pool with Code Mode on', () => {
     const pool = getTools(getEmptyToolPermissionContext())
     const poolNames = names(pool)
     expect(poolNames).toContain('REPL')
+    expect(poolNames).toContain('Poll')
     for (const name of CODE_MODE_ONLY_TOOLS) expect(poolNames).not.toContain(name)
     // Write and Edit stay in the pool; the API list carries only REPL (and Poll, StructuredOutput).
     expect(poolNames).toEqual(expect.arrayContaining(['Write', 'Edit']))
-    expect(names(hideCodeModeOnlyTools(pool))).toEqual(['REPL'])
+    expect(names(hideCodeModeOnlyTools(pool))).toEqual(['REPL', 'Poll'])
   })
 })
 

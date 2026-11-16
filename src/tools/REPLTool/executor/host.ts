@@ -13,6 +13,15 @@ export type ReplRunOptions = {
   searchTools?: (query: string, max?: number) => unknown
   /** Script run once in each new context before its first script (helper globals). */
   prelude?: string
+  /**
+   * The async lane: the next queued script starts once this one ends or has
+   * run this long (official replDetachAfterMs), so the two overlap.
+   */
+  detachAfterMs?: number
+  /** Called when the script starts, after the scripts queued before it let it. */
+  onStart?: () => void
+  /** The error for a signal abort, read as the signal fires; INTERRUPTED when it gives none. */
+  interruptedError?: () => string | undefined
 }
 
 export type ReplToolDescription = {
@@ -39,7 +48,16 @@ export type ReplExecutor = {
   run(code: string, o: ReplRunOptions): Promise<ReplRunResult>
   interrupt(): void
   release(): void
+  /**
+   * The globals scripts defined in the live context (not the built-in, helper
+   * or tool ones); undefined when no context is live or it doesn't answer.
+   * Never starts a Worker.
+   */
+  scriptGlobalNames(): Promise<string[] | undefined>
 }
+
+/** How long scriptGlobalNames waits for a context busy in a synchronous loop. */
+const GLOBALS_REPLY_MS = 1_000
 
 export const REPL_DEFAULT_TIMEOUT_MS = 30_000
 export const REPL_MAX_TIMEOUT_MS = 600_000
@@ -48,7 +66,13 @@ export const REPL_OUTPUT_PART_CHARS = 30_000
 /** REPL maxResultSizeChars in 2.1.325. */
 export const REPL_OUTPUT_TOTAL_CHARS = 100_000
 
-const INTERRUPTED = 'Interrupted'
+/**
+ * Official 325 `Ju()` default branch (an Esc, a turn interrupt, /clear): the
+ * model sees the error's stack head, `Error: REPL execution interrupted`.
+ * Its `taskStop`/`session` texts need per-eval tasks, which we don't have.
+ */
+const INTERRUPTED = 'Error: REPL execution interrupted'
+const CONTEXT_LOST = 'Stopped: another script in this REPL context was stopped, and the context went with it'
 const SYNTAX_ERROR = 'Syntax error, so nothing ran'
 const IMPORT_KINDS: Record<string, string> = {
   'import-statement': 'import',
@@ -97,16 +121,12 @@ function escapeOutput(text: string): string {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
-/** Official `Ls()`: seconds under a minute, otherwise minutes and seconds. */
-export function formatReplDuration(ms: number): string {
-  if (ms < 60_000) return `${Number((ms / 1000).toFixed(3))}s`
-  const minutes = Math.floor(ms / 60_000)
-  const seconds = Number(((ms % 60_000) / 1000).toFixed(1))
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
-}
-
+/**
+ * Official 325 script-time timeout: the model sees the error's stack head,
+ * `Error: <message>` (its `Timed out after …` line is only shown to people).
+ */
 export function replTimeoutMessage(ms: number): string {
-  return `Timed out after ${formatReplDuration(ms)}, not counting time spent in tool calls`
+  return `Error: REPL execution timed out after ${ms}ms of script time (inner tool calls excluded). Script may still be running \u2014 avoid unbounded awaits.`
 }
 
 export function replTotalCapMessage(ms: number): string {
@@ -230,14 +250,25 @@ export function createReplExecutor(): ReplExecutor {
   let lost = false
   let released = false
   let nextRunId = 1
-  let active: ActiveRun | undefined
+  // More than one when a detached script runs beside the next (async lane).
+  const active = new Map<number, ActiveRun>()
   let queue: Promise<unknown> = Promise.resolve()
 
-  const kill = () => {
+  let nextGlobalsId = 1
+  const globalsReplies = new Map<number, (names: string[] | undefined) => void>()
+
+  const finishAll = (end: RunEnd) => {
+    for (const run of [...active.values()]) run.finish(end)
+  }
+
+  const kill = (others: RunEnd = { error: CONTEXT_LOST, interrupted: true }) => {
     if (!worker) return
     worker.terminate()
     worker = undefined
     lost = true
+    // Scripts sharing the context can't outlive it.
+    finishAll(others)
+    for (const reply of [...globalsReplies.values()]) reply(undefined)
   }
 
   const ensureWorker = (): { worker: Worker; contextReset: boolean } => {
@@ -248,13 +279,16 @@ export function createReplExecutor(): ReplExecutor {
     // An idle context must not keep the CLI alive; a run holds its own timers.
     ;(started as Worker & { unref?: () => void }).unref?.()
     started.onmessage = (event: MessageEvent<ReplWorkerMessage>) => {
-      if (worker === started && active?.id === event.data.runId) active.onMessage(event.data)
+      if (worker !== started) return
+      const message = event.data
+      if (message.t === 'globals') globalsReplies.get(message.id)?.(message.names)
+      else active.get(message.runId)?.onMessage(message)
     }
     started.onerror = (event: ErrorEvent) => {
       if (worker !== started) return
       event.preventDefault?.()
+      finishAll({ error: `REPL worker crashed: ${event.message}` })
       kill()
-      active?.finish({ error: `REPL worker crashed: ${event.message}` })
     }
     worker = started
     return { worker: started, contextReset }
@@ -262,7 +296,10 @@ export function createReplExecutor(): ReplExecutor {
 
   const execute = (code: string, o: ReplRunOptions): Promise<ReplRunResult> => {
     if (released) return Promise.reject(new Error('REPL executor released'))
-    if (o.signal.aborted) return Promise.resolve({ output: formatReplOutput({ error: INTERRUPTED }), error: INTERRUPTED, interrupted: true })
+    if (o.signal.aborted) {
+      const error = o.interruptedError?.() ?? INTERRUPTED
+      return Promise.resolve({ output: formatReplOutput({ error }), error, interrupted: true })
+    }
     const transpiled = transpileReplCode(code)
     if ('error' in transpiled) return Promise.resolve({ output: formatReplOutput({ error: transpiled.error }), error: transpiled.error })
 
@@ -309,7 +346,7 @@ export function createReplExecutor(): ReplExecutor {
         since = performance.now()
         arm()
       }
-      const onAbort = () => run.finish({ error: INTERRUPTED, interrupted: true })
+      const onAbort = () => run.finish({ error: o.interruptedError?.() ?? INTERRUPTED, interrupted: true })
 
       const answer = (callId: number, work: () => unknown) => {
         if (pendingCalls++ === 0) pause()
@@ -346,7 +383,7 @@ export function createReplExecutor(): ReplExecutor {
           clearTimeout(budgetTimer)
           clearTimeout(capTimer)
           o.signal.removeEventListener('abort', onAbort)
-          if (active === run) active = undefined
+          active.delete(id)
           // The only way to stop the script; the context goes with it.
           if (end.timedOut || end.interrupted) kill()
           const logged = stdout.empty ? '' : stdout.render()
@@ -370,13 +407,14 @@ export function createReplExecutor(): ReplExecutor {
         },
       }
 
-      active = run
+      active.set(id, run)
       o.signal.addEventListener('abort', onAbort, { once: true })
       if (o.totalCapMs !== undefined) {
         const cap = Math.max(1, o.totalCapMs)
         capTimer = setTimeout(() => run.finish({ error: replTotalCapMessage(cap), timedOut: true }), cap)
       }
       arm()
+      o.onStart?.()
       target.postMessage({
         t: 'run',
         runId: id,
@@ -391,17 +429,51 @@ export function createReplExecutor(): ReplExecutor {
 
   return {
     run(code, o) {
-      const result = queue.then(() => execute(code, o))
-      queue = result.catch(() => {})
+      let started!: () => void
+      const start = new Promise<void>(resolve => (started = resolve))
+      const result = queue.then(() => execute(code, { ...o, onStart: () => (started(), o.onStart?.()) }))
+      const ended = result.then(
+        () => {},
+        () => {},
+      )
+      const detach = o.detachAfterMs
+      queue =
+        detach === undefined
+          ? ended
+          : Promise.race([
+              ended,
+              start.then(
+                () =>
+                  new Promise<void>(resolve => {
+                    const timer = setTimeout(resolve, Math.max(0, detach))
+                    ;(timer as { unref?: () => void }).unref?.()
+                  }),
+              ),
+            ])
       return result
     },
     interrupt() {
-      active?.finish({ error: INTERRUPTED, interrupted: true })
+      kill({ error: INTERRUPTED, interrupted: true })
+    },
+    scriptGlobalNames() {
+      const target = worker
+      if (!target) return Promise.resolve(undefined)
+      return new Promise(resolve => {
+        const id = nextGlobalsId++
+        const timer = setTimeout(() => reply(undefined), GLOBALS_REPLY_MS)
+        ;(timer as { unref?: () => void }).unref?.()
+        const reply = (names: string[] | undefined) => {
+          clearTimeout(timer)
+          globalsReplies.delete(id)
+          resolve(names)
+        }
+        globalsReplies.set(id, reply)
+        target.postMessage({ t: 'globals', id } satisfies ReplHostMessage)
+      })
     },
     release() {
       released = true
-      active?.finish({ error: INTERRUPTED, interrupted: true })
-      kill()
+      kill({ error: INTERRUPTED, interrupted: true })
     },
   }
 }

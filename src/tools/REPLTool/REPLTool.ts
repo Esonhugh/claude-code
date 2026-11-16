@@ -1,13 +1,19 @@
+import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
-import { buildTool, type Tool, type ToolDef, type ToolUseContext, type Tools } from '../../Tool.js'
+import { buildTool, type Tool, type ToolDef, toolMatchesName, type ToolUseContext, type Tools } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
+import { getAgentContext } from '../../utils/agentContext.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
 import { isAutoModeActive } from '../../utils/permissions/autoModeState.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { saveCodeMode } from '../../utils/sessionStorage.js'
+import { isInProcessTeammate } from '../../utils/teammateContext.js'
+import { getCurrentSubagentDepth } from '../AgentTool/subagentDepth.js'
 import { isCodeModeEnabled } from './codeModeGate.js'
-import { isReplModeEnabled, REPL_TOOL_NAME } from './constants.js'
+import { isReplModeEnabled, POLL_TOOL_NAME, REPL_ASYNC_WALL_CAP_MS, REPL_TOOL_NAME } from './constants.js'
 import {
+  formatReplOutput,
   REPL_MAX_TIMEOUT_MS,
   REPL_OUTPUT_TOTAL_CHARS,
   type ReplRunResult,
@@ -15,12 +21,24 @@ import {
 } from './executor/host.js'
 import { REPL_HELPERS_PRELUDE } from './helpers.js'
 import { getReplPrompt, schemaToTypeScript, toolInputSchema } from './prompt.js'
-import { getReplSession, MAIN_REPL_SESSION } from './sessions.js'
+import {
+  abortPendingReplEvals,
+  deliverReplEvent,
+  formatReplEvalEvent,
+  getReplSession,
+  MAIN_REPL_SESSION,
+  type ReplSession,
+  takeReplLateMessages,
+} from './sessions.js'
+import { replStopOf, replStopReport, type ReplStop } from './stopReport.js'
 import { createReplToolHost, getReplCallableTools, type ReplToolDescriptor } from './toolWrappers.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { collectResultBlocks, resultBlockContent } from './resultBlocks.js'
 
 export const REPL_ALIAS = 'Eval'
 export const REPL_USER_FACING_NAME = 'Code'
+/** LocalMainSessionTask's subagentName: a backgrounded main session (official `isMainSession`). */
+const MAIN_SESSION_SUBAGENT_NAME = 'main-session'
 
 /** Official `Wo` (new-context notice), shown on the first result in a context that lost earlier state. */
 export const REPL_NEW_CONTEXT_NOTICE =
@@ -54,6 +72,22 @@ const outputSchema = lazySchema(() =>
     stdout: z.string().describe('What the script logged (self.log; console.log outside REPL mode)'),
     stderr: z.string().describe('Captured console.error output'),
     error: z.string().optional().describe('Error message if execution failed'),
+    images: z
+      .array(z.object({ base64: z.string(), mediaType: z.string() }))
+      .optional()
+      .describe('Images returned by inner Read and MCP tool calls — surfaced as image content blocks'),
+    imagesOmitted: z
+      .number()
+      .optional()
+      .describe('Count of images from inner tool calls dropped by the per-result image cap; surfaced as a note in the tool_result'),
+    documents: z
+      .array(z.object({ base64: z.string() }))
+      .optional()
+      .describe('PDFs returned by inner Read calls — surfaced as document content blocks'),
+    documentsOmitted: z
+      .number()
+      .optional()
+      .describe('Count of inner-Read PDFs dropped by the per-result document cap; surfaced as a note in the tool_result'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -63,6 +97,93 @@ export type Output = z.infer<OutputSchema> & {
   contextReset?: boolean
   timedOut?: boolean
   interrupted?: boolean
+  /** Official `stoppedBy`: the user stopped the script, or declined a call's permission prompt. */
+  stoppedBy?: ReplStop['by']
+  /** The script's number in the async lane. */
+  evalId?: number
+  /** The script still runs; its outcome arrives as a `repl-eval` event. */
+  asyncDispatched?: boolean
+}
+
+/** Official replSettleWindowMs and replDetachAfterMs (both 30000 in 2.1.325). */
+export const REPL_SETTLE_WINDOW_MS = 30_000
+export { REPL_ASYNC_WALL_CAP_MS }
+/** Official sLo: unsettled evals one context holds before a dispatch is refused. */
+export const REPL_MAX_PENDING_EVALS = 8
+
+const asyncTiming = { settleMs: REPL_SETTLE_WINDOW_MS, wallCapMs: REPL_ASYNC_WALL_CAP_MS }
+
+export function setReplAsyncTimingForTesting(timing?: Partial<typeof asyncTiming>): void {
+  asyncTiming.settleMs = timing?.settleMs ?? REPL_SETTLE_WINDOW_MS
+  asyncTiming.wallCapMs = timing?.wallCapMs ?? REPL_ASYNC_WALL_CAP_MS
+}
+
+/**
+ * Official `lAt`: a subagent the main thread spawned (not a teammate, not a
+ * backgrounded main session, not one a subagent spawned). Such an agent gets
+ * the async lane and Poll; any other agent's REPL calls wait for their script.
+ */
+export function isMainThreadSubagent(context: Pick<ToolUseContext, 'agentId' | 'options'>): boolean {
+  const agent = getAgentContext()
+  return (
+    context.agentId !== undefined &&
+    agent?.agentType === 'subagent' &&
+    agent.agentId === context.agentId &&
+    agent.subagentName !== MAIN_SESSION_SUBAGENT_NAME &&
+    getCurrentSubagentDepth(context.options) === 1 &&
+    !isInProcessTeammate()
+  )
+}
+
+/**
+ * Official `Xu`: the async lane needs Code Mode, the main thread or a subagent
+ * it spawned, Poll in the tool list, and auto or bypassPermissions mode (`oZ`).
+ */
+export function isReplAsyncLane(context: Pick<ToolUseContext, 'agentId' | 'options'>, mode: PermissionMode): boolean {
+  return (
+    isCodeModeEnabled() &&
+    (context.agentId === undefined || isMainThreadSubagent(context)) &&
+    context.options.tools.some(tool => tool.isMcp !== true && toolMatchesName(tool, POLL_TOOL_NAME)) &&
+    (mode === 'auto' || mode === 'bypassPermissions')
+  )
+}
+
+/** Official `gpn`: only a "turn-abort" (a Mods turn abort) leaves dispatched scripts running. */
+function keepsDispatched(signal: AbortSignal): boolean {
+  return signal.reason === 'turn-abort'
+}
+
+/** Esc or an interrupt stops the session's dispatched scripts. */
+export function stopPendingOnAbort(session: ReplSession, signal: AbortSignal): void {
+  const onAbort = () => {
+    if (!keepsDispatched(signal)) abortPendingReplEvals(session, signal.reason)
+  }
+  if (signal.aborted) onAbort()
+  else signal.addEventListener('abort', onAbort, { once: true })
+}
+
+/** Official refusal in `Ku` (2.1.325 chunk-g61t94xb.js). */
+function pendingCapMessage(depth: number): string {
+  return `async REPL dispatch rejected: ${depth} evals already waiting or running \u2014 wait for their settles (Poll) before dispatching more`
+}
+
+function withEvalId(output: string, evalId: number | undefined): string {
+  return evalId === undefined ? output : output.replace('<repl-output>', `<repl-output eval="${evalId}">`)
+}
+
+/** Official: a dispatched script that failed shows as a REPL call of its own (virtual, not sent to the API). */
+function failurePair(code: string, description: string | undefined, output: string): Message[] {
+  const id = `repl_eval_${randomUUID()}`
+  const assistant = createAssistantMessage({
+    content: [{ type: 'tool_use', id, name: REPL_TOOL_NAME, input: { code, ...(description ? { description } : {}) } }] as never,
+    isVirtual: true,
+  })
+  const user = createUserMessage({
+    content: [{ type: 'tool_result', tool_use_id: id, content: output }],
+    isVirtual: true,
+    sourceToolAssistantUUID: assistant.uuid,
+  })
+  return [assistant, user]
 }
 
 /** Official `La()`: one line, whitespace collapsed, marked when the text had several. */
@@ -229,49 +350,136 @@ export const REPLTool = buildTool({
   async call(input, context, canUseTool, _parentMessage, onProgress) {
     if (isCodeModeEnabled()) saveCodeMode(true)
     const session = getReplSession(context.agentId ?? MAIN_REPL_SESSION)
+    const mode = context.getAppState().toolPermissionContext.mode
+    const asyncLane = isReplAsyncLane(context, mode)
+    const outer = context.abortController.signal
+    stopPendingOnAbort(session, outer)
+    if (asyncLane && session.pending.size >= REPL_MAX_PENDING_EVALS) {
+      const error = pendingCapMessage(session.pending.size)
+      return {
+        data: { code: input.code, stdout: '', stderr: '', error, output: formatReplOutput({ error }), asyncDispatched: true },
+        newMessages: takeReplLateMessages(session) as never,
+      }
+    }
     const fresh = !session.used
     session.used = true
+    const evalId = asyncLane ? session.nextEvalId++ : undefined
+    let dispatched = false
     const controller = new AbortController()
-    const stop = () => controller.abort()
-    const outer = context.abortController.signal
-    if (outer.aborted) controller.abort()
+    const stop = () => {
+      if (dispatched && keepsDispatched(outer)) return
+      controller.abort(outer.reason)
+    }
+    if (outer.aborted) controller.abort(outer.reason)
     else outer.addEventListener('abort', stop, { once: true })
     const host = createReplToolHost({
       context,
       canUseTool,
       parentToolUseId: context.toolUseId ?? '',
       signal: controller.signal,
-      onProgress: data => onProgress?.({ toolUseID: data.toolUseId, data }),
+      asyncLane,
+      // The call has returned once dispatched: progress then has no row to go to.
+      onProgress: data => {
+        if (!dispatched) onProgress?.({ toolUseID: data.toolUseId, data })
+      },
     })
+    const cleanup = () => {
+      host.stop()
+      outer.removeEventListener('abort', stop)
+    }
     try {
       const callable = getReplCallableTools(context)
       const descriptions = await describeTools(callable, context)
-      const result = await session.executor.run(input.code, {
+      let startedAt = Date.now()
+      let stop: ReplStop | undefined
+      let settleTimer: ReturnType<typeof setTimeout> | undefined
+      let settled!: () => void
+      const settleWindow = new Promise<null>(resolve => (settled = () => resolve(null)))
+      const running = session.executor.run(input.code, {
         timeoutMs: input.timeout,
-        totalCapMs: replTotalCapFor(context.getAppState().toolPermissionContext.mode),
+        totalCapMs: asyncLane ? asyncTiming.wallCapMs : replTotalCapFor(mode),
         signal: controller.signal,
         tools: host.tools.map(({ name, scriptName, aliases }: ReplToolDescriptor) => ({ name, scriptName, aliases })),
         callTool: (name, toolInput) => host.call(name, toolInput),
         describeTool: name => descriptions.get(name),
         searchTools: (query, max) => searchReplTools(query, max, callable, descriptions),
         prelude: REPL_HELPERS_PRELUDE,
+        // Official `qu`: only a call the executor waits on reports the stop,
+        // listing the calls as they stood when it came.
+        interruptedError: () => {
+          if (context.stoppedResultWait === undefined) return undefined
+          stop = replStopOf(controller.signal.reason, host.calls())
+          return stop && replStopReport(stop)
+        },
+        ...(asyncLane && {
+          detachAfterMs: asyncTiming.settleMs,
+          onStart: () => {
+            startedAt = Date.now()
+            settleTimer = setTimeout(settled, asyncTiming.settleMs)
+          },
+        }),
       })
-      const output = [...notices(result, fresh, context), result.output].join('\n')
+      const result = asyncLane ? await Promise.race([running, settleWindow]) : await running
+      clearTimeout(settleTimer)
+      if (result === null && evalId !== undefined) {
+        dispatched = true
+        session.pending.set(evalId, { id: evalId, startedAt, abort: reason => controller.abort(reason) })
+        void running.then(
+          async late => {
+            cleanup()
+            const output = withEvalId(late.output, evalId)
+            const messages = [
+              ...host.drainMessages(),
+              ...(late.error === undefined ? [] : failurePair(input.code, input.description, output)),
+            ]
+            const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, late.output) }
+            try {
+              await deliverReplEvent(session, event, messages)
+            } finally {
+              // deliverReplEvent ends the entry when it lists the event, so a Poll in between waits for it.
+              session.pending.delete(evalId)
+            }
+          },
+          async (error: unknown) => {
+            // Official `tr` with its failure flag: the host failed before the script settled.
+            cleanup()
+            const text =
+              error instanceof Error
+                ? error.message
+                : 'host-side failure before settling (non-Error rejection; detail withheld from coercion)'
+            const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, text, new Date(), 'failed') }
+            try {
+              await deliverReplEvent(session, event, host.drainMessages())
+            } finally {
+              session.pending.delete(evalId)
+            }
+          },
+        )
+        const receipt = `(dispatched #${evalId})`
+        const output = [...(fresh && hadEarlierScripts(context.messages, context.toolUseId) ? [REPL_NEW_CONTEXT_NOTICE] : []), receipt].join('\n')
+        const data: Output = { code: input.code, result: receipt, stdout: '', stderr: '', output, evalId, asyncDispatched: true }
+        return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
+      }
+      const done = result as ReplRunResult
+      const output = [...notices(done, fresh, context), withEvalId(done.output, evalId)].join('\n')
       const data: Output = {
         code: input.code,
-        ...(result.value === undefined ? {} : { result: result.value }),
-        stdout: result.stdout ?? '',
-        stderr: result.stderr ?? '',
-        ...(result.error === undefined ? {} : { error: result.error }),
+        ...(done.value === undefined ? {} : { result: done.value }),
+        stdout: done.stdout ?? '',
+        stderr: done.stderr ?? '',
+        ...(done.error === undefined ? {} : { error: done.error }),
         output,
-        ...(result.contextReset ? { contextReset: true } : {}),
-        ...(result.timedOut ? { timedOut: true } : {}),
-        ...(result.interrupted ? { interrupted: true } : {}),
+        ...(evalId === undefined ? {} : { evalId }),
+        ...(done.contextReset ? { contextReset: true } : {}),
+        ...(done.timedOut ? { timedOut: true } : {}),
+        ...(done.interrupted ? { interrupted: true } : {}),
+        ...(done.interrupted && stop ? { stoppedBy: stop.by } : {}),
+        // Official: only a script that settled without an error carries its calls' images and PDFs.
+        ...(done.error === undefined ? collectResultBlocks(host.calls()) : {}),
       }
-      return { data, newMessages: host.drainMessages() as never }
+      return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
     } finally {
-      host.stop()
-      outer.removeEventListener('abort', stop)
+      if (!dispatched) cleanup()
     }
   },
   mapToolResultToToolResultBlockParam(data, toolUseID) {
@@ -279,7 +487,7 @@ export const REPLTool = buildTool({
       tool_use_id: toolUseID,
       type: 'tool_result',
       // Never is_error: an error is part of the <repl-output>, which resume inference reads from non-error results.
-      content: resultText(data),
+      content: resultBlockContent(resultText(data), data) ?? resultText(data),
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

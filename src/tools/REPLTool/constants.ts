@@ -13,6 +13,12 @@ import { isAnt } from 'src/utils/userType.js'
 export const REPL_TOOL_NAME = 'REPL'
 export const POLL_TOOL_NAME = 'Poll'
 
+/** Official `dot` (REPL_ASYNC_WALL_CAP_MS): an async-lane script's wall cap, also the cap on its shell commands' timeouts. */
+export const REPL_ASYNC_WALL_CAP_MS = 7_200_000
+
+/** Official `tos`: the async lane stops the turn with this when the user declines an inner call. */
+export const SCRIPT_ASK_DECLINED = new DOMException('repl-ask-declined', 'AbortError')
+
 /**
  * REPL mode is on when Code Mode is on (CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1),
  * and default-on for ants in the interactive CLI (opt out with

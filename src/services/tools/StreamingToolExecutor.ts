@@ -1,12 +1,21 @@
-import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
+import type { ToolResultBlockParam, ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
   createUserMessage,
   REJECT_MESSAGE,
   withMemoryCorrectionHint,
 } from 'src/utils/messages.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
+import {
+  findToolByName,
+  type StoppedResultWait,
+  type Tools,
+  type ToolUseContext,
+} from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
+import { isReplModeEnabled, REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { STOP_AND_WAIT } from '../../tools/REPLTool/stopReport.js'
+import { isShuttingDown } from '../../utils/gracefulShutdown.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse, unknownToolSuffix } from './toolExecution.js'
@@ -33,6 +42,86 @@ type TrackedTool = {
   // Progress messages are stored separately and yielded immediately
   pendingProgress: Message[]
   contextModifiers?: Array<(context: ToolUseContext) => ToolUseContext>
+  stopWait?: StopWait
+}
+
+/** Official `stopWait`: the executor waiting for a stopped REPL call's own result. */
+type StopWait = {
+  kept: boolean
+  taken: boolean
+  withdrawn: boolean
+  timedOut: boolean
+  hookController: AbortController
+  timer?: ReturnType<typeof setTimeout>
+  commit?: () => void
+}
+
+/**
+ * Official `N0s`: how long a user stop waits for REPL to hand back its stopped
+ * result. Past it the call gets REJECT_MESSAGE, as other tools do.
+ */
+export const STOPPED_RESULT_WAIT_MS = 10_000
+let stoppedResultWaitMs = STOPPED_RESULT_WAIT_MS
+
+export function setStoppedResultWaitMsForTesting(ms: number | undefined): void {
+  stoppedResultWaitMs = ms ?? STOPPED_RESULT_WAIT_MS
+}
+
+/** Official `CEs`: REPL in REPL mode, unless a mod hooks its `tool.call`. */
+function waitsForStoppedResult(name: string, snapshot: ModSnapshot | undefined): boolean {
+  return (
+    name === REPL_TOOL_NAME &&
+    isCodeModeEnabled() &&
+    isReplModeEnabled() &&
+    snapshot?.hasHooks('tool.call', { tool: name }) !== true
+  )
+}
+
+/** Official `TEs`: Esc, a remote stop, or `abort()` with no reason (a declined permission prompt). */
+function isUserStopAbort(signal: AbortSignal): boolean {
+  const reason: unknown = signal.reason
+  if (reason === 'user-cancel' || reason === 'remote-cancel') return true
+  if (!(reason instanceof DOMException) || reason.name !== 'AbortError') return false
+  const plain = new AbortController()
+  plain.abort()
+  return reason.message === (plain.signal.reason as DOMException).message
+}
+
+/** Official `ly`: the kept result marked as a user stop, with the stop sentence after it. */
+function markUserStopped(message: Message, toolUseId: string): Message {
+  if (message.type !== 'user' || message.toolDenialKind !== undefined) return message
+  const content = message.message.content
+  return {
+    ...message,
+    toolDenialKind: 'user-rejected',
+    message: {
+      ...message.message,
+      content:
+        typeof content === 'string'
+          ? content
+          : content.map(part => {
+              if (part.type !== 'tool_result' || part.tool_use_id !== toolUseId) return part
+              const blocks =
+                typeof part.content === 'string'
+                  ? part.content === ''
+                    ? []
+                    : [{ type: 'text' as const, text: part.content }]
+                  : ((part.content ?? []) as Exclude<ToolResultBlockParam['content'], string | undefined>)
+              return {
+                ...part,
+                content: [...blocks, { type: 'text' as const, text: `The user stopped this call. ${STOP_AND_WAIT}` }],
+              }
+            }),
+    },
+  }
+}
+
+function isResultFor(message: Message, toolUseId: string): boolean {
+  return (
+    message.type === 'user' &&
+    Array.isArray(message.message.content) &&
+    message.message.content.some(part => part.type === 'tool_result' && part.tool_use_id === toolUseId)
+  )
 }
 
 /**
@@ -323,6 +412,74 @@ export class StreamingToolExecutor {
   }
 
   /**
+   * Official `armStoppedResultWait`: on a user stop, wait up to
+   * STOPPED_RESULT_WAIT_MS for the call's stopped result; `fallback` ends the
+   * call with REJECT_MESSAGE if it does not come in time.
+   */
+  private armStoppedResultWait(tool: TrackedTool, fallback: () => void): void {
+    const signal = this.toolUseContext.abortController.signal
+    if (
+      tool.status !== 'executing' ||
+      tool.stopWait !== undefined ||
+      !signal.aborted ||
+      isShuttingDown() ||
+      !isUserStopAbort(signal)
+    )
+      return
+    const wait: StopWait = {
+      kept: false,
+      taken: false,
+      withdrawn: false,
+      timedOut: false,
+      hookController: new AbortController(),
+    }
+    wait.timer = setTimeout(() => {
+      if (tool.status !== 'executing') return
+      wait.timedOut = true
+      wait.commit = undefined
+      wait.hookController.abort(signal.reason)
+      fallback()
+    }, stoppedResultWaitMs)
+    tool.stopWait = wait
+  }
+
+  /** Official `takeKeptResult`: the kept result is sent, and its commit runs. */
+  private takeKeptResult(tool: TrackedTool, message: Message): Message {
+    const wait = tool.stopWait
+    if (wait === undefined || !isResultFor(message, tool.id)) return message
+    clearTimeout(wait.timer)
+    wait.taken = true
+    const commit = wait.commit
+    wait.commit = undefined
+    commit?.()
+    return markUserStopped(message, tool.id)
+  }
+
+  /** Official `stoppedResultWaitOf`. */
+  private stoppedResultWaitOf(tool: TrackedTool): StoppedResultWait | undefined {
+    const wait = tool.stopWait
+    if (wait === undefined) return undefined
+    return {
+      hookController: wait.hookController,
+      get kept() {
+        return wait.kept
+      },
+      keep: commit => {
+        if (wait.timedOut || wait.withdrawn || wait.taken) return false
+        wait.kept = true
+        wait.commit = commit
+        return true
+      },
+      withdraw: () => {
+        if (wait.taken) return
+        wait.withdrawn = true
+        wait.kept = false
+        wait.commit = undefined
+      },
+    }
+  }
+
+  /**
    * Execute a tool and collect its results
    */
   private async executeTool(tool: TrackedTool): Promise<void> {
@@ -380,11 +537,43 @@ export class StreamingToolExecutor {
         { once: true },
       )
 
+      // Official `I`: a user stop while REPL runs waits for its stopped result.
+      const querySignal = this.toolUseContext.abortController.signal
+      const onStop = waitsForStoppedResult(
+        tool.block.name,
+        this.modsSnapshot ?? this.toolUseContext.modsSnapshot,
+      )
+        ? () =>
+            this.armStoppedResultWait(tool, () => {
+              messages.push(
+                this.createSyntheticErrorMessage(
+                  tool.id,
+                  'user_interrupted',
+                  tool.assistantMessage,
+                ),
+              )
+              tool.results = messages
+              tool.contextModifiers = contextModifiers
+              tool.status = 'completed'
+              this.updateInterruptibleState()
+              this.progressAvailableResolve?.()
+              this.progressAvailableResolve = undefined
+            })
+        : undefined
+      if (onStop) querySignal.addEventListener('abort', onStop, { once: true })
+
       const generator = runToolUse(
         tool.block,
         tool.assistantMessage,
         this.canUseTool,
-        { ...this.toolUseContext, abortController: toolAbortController },
+        {
+          ...this.toolUseContext,
+          abortController: toolAbortController,
+          ...(onStop && {
+            stoppedResultWait: (toolUseId: string) =>
+              toolUseId === tool.id ? this.stoppedResultWaitOf(tool) : undefined,
+          }),
+        },
       )
 
       // Track if this specific tool has produced an error result.
@@ -392,57 +581,84 @@ export class StreamingToolExecutor {
       // message when it is the one that caused the error.
       let thisToolErrored = false
 
-      for await (const update of generator) {
-        // Check if we were aborted by a sibling tool error or user interruption.
-        // Only add the synthetic error if THIS tool didn't produce the error.
-        const abortReason = this.getAbortReason(tool)
-        if (abortReason && !thisToolErrored) {
-          messages.push(
-            this.createSyntheticErrorMessage(
-              tool.id,
-              abortReason,
-              tool.assistantMessage,
-            ),
-          )
-          break
-        }
-
-        const isErrorResult =
-          update.message.type === 'user' &&
-          Array.isArray(update.message.message.content) &&
-          update.message.message.content.some(
-            _ => _.type === 'tool_result' && _.is_error === true,
-          )
-
-        if (isErrorResult) {
-          thisToolErrored = true
-          // Only Bash errors cancel siblings. Bash commands often have implicit
-          // dependency chains (e.g. mkdir fails → subsequent commands pointless).
-          // Read/WebFetch/etc are independent — one failure shouldn't nuke the rest.
-          if (tool.block.name === BASH_TOOL_NAME) {
-            this.hasErrored = true
-            this.erroredToolDescription = this.getToolDescription(tool)
-            this.siblingAbortController.abort('sibling_error')
+      try {
+        for await (const update of generator) {
+          const wait = tool.stopWait
+          if (wait?.timedOut) break
+          if (wait?.kept && !wait.taken && isShuttingDown()) {
+            wait.kept = false
+            wait.commit = undefined
           }
-        }
+          // Check if we were aborted by a sibling tool error or user interruption.
+          // Only add the synthetic error if THIS tool didn't produce the error.
+          // Official `ay`: a stop waiting on REPL lets its progress and kept result through.
+          const abortReason = this.getAbortReason(tool)
+          if (
+            abortReason &&
+            !thisToolErrored &&
+            !(
+              abortReason === 'user_interrupted' &&
+              wait !== undefined &&
+              (wait.kept || update.message?.type === 'progress')
+            )
+          ) {
+            clearTimeout(wait?.timer)
+            messages.push(
+              this.createSyntheticErrorMessage(
+                tool.id,
+                abortReason,
+                tool.assistantMessage,
+              ),
+            )
+            break
+          }
 
-        if (update.message) {
-          // Progress messages go to pendingProgress for immediate yielding
-          if (update.message.type === 'progress') {
-            tool.pendingProgress.push(update.message)
-            // Signal that progress is available
-            if (this.progressAvailableResolve) {
-              this.progressAvailableResolve()
-              this.progressAvailableResolve = undefined
+          const isErrorResult =
+            update.message.type === 'user' &&
+            Array.isArray(update.message.message.content) &&
+            update.message.message.content.some(
+              _ => _.type === 'tool_result' && _.is_error === true,
+            )
+
+          if (isErrorResult) {
+            thisToolErrored = true
+            // Only Bash errors cancel siblings. Bash commands often have implicit
+            // dependency chains (e.g. mkdir fails → subsequent commands pointless).
+            // Read/WebFetch/etc are independent — one failure shouldn't nuke the rest.
+            if (tool.block.name === BASH_TOOL_NAME) {
+              this.hasErrored = true
+              this.erroredToolDescription = this.getToolDescription(tool)
+              this.siblingAbortController.abort('sibling_error')
             }
-          } else {
-            messages.push(update.message)
+          }
+
+          if (update.message) {
+            // Progress messages go to pendingProgress for immediate yielding
+            if (update.message.type === 'progress') {
+              tool.pendingProgress.push(update.message)
+              // Signal that progress is available
+              if (this.progressAvailableResolve) {
+                this.progressAvailableResolve()
+                this.progressAvailableResolve = undefined
+              }
+            } else {
+              messages.push(
+                tool.stopWait?.kept
+                  ? this.takeKeptResult(tool, update.message)
+                  : update.message,
+              )
+            }
+          }
+          if (update.contextModifier) {
+            contextModifiers.push(update.contextModifier.modifyContext)
           }
         }
-        if (update.contextModifier) {
-          contextModifiers.push(update.contextModifier.modifyContext)
-        }
+      } finally {
+        if (onStop) querySignal.removeEventListener('abort', onStop)
+        clearTimeout(tool.stopWait?.timer)
       }
+      // The wait ran out and the call already ended with REJECT_MESSAGE.
+      if (tool.stopWait?.timedOut) return
       tool.results = messages
       tool.contextModifiers = contextModifiers
       tool.status = 'completed'

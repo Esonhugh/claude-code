@@ -1,6 +1,28 @@
 import { getSessionId } from '../../bootstrap/state.js'
+import type { Message } from '../../types/message.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import { formatDuration } from '../../utils/format.js'
+import {
+  enqueuePendingNotification,
+  getCommandQueueSnapshot,
+  removeByFilter,
+} from '../../utils/messageQueueManager.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
+
+/** A script the async lane dispatched that has not ended yet. */
+export type ReplPendingEval = {
+  id: number
+  startedAt: number
+  abort(reason?: unknown): void
+}
+
+/** A dispatched script's outcome, queued as a notification until a Poll call or the next turn takes it. */
+export type ReplEvalEvent = {
+  id: number
+  text: string
+  /** Whether the notification queue took it; one it didn't (a Mods hook dropped it) only Poll delivers. */
+  queued?: boolean
+}
 
 /** One persistent JavaScript context per conversation thread: the main thread or a subagent. */
 export type ReplSession = {
@@ -9,6 +31,18 @@ export type ReplSession = {
   epoch: string
   /** False until the first script ran, so the first call knows it is in a new context. */
   used: boolean
+  /** Eval numbers, as in `(dispatched #N)` and `<repl-output eval="N">`. */
+  nextEvalId: number
+  pending: Map<number, ReplPendingEval>
+  /** Outcomes of dispatched scripts not yet taken by Poll. */
+  events: ReplEvalEvent[]
+  /** Virtual messages from dispatched scripts (inner calls, failure pairs) for the next REPL or Poll result. */
+  lateMessages: Message[]
+  /** Poll calls waiting for the next event. */
+  waiters: Set<() => void>
+  /** Which agent's queue the notifications go to (undefined: the main thread). */
+  agentId: string | undefined
+  released: boolean
 }
 
 export const MAIN_REPL_SESSION = 'main'
@@ -22,7 +56,18 @@ export function getReplSession(key: string): ReplSession {
   const existing = sessions.get(key)
   if (existing && existing.epoch === epoch) return existing
   existing?.executor.release()
-  const session: ReplSession = { executor: createReplExecutor(), epoch, used: false }
+  const session: ReplSession = {
+    executor: createReplExecutor(),
+    epoch,
+    used: false,
+    nextEvalId: 1,
+    pending: new Map(),
+    events: [],
+    lateMessages: [],
+    waiters: new Set(),
+    agentId: key === MAIN_REPL_SESSION ? undefined : key,
+    released: false,
+  }
   sessions.set(key, session)
   unregisterCleanup ??= registerCleanup(async () => releaseAllReplSessions())
   return session
@@ -33,7 +78,97 @@ export function releaseReplSession(key: string): void {
   const session = sessions.get(key)
   if (!session) return
   sessions.delete(key)
+  session.released = true
   session.executor.release()
+  wake(session)
+}
+
+/** The context for `key` if one exists in this session id, without making one. */
+export function findReplSession(key: string): ReplSession | undefined {
+  const session = sessions.get(key)
+  return session && session.epoch === getSessionId() ? session : undefined
+}
+
+function wake(session: ReplSession): void {
+  for (const waiter of [...session.waiters]) waiter()
+  session.waiters.clear()
+}
+
+/**
+ * Hands a dispatched script's outcome to the model: queued as a notification
+ * (so it reaches the next turn when nobody polls) and kept for Poll, which
+ * takes it out of the queue instead.
+ */
+export async function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): Promise<void> {
+  if (session.released) return
+  session.lateMessages.push(...messages)
+  try {
+    await enqueuePendingNotification({ value: event.text, mode: 'task-notification', agentId: session.agentId as never })
+  } finally {
+    // Listed once the queue has it (or refused it), so Poll never misses it in between.
+    event.queued = getCommandQueueSnapshot().some(cmd => cmd.mode === 'task-notification' && cmd.value === event.text)
+    session.pending.delete(event.id)
+    if (!session.released) session.events.push(event)
+    wake(session)
+  }
+}
+
+/** Official H6t and SBe: one Poll delivery holds at most this many events and bytes (always at least one event). */
+export const POLL_CHUNK_EVENTS = 20
+export const POLL_CHUNK_BYTES = 32_768
+
+/**
+ * Official `drainPollEventChunk`: the oldest events the next turn has not
+ * taken yet that fit one delivery, out of the notification queue so they
+ * arrive once; the rest stay queued for the next delivery.
+ */
+export function takeReplEventChunk(
+  session: ReplSession,
+  maxEvents = POLL_CHUNK_EVENTS,
+  maxBytes = POLL_CHUNK_BYTES,
+): { events: ReplEvalEvent[]; remaining: number } {
+  // An event no longer queued (and not one the queue refused) was delivered with a turn.
+  const live = session.events.filter(
+    event => event.queued === false || getCommandQueueSnapshot().some(cmd => cmd.mode === 'task-notification' && cmd.value === event.text),
+  )
+  const events: ReplEvalEvent[] = []
+  let bytes = 0
+  for (const event of live) {
+    const size = Buffer.byteLength(event.text, 'utf8')
+    if (events.length > 0 && (events.length + 1 > maxEvents || bytes + size > maxBytes)) break
+    events.push(event)
+    bytes += size
+  }
+  for (const event of events) removeByFilter(cmd => cmd.mode === 'task-notification' && cmd.value === event.text)
+  session.events = live.slice(events.length)
+  return { events, remaining: session.events.length }
+}
+
+export function takeReplLateMessages(session: ReplSession): Message[] {
+  const messages = session.lateMessages
+  session.lateMessages = []
+  return messages
+}
+
+/** Resolves on the next event, a release, `ms` passing or `signal` aborting. */
+export function waitForReplEvent(session: ReplSession, ms: number, signal: AbortSignal): Promise<void> {
+  if (session.events.length > 0 || session.released || signal.aborted) return Promise.resolve()
+  return new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      session.waiters.delete(done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+    session.waiters.add(done)
+  })
+}
+
+/** Stops every dispatched script of the session (Esc, an interrupt). */
+export function abortPendingReplEvals(session: ReplSession, reason?: unknown): void {
+  for (const pending of [...session.pending.values()]) pending.abort(reason)
 }
 
 export function releaseAllReplSessions(): void {
@@ -42,4 +177,54 @@ export function releaseAllReplSessions(): void {
 
 export function hasReplSession(key: string): boolean {
   return sessions.has(key)
+}
+
+/** Official `OBr`: attribute values lose the characters that would break the tag. */
+function attribute(value: string): string {
+  return value.replace(/[&<>"'=\r\n\t]/g, ' ')
+}
+
+/** Official `HIe`: event content text, escaped, with control characters dropped. */
+function escapeContent(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+    .replace(/\r\n?/g, '\n')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u0085\u2028\u2029]/g, '')
+}
+
+/**
+ * A dispatched script's outcome as the official XML event (`hoe`, built in
+ * `tr` in 2.1.325): a settled script's `<repl-output>` children, each on its
+ * own line; a host-side failure as `eval #N FAILED before settling:` and its text.
+ */
+export function formatReplEvalEvent(
+  id: number,
+  ms: number,
+  output: string,
+  at = new Date(),
+  status: 'settled' | 'failed' = 'settled',
+): string {
+  const open = `<event kind="repl-eval" at="${attribute(at.toISOString())}" eval="${id}" ms="${Math.round(ms)}" status="${status}">`
+  if (status === 'failed') return `${open}${escapeContent(`eval #${id} FAILED before settling:\n${output}`)}</event>`
+  const body = output.replace(/^<repl-output[^>]*>\n?/, '').replace(/\n?<\/repl-output>$/, '')
+  return `${open}\n${body}\n</event>`
+}
+
+/**
+ * Official `enqueueReplStatus` text (`h(r, false)`, 2.1.325 chunk-2p8jywjd.js).
+ * An entry exists only once its call returned the receipt, which is when the
+ * official ledger marks it detached; calls waiting at a permission prompt and
+ * late output are not tracked here, so those clauses never apply.
+ */
+export function formatReplStatus(session: ReplSession, at = new Date()): string {
+  const now = Date.now()
+  const pending = [...session.pending.values()].sort((a, b) => a.id - b.id)
+  const parts = pending.map(p => `#${p.id} running for ${formatDuration(now - p.startedAt)} (detached: later evals run beside it)`)
+  const text = `no output yet \u2014 ${pending.length} ${pending.length === 1 ? 'eval' : 'evals'} pending: ${parts.join('; ')}. Poll again to keep waiting.`
+  return `<event kind="repl-status" at="${attribute(at.toISOString())}" pending="${pending.length}">${escapeContent(text)}</event>`
 }

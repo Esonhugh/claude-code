@@ -53,7 +53,7 @@
 
 ### C. 权限、hook 与 auto mode（L2）
 
-- default 模式下脚本内 Bash 弹确认，确认框显示的是内层工具和命令；拒绝后脚本收到 `{error}` 继续。
+- default 模式下脚本内 Bash 弹确认，确认框显示的是内层工具和命令。主线程上不带反馈的拒绝会停掉本轮和整个脚本，模型收到 refusal 报告（"The user doesn't want to proceed with this tool use. … The user declined the permission prompt for Bash(…), so the script stopped."，被拒的调用列为 "did not run. The user declined it."）；带反馈的拒绝、子 agent 里的拒绝不停本轮，脚本收到 `{error}` 并继续。
 - `Bash(...)`、`Read(...)` 的 allow/deny/ask 规则按内层工具匹配；deny Edit 时 `apply_patch` 一并消失。
 - PreToolUse/PostToolUse hook 收到的 `tool_name` 和 `tool_input` 是内层工具；`updatedInput`、block、`updatedToolOutput` 生效。
 - auto mode 分类器收到整段 `code`；内层调用仍逐次判定。

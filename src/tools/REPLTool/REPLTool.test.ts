@@ -62,10 +62,12 @@ function fakeTool(name: string, inputSchema: z.ZodObject, call: (input: Record<s
   } as Parameters<typeof buildTool>[0]) as Tool
 }
 
-const fakeRead = fakeTool('Read', z.object({ file_path: z.string() }), input => ({
-  type: 'text',
-  file: { filePath: input.file_path, content: `contents of ${String(input.file_path)}` },
-}))
+const PNG = 'iVBORw0KGgo'
+const fakeRead = fakeTool('Read', z.object({ file_path: z.string() }), input =>
+  String(input.file_path).endsWith('.png')
+    ? { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 8 } }
+    : { type: 'text', file: { filePath: input.file_path, content: `contents of ${String(input.file_path)}` } },
+)
 const fakeBash = fakeTool('Bash', z.object({ command: z.string() }), input => ({
   stdout: `ran ${String(input.command)}`,
   stderr: '',
@@ -149,6 +151,51 @@ describe('REPL end to end through the executor', () => {
     const { text } = await run('const r = await Bash({command: "rm -rf /"}); [r.error, "after"]', contextFor(), { canUseTool: deny })
     expect(text).toContain('Permission denied for Bash: no')
     expect(text).toContain('after')
+  })
+
+  test('a prompt the user declines stops the script with the refusal report', async () => {
+    // PermissionContext `cancelAndAbort`: a decline with no feedback aborts the call.
+    const decline: CanUseToolFn = async (_tool, _input, inner) => {
+      inner.abortController.abort()
+      return { behavior: 'ask', message: 'declined' }
+    }
+    const context = { ...contextFor(), stoppedResultWait: () => undefined } as ToolUseContext
+    const { text, data } = await run(
+      'await Read({file_path: "a.txt"}); await Bash({command: "rm x"}); self.log("after"); 1',
+      context,
+      { canUseTool: (tool, ...rest) => (tool.name === 'Bash' ? decline(tool, ...rest) : allow(tool, ...rest)) },
+    )
+    expect(context.abortController.signal.aborted).toBe(true)
+    expect(data).toMatchObject({ interrupted: true, stoppedBy: 'refusal' })
+    expect(text).toContain(
+      'The user declined the permission prompt for Bash({"command":"rm x"}), so the script stopped.',
+    )
+    expect(text).toContain('2. Bash({"command":"rm x"}) did not run. The user declined it.')
+    expect(text).not.toContain('after')
+  })
+
+  test('a Read image rides on the REPL result as an image block after the text', async () => {
+    const result = await REPLTool.call(
+      { code: 'const r = await Read({file_path: "a.png"}); r.file.base64' },
+      contextFor(),
+      allow,
+      undefined as never,
+      undefined,
+    )
+    const placeholder =
+      '[11 base64 chars — image bytes moved to the REPL result, subject to its per-result image cap]'
+    expect(result.data).toMatchObject({ result: placeholder, images: [{ base64: PNG, mediaType: 'image/png' }] })
+    const block = REPLTool.mapToolResultToToolResultBlockParam(result.data, 'toolu_current')
+    expect(block.content).toEqual([
+      { type: 'text', text: `<repl-output>\n<result>${placeholder}</result>\n</repl-output>` },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+    ])
+  })
+
+  test('a script that throws carries no images', async () => {
+    const { data, text } = await run('await Read({file_path: "a.png"}); throw new Error("boom")', contextFor())
+    expect(data.images).toBeUndefined()
+    expect(typeof text).toBe('string')
   })
 
   test('describeTool and searchTools see the callable tools', async () => {

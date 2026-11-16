@@ -168,6 +168,19 @@ export function getREPLTool(): Tool | null {
   }
   return replTool
 }
+let pollTool: Tool | null | undefined
+/** Poll, which delivers the outcomes of REPL scripts the async lane dispatched; it rides with REPL. */
+export function getPollTool(): Tool | null {
+  if (!getREPLTool()) return null
+  if (pollTool !== undefined) return pollTool
+  try {
+    const tool = (require('./tools/PollTool/PollTool.js') as { PollTool?: Tool }).PollTool
+    pollTool = typeof tool?.name === 'string' ? tool : null
+  } catch {
+    pollTool = null
+  }
+  return pollTool
+}
 /* eslint-enable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-require-imports */
 const getPowerShellTool = () => {
@@ -258,6 +271,7 @@ export function getAllBaseTools(
     ...(ListAgentsTool ? [ListAgentsTool] : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(getREPLTool() ? [getREPLTool()!] : []),
+    ...(getPollTool() ? [getPollTool()!] : []),
     ...getWorkflowTools(),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
@@ -313,7 +327,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     // below which also hides CODE_MODE_ONLY_TOOLS when REPL is enabled.
     const repl = isReplModeEnabled() ? getREPLTool() : null
     if (repl) {
-      const replSimple: Tool[] = [repl]
+      const replSimple: Tool[] = [repl, ...(getPollTool() ? [getPollTool()!] : [])]
       if (permissionContext.mode === 'plan') replSimple.push(ExitPlanModeV2Tool)
       if (
         feature('COORDINATOR_MODE') &&

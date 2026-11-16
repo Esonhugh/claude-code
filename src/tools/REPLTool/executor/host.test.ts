@@ -127,7 +127,9 @@ describe('REPL executor', () => {
     const result = await run('while (true) {}', { timeoutMs: 200 })
     expect(performance.now() - started).toBeLessThan(1500)
     expect(result.timedOut).toBe(true)
-    expect(result.error).toBe('Timed out after 0.2s, not counting time spent in tool calls')
+    expect(result.error).toBe(
+      'Error: REPL execution timed out after 200ms of script time (inner tool calls excluded). Script may still be running \u2014 avoid unbounded awaits.',
+    )
     const next = await run('typeof kept')
     expect(next.contextReset).toBe(true)
     expect(next.value).toBe('undefined')
@@ -148,7 +150,7 @@ describe('REPL executor', () => {
     await sleep(100)
     controller.abort()
     const result = await pending
-    expect(result).toMatchObject({ interrupted: true, error: 'Interrupted' })
+    expect(result).toMatchObject({ interrupted: true, error: 'Error: REPL execution interrupted' })
     expect((await run('1', { signal: new AbortController().signal })).contextReset).toBe(true)
     expect((await run('1', { signal: controller.signal })).interrupted).toBe(true)
   })
@@ -216,6 +218,83 @@ describe('REPL executor', () => {
   test('syntax errors report without running', async () => {
     const { run } = setup()
     expect((await run('const = 1')).error).toStartWith('Syntax error, so nothing ran\n')
+  })
+})
+
+describe('REPL executor, async lane', () => {
+  test('a script past detachAfterMs lets the next start; they share variables and keep their own logs and calls', async () => {
+    const { run, calls } = setup()
+    const first = run("self.log('one'); shared = 1; await new Promise(r => setTimeout(r, 300)); await Read({who: 1}); shared", { detachAfterMs: 50 })
+    const second = run("self.log('two'); shared = 2; await Read({who: 2}); shared", { detachAfterMs: 50 })
+    const done = await second
+    expect(done.value).toBe('2')
+    expect(done.stdout).toBe('two')
+    const late = await first
+    expect(late.value).toBe('2')
+    expect(late.stdout).toBe('one')
+    expect(calls.map(call => call.input)).toEqual([{ who: 2 }, { who: 1 }])
+  })
+
+  test('without detachAfterMs scripts still run one after another', async () => {
+    const { run } = setup()
+    const order: string[] = []
+    const first = run('await new Promise(r => setTimeout(r, 150)); 1').then(() => order.push('first'))
+    const second = run('2').then(() => order.push('second'))
+    await Promise.all([first, second])
+    expect(order).toEqual(['first', 'second'])
+  })
+
+  test("a script's timers end with it, another script's keep running", async () => {
+    const { run } = setup()
+    const long = run("ticks = 0; setInterval(() => ticks++, 10); await new Promise(r => setTimeout(r, 200)); ticks > 5", { detachAfterMs: 20 })
+    await run("setInterval(() => {}, 10); 'short'", { detachAfterMs: 20 })
+    expect((await long).value).toBe('true')
+  })
+
+  test('stopping one script stops the scripts sharing its context', async () => {
+    const { run } = setup()
+    const controller = new AbortController()
+    const detached = run('await new Promise(r => setTimeout(r, 5000)); 1', { detachAfterMs: 20 })
+    await sleep(40)
+    const stopped = run('await new Promise(r => setTimeout(r, 5000)); 2', { signal: controller.signal })
+    await sleep(40)
+    controller.abort()
+    expect((await stopped).interrupted).toBe(true)
+    const other = await detached
+    expect(other.interrupted).toBe(true)
+    expect(other.error).toContain('another script')
+  })
+
+  test('interrupt stops every running script', async () => {
+    const { executor, run } = setup()
+    const a = run('await new Promise(r => setTimeout(r, 5000)); 1', { detachAfterMs: 10 })
+    await sleep(30)
+    const b = run('await new Promise(r => setTimeout(r, 5000)); 2', { detachAfterMs: 10 })
+    await sleep(30)
+    executor.interrupt()
+    expect((await a).error).toBe('Error: REPL execution interrupted')
+    expect((await b).error).toBe('Error: REPL execution interrupted')
+  })
+})
+
+describe('REPL executor, scriptGlobalNames', () => {
+  test('lists what scripts defined, not built-in, helper or tool globals, and starts no Worker', async () => {
+    const { executor, run } = setup({ prelude: 'var helperFn = () => 1' })
+    expect(await executor.scriptGlobalNames()).toBeUndefined()
+    await run('const kept = 1; function named() {}; class Klass {}; implicit = 2; helperFn()')
+    const names = await executor.scriptGlobalNames()
+    expect(names?.sort()).toEqual(['Klass', 'implicit', 'kept', 'named'])
+    executor.interrupt()
+    expect(await executor.scriptGlobalNames()).toBeUndefined()
+  })
+
+  test('a context busy in a synchronous loop gives undefined', async () => {
+    const { executor, run } = setup()
+    const busy = run('x = 1; while (true) {}', { timeoutMs: 3000 })
+    await sleep(100)
+    expect(await executor.scriptGlobalNames()).toBeUndefined()
+    executor.interrupt()
+    await busy
   })
 })
 

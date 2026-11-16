@@ -183,11 +183,29 @@ export type ManagedSSHRemotePermissions = {
   ) => Promise<SDKControlSSHPermissionsResponse>
 }
 
+/** A stopped REPL call's claim on the result the executor waits for (official `stoppedResultWaitOf`). */
+export type StoppedResultWait = {
+  /** Aborted when the wait times out; PostToolUse hooks for the stopped result run under it. */
+  hookController: AbortController
+  readonly kept: boolean
+  /** Hands the result to the executor; `commit` runs once it is sent. False once too late. */
+  keep(commit: () => void): boolean
+  /** Takes back a kept result that will not be sent after all. */
+  withdraw(): void
+}
+
 export type ToolUseContext = {
   /** Host script invocation; distinct from a model tool call in a headless child. */
   innerCall?: boolean
   /** Tool call made from a Code Mode REPL script; the result goes back to the script, not the model. */
   replScriptCall?: boolean
+  /** Async REPL lane (official `shellWallCapMs`): the shell's wall cap; set only for script calls there. */
+  shellWallCapMs?: number
+  /**
+   * Official `stoppedResultWait`: set by the streaming executor for a REPL call
+   * it may wait on after a user stop, so the call can hand back its stopped result.
+   */
+  stoppedResultWait?: (toolUseId: string) => StoppedResultWait | undefined
   /** Code Mode primitives this agent's REPL scripts may call; undefined means all of them. */
   primitiveToolGrant?: ReadonlySet<string>
   diff?: import('./services/diff/controller.js').DiffController

@@ -27,20 +27,25 @@ export type ReplHostMessage =
       prelude?: string
     }
   | { t: 'reply'; id: number; json: string }
+  /** Asks for the globals scripts defined (not the built-in, helper or tool ones). */
+  | { t: 'globals'; id: number }
 
 export type ReplWorkerMessage =
   | { t: 'call'; runId: number; id: number; kind: 'tool' | 'search'; name: string; input?: string }
   | { t: 'log'; runId: number; stream: 0 | 1; text: string }
   | { t: 'done'; runId: number; value?: string; error?: string }
+  | { t: 'globals'; id: number; names: string[] }
 
 export function replWorkerMain(): void {
   type Builtins = {
     getBuiltinModule(id: 'node:vm'): typeof import('node:vm')
     getBuiltinModule(id: 'node:util'): typeof import('node:util')
+    getBuiltinModule(id: 'node:async_hooks'): typeof import('node:async_hooks')
   }
   const proc = (globalThis as unknown as { process: Builtins & { on(event: string, fn: (reason: unknown) => void): void } }).process
   const vm = proc.getBuiltinModule('node:vm')
   const util = proc.getBuiltinModule('node:util')
+  const { AsyncLocalStorage } = proc.getBuiltinModule('node:async_hooks')
   const scope = globalThis as unknown as {
     postMessage(message: ReplWorkerMessage): void
     onmessage: ((event: { data: ReplHostMessage }) => void) | null
@@ -171,6 +176,7 @@ export function replWorkerMain(): void {
       return id;
     }
     function clearTimer(id) { if (timers.delete(id)) cancel(id) }
+    const forget = id => { timers.delete(id) };
     function describeError(e) {
       let name = 'Error', message = '';
       try { const v = e?.name; if (typeof v === 'string') name = v } catch {}
@@ -233,7 +239,7 @@ export function replWorkerMain(): void {
         if (!timer.repeat) timers.delete(id);
         try { timer.fn(...timer.args) } catch (e) { sink(1, ['Uncaught ' + describeError(e)]) }
       },
-      clearTimers() { for (const id of timers.keys()) cancel(id); timers.clear() },
+      forget,
       // Promises (and thenables such as $ results) inside a returned object or array are awaited.
       async settle(value) {
         const isThen = v => v !== null && (typeof v === 'object' || typeof v === 'function') && typeof v.then === 'function';
@@ -262,15 +268,26 @@ export function replWorkerMain(): void {
       ? value
       : util.inspect(value, { colors: false, depth: 4, customInspect: false, showProxy: true, getters: false, maxStringLength: 30000, maxArrayLength: 200 })
 
-  let runId = 0
+  // Scripts can overlap (a detached one runs beside the next), so the run a
+  // call, log or timer belongs to follows the async context it came from.
+  const owner = new AsyncLocalStorage<number>()
+  let lastRunId = 0
+  const runIdNow = () => owner.getStore() ?? lastRunId
   let nextCall = 1
   const pending = new Map<number, (json: string) => void>()
-  const handles = new Map<number, ReturnType<typeof setTimeout>>()
+  const handles = new Map<number, { handle: ReturnType<typeof setTimeout>; runId: number }>()
+  const clearHandle = (id: number) => {
+    const entry = handles.get(id)
+    if (entry === undefined) return
+    clearTimeout(entry.handle)
+    clearInterval(entry.handle)
+    handles.delete(id)
+  }
 
   type Kernel = {
     install(tools: string, descriptions: string, search: boolean): void
     fire(id: number): void
-    clearTimers(): void
+    forget(id: number): void
     settle(value: unknown): Promise<unknown>
     describeError(error: unknown): string
   }
@@ -279,20 +296,18 @@ export function replWorkerMain(): void {
       new Promise<string>(resolve => {
         const id = nextCall++
         pending.set(id, resolve)
-        post({ t: 'call', runId, id, kind, name, ...(input === undefined ? {} : { input }) })
+        post({ t: 'call', runId: runIdNow(), id, kind, name, ...(input === undefined ? {} : { input }) })
       }),
     (id: number, ms: number, repeat: boolean) => {
       const fire = () => kernel.fire(id)
-      handles.set(id, repeat ? setInterval(fire, ms) : setTimeout(() => { handles.delete(id); fire() }, ms))
+      const handle = repeat ? setInterval(fire, ms) : setTimeout(() => { handles.delete(id); fire() }, ms)
+      handles.set(id, { handle, runId: runIdNow() })
     },
-    (id: number) => {
-      const handle = handles.get(id)
-      if (handle !== undefined) { clearTimeout(handle); clearInterval(handle); handles.delete(id) }
-    },
+    clearHandle,
     (stream: 0 | 1, args: unknown[]) => {
       let text: string
       try { text = Array.from(args, inspect).join(' ') } catch { text = '[unprintable]' }
-      post({ t: 'log', runId, stream, text })
+      post({ t: 'log', runId: runIdNow(), stream, text })
     },
     (direction: 0 | 1, text: string) => {
       try { return direction === 0 ? atob(text) : btoa(text) } catch { return null }
@@ -302,23 +317,45 @@ export function replWorkerMain(): void {
     },
   )
   let preludeRan = false
+  // Taken before any script can redefine it; only strings come back.
+  const ownNames = vm.runInContext('(o => () => o(globalThis))(Object.getOwnPropertyNames)', context) as () => string[]
+  const builtinNames = new Set(Array.from(ownNames(), String))
+  let toolNames = new Set<string>()
+  let baselined = false
 
   // A rejection nobody handled must not take the worker (and the context) down.
   proc.on('unhandledRejection', reason => {
-    post({ t: 'log', runId, stream: 1, text: `Unhandled rejection: ${kernel.describeError(reason)}` })
+    post({ t: 'log', runId: runIdNow(), stream: 1, text: `Unhandled rejection: ${kernel.describeError(reason)}` })
   })
 
   // The error must come from the context realm, or the script would hold a worker-realm object.
   const throwInContext = vm.runInContext('(m => { throw new Error(m) })', context) as (message: string) => never
   const rejectImport = () => throwInContext('Module loading (import) is not available in REPL \u2014 the vm context is sealed.')
 
+  // A script's timers end with it; another script's keep running.
+  const clearRunTimers = (runId: number) => {
+    for (const [id, entry] of handles)
+      if (entry.runId === runId) {
+        clearHandle(id)
+        kernel.forget(id)
+      }
+  }
+
   async function run(message: Extract<ReplHostMessage, { t: 'run' }>) {
-    runId = message.runId
+    lastRunId = message.runId
     try {
       kernel.install(message.tools, message.descriptions, message.search)
+      toolNames = new Set((JSON.parse(message.tools) as ReplWorkerToolSpec[]).flatMap(spec => [spec.name, ...spec.names]))
+      // The kernel's globals on the first run, and what the helper prelude adds, aren't the scripts'.
+      if (!baselined) {
+        baselined = true
+        for (const name of ownNames()) if (!toolNames.has(name)) builtinNames.add(String(name))
+      }
       if (message.prelude !== undefined && !preludeRan) {
         preludeRan = true
+        const before = new Set(Array.from(ownNames(), String))
         vm.runInContext(message.prelude, context, { filename: 'repl-helpers.js' })
+        for (const name of ownNames()) if (!before.has(String(name))) builtinNames.add(String(name))
       }
       const script = new vm.Script(message.code, {
         filename: 'repl-tool-code.js',
@@ -330,12 +367,16 @@ export function replWorkerMain(): void {
     } catch (error) {
       post({ t: 'done', runId: message.runId, error: kernel.describeError(error) })
     } finally {
-      kernel.clearTimers()
+      clearRunTimers(message.runId)
     }
   }
 
   scope.onmessage = ({ data }) => {
-    if (data.t === 'run') void run(data)
+    if (data.t === 'run') void owner.run(data.runId, () => run(data))
+    else if (data.t === 'globals') {
+      const names = Array.from(ownNames(), String).filter(name => !builtinNames.has(name) && !toolNames.has(name))
+      post({ t: 'globals', id: data.id, names })
+    }
     else if (data.t === 'reply') {
       const resolve = pending.get(data.id)
       pending.delete(data.id)

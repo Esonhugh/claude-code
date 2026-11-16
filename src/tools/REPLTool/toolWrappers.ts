@@ -13,12 +13,17 @@ import type { REPLToolCallProgress } from '../../types/tools.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { AbortError } from '../../utils/errors.js'
 import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
+import { parsePDFPageRange } from '../../utils/pdfUtils.js'
 import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js'
+import { getMaxBashTimeoutMs } from '../../utils/timeouts.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { POWERSHELL_TOOL_NAME } from '../PowerShellTool/toolName.js'
 import { filterToolsByDenyRules } from '../../tools.js'
-import { REPL_TOOL_NAME } from './constants.js'
+import { POLL_TOOL_NAME, REPL_ASYNC_WALL_CAP_MS, REPL_TOOL_NAME, SCRIPT_ASK_DECLINED } from './constants.js'
 import { getReplPrimitiveTools } from './primitiveTools.js'
+import { type ReplImage, scriptValue } from './resultBlocks.js'
+import type { ReplCallRecord } from './stopReport.js'
 
 /** Calls one script may make, as in official 2.1.325 (`Hjs`). */
 export const REPL_MAX_TOOL_CALLS = 50_000
@@ -42,6 +47,8 @@ export type ReplToolHost = {
   drainMessages(): Message[]
   stop(): void
   readonly callCount: number
+  /** Copies of the calls the script started, in order (official `Zu` input). */
+  calls(): ReplCallRecord[]
 }
 
 /** An MCP tool reported an error; `detail` is its text parsed as JSON when possible. */
@@ -74,7 +81,8 @@ export function replCallableToolsFrom(
     ? getReplPrimitiveTools()
     : getReplPrimitiveTools().filter(tool => grant.has(tool.name))
   for (const tool of [...tools, ...primitives]) {
-    if (seen.has(tool.name) || toolMatchesName(tool, REPL_TOOL_NAME)) continue
+    // Poll waits on scripts, so one called from a script would wait on itself.
+    if (seen.has(tool.name) || toolMatchesName(tool, REPL_TOOL_NAME) || tool.name === POLL_TOOL_NAME) continue
     seen.add(tool.name)
     if (tool.name === POWERSHELL_TOOL_NAME && !isPowerShellToolEnabled()) continue
     result.push(tool)
@@ -117,6 +125,25 @@ function mcpValue(block: ToolResultBlockParam): unknown {
   return parseJson(resultText(block))
 }
 
+function imagesOf(content: readonly unknown[]): ReplImage[] {
+  const images: ReplImage[] = []
+  for (const block of content) {
+    const source = (block as { type?: unknown; source?: Record<string, unknown> }).source
+    if ((block as { type?: unknown }).type === 'image' && source?.type === 'base64' && typeof source.data === 'string')
+      images.push({ base64: source.data, mediaType: String(source.media_type) })
+  }
+  return images
+}
+
+/** Official Read's paged result holds its pages (`firstPage`, `pages`); this Read sends them as a meta message. */
+function withPages(tool: Tool, input: unknown, data: unknown, pages: ReplImage[]): unknown {
+  if (tool.name !== FILE_READ_TOOL_NAME || pages.length === 0) return data
+  if ((data as { type?: unknown } | null)?.type !== 'parts' || 'pages' in (data as object)) return data
+  const range = (input as { pages?: unknown } | null)?.pages
+  const firstPage = typeof range === 'string' ? parsePDFPageRange(range)?.firstPage : undefined
+  return { ...(data as object), ...(firstPage !== undefined && { firstPage }), pages }
+}
+
 function createSemaphore(limit: number) {
   let active = 0
   const waiting: (() => void)[] = []
@@ -134,6 +161,19 @@ function createSemaphore(limit: number) {
       else active--
     },
   }
+}
+
+/**
+ * Official `shellWallCapMs`: in the async lane a shell command with no
+ * timeout of its own is awaited for up to the shell's max timeout, and its
+ * own timeout may go up to the async wall cap instead of the shell's max.
+ */
+function withAsyncShellTimeout(tool: Tool, input: unknown): unknown {
+  if (tool.name !== BASH_TOOL_NAME && tool.name !== POWERSHELL_TOOL_NAME) return input
+  if (input === null || typeof input !== 'object') return input
+  const own = (input as { timeout?: unknown }).timeout
+  const timeout = typeof own === 'number' && own > 0 ? own : getMaxBashTimeoutMs()
+  return { ...input, timeout: Math.min(timeout, REPL_ASYNC_WALL_CAP_MS) }
 }
 
 /**
@@ -177,6 +217,7 @@ export function createReplToolHost(opts: {
       context.primitiveToolGrant,
     )
   let messages: Message[] = []
+  const started: ReplCallRecord[] = []
   let callCount = 0
   let stopped = false
   let afterStop = 0
@@ -185,7 +226,7 @@ export function createReplToolHost(opts: {
     tool: Tool,
     input: unknown,
     toolUseId: string,
-  ): Promise<{ value: unknown; isError: boolean }> {
+  ): Promise<{ value: unknown; raw: unknown; mcpContent?: boolean; isError: boolean; declined?: { reason: unknown } }> {
     const block = {
       type: 'tool_use' as const,
       caller: { type: 'direct' as const },
@@ -202,15 +243,30 @@ export function createReplToolHost(opts: {
     }
     for (const parent of parents) parent.addEventListener('abort', abort, { once: true })
     abort()
+    // Official `v.pending`: the call's own controller aborted while it ran and
+    // its parents had not, which is how a declined permission prompt shows.
+    let declined: { reason: unknown } | undefined
+    let settled = false
+    abortController.signal.addEventListener(
+      'abort',
+      () => {
+        if (!settled && ![...parents].some(parent => parent.aborted))
+          declined = { reason: abortController.signal.reason }
+      },
+      { once: true },
+    )
     try {
       if (abortController.signal.aborted) throw new AbortError()
       const { runToolUse } = await import('../../services/tools/toolExecution.js')
       let reply: UserMessage | undefined
       let result: ToolResultBlockParam | undefined
+      // A paged Read sends its page images in a meta message after its result.
+      const pageImages: ReplImage[] = []
       for await (const update of runToolUse(block, assistant, canUseTool, {
         ...context,
         innerCall: true,
         replScriptCall: true,
+        ...(asyncLane && { shellWallCapMs: REPL_ASYNC_WALL_CAP_MS }),
         preserveToolUseResults: true,
         modToolCallResult: undefined,
         fileReadingLimits: READ_LIMITS,
@@ -221,25 +277,28 @@ export function createReplToolHost(opts: {
         // Progress and hook attachments stay inside the script call.
         const message = update.message
         if (message?.type !== 'user' || !Array.isArray(message.message.content)) continue
+        if (message.isMeta && tool.name === FILE_READ_TOOL_NAME) pageImages.push(...imagesOf(message.message.content))
         for (const part of message.message.content)
           if (part.type === 'tool_result' && part.tool_use_id === toolUseId) {
             reply = message
             result = part as ToolResultBlockParam
           }
       }
-      if (abortController.signal.aborted) throw new AbortError()
+      if (abortController.signal.aborted && !declined) throw new AbortError()
       if (!reply || !result) throw new Error(`${tool.name} returned no result`)
       const isError = result.is_error === true
       const text = isError ? errorText(resultText(result)) : ''
       const denied = isError && reply.permissionDecision?.decision === 'reject'
       const error = denied ? `Permission denied for ${tool.name}: ${text}` : text
-      const value = isError
+      const raw = isError
         ? { error }
         : tool.isMcp
           ? mcpValue(result)
           : reply.toolUseResult !== undefined
-            ? reply.toolUseResult
+            ? withPages(tool, input, reply.toolUseResult, pageImages)
             : resultText(result)
+      const mcpContent = tool.isMcp === true && Array.isArray(raw)
+      const value = scriptValue({ toolName: tool.name, mcpContent }, raw)
       messages.push(
         assistant,
         createUserMessage({
@@ -256,9 +315,10 @@ export function createReplToolHost(opts: {
           sourceToolAssistantUUID: assistant.uuid,
         }),
       )
-      if (isError && tool.isMcp) throw new McpToolError(error, parseJson(text))
-      return { value, isError }
+      if (isError && tool.isMcp && !declined) throw new McpToolError(error, parseJson(text))
+      return { value, raw, ...(mcpContent && { mcpContent }), isError, ...(declined && { declined }) }
     } finally {
+      settled = true
       for (const parent of parents) parent.removeEventListener('abort', abort)
     }
   }
@@ -270,6 +330,9 @@ export function createReplToolHost(opts: {
     },
     stop() {
       stopped = true
+    },
+    calls() {
+      return started.map(call => ({ ...call }))
     },
     drainMessages() {
       const drained = messages
@@ -293,16 +356,32 @@ export function createReplToolHost(opts: {
           error: `${tool.name}: run_in_background is not available in the async REPL. The eval already runs in the background, so await the command instead.`,
         }
       const toolUseId = `repl_${randomUUID()}`
-      const progress = (phase: REPLToolCallProgress['phase']) =>
+      const record: ReplCallRecord = { toolName: tool.name, toolInput: input, phase: 'start' }
+      started.push(record)
+      const progress = (phase: REPLToolCallProgress['phase']) => {
+        record.phase = phase
         onProgress?.({ type: 'repl_tool_call', phase, toolName: tool.name, toolUseId })
+      }
       progress('start')
       await slots.acquire()
       try {
         progress('executing')
-        const { value, isError } = await run(tool, input, toolUseId)
-        progress(isError ? 'error' : 'complete')
+        const { value, raw, mcpContent, isError, declined } = await run(
+          tool,
+          asyncLane ? withAsyncShellTimeout(tool, input) : input,
+          toolUseId,
+        )
+        if (isError) record.error = (value as { error: string }).error
+        else record.value = raw
+        if (mcpContent) record.mcpContent = true
+        if (declined) record.declined = true
+        progress(isError || declined ? 'error' : 'complete')
+        // Official `onStopTurn`: a decline stops the turn, and with it the script,
+        // once the call has its result; the async lane marks the stop as one.
+        if (declined) context.abortController.abort(asyncLane ? SCRIPT_ASK_DECLINED : declined.reason)
         return value
       } catch (error) {
+        record.error = error instanceof Error ? error.message : String(error)
         progress('error')
         throw error
       } finally {
