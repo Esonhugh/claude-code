@@ -3,17 +3,7 @@ import type { Message } from '../../types/message.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { formatDuration } from '../../utils/format.js'
-import {
-  enqueuePendingNotification,
-  enqueuePollEvent,
-  getCommandQueueSnapshot,
-  POLL_EVENT_CHUNK_BYTES,
-  POLL_EVENT_CHUNK_EVENTS,
-  REPL_EVAL_EVENT_KIND,
-  REPL_STATUS_EVENT_KIND,
-  removeByFilter,
-} from '../../utils/messageQueueManager.js'
-import { isReplSpliceWaitEnabled } from './codeModeGate.js'
+import { enqueuePollEvent, REPL_EVAL_EVENT_KIND, REPL_STATUS_EVENT_KIND } from '../../utils/messageQueueManager.js'
 import { SCRIPT_ASK_DECLINED } from './constants.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
 import { isUserStop } from './stopReport.js'
@@ -54,12 +44,10 @@ export type ReplLedgerRow = {
 
 const SNIPPET_CHARS = 100
 
-/** A dispatched script's outcome, queued as a notification until a Poll call or the next turn takes it. */
+/** A dispatched script's outcome, queued as a poll event until a delivery takes it. */
 export type ReplEvalEvent = {
   id: number
   text: string
-  /** Whether the notification queue took it; one it didn't (a Mods hook dropped it) only Poll delivers. */
-  queued?: boolean
   /** False: the main thread's eval the user stopped, whose outcome waits for the next turn instead of starting one. */
   startsTurn?: false
 }
@@ -74,8 +62,6 @@ export type ReplSession = {
   /** Eval numbers, as in `(dispatched #N)` and `<repl-output eval="N">`. */
   nextEvalId: number
   pending: Map<number, ReplPendingEval>
-  /** Outcomes of dispatched scripts not yet taken by Poll. */
-  events: ReplEvalEvent[]
   /** Virtual messages from dispatched scripts (inner calls, failure pairs) for the next REPL or Poll result. */
   lateMessages: Message[]
   /** Poll calls waiting for the next event. */
@@ -91,7 +77,7 @@ export type ReplSession = {
   /** A status line for the pending evals was given since the last dispatch. */
   statusLineGiven: boolean
   ledgerListeners: Set<() => void>
-  /** Which agent's queue the notifications go to (undefined: the main thread). */
+  /** Which agent's queue the events go to (undefined: the main thread). */
   agentId: string | undefined
   released: boolean
 }
@@ -113,7 +99,6 @@ export function getReplSession(key: string): ReplSession {
     used: false,
     nextEvalId: 1,
     pending: new Map(),
-    events: [],
     lateMessages: [],
     waiters: new Set(),
     ledger: new Map(),
@@ -152,32 +137,13 @@ function wake(session: ReplSession): void {
 }
 
 /**
- * Hands a dispatched script's outcome to the model: queued as a notification
- * (so it reaches the next turn when nobody polls) and kept for Poll, which
- * takes it out of the queue instead.
+ * Official `tr`: the outcome goes out as a `repl-eval` poll event, for the
+ * wait after tool calls, a turn's first request or Poll to deliver. It
+ * counts as delivered once queued.
  */
-export async function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): Promise<void> {
+export function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): void {
   if (session.released) return
   session.lateMessages.push(...messages)
-  if (isReplSpliceWaitEnabled()) return enqueueReplEvalEvent(session, event)
-  try {
-    await enqueuePendingNotification({ value: event.text, mode: 'task-notification', agentId: session.agentId as never })
-  } finally {
-    // Listed once the queue has it (or refused it), so Poll never misses it in between.
-    event.queued = getCommandQueueSnapshot().some(cmd => cmd.mode === 'task-notification' && cmd.value === event.text)
-    session.pending.delete(event.id)
-    markReplEvalDelivered(session, event.id)
-    if (!session.released) session.events.push(event)
-    wake(session)
-  }
-}
-
-/**
- * Official `tr` under the splice wait: the outcome goes out as a `repl-eval`
- * poll event, for the wait after tool calls, a turn's first request or Poll
- * to deliver. It counts as delivered once queued.
- */
-function enqueueReplEvalEvent(session: ReplSession, event: ReplEvalEvent): void {
   const refused = (error: unknown) =>
     logForDebugging(`async REPL eval #${event.id} outcome not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
   try {
@@ -339,53 +305,10 @@ export function onReplLedgerChange(session: ReplSession, listener: () => void): 
   return () => void session.ledgerListeners.delete(listener)
 }
 
-/**
- * Official `drainPollEventChunk`: the oldest events the next turn has not
- * taken yet that fit one delivery, out of the notification queue so they
- * arrive once; the rest stay queued for the next delivery.
- */
-export function takeReplEventChunk(
-  session: ReplSession,
-  maxEvents = POLL_EVENT_CHUNK_EVENTS,
-  maxBytes = POLL_EVENT_CHUNK_BYTES,
-): { events: ReplEvalEvent[]; remaining: number } {
-  // An event no longer queued (and not one the queue refused) was delivered with a turn.
-  const live = session.events.filter(
-    event => event.queued === false || getCommandQueueSnapshot().some(cmd => cmd.mode === 'task-notification' && cmd.value === event.text),
-  )
-  const events: ReplEvalEvent[] = []
-  let bytes = 0
-  for (const event of live) {
-    const size = Buffer.byteLength(event.text, 'utf8')
-    if (events.length > 0 && (events.length + 1 > maxEvents || bytes + size > maxBytes)) break
-    events.push(event)
-    bytes += size
-  }
-  for (const event of events) removeByFilter(cmd => cmd.mode === 'task-notification' && cmd.value === event.text)
-  session.events = live.slice(events.length)
-  return { events, remaining: session.events.length }
-}
-
 export function takeReplLateMessages(session: ReplSession): Message[] {
   const messages = session.lateMessages
   session.lateMessages = []
   return messages
-}
-
-/** Resolves on the next event, a release, `ms` passing or `signal` aborting. */
-export function waitForReplEvent(session: ReplSession, ms: number, signal: AbortSignal): Promise<void> {
-  if (session.events.length > 0 || session.released || signal.aborted) return Promise.resolve()
-  return new Promise(resolve => {
-    const done = () => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', done)
-      session.waiters.delete(done)
-      resolve()
-    }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
-    session.waiters.add(done)
-  })
 }
 
 /** Stops every dispatched script of the session (Esc between turns). */
@@ -532,23 +455,4 @@ export function enqueueReplStatus(session: ReplSession, rows: readonly ReplLedge
   } catch (error) {
     refused(error)
   }
-}
-
-/**
- * The status line for the session's dispatched evals, as Poll gives it when
- * its wait runs out. A dispatched eval ran past the settle window, where the
- * executor detaches it, so it shows as detached even in the tick before the
- * ledger hears so, or after its script ended while its outcome is queued.
- */
-export function formatReplStatus(session: ReplSession, at = new Date()): string {
-  const now = at.getTime()
-  const ledger = new Map(replLedger(session, now).map(row => [row.id, row]))
-  const rows = [...session.pending.values()]
-    .sort((a, b) => a.id - b.id)
-    .map((p): ReplLedgerRow => {
-      const row = ledger.get(p.id)
-      if (row && row.state !== 'running') return row
-      return { id: p.id, state: 'detached', runningMs: now - p.startedAt, snippet: row?.snippet ?? '', notYetStarted: row?.notYetStarted ?? [] }
-    })
-  return formatReplStatusEvent(rows, at)
 }

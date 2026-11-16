@@ -4,7 +4,13 @@ import { getIsInteractive, setIsInteractive } from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
-import { enqueue, getCommandQueueSnapshot, POLL_EVENT_CHUNK_EVENTS, resetCommandQueue } from '../../utils/messageQueueManager.js'
+import {
+  enqueue,
+  enqueuePollEvent,
+  getCommandQueueSnapshot,
+  POLL_EVENT_CHUNK_EVENTS,
+  resetCommandQueue,
+} from '../../utils/messageQueueManager.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import {
   getSessionSettingsCache,
@@ -44,6 +50,8 @@ beforeAll(() => {
   process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
   setIsInteractive(true)
   resetCodeModeGateForTesting()
+  // A session launched in bypassPermissions: Poll and event delivery are on (official HR, NUe).
+  noteReplLaunchPermissionMode('bypassPermissions')
 })
 afterAll(() => {
   releaseAllReplSessions()
@@ -59,7 +67,7 @@ afterAll(() => {
 afterEach(() => {
   releaseAllReplSessions()
   resetCommandQueue()
-  setReplAsyncTimingForTesting({ settleMs: 100 })
+  setReplAsyncTimingForTesting({ detachMs: 100 })
   setPollWaitForTesting()
 })
 
@@ -120,87 +128,14 @@ async function poll(context: ToolUseContext) {
   return { ...result, text: PollTool.mapToolResultToToolResultBlockParam(result.data, 'toolu_poll').content as string }
 }
 
+/** A dispatched script returns at once: give it time to make its calls before stopping it. */
+const calling = () => new Promise(r => setTimeout(r, 50))
 const sleepCode = (ms: number, value: string) => `await new Promise(r => setTimeout(r, ${ms})); ${JSON.stringify(value)}`
 
-setReplAsyncTimingForTesting({ settleMs: 100 })
+setReplAsyncTimingForTesting({ detachMs: 100 })
 
 test('Code Mode is on for these tests', () => {
   expect(isCodeModeEnabled()).toBe(true)
-})
-
-describe('REPL async lane', () => {
-  test('a script past the settle window returns a receipt, and Poll delivers its outcome once', async () => {
-    const context = contextFor()
-    const receipt = await run(sleepCode(400, 'done'), context)
-    expect(receipt.text).toBe('(dispatched #1)')
-    expect(receipt.data).toMatchObject({ asyncDispatched: true, evalId: 1 })
-    const polled = await poll(context)
-    expect(polled.data.eventCount).toBe(1)
-    expect(polled.text).toMatch(/^<event kind="repl-eval" at="[^"]+" eval="1" ms="\d+" status="settled">\n<result>done<\/result>\n<\/event>$/)
-    // Taken out of the notification queue, so the next turn doesn't get it again.
-    expect(getCommandQueueSnapshot()).toHaveLength(0)
-    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
-  })
-
-  test('without Poll the outcome is queued as a notification for the next turn', async () => {
-    const context = contextFor('auto')
-    expect((await run(sleepCode(300, 'later'), context)).text).toBe('(dispatched #1)')
-    await new Promise(r => setTimeout(r, 500))
-    const queued = getCommandQueueSnapshot()
-    expect(queued).toHaveLength(1)
-    expect(queued[0]).toMatchObject({ mode: 'task-notification', agentId: context.agentId })
-    expect(String(queued[0]!.value)).toContain('<result>later</result>')
-  })
-
-  test('a script that finishes in the window answers directly, numbered', async () => {
-    const context = contextFor()
-    const { text, data } = await run('1 + 1', context)
-    expect(text).toBe('<repl-output eval="1">\n<result>2</result>\n</repl-output>')
-    expect(data.asyncDispatched).toBeUndefined()
-    const session = findReplSession(context.agentId!)!
-    expect([session.ledger.size, session.depth, session.undelivered.size]).toEqual([0, 0, 0])
-  })
-
-  test('the ledger holds a dispatched script as detached until its outcome is delivered', async () => {
-    const context = contextFor()
-    await run(sleepCode(400, 'done'), context)
-    const session = findReplSession(context.agentId!)!
-    // The executor's detach timer starts a tick after the settle window's.
-    await new Promise(r => setTimeout(r, 20))
-    expect(replLedger(session).map(row => [row.id, row.state])).toEqual([[1, 'detached']])
-    expect(session.depth).toBe(1)
-    await poll(context)
-    expect([session.ledger.size, session.depth, session.undelivered.size]).toEqual([0, 0, 0])
-  })
-
-  test('a second script runs while one is pending and shares its variables', async () => {
-    const context = contextFor()
-    await run(`shared = 'first'; ${sleepCode(500, 'slow')}`, context)
-    const second = await run('shared', context)
-    expect(second.text).toContain('eval="2"')
-    expect(second.text).toContain('<result>first</result>')
-    expect((await poll(context)).text).toContain('<result>slow</result>')
-  })
-
-  test('a failed background script comes back as an error event and a virtual REPL pair', async () => {
-    const context = contextFor()
-    await run(`await new Promise(r => setTimeout(r, 300)); throw new Error('boom')`, context)
-    const polled = await poll(context)
-    expect(polled.text).toContain('<error>Error: boom</error>')
-    const messages = ((polled as { newMessages?: unknown }).newMessages ?? []) as {
-      type: string
-      isVirtual?: boolean
-      message: { content: { type: string; id?: string; name?: string; content?: string }[] }
-    }[]
-    expect(messages.map(m => [m.type, m.isVirtual])).toEqual([
-      ['assistant', true],
-      ['user', true],
-    ])
-    const use = messages[0]!.message.content[0]!
-    expect(use).toMatchObject({ type: 'tool_use', name: 'REPL' })
-    expect(use.id).toMatch(/^repl_eval_/)
-    expect(messages[1]!.message.content[0]!.content).toContain('<repl-output eval="1">')
-  })
 })
 
 /** A main-thread context: no agentId, so the session is the main one. */
@@ -210,13 +145,7 @@ function mainContext(mode: PermissionMode = 'bypassPermissions'): ToolUseContext
 
 const queuedEvalEvents = () => getCommandQueueSnapshot().filter(cmd => cmd.mode === 'poll-event' && cmd.pollEvent?.kind === 'repl-eval')
 
-describe('REPL splice wait (official NUe)', () => {
-  beforeAll(() => {
-    resetCodeModeGateForTesting()
-    noteReplLaunchPermissionMode('bypassPermissions')
-  })
-  afterAll(() => resetCodeModeGateForTesting())
-
+describe('REPL async lane (official NUe)', () => {
   test('every script is dispatched at once, and Poll delivers its outcome once, with its nonce', async () => {
     const context = contextFor()
     const receipt = await run('1 + 1', context)
@@ -232,6 +161,47 @@ describe('REPL splice wait (official NUe)', () => {
     const session = findReplSession(context.agentId!)!
     expect([session.ledger.size, session.depth, session.undelivered.size, session.unwaited.size]).toEqual([0, 0, 0, 0])
     expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
+  })
+
+  test('the ledger holds a script past the detach time as detached until its outcome is delivered', async () => {
+    const context = contextFor()
+    await run(sleepCode(400, 'done'), context)
+    const session = findReplSession(context.agentId!)!
+    await new Promise(r => setTimeout(r, 150))
+    expect(replLedger(session).map(row => [row.id, row.state])).toEqual([[1, 'detached']])
+    expect(session.depth).toBe(1)
+    expect((await poll(context)).text).toContain('<result>done</result>')
+    expect([session.ledger.size, session.depth, session.undelivered.size]).toEqual([0, 0, 0])
+  })
+
+  test('a script starts beside a detached one and shares its variables', async () => {
+    const context = contextFor()
+    expect((await run(`shared = 'first'; ${sleepCode(500, 'slow')}`, context)).text).toBe('(dispatched #1)')
+    expect((await run('shared', context)).text).toBe('(dispatched #2)')
+    let text = ''
+    for (let i = 0; i < 3 && (text.match(/<event nonce/g) ?? []).length < 2; i++) text += (await poll(context)).text
+    expect(text).toMatch(/eval="2"[^>]*>\n<result>first<\/result>/)
+    expect(text).toMatch(/eval="1"[^>]*>\n<result>slow<\/result>/)
+  })
+
+  test('a failed script comes back as an error event and a virtual REPL pair', async () => {
+    const context = contextFor()
+    await run(`await new Promise(r => setTimeout(r, 50)); throw new Error('boom')`, context)
+    const polled = await poll(context)
+    expect(polled.text).toContain('<error>Error: boom</error>')
+    const messages = ((polled as { newMessages?: unknown }).newMessages ?? []) as {
+      type: string
+      isVirtual?: boolean
+      message: { content: { type: string; id?: string; name?: string; content?: string }[] }
+    }[]
+    expect(messages.map(m => [m.type, m.isVirtual])).toEqual([
+      ['assistant', true],
+      ['user', true],
+    ])
+    const use = messages[0]!.message.content[0]!
+    expect(use).toMatchObject({ type: 'tool_use', name: 'REPL' })
+    expect(use.id).toMatch(/^repl_eval_/)
+    expect(messages[1]!.message.content[0]!.content).toContain('<repl-output eval="1">')
   })
 
   test('running() lists the session\u2019s evals and marks the caller; abort() cancels one still waiting', async () => {
@@ -313,18 +283,10 @@ describe('REPL splice wait (official NUe)', () => {
     expect(polled.text).toMatch(/kind="repl-status" at="[^"]+" pending="1">no output yet \u2014 1 eval pending: #1 running for /)
     expect(findReplSession(context.agentId!)!.statusLineGiven).toBe(true)
   })
-
-  test('a message from the user ends a Poll wait', async () => {
-    const context = contextFor()
-    await run(sleepCode(5_000, 'never'), context, { timeout: 60_000 })
-    setTimeout(() => enqueue({ value: 'hi', mode: 'prompt', agentId: context.agentId as never }), 30)
-    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
-  })
 })
 
 describe('REPL async lane limits', () => {
   test(`at most ${REPL_MAX_PENDING_EVALS} dispatched scripts per context`, async () => {
-    setReplAsyncTimingForTesting({ settleMs: 30 })
     const context = contextFor()
     for (let i = 1; i <= REPL_MAX_PENDING_EVALS; i++)
       expect((await run(sleepCode(20_000, 'x'), context, { timeout: 60_000 })).text).toBe(`(dispatched #${i})`)
@@ -337,7 +299,7 @@ describe('REPL async lane limits', () => {
   })
 
   test('the wall-clock cap stops a dispatched script', async () => {
-    setReplAsyncTimingForTesting({ settleMs: 50, wallCapMs: 300 })
+    setReplAsyncTimingForTesting({ wallCapMs: 300 })
     const context = contextFor()
     expect((await run(sleepCode(5_000, 'never'), context, { timeout: 60_000 })).text).toBe('(dispatched #1)')
     const polled = await poll(context)
@@ -380,6 +342,7 @@ describe('REPL async lane limits', () => {
     const between = contextFor()
     ;(between.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, waiter]
     expect((await run('await Waiter({})', between)).text).toBe('(dispatched #1)')
+    await calling()
     // Esc between turns (official `kge.abort` stops the eval with "user-cancel").
     abortPendingReplEvals(findReplSession(between.agentId!)!, 'user-cancel')
     await poll(contextAfterAbort(between))
@@ -387,6 +350,7 @@ describe('REPL async lane limits', () => {
     const interrupted = contextFor()
     ;(interrupted.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, waiter]
     expect((await run('await Waiter({})', interrupted)).text).toBe('(dispatched #1)')
+    await calling()
     interrupted.abortController.abort('background')
     await poll(contextAfterAbort(interrupted))
     expect(reasons).toEqual(['user-cancel', 'background'])
@@ -403,6 +367,7 @@ describe('REPL async lane limits', () => {
     const context = contextFor()
     ;(context.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, fakeRead, waiter]
     expect((await run(`await Read({file_path: 'a'}); await Waiter({})`, context)).text).toBe('(dispatched #1)')
+    await calling()
     abortPendingReplEvals(findReplSession(context.agentId!)!, 'user-cancel')
     const { text } = await poll(contextAfterAbort(context))
     expect(text).toContain(
@@ -426,13 +391,13 @@ describe('REPL async lane limits', () => {
   })
 
   test('a Poll wait with nothing to deliver ends in a status line', async () => {
-    setPollWaitForTesting(150)
+    setPollWaitForTesting(250)
     const context = contextFor()
     await run(sleepCode(5_000, 'never'), context, { timeout: 60_000 })
     const polled = await poll(context)
     expect(polled.data).toMatchObject({ eventCount: 1, remainingWakeCount: 0 })
     expect(polled.text).toMatch(
-      /^<event kind="repl-status" at="[^"]+" pending="1">no output yet \u2014 1 eval pending: #1 running for \d+s \(detached: later evals run beside it\)\. Poll again to keep waiting\.<\/event>$/,
+      /\n<event nonce="[^"]+" kind="repl-status" at="[^"]+" pending="1">no output yet \u2014 1 eval pending: #1 running for \d+s \(detached: later evals run beside it\)\. Poll again to keep waiting\.<\/event>$/,
     )
   })
 
@@ -440,7 +405,10 @@ describe('REPL async lane limits', () => {
     const context = contextFor()
     expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
     await run('1', context)
+    expect((await poll(context)).text).toContain('<result>1</result>')
+    const started = Date.now()
     expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 
   test('a message from the user ends a Poll wait', async () => {
@@ -453,18 +421,12 @@ describe('REPL async lane limits', () => {
     expect(Date.now() - started).toBeLessThan(2_000)
   })
 
-  test('progress from inner calls stops once the script is dispatched', async () => {
+  test('a dispatched script reports no progress: its call has already returned', async () => {
     const context = contextFor()
     const progress: unknown[] = []
-    await run(
-      `await Read({file_path: 'a'}); await new Promise(r => setTimeout(r, 300)); await Read({file_path: 'b'}); 'ok'`,
-      context,
-      { onProgress: p => progress.push(p) },
-    )
-    const before = progress.length
-    expect(before).toBeGreaterThan(0)
+    await run(`await Read({file_path: 'a'}); await Read({file_path: 'b'}); 'ok'`, context, { onProgress: p => progress.push(p) })
     expect((await poll(context)).text).toContain('<result>ok</result>')
-    expect(progress).toHaveLength(before)
+    expect(progress).toHaveLength(0)
   })
 
   test('run_in_background is refused for inner shell calls', async () => {
@@ -475,8 +437,8 @@ describe('REPL async lane limits', () => {
       inputSchema: z.object({ command: z.string(), run_in_background: z.boolean().optional() }),
     } as Parameters<typeof buildTool>[0]) as Tool
     ;(context.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, bash]
-    const { text } = await run(`await Bash({command: 'ls', run_in_background: true})`, context)
-    expect(text).toContain('run_in_background is not available in the async REPL')
+    await run(`await Bash({command: 'ls', run_in_background: true})`, context)
+    expect((await poll(context)).text).toContain('run_in_background is not available in the async REPL')
   })
 
   test('inner shell timeouts default to the shell max and cap at the async wall cap', async () => {
@@ -498,6 +460,7 @@ describe('REPL async lane limits', () => {
     const caps: unknown[] = []
     ;(context.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, bash]
     await run(`await Bash({command: 'a'}); await Bash({command: 'b', timeout: 9e6}); await Bash({command: 'c', timeout: 5})`, context)
+    await poll(context)
     expect(seen).toEqual([600_000, REPL_ASYNC_WALL_CAP_MS, 5])
     // Official passes shellWallCapMs to the inner call's validateInput (it lifts the leading-sleep block).
     expect(caps).toEqual([REPL_ASYNC_WALL_CAP_MS, REPL_ASYNC_WALL_CAP_MS, REPL_ASYNC_WALL_CAP_MS])
@@ -525,15 +488,18 @@ describe('REPL async lane limits', () => {
 
   test('Poll delivers at most 20 events at a time and says how many follow', async () => {
     const context = contextFor()
-    const session = getReplSession(context.agentId!)
-    for (let id = 1; id <= POLL_EVENT_CHUNK_EVENTS + 3; id++) session.events.push({ id, text: `e${id}`, queued: false })
+    getReplSession(context.agentId!)
+    const element = (id: number) => `<event kind="repl-eval" at="2026-01-01T00:00:00.000Z" eval="${id}">e${id}</event>`
+    for (let id = 1; id <= POLL_EVENT_CHUNK_EVENTS + 3; id++)
+      void enqueuePollEvent({ kind: 'repl-eval', element: element(id), agentId: context.agentId as never })
     const first = await poll(context)
     expect(first.data).toMatchObject({ eventCount: POLL_EVENT_CHUNK_EVENTS, remainingWakeCount: 3 })
     expect(first.text.endsWith(
       '<system>delivery chunked: 3 more queued event(s) follow in the next delivery, oldest first; nothing was dropped.</system>',
     )).toBe(true)
     const rest = await poll(context)
-    expect(rest.data).toEqual({ content: 'e21\ne22\ne23', eventCount: 3, remainingWakeCount: 0 })
+    expect(rest.data).toMatchObject({ eventCount: 3, remainingWakeCount: 0 })
+    expect([...rest.text.matchAll(/eval="(\d+)">e\1<\/event>/g)].map(([, id]) => Number(id))).toEqual([21, 22, 23])
   })
 
   test('a host-side failure is an escaped failed event', () => {
@@ -547,7 +513,6 @@ describe('REPL async lane limits', () => {
 describe('outside the async lane', () => {
   for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk'] as PermissionMode[])
     test(`${mode} mode waits for the script and never dispatches`, async () => {
-      setReplAsyncTimingForTesting({ settleMs: 30 })
       const context = contextFor(mode)
       const { text, data } = await run(sleepCode(200, 'waited'), context)
       expect(text).toBe('<repl-output>\n<result>waited</result>\n</repl-output>')
@@ -560,9 +525,10 @@ describe('calls left running at script end', () => {
   afterEach(() => restore('CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY', savedConcurrency))
 
   test('the async lane says they run on', async () => {
-    const { text } = await run(`Read({file_path: 'slow:150'}); 'ok'`, contextFor('bypassPermissions'))
-    expect(text).toBe(
-      "<repl-output eval=\"1\">\n<log>[stderr] \u26a0 1 tool call(s) still running at script end (Read) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.</log>\n<result>ok</result>\n</repl-output>",
+    const context = contextFor('bypassPermissions')
+    await run(`Read({file_path: 'slow:150'}); 'ok'`, context)
+    expect((await poll(context)).text).toContain(
+      "status=\"settled\">\n<log>[stderr] \u26a0 1 tool call(s) still running at script end (Read) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.</log>\n<result>ok</result>\n</event>",
     )
   })
 

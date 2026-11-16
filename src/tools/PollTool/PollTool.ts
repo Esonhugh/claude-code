@@ -8,24 +8,21 @@ import {
   settlePollEventsDelivered,
   subscribeToCommandQueue,
 } from '../../utils/messageQueueManager.js'
-import { isReplEventDeliveryEnabled, isReplSpliceWaitEnabled } from '../REPLTool/codeModeGate.js'
+import { isReplEventDeliveryEnabled } from '../REPLTool/codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from '../REPLTool/constants.js'
-import { isMainThreadSubagent, stopPendingOnAbort } from '../REPLTool/REPLTool.js'
+import { isMainThreadSubagent } from '../REPLTool/REPLTool.js'
 import {
   enqueueReplStatus,
   findReplSession,
-  formatReplStatus,
   MAIN_REPL_SESSION,
   noteReplStatusLine,
   onReplLedgerChange,
   outstandingReplEvals,
   replLedger,
   type ReplSession,
-  takeReplEventChunk,
   takeReplLateMessages,
   takeReplStatusLineGiven,
   takeUnwaitedReplEvals,
-  waitForReplEvent,
 } from '../REPLTool/sessions.js'
 import { formatPollDelivery } from './delivery.js'
 import { DESCRIPTION, NO_PENDING_EVENTS, PROMPT } from './prompt.js'
@@ -83,63 +80,6 @@ function hasQueuedInput(agentId: string | undefined): boolean {
   return getCommandQueueSnapshot().some(cmd => cmd.mode === 'prompt' && cmd.agentId === agentId)
 }
 
-/** Aborts when `signal` does or the user types something, so their message isn't held behind the wait. */
-function untilUserInput(agentId: string | undefined, signal: AbortSignal): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController()
-  const stop = () => controller.abort()
-  const check = () => {
-    if (hasQueuedInput(agentId)) stop()
-  }
-  const unsubscribe = subscribeToCommandQueue(check)
-  check()
-  if (signal.aborted) stop()
-  else signal.addEventListener('abort', stop, { once: true })
-  return {
-    signal: controller.signal,
-    dispose() {
-      unsubscribe()
-      signal.removeEventListener('abort', stop)
-    },
-  }
-}
-
-/** The events of one chunk as one delivery (official `nce`). */
-function deliver(session: ReplSession): Output | undefined {
-  const { events, remaining } = takeReplEventChunk(session)
-  if (events.length === 0) return undefined
-  return {
-    content: formatPollDelivery(events.map(event => event.text), remaining),
-    eventCount: events.length,
-    remainingWakeCount: remaining,
-  }
-}
-
-async function poll(session: ReplSession, context: ToolUseContext): Promise<Output> {
-  const signal = context.abortController.signal
-  stopPendingOnAbort(session, signal)
-  const ready = deliver(session)
-  if (ready) return ready
-  if (session.pending.size === 0) return NOTHING
-  const wake = untilUserInput(session.agentId, signal)
-  const deadline = Date.now() + pollWaitMs(session.agentId)
-  try {
-    while (session.pending.size > 0 && !wake.signal.aborted && !session.released) {
-      const left = deadline - Date.now()
-      if (left <= 0) break
-      await waitForReplEvent(session, left, wake.signal)
-      const delivered = deliver(session)
-      if (delivered) return delivered
-    }
-  } finally {
-    wake.dispose()
-  }
-  // Official: at the deadline the status line is queued and delivered as an event of its own.
-  if (session.pending.size > 0 && !wake.signal.aborted && !session.released) {
-    return { content: formatReplStatus(session), eventCount: 1, remainingWakeCount: 0 }
-  }
-  return NOTHING
-}
-
 /** Resolves on the next queue or ledger change, a release, `ms` passing or `signal` aborting. */
 function nextChange(session: ReplSession, ms: number, signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
@@ -160,7 +100,7 @@ function nextChange(session: ReplSession, ms: number, signal: AbortSignal): Prom
 }
 
 /**
- * Official `Mso` (2.1.325 chunk-pg2sb68f.js) under the splice wait: delivers
+ * Official `Mso` (2.1.325 chunk-pg2sb68f.js): delivers
  * the thread's queued poll events, one chunk, waiting for them while evals
  * are outstanding. At the deadline the status line is queued and delivered
  * as an event of its own.
@@ -168,7 +108,6 @@ function nextChange(session: ReplSession, ms: number, signal: AbortSignal): Prom
 async function pollQueue(session: ReplSession, context: ToolUseContext): Promise<Output> {
   const signal = context.abortController.signal
   const agentId = session.agentId
-  stopPendingOnAbort(session, signal)
   takeReplStatusLineGiven(session)
   const deadline = Date.now() + pollWaitMs(agentId)
   let statusQueued = false
@@ -245,7 +184,7 @@ export const PollTool = buildTool({
     try {
       const session = findReplSession(key)
       if (!session) return { data: NOTHING }
-      const data = isReplSpliceWaitEnabled() ? await pollQueue(session, context) : await poll(session, context)
+      const data = await pollQueue(session, context)
       return { data, newMessages: takeReplLateMessages(session) as never }
     } finally {
       activePolls.delete(key)

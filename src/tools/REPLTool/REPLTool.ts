@@ -10,7 +10,7 @@ import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { saveCodeMode } from '../../utils/sessionStorage.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getCurrentSubagentDepth } from '../AgentTool/subagentDepth.js'
-import { isCodeModeEnabled, isReplSpliceWaitEnabled } from './codeModeGate.js'
+import { isCodeModeEnabled } from './codeModeGate.js'
 import { isReplModeEnabled, POLL_TOOL_NAME, REPL_ASYNC_WALL_CAP_MS, REPL_TOOL_NAME } from './constants.js'
 import {
   formatReplOutput,
@@ -22,7 +22,6 @@ import {
 import { REPL_HELPERS_PRELUDE } from './helpers.js'
 import { getReplPrompt, schemaToTypeScript, toolInputSchema } from './prompt.js'
 import {
-  abortPendingReplEvals,
   deliverReplEvent,
   detachReplEval,
   dispatchReplEval,
@@ -30,9 +29,7 @@ import {
   formatReplEvalEvent,
   getReplSession,
   MAIN_REPL_SESSION,
-  markReplEvalDelivered,
   replCancelledBeforeStartText,
-  type ReplSession,
   startReplEval,
   takeReplLateMessages,
 } from './sessions.js'
@@ -113,16 +110,16 @@ export type Output = z.infer<OutputSchema> & {
   keptByTurnAbort?: boolean
 }
 
-/** Official replSettleWindowMs and replDetachAfterMs (both 30000 in 2.1.325). */
-export const REPL_SETTLE_WINDOW_MS = 30_000
+/** Official replDetachAfterMs (`Z1r()`, 30000 in 2.1.325): when the executor lets the next script start beside a running one. */
+export const REPL_DETACH_AFTER_MS = 30_000
 export { REPL_ASYNC_WALL_CAP_MS }
 /** Official sLo: evals waiting, running or detached on one context (its `depth`) before a dispatch is refused. */
 export const REPL_MAX_PENDING_EVALS = 8
 
-const asyncTiming = { settleMs: REPL_SETTLE_WINDOW_MS, wallCapMs: REPL_ASYNC_WALL_CAP_MS }
+const asyncTiming = { detachMs: REPL_DETACH_AFTER_MS, wallCapMs: REPL_ASYNC_WALL_CAP_MS }
 
 export function setReplAsyncTimingForTesting(timing?: Partial<typeof asyncTiming>): void {
-  asyncTiming.settleMs = timing?.settleMs ?? REPL_SETTLE_WINDOW_MS
+  asyncTiming.detachMs = timing?.detachMs ?? REPL_DETACH_AFTER_MS
   asyncTiming.wallCapMs = timing?.wallCapMs ?? REPL_ASYNC_WALL_CAP_MS
 }
 
@@ -159,20 +156,6 @@ export function isReplAsyncLane(context: Pick<ToolUseContext, 'agentId' | 'optio
 /** Official `gpn`: only a "turn-abort" (a Mods turn abort) leaves dispatched scripts running. */
 function keepsDispatched(signal: AbortSignal): boolean {
   return signal.reason === 'turn-abort'
-}
-
-/**
- * Esc or an interrupt stops the session's dispatched scripts. Under the
- * splice wait a call's abort stops only its own script (official `R()`);
- * Esc stops the rest through `interruptReplSession`.
- */
-export function stopPendingOnAbort(session: ReplSession, signal: AbortSignal): void {
-  if (isReplSpliceWaitEnabled()) return
-  const onAbort = () => {
-    if (!keepsDispatched(signal)) abortPendingReplEvals(session, signal.reason)
-  }
-  if (signal.aborted) onAbort()
-  else signal.addEventListener('abort', onAbort, { once: true })
 }
 
 /** Official refusal in `Ku` (2.1.325 chunk-g61t94xb.js). */
@@ -366,7 +349,6 @@ export const REPLTool = buildTool({
     const mode = context.getAppState().toolPermissionContext.mode
     const asyncLane = isReplAsyncLane(context, mode)
     const outer = context.abortController.signal
-    stopPendingOnAbort(session, outer)
     if (asyncLane && session.depth >= REPL_MAX_PENDING_EVALS) {
       const error = pendingCapMessage(session.depth)
       return {
@@ -377,10 +359,9 @@ export const REPLTool = buildTool({
     const fresh = !session.used
     session.used = true
     const evalId = asyncLane ? session.nextEvalId++ : undefined
-    // Official `Ku` under `NUe()`: a settle window of 0, so the script is
-    // dispatched at once and stays attached when the turn is aborted.
-    const splice = asyncLane && isReplSpliceWaitEnabled()
-    let dispatched = splice
+    // Official `Ku` under `NUe()`: the script is dispatched at once and
+    // stays attached when the turn is aborted ("turn-abort").
+    const dispatched = asyncLane
     const controller = new AbortController()
     const stop = () => {
       if (dispatched && keepsDispatched(outer)) return
@@ -413,9 +394,6 @@ export const REPLTool = buildTool({
       let startedAt = Date.now()
       let began = false
       let stop: ReplStop | undefined
-      let settleTimer: ReturnType<typeof setTimeout> | undefined
-      let settled!: () => void
-      const settleWindow = new Promise<null>(resolve => (settled = () => resolve(null)))
       if (evalId !== undefined) dispatchReplEval(session, evalId, input.code)
       const running = session.executor.run(input.code, {
         timeoutMs: input.timeout,
@@ -437,25 +415,19 @@ export const REPLTool = buildTool({
           return stop && replStopReport(stop)
         },
         ...(asyncLane && {
-          detachAfterMs: asyncTiming.settleMs,
+          detachAfterMs: asyncTiming.detachMs,
           evalId,
           onDetach: () => detachReplEval(session, evalId!),
           onStart: () => {
             began = true
             startedAt = Date.now()
             startReplEval(session, evalId!)
-            settleTimer = setTimeout(settled, asyncTiming.settleMs)
           },
         }),
       })
       if (evalId !== undefined) {
         const finish = () => finishReplEval(session, evalId)
         void running.then(finish, finish)
-      }
-      const result = splice ? null : asyncLane ? await Promise.race([running, settleWindow]) : await running
-      clearTimeout(settleTimer)
-      if (result === null && evalId !== undefined) {
-        dispatched = true
         session.pending.set(evalId, { id: evalId, startedAt, abort: reason => controller.abort(reason) })
         // Official: the main thread's eval the user stopped does not start a turn of its own.
         // INFERRED: an Esc interrupt cancelling a waiting eval is a user stop too.
@@ -466,17 +438,14 @@ export const REPLTool = buildTool({
             ? { startsTurn: false as const }
             : {}
         void running.then(
-          async late => {
+          late => {
             cleanup()
-            if (splice && !began && late.interrupted) {
+            if (!began && late.interrupted) {
               // INFERRED: the registry rejects a cancelled waiting eval, so its outcome takes `tr`'s failure form.
               const text = replCancelledBeforeStartText(controller.signal.reason, outer.aborted && !keepsDispatched(outer))
               const event = { id: evalId, text: formatReplEvalEvent(evalId, 0, text, new Date(), 'failed'), ...startsTurn() }
-              try {
-                await deliverReplEvent(session, event, host.drainMessages())
-              } finally {
-                session.pending.delete(evalId)
-              }
+              deliverReplEvent(session, event, host.drainMessages())
+              session.pending.delete(evalId)
               return
             }
             const output = withEvalId(late.output, evalId)
@@ -485,14 +454,10 @@ export const REPLTool = buildTool({
               ...(late.error === undefined ? [] : failurePair(input.code, input.description, output)),
             ]
             const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, late.output), ...startsTurn() }
-            try {
-              await deliverReplEvent(session, event, messages)
-            } finally {
-              // deliverReplEvent ends the entry when it lists the event, so a Poll in between waits for it.
-              session.pending.delete(evalId)
-            }
+            deliverReplEvent(session, event, messages)
+            session.pending.delete(evalId)
           },
-          async (error: unknown) => {
+          (error: unknown) => {
             // Official `tr` with its failure flag: the host failed before the script settled.
             cleanup()
             const text =
@@ -500,11 +465,8 @@ export const REPLTool = buildTool({
                 ? error.message
                 : 'host-side failure before settling (non-Error rejection; detail withheld from coercion)'
             const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, text, new Date(), 'failed'), ...startsTurn() }
-            try {
-              await deliverReplEvent(session, event, host.drainMessages())
-            } finally {
-              session.pending.delete(evalId)
-            }
+            deliverReplEvent(session, event, host.drainMessages())
+            session.pending.delete(evalId)
           },
         )
         const receipt = `(dispatched #${evalId})`
@@ -517,12 +479,12 @@ export const REPLTool = buildTool({
           output,
           evalId,
           asyncDispatched: true,
-          ...(splice && keepsDispatched(outer) && outer.aborted ? { keptByTurnAbort: true } : {}),
+          ...(keepsDispatched(outer) && outer.aborted ? { keptByTurnAbort: true } : {}),
         }
         return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
       }
-      const done = result as ReplRunResult
-      const output = [...notices(done, fresh, context), withEvalId(done.output, evalId)].join('\n')
+      const done = await running
+      const output = [...notices(done, fresh, context), done.output].join('\n')
       const data: Output = {
         code: input.code,
         ...(done.value === undefined ? {} : { result: done.value }),
@@ -530,7 +492,6 @@ export const REPLTool = buildTool({
         stderr: done.stderr ?? '',
         ...(done.error === undefined ? {} : { error: done.error }),
         output,
-        ...(evalId === undefined ? {} : { evalId }),
         ...(done.contextReset ? { contextReset: true } : {}),
         ...(done.timedOut ? { timedOut: true } : {}),
         ...(done.interrupted ? { interrupted: true } : {}),
@@ -541,8 +502,6 @@ export const REPLTool = buildTool({
       return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
     } finally {
       if (!dispatched) cleanup()
-      // A script answered in this call's own result was delivered with it.
-      if (!dispatched && evalId !== undefined) markReplEvalDelivered(session, evalId)
     }
   },
   mapToolResultToToolResultBlockParam(data, toolUseID) {
