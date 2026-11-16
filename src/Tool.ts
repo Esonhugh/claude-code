@@ -199,6 +199,8 @@ export type ToolUseContext = {
   innerCall?: boolean
   /** Tool call made from a Code Mode REPL script; the result goes back to the script, not the model. */
   replScriptCall?: boolean
+  /** Script call: runs when the tool's own call starts (arms the REPL watchdog). */
+  onReplToolCall?: () => void
   /** Async REPL lane (official `shellWallCapMs`): the shell's wall cap; set only for script calls there. */
   shellWallCapMs?: number
   /**

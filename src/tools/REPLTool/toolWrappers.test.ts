@@ -181,6 +181,17 @@ test("the caller's canUseTool reaches the permission check unchanged", async () 
   expect(received[0]).toBe(canUseTool)
 })
 
+test('the permission check gets the original tool object, so the dialog matches the tool', async () => {
+  const tool = fixtureTool()
+  const asked: unknown[] = []
+  const { host } = hostFor([tool], {
+    canUseTool: (async (askedTool: unknown) => (asked.push(askedTool), { behavior: 'allow' })) as unknown as CanUseToolFn,
+  })
+  await host.call('Fixture', { value: 'x' })
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toBe(tool)
+})
+
 test('the wall-clock error says a call was waiting to run, perhaps at a permission prompt', async () => {
   let answer!: () => void
   const asked = new Promise<void>(resolve => (answer = resolve))

@@ -1775,10 +1775,12 @@ async function checkPermissionsAndCallTool(
       executionRecord.input = callInput
       if (tool.isReadOnly(callInput)) executionRecord.isReadOnly = true
     }
+    toolUseContext.onReplToolCall?.()
     const result = await tool.call(
       callInput,
       {
         ...toolUseContext,
+        onReplToolCall: undefined,
         // ToolSearch consumes description admission and Agent consumes
         // agent.offer dispatch admission. Other background/nested tools must not
         // retain an invocation snapshot past the executor's release.

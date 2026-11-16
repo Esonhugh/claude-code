@@ -396,20 +396,8 @@ export function createReplToolHost(opts: {
       let result: ToolResultBlockParam | undefined
       // A paged Read sends its page images in a meta message after its result.
       const pageImages: ReplImage[] = []
-      // The tool itself still gets the caller's canUseTool.
-      const marked = (list: Tools): Tools =>
-        list.map(candidate =>
-          candidate.name === tool.name
-            ? ({
-                ...candidate,
-                call: (...args: Parameters<Tool['call']>) => {
-                  onToolCall()
-                  return candidate.call(...args)
-                },
-              } as Tool)
-            : candidate,
-        )
-      const markedTools = () => marked(refreshTools())
+      // The tool itself still gets the caller's canUseTool. The tool objects stay
+      // the originals (official Kd): the permission dialog is picked by identity.
       for await (const update of runToolUse(block, assistant, canUseTool, {
         ...context,
         // Official script calls have no tool JSX (Bash's background hint is a progress hint there);
@@ -422,7 +410,8 @@ export function createReplToolHost(opts: {
         modToolCallResult: undefined,
         fileReadingLimits: READ_LIMITS,
         globLimits: GLOB_LIMITS,
-        options: { ...context.options, tools: markedTools(), refreshTools: markedTools },
+        onReplToolCall: onToolCall,
+        options: { ...context.options, tools: refreshTools(), refreshTools },
         abortController,
       })) {
         // Progress and hook attachments stay inside the script call.
