@@ -161,8 +161,13 @@ function keepsDispatched(signal: AbortSignal): boolean {
   return signal.reason === 'turn-abort'
 }
 
-/** Esc or an interrupt stops the session's dispatched scripts. */
+/**
+ * Esc or an interrupt stops the session's dispatched scripts. Under the
+ * splice wait a call's abort stops only its own script (official `R()`);
+ * Esc stops the rest through `interruptReplSession`.
+ */
 export function stopPendingOnAbort(session: ReplSession, signal: AbortSignal): void {
+  if (isReplSpliceWaitEnabled()) return
   const onAbort = () => {
     if (!keepsDispatched(signal)) abortPendingReplEvals(session, signal.reason)
   }
@@ -453,14 +458,19 @@ export const REPLTool = buildTool({
         dispatched = true
         session.pending.set(evalId, { id: evalId, startedAt, abort: reason => controller.abort(reason) })
         // Official: the main thread's eval the user stopped does not start a turn of its own.
+        // INFERRED: an Esc interrupt cancelling a waiting eval is a user stop too.
         const startsTurn = () =>
-          context.agentId === undefined && controller.signal.aborted && isUserStop(controller.signal.reason) ? { startsTurn: false as const } : {}
+          context.agentId === undefined &&
+          controller.signal.aborted &&
+          (isUserStop(controller.signal.reason) || controller.signal.reason === 'interrupt')
+            ? { startsTurn: false as const }
+            : {}
         void running.then(
           async late => {
             cleanup()
             if (splice && !began && late.interrupted) {
               // INFERRED: the registry rejects a cancelled waiting eval, so its outcome takes `tr`'s failure form.
-              const text = replCancelledBeforeStartText(controller.signal.reason)
+              const text = replCancelledBeforeStartText(controller.signal.reason, outer.aborted && !keepsDispatched(outer))
               const event = { id: evalId, text: formatReplEvalEvent(evalId, 0, text, new Date(), 'failed'), ...startsTurn() }
               try {
                 await deliverReplEvent(session, event, host.drainMessages())

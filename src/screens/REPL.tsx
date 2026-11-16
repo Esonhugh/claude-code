@@ -480,7 +480,7 @@ import {
 import { deserializeMessages } from '../utils/conversationRecovery.js'
 import { planCodeModeResume, reportLostReplEvals } from '../utils/codeModeResume.js'
 import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
-import { abortPendingReplEvals, findReplSession, MAIN_REPL_SESSION } from '../tools/REPLTool/sessions.js'
+import { abortPendingReplEvals, findReplSession, interruptReplSession, MAIN_REPL_SESSION } from '../tools/REPLTool/sessions.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
 import {
@@ -3772,10 +3772,10 @@ export function REPL({
     }
 
     // Official `ReplSessions.interrupt([qx])`: a stop during a turn also stops
-    // the scripts dispatched in it, whose REPL calls have already returned.
+    // the session's dispatched scripts, those of earlier turns included.
     if (!activeRemote.isRemoteMode) {
       const replSession = findReplSession(MAIN_REPL_SESSION)
-      if (replSession) abortPendingReplEvals(replSession, 'user-cancel')
+      if (replSession) interruptReplSession(replSession)
     }
 
     // Clear the controller so subsequent Escape presses don't see a stale

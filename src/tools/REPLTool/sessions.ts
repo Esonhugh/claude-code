@@ -201,9 +201,13 @@ export function outstandingReplEvals(session: ReplSession): number {
   return session.undelivered.size + [...session.ledger.values()].filter(entry => entry.late).length
 }
 
-/** Official registry texts for an eval stopped while it waited for the scripts before it. */
-export function replCancelledBeforeStartText(reason: unknown): string {
-  if (reason === 'turn-abort')
+/**
+ * Official registry texts for an eval stopped while it waited for the scripts
+ * before it. `turnAborted`: the turn that dispatched it was aborted (not a
+ * "turn-abort", which keeps it), checked before the reason.
+ */
+export function replCancelledBeforeStartText(reason: unknown, turnAborted = false): string {
+  if (turnAborted)
     return 'cancelled before start \u2014 the dispatching turn was aborted while this eval waited for its turn; the script never ran'
   if (reason === 'interrupt')
     return 'cancelled before start \u2014 the session was interrupted while this eval waited for its turn; the script never ran'
@@ -384,9 +388,21 @@ export function waitForReplEvent(session: ReplSession, ms: number, signal: Abort
   })
 }
 
-/** Stops every dispatched script of the session (Esc, an interrupt). */
+/** Stops every dispatched script of the session (Esc between turns). */
 export function abortPendingReplEvals(session: ReplSession, reason?: unknown): void {
   for (const pending of [...session.pending.values()]) pending.abort(reason)
+}
+
+/**
+ * Official `interrupt` (2.1.325 chunk-gcw6cvys.js), what Esc during a turn
+ * calls: a running script is stopped as the user would stop it, one still
+ * waiting for its turn is cancelled as interrupted, and the next wait gives
+ * a status line again.
+ */
+export function interruptReplSession(session: ReplSession): void {
+  session.statusLineGiven = false
+  for (const pending of [...session.pending.values()])
+    pending.abort(session.ledger.get(pending.id)?.startedAt === undefined ? 'interrupt' : 'user-cancel')
 }
 
 export function releaseAllReplSessions(): void {

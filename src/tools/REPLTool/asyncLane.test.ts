@@ -22,6 +22,8 @@ import {
   findReplSession,
   formatReplEvalEvent,
   getReplSession,
+  interruptReplSession,
+  MAIN_REPL_SESSION,
   releaseAllReplSessions,
   replLedger,
 } from './sessions.js'
@@ -281,7 +283,24 @@ describe('REPL splice wait (official NUe)', () => {
     const events = queuedEvalEvents()
     expect(events.map(cmd => cmd.pollEvent!.startsTurn)).toEqual([false, false])
     expect(events[1]!.pollEvent!.envelope).toContain(
-      'eval="2" ms="0" status="failed">eval #2 FAILED before settling:\ncancelled before start \u2014 the user stopped this eval while it waited for its turn; the script never ran</event>',
+      'eval="2" ms="0" status="failed">eval #2 FAILED before settling:\ncancelled before start \u2014 the dispatching turn was aborted while this eval waited for its turn; the script never ran</event>',
+    )
+  })
+
+  test('an interrupt stops the scripts of earlier turns; one waiting for its turn says the session was interrupted', async () => {
+    const context = mainContext()
+    await REPLTool.call({ code: sleepCode(5_000, 'never'), timeout: 60_000 }, context, allow, undefined as never, undefined as never)
+    await REPLTool.call({ code: '"second"' }, context, allow, undefined as never, undefined as never)
+    const session = findReplSession(MAIN_REPL_SESSION)!
+    session.statusLineGiven = true
+    interruptReplSession(session)
+    expect(session.statusLineGiven).toBe(false)
+    await new Promise(r => setTimeout(r, 100))
+    const events = queuedEvalEvents()
+    expect(events.map(cmd => cmd.pollEvent!.startsTurn)).toEqual([false, false])
+    expect(events[0]!.pollEvent!.envelope).toContain('<error>The user interrupted this script, so it stopped.')
+    expect(events[1]!.pollEvent!.envelope).toContain(
+      'cancelled before start \u2014 the session was interrupted while this eval waited for its turn; the script never ran</event>',
     )
   })
 
