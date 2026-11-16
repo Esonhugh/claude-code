@@ -215,6 +215,11 @@ export function formatReplEvalEvent(
   return `${open}\n${body}\n</event>`
 }
 
+/** Official lost event (`p` in 2.1.325 chunk-z3r3ymwt.js, status `Jot`): an eval whose outcome will never come. */
+export function formatReplLostEvent(id: number, text: string, at = new Date()): string {
+  return `<event kind="repl-eval" at="${attribute(at.toISOString())}" eval="${id}" status="lost">${escapeContent(text)}</event>`
+}
+
 /**
  * Official `enqueueReplStatus` text (`h(r, false)`, 2.1.325 chunk-2p8jywjd.js).
  * An entry exists only once its call returned the receipt, which is when the

@@ -1,12 +1,23 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
+import { getIsInteractive, setIsInteractive } from '../bootstrap/state.js'
+import { noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from '../tools/REPLTool/codeModeGate.js'
+import { releaseAllReplSessions } from '../tools/REPLTool/sessions.js'
 import type { Message } from '../types/message.js'
 import {
   CODE_MODE_TAKEN_OUT_NOTICE,
   codeModeOffReminder,
   inferCodeModeFromMessages,
   planCodeModeResume,
+  reportLostReplEvals,
 } from './codeModeResume.js'
+import { getCommandQueueSnapshot, resetCommandQueue } from './messageQueueManager.js'
 import { createAssistantMessage, createUserMessage, REJECT_MESSAGE } from './messages.js'
+import {
+  getSessionSettingsCache,
+  resetSettingsCache,
+  setCachedSettingsForSource,
+  setSessionSettingsCache,
+} from './settings/settingsCache.js'
 
 function use(id: string, name: string, isVirtual?: true): Message {
   return createAssistantMessage({ content: [{ type: 'tool_use', id, name, input: {} }] as never, isVirtual })
@@ -91,5 +102,66 @@ describe('the Code Mode taken-out texts', () => {
       '- The variables and functions that your earlier scripts defined are gone.\n- eval #2 never settled: the process that was running it exited. Its result is lost and the script is no longer running; a command it had started may have run on.\n- If this conversation',
     )
     expect(text).not.toContain('eval #1 never settled')
+  })
+})
+
+describe('reportLostReplEvals (official qKa)', () => {
+  const savedCodeMode = process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE
+  const savedEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  const savedInteractive = getIsInteractive()
+  const originalSettings = getSessionSettingsCache()
+  const restore = (key: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  beforeAll(() => {
+    setSessionSettingsCache({ settings: {}, errors: [] })
+    for (const source of ['userSettings', 'projectSettings', 'localSettings', 'policySettings', 'flagSettings'] as const)
+      setCachedSettingsForSource(source, {})
+    process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
+    setIsInteractive(true)
+  })
+  afterEach(() => {
+    releaseAllReplSessions()
+    resetCommandQueue()
+    resetCodeModeGateForTesting()
+  })
+  afterAll(() => {
+    restore('CLAUDE_CODE_EXPERIMENTAL_CODE_MODE', savedCodeMode)
+    restore('CLAUDE_CODE_ENTRYPOINT', savedEntrypoint)
+    setIsInteractive(savedInteractive)
+    resetSettingsCache()
+    if (originalSettings) setSessionSettingsCache(originalSettings)
+  })
+
+  const earlier = (message: Message): Message => ({ ...message, timestamp: '2020-01-01T00:00:00.000Z' }) as Message
+  const notifications = () => getCommandQueueSnapshot().filter(cmd => cmd.mode === 'task-notification')
+
+  test('each eval an earlier process left unsettled gets a lost event', async () => {
+    noteReplLaunchPermissionMode('bypassPermissions')
+    await reportLostReplEvals([
+      use('t1', 'REPL'),
+      earlier(result('t1', '(dispatched #1)')),
+      use('t2', 'REPL'),
+      earlier(result('t2', '(dispatched #2)')),
+      use('p1', 'Poll'),
+      result('p1', '<event kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="1" ms="5" status="settled">done</event>'),
+    ])
+    const texts = notifications().map(cmd => cmd.value)
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toMatch(
+      /^<event kind="repl-eval" at="[^"]+" eval="2" status="lost">eval #2 never settled: the process that was running it exited\. Its result is lost and the script is no longer running; a command it had started may have run on\.<\/event>$/,
+    )
+  })
+
+  test('receipts from this process, or no event delivery, queue nothing', async () => {
+    noteReplLaunchPermissionMode('bypassPermissions')
+    await reportLostReplEvals([use('t1', 'REPL'), result('t1', '(dispatched #1)')])
+    expect(notifications()).toHaveLength(0)
+    resetCodeModeGateForTesting()
+    noteReplLaunchPermissionMode('default')
+    await reportLostReplEvals([use('t1', 'REPL'), earlier(result('t1', '(dispatched #1)'))])
+    expect(notifications()).toHaveLength(0)
   })
 })

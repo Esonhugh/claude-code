@@ -72,12 +72,13 @@ const DELIVERED = /<event kind="repl-eval"[^>]* eval="(\d+)"/g
 
 /**
  * Official `npr`: evals dispatched to the background whose outcome never
- * reached the conversation, in dispatch order. An outcome arrives as a
- * repl-eval event, in a Poll result or queued before a turn.
+ * reached the conversation, in dispatch order, each with the time its
+ * receipt was recorded. An outcome arrives as a repl-eval event, in a Poll
+ * result or queued before a turn.
  */
-function unsettledEvals(messages: readonly Message[]): number[] {
+function unsettledEvals(messages: readonly Message[]): { evalId: number; recordedAt: string }[] {
   const repl = new Set<string>()
-  const open: number[] = []
+  const open: { evalId: number; recordedAt: string }[] = []
   for (const message of messages) {
     if (message.type === 'assistant' && !(message as { isVirtual?: boolean }).isVirtual) {
       for (const block of blocks(message))
@@ -89,14 +90,56 @@ function unsettledEvals(messages: readonly Message[]): number[] {
       const id = block.type === 'tool_result' && typeof block.tool_use_id === 'string' && repl.has(block.tool_use_id)
         ? DISPATCHED.exec(firstText(block.content))?.[1]
         : undefined
-      if (id !== undefined) open.push(Number(id))
+      if (id !== undefined) open.push({ evalId: Number(id), recordedAt: (message as { timestamp?: string }).timestamp ?? '' })
     }
     for (const [, id] of JSON.stringify(message).replaceAll('\\"', '"').matchAll(DELIVERED)) {
-      const at = open.lastIndexOf(Number(id))
+      const at = open.findLastIndex(entry => entry.evalId === Number(id))
       if (at !== -1) open.splice(at, 1)
     }
   }
   return open
+}
+
+/** Official `_so`: what the model is told about an eval its exited process left unsettled. */
+export function lostEvalText(id: number): string {
+  return `eval #${id} never settled: the process that was running it exited. Its result is lost and the script is no longer running; a command it had started may have run on.`
+}
+
+/**
+ * Official `qKa` (`reportLostReplEvals`): on a Code Mode resume, answers each
+ * eval an earlier process dispatched and never settled with a lost event, so
+ * the model stops waiting for it. Runs after launch, once the session id and
+ * event delivery are settled. Official queues it without starting a turn in
+ * an interactive session; our notifications always wake the model at idle.
+ */
+export async function reportLostReplEvals(messages: readonly Message[]): Promise<void> {
+  const { isCodeModeEnabled, isReplEventDeliveryEnabled } = await import('../tools/REPLTool/codeModeGate.js')
+  if (!isCodeModeEnabled()) return
+  const lost = unsettledEvals(messages).filter(entry => Date.parse(entry.recordedAt) < performance.timeOrigin)
+  if (lost.length === 0) return
+  if (!isReplEventDeliveryEnabled()) {
+    logForDebugging(
+      `resume: ${lost.length} async REPL eval(s) never settled, and poll-event delivery is off, so no lost event is queued`,
+      { level: 'warn' },
+    )
+    return
+  }
+  logForDebugging(
+    `resume: ${lost.length} async REPL eval(s) never settled (${lost.map(entry => `#${entry.evalId}`).join(', ')}); answering each with a lost event`,
+  )
+  const { deliverReplEvent, formatReplLostEvent, getReplSession, MAIN_REPL_SESSION } = await import(
+    '../tools/REPLTool/sessions.js'
+  )
+  const session = getReplSession(MAIN_REPL_SESSION)
+  for (const { evalId } of lost) {
+    await deliverReplEvent(session, { id: evalId, text: formatReplLostEvent(evalId, lostEvalText(evalId)) }, []).catch(
+      (error: unknown) =>
+        logForDebugging(
+          `async REPL lost event for eval #${evalId} not queued: ${error instanceof Error ? error.message : 'non-Error rejection'}`,
+          { level: 'warn' },
+        ),
+    )
+  }
 }
 
 /** Official `M()`, with a line for each eval left unsettled (official `_so`). */
@@ -106,10 +149,7 @@ export function codeModeOffReminder(messages: readonly Message[] = []): string {
     `Do not call ${REPL_TOOL_NAME} or ${POLL_TOOL_NAME}. They may still be in your tool list, but every call to them is refused. Disregard their descriptions, including the statement that you have no other tools.`,
     'Use your other tools instead.',
     'The variables and functions that your earlier scripts defined are gone.',
-    ...unsettledEvals(messages).map(
-      id =>
-        `eval #${id} never settled: the process that was running it exited. Its result is lost and the script is no longer running; a command it had started may have run on.`,
-    ),
+    ...unsettledEvals(messages).map(entry => lostEvalText(entry.evalId)),
     `If this conversation later continues in a session that gives you no tools other than ${REPL_TOOL_NAME} and ${POLL_TOOL_NAME}, Code Mode is on there: disregard this reminder.`,
   ].join('\n- ')
 }

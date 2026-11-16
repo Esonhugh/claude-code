@@ -478,7 +478,7 @@ import {
   saveAiGeneratedTitle,
 } from '../utils/sessionStorage.js'
 import { deserializeMessages } from '../utils/conversationRecovery.js'
-import { planCodeModeResume } from '../utils/codeModeResume.js'
+import { planCodeModeResume, reportLostReplEvals } from '../utils/codeModeResume.js'
 import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
 import { abortPendingReplEvals, findReplSession, MAIN_REPL_SESSION } from '../tools/REPLTool/sessions.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
@@ -3235,6 +3235,8 @@ export function REPL({
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
         restoreSessionMetadata({ ...log, replMode: codeModePlan.replMode })
+        // Official qKa runs once the restored session is the current one.
+        void reportLostReplEvals(messages)
         restoreSessionCosts(log)
         const resumedPermissionContext = restorePermissionModeForResume(
           store.getState().toolPermissionContext,
@@ -3397,6 +3399,8 @@ export function REPL({
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
       restoreReadFileState(initialMessages, getOriginalCwd())
+      // After launch, so event delivery for this session is known (official qKa).
+      void reportLostReplEvals(initialMessages)
       void restoreRemoteAgentTasks({
         abortController: new AbortController(),
         getAppState: () => store.getState(),
