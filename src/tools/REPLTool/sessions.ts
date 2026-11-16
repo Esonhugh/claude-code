@@ -29,15 +29,18 @@ export type ReplLedgerEval = {
   late: boolean
   snippet: string
   /** The calls it made that have not started yet, for the status line. */
-  readNotYetStarted?: () => string[]
+  readNotYetStarted?: () => ReplNotYetStartedCall[]
 }
+
+/** A call a script made that has not started, most likely held at a permission prompt. */
+export type ReplNotYetStartedCall = { toolName: string; waitingMs: number }
 
 export type ReplLedgerRow = {
   id: number
   state: ReplEvalState
   runningMs: number
   snippet: string
-  notYetStarted: string[]
+  notYetStarted: ReplNotYetStartedCall[]
 }
 
 const SNIPPET_CHARS = 100
@@ -357,16 +360,83 @@ export function formatReplLostEvent(id: number, text: string, at = new Date()): 
   return `<event kind="repl-eval" at="${attribute(at.toISOString())}" eval="${id}" status="lost">${escapeContent(text)}</event>`
 }
 
+/** Official `c` and `v` in 2.1.325 chunk-2p8jywjd.js: evals and calls the not-started clause names. */
+const STATUS_NOT_STARTED_EVALS = 3
+const STATUS_NOT_STARTED_CALLS = 5
+
+/** Official `f`: the clause for an eval's calls that have not started. */
+function notStartedClause(calls: readonly ReplNotYetStartedCall[]): string {
+  const pronoun = calls.length === 1 ? 'it' : 'they'
+  const named = calls.slice(0, STATUS_NOT_STARTED_CALLS).map(call => `${call.toolName} after ${formatDuration(call.waitingMs)}`)
+  const more = calls.length - named.length
+  const list = more > 0 ? `${named.join(', ')} and ${more} more` : named.join(', ')
+  return calls.length === 1
+    ? `its ${calls[0]!.toolName} call hasn't started after ${formatDuration(calls[0]!.waitingMs)} (${pronoun} may be waiting for the user to answer a permission prompt)`
+    : `${calls.length} of its calls haven't started: ${list} (${pronoun} may be waiting for the user to answer a permission prompt)`
+}
+
 /**
- * Official `enqueueReplStatus` text (`h(r, false)`, 2.1.325 chunk-2p8jywjd.js).
- * An entry exists only once its call returned the receipt, which is when the
- * official ledger marks it detached; calls waiting at a permission prompt and
- * late output are not tracked here, so those clauses never apply.
+ * Official status line text (`h(n, r)` in 2.1.325 chunk-2p8jywjd.js) for the
+ * pending evals; `stillPending` is the form the wait after tool calls gives
+ * when some outcomes went out and others did not.
+ */
+export function replStatusText(rows: readonly ReplLedgerRow[], stillPending = false): string {
+  const blocked = rows.filter(row => row.notYetStarted.length > 0)
+  const named = new Set(blocked.slice(0, STATUS_NOT_STARTED_EVALS).map(row => row.id))
+  const unnamed = blocked.length - named.size
+  const moreClause = unnamed === 0 ? '' : `; ${unnamed} more ${unnamed === 1 ? 'eval has calls' : 'evals have calls'} that haven't started`
+  if (rows.length > 0 && rows.every(row => row.state === 'late')) {
+    const ids = rows.map(row => `#${row.id}`).join(', ')
+    if (blocked.length === 0)
+      return rows.length === 1
+        ? `no late output yet \u2014 eval ${ids} settled; the calls it left running are finishing. Poll again to keep waiting.`
+        : `no late output yet \u2014 evals ${ids} settled; the calls they left running are finishing. Poll again to keep waiting.`
+    if (rows.length === 1)
+      return `no late output yet \u2014 eval ${ids} settled; ${notStartedClause(rows[0]!.notYetStarted)}. Poll again to keep waiting.`
+    const clauses = rows.filter(row => named.has(row.id)).map(row => `#${row.id}: ${notStartedClause(row.notYetStarted)}`)
+    const others = rows.length > blocked.length ? '; the calls the others left running are finishing' : ''
+    return `no late output yet \u2014 evals ${ids} settled; ${clauses.join('; ')}${moreClause}${others}. Poll again to keep waiting.`
+  }
+  const parts = rows.map(row => {
+    const calls = named.has(row.id) ? `, and ${notStartedClause(row.notYetStarted)}` : ''
+    switch (row.state) {
+      case 'waiting':
+        return `#${row.id} waiting for its turn`
+      case 'running':
+        return `#${row.id} running for ${formatDuration(row.runningMs)}${calls}`
+      case 'detached':
+        return `#${row.id} running for ${formatDuration(row.runningMs)} (detached: later evals run beside it)${calls}`
+      case 'late':
+        return named.has(row.id)
+          ? `#${row.id} settled, and ${notStartedClause(row.notYetStarted)}`
+          : `#${row.id} settled; calls it left running are finishing`
+    }
+  })
+  const evals = rows.length === 1 ? 'eval' : 'evals'
+  if (stillPending) return `${rows.length} ${evals} still pending: ${parts.join('; ')}${moreClause}.`
+  return `no output yet \u2014 ${rows.length} ${evals} pending: ${parts.join('; ')}${moreClause}. Poll again to keep waiting.`
+}
+
+/** Official `enqueueReplStatus` element: the status text as a `repl-status` event. */
+export function formatReplStatusEvent(rows: readonly ReplLedgerRow[], at = new Date(), stillPending = false): string {
+  return `<event kind="repl-status" at="${attribute(at.toISOString())}" pending="${rows.length}">${escapeContent(replStatusText(rows, stillPending))}</event>`
+}
+
+/**
+ * The status line for the session's dispatched evals, as Poll gives it when
+ * its wait runs out. A dispatched eval ran past the settle window, where the
+ * executor detaches it, so it shows as detached even in the tick before the
+ * ledger hears so, or after its script ended while its outcome is queued.
  */
 export function formatReplStatus(session: ReplSession, at = new Date()): string {
-  const now = Date.now()
-  const pending = [...session.pending.values()].sort((a, b) => a.id - b.id)
-  const parts = pending.map(p => `#${p.id} running for ${formatDuration(now - p.startedAt)} (detached: later evals run beside it)`)
-  const text = `no output yet \u2014 ${pending.length} ${pending.length === 1 ? 'eval' : 'evals'} pending: ${parts.join('; ')}. Poll again to keep waiting.`
-  return `<event kind="repl-status" at="${attribute(at.toISOString())}" pending="${pending.length}">${escapeContent(text)}</event>`
+  const now = at.getTime()
+  const ledger = new Map(replLedger(session, now).map(row => [row.id, row]))
+  const rows = [...session.pending.values()]
+    .sort((a, b) => a.id - b.id)
+    .map((p): ReplLedgerRow => {
+      const row = ledger.get(p.id)
+      if (row && row.state !== 'running') return row
+      return { id: p.id, state: 'detached', runningMs: now - p.startedAt, snippet: row?.snippet ?? '', notYetStarted: row?.notYetStarted ?? [] }
+    })
+  return formatReplStatusEvent(rows, at)
 }

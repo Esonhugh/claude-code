@@ -4,12 +4,17 @@ import {
   dispatchReplEval,
   endLateReplEval,
   finishReplEval,
+  formatReplStatusEvent,
   getReplSession,
   markReplEvalDelivered,
   noteReplStatusLine,
   onReplLedgerChange,
   releaseAllReplSessions,
   replLedger,
+  replStatusText,
+  type ReplEvalState,
+  type ReplLedgerRow,
+  type ReplNotYetStartedCall,
   startReplEval,
   takeReplStatusLineGiven,
   takeUnwaitedReplEvals,
@@ -101,5 +106,89 @@ describe('eval ledger', () => {
     off()
     dispatchReplEval(session, 2, 'b')
     expect(changes).toBe(5)
+  })
+})
+
+const row = (id: number, state: ReplEvalState, runningMs = 0, notYetStarted: ReplNotYetStartedCall[] = []): ReplLedgerRow => ({
+  id,
+  state,
+  runningMs,
+  snippet: '',
+  notYetStarted,
+})
+const calls = (...names: string[]) => names.map((toolName, i) => ({ toolName, waitingMs: (i + 1) * 1000 }))
+
+describe('repl-status wording (official 2.1.325 chunk-2p8jywjd.js)', () => {
+  test.each([
+    [
+      'waiting, running and detached',
+      [row(1, 'waiting'), row(2, 'running', 10_000), row(3, 'detached', 65_000)],
+      false,
+      'no output yet \u2014 3 evals pending: #1 waiting for its turn; #2 running for 10s; #3 running for 1m 5s (detached: later evals run beside it). Poll again to keep waiting.',
+    ],
+    [
+      'still pending after some settled',
+      [row(1, 'detached', 31_000)],
+      true,
+      '1 eval still pending: #1 running for 31s (detached: later evals run beside it).',
+    ],
+    [
+      'a call that has not started',
+      [row(1, 'running', 20_000, [{ toolName: 'Bash', waitingMs: 12_000 }])],
+      false,
+      "no output yet \u2014 1 eval pending: #1 running for 20s, and its Bash call hasn't started after 12s (it may be waiting for the user to answer a permission prompt). Poll again to keep waiting.",
+    ],
+    [
+      'at most 5 calls named',
+      [row(1, 'detached', 40_000, calls('A', 'B', 'C', 'D', 'E', 'F', 'G'))],
+      true,
+      "1 eval still pending: #1 running for 40s (detached: later evals run beside it), and 7 of its calls haven't started: A after 1s, B after 2s, C after 3s, D after 4s, E after 5s and 2 more (they may be waiting for the user to answer a permission prompt).",
+    ],
+    [
+      'at most 3 evals named',
+      [1, 2, 3, 4, 5].map(id => row(id, 'running', 2000, calls('Read'))),
+      false,
+      `no output yet \u2014 5 evals pending: ${[1, 2, 3]
+        .map(id => `#${id} running for 2s, and its Read call hasn't started after 1s (it may be waiting for the user to answer a permission prompt)`)
+        .join('; ')}; #4 running for 2s; #5 running for 2s; 2 more evals have calls that haven't started. Poll again to keep waiting.`,
+    ],
+    [
+      'a late eval among running ones',
+      [row(1, 'running', 5000), row(2, 'late')],
+      false,
+      'no output yet \u2014 2 evals pending: #1 running for 5s; #2 settled; calls it left running are finishing. Poll again to keep waiting.',
+    ],
+    [
+      'one late eval',
+      [row(4, 'late')],
+      false,
+      'no late output yet \u2014 eval #4 settled; the calls it left running are finishing. Poll again to keep waiting.',
+    ],
+    [
+      'late evals',
+      [row(1, 'late'), row(2, 'late')],
+      false,
+      'no late output yet \u2014 evals #1, #2 settled; the calls they left running are finishing. Poll again to keep waiting.',
+    ],
+    [
+      'one late eval with a call not started',
+      [row(1, 'late', 0, calls('Edit'))],
+      false,
+      "no late output yet \u2014 eval #1 settled; its Edit call hasn't started after 1s (it may be waiting for the user to answer a permission prompt). Poll again to keep waiting.",
+    ],
+    [
+      'late evals, one with a call not started',
+      [row(1, 'late', 0, calls('Edit')), row(2, 'late')],
+      false,
+      "no late output yet \u2014 evals #1, #2 settled; #1: its Edit call hasn't started after 1s (it may be waiting for the user to answer a permission prompt); the calls the others left running are finishing. Poll again to keep waiting.",
+    ],
+  ] as const)('%s', (_name, rows, stillPending, text) => {
+    expect(replStatusText(rows as ReplLedgerRow[], stillPending)).toBe(text)
+  })
+
+  test('the element carries the pending count and escapes its text', () => {
+    expect(formatReplStatusEvent([row(1, 'waiting')], new Date('2026-11-16T00:00:00.000Z'))).toBe(
+      '<event kind="repl-status" at="2026-11-16T00:00:00.000Z" pending="1">no output yet \u2014 1 eval pending: #1 waiting for its turn. Poll again to keep waiting.</event>',
+    )
   })
 })
