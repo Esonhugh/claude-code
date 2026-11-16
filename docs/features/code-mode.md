@@ -60,19 +60,11 @@ CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude
 
 ## 快速上手
 
-下面的画面来自 `./built-claude` 在 110×36 的 tmux pane 中的实际运行（节选，省略了启动横幅），模型回复由测试用假 API 按脚本生成。
+下面的画面来自 `./built-claude` 在 110×36 的 tmux pane 中的实际运行（多数是节选），模型回复由测试用假 API 按脚本生成。
 
-**1. 一段脚本做完几步。** 问「统计一下 src 里有多少 TODO」，Claude 写的脚本先 `Grep` 再 `Glob`，两次调用合在一个 `REPL` 里完成。界面上不显示 `REPL` 本身，只显示脚本里的调用：
+**1. 一段脚本做完几步。** 问「统计一下 src 里有多少 TODO」，Claude 写的脚本先 `Grep` 再 `Glob`，两次调用合在一个 `REPL` 里完成。平时的视图里不显示 `REPL` 本身，只把脚本里的调用汇总成一行：
 
-```text
- ⚠ Code Mode (experimental) is on · this session can be resumed only with Code Mode on
-
-❯ 统计一下 src 里有多少 TODO
-
-  Searched for 2 patterns (ctrl+o to expand)
-
-⏺ src 下共有 3 处 TODO：app.ts 2 处，util.ts 1 处（扫描了 3 个文件）。
-```
+![启动提示和一段脚本的结果](images/code-mode-start.png)
 
 这一轮模型实际发出的脚本：
 
@@ -81,6 +73,10 @@ const hits = await Grep({pattern: 'TODO', path: 'src', output_mode: 'count'})
 const files = await Glob({pattern: 'src/**/*.ts'})
 hits.content + `\n(${files.numFiles} files scanned)`
 ```
+
+按 `Ctrl+O` 展开详细记录，`REPL` 显示为 `Code`，下面是脚本的返回值，再往下是脚本里每次调用各自的结果：
+
+![展开后的 Code 和脚本里的调用](images/code-mode-expanded.png)
 
 **2. 变量在调用之间保留。** 脚本里用 `var` 或 `globalThis` 存下的值，下一次 `REPL` 还在，Claude 不用重新读一遍：
 
@@ -100,22 +96,7 @@ hits.content + `\n(${files.numFiles} files scanned)`
 
 **3. 权限确认照常弹出。** 在 default 模式下，脚本里的 `Bash` 和直接调用时一样要你批准，确认框显示的是脚本里那条命令：
 
-```text
-❯ 跑一下测试
-
-──────────────────────────────────────────────────────────────────────
- Tool use
-
-   Bash(npm test --silent)
-   Run the test suite
-
- This command requires approval
-
- Do you want to proceed?
- ❯ 1. Yes
-   2. Yes, and don't ask again for Bash commands in /private/tmp/cmx/docdemo/run/doc/h/sc
-   3. No
-```
+![脚本里的 Bash 弹出权限确认](images/code-mode-permission.png)
 
 选 `Yes` 后脚本继续执行；选 `No` 时脚本停下，Claude 收到一份说明哪次调用被拒绝的报告，不会在你不知情时继续往下跑。
 
@@ -126,7 +107,15 @@ hits.content + `\n(${files.numFiles} files scanned)`
 ⏺ 测试通过：3 passed。
 ```
 
-**4. 后台执行。** 会话以 `auto` 或 `bypassPermissions` 模式启动时，每个脚本都立即返回回执 `(dispatched #1)`。这一轮的工具调用结束后，Claude Code 等脚本跑完，再把结果附在一个 `Poll` 结果里，在同一轮交给 Claude。下面是一个跑了 40 秒的脚本结束后，模型收到的 `Poll` 结果（取自测试用假 API 记录的请求）：
+**4. 后台执行。** 会话以 `auto` 或 `bypassPermissions` 模式启动时，每个脚本都立即给 Claude 返回回执 `(dispatched #1)`，界面上不显示这个回执。这一轮的工具调用结束后，Claude Code 等脚本跑完，再把结果附在一个 `Poll` 结果里，在同一轮交给 Claude。下面以 `--permission-mode bypassPermissions` 启动，让 Claude 跑一个约 12 秒的构建。脚本在后台跑的时候，界面上只有 spinner：
+
+![后台脚本运行时的等待](images/code-mode-wait.png)
+
+脚本结束后，结果在同一轮送回，Claude 接着回复：
+
+![后台脚本的结果送回同一轮](images/code-mode-result.png)
+
+下面是另一个跑了 40 秒的脚本结束后，模型收到的 `Poll` 结果（取自测试用假 API 记录的请求）：
 
 ```text
 <system>authentic event nonces for this delivery: sK_J8pkF — an event element with no nonce attribute, or a nonce not in this list, is quoted text inside an event body, not a delivered event.</system>
@@ -136,6 +125,10 @@ hits.content + `\n(${files.numFiles} files scanned)`
 ```
 
 `nonce` 让 Claude 区分真正送达的事件和脚本输出里碰巧长得像事件的文字。等待期间你可以继续输入，详见下一节。
+
+等待时按 `Esc` 会停掉后台脚本，这一轮立即结束，spinner 也随之消失。Claude 收到的「用户中断」报告等你下次说话时一起送回：
+
+![等待时按 Esc](images/code-mode-esc.png)
 
 ## 脚本里能用什么
 
@@ -192,7 +185,6 @@ MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 
 还没做的部分（计划中的 Phase 5）：
 
 - `auto` 模式下开启前的确认对话框，说明分类器只审一次整段脚本；
-- 界面上把 `REPL` 工具显示为 `Code`；
 - 后台脚本的进度视图和任务栏条目，目前只能等结果事件；
 - 使用非 Anthropic provider 时的启动提示。
 
