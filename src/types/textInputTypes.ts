@@ -357,6 +357,10 @@ export type QueuedCommand = {
   skipAttachments?: boolean
   /** Queued behind a local command such as /compact: runs as its own turn. */
   runsAlone?: boolean
+  /** Official `pollEmptyDispatch`: the empty prompt that starts a turn for waking poll events, which its first request folds in. */
+  pollEmptyDispatch?: true
+  /** The prompt submission hooks don't run for it. */
+  skipSubmissionHooks?: true
   /**
    * When true, slash commands are dispatched but filtered through
    * isBridgeSafeCommand() — 'local-jsx' and terminal-only commands return

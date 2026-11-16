@@ -201,6 +201,89 @@ describe('REPL async lane', () => {
   })
 })
 
+/** A main-thread context: no agentId, so the session is the main one. */
+function mainContext(mode: PermissionMode = 'bypassPermissions'): ToolUseContext {
+  return { ...contextFor(mode), agentId: undefined } as unknown as ToolUseContext
+}
+
+const queuedEvalEvents = () => getCommandQueueSnapshot().filter(cmd => cmd.mode === 'poll-event' && cmd.pollEvent?.kind === 'repl-eval')
+
+describe('REPL splice wait (official NUe)', () => {
+  beforeAll(() => {
+    resetCodeModeGateForTesting()
+    noteReplLaunchPermissionMode('bypassPermissions')
+  })
+  afterAll(() => resetCodeModeGateForTesting())
+
+  test('every script is dispatched at once, and Poll delivers its outcome once, with its nonce', async () => {
+    const context = contextFor()
+    const receipt = await run('1 + 1', context)
+    expect(receipt.text).toBe('(dispatched #1)')
+    expect(receipt.data).toMatchObject({ result: '(dispatched #1)', stdout: '', stderr: '', evalId: 1, asyncDispatched: true })
+    expect(receipt.data.keptByTurnAbort).toBeUndefined()
+    const polled = await poll(context)
+    expect(polled.data.eventCount).toBe(1)
+    expect(polled.text).toMatch(
+      /^<system>authentic event nonces for this delivery: (\S+) \u2014 [^\n]+<\/system>\n<event nonce="\1" kind="repl-eval" at="[^"]+" eval="1" ms="\d+" status="settled">\n<result>2<\/result>\n<\/event>$/,
+    )
+    expect(getCommandQueueSnapshot()).toHaveLength(0)
+    const session = findReplSession(context.agentId!)!
+    expect([session.ledger.size, session.depth, session.undelivered.size, session.unwaited.size]).toEqual([0, 0, 0, 0])
+    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
+  })
+
+  test('without Poll the outcome is queued as a waking repl-eval event for its thread', async () => {
+    const context = contextFor('auto')
+    await run(sleepCode(50, 'later'), context)
+    await new Promise(r => setTimeout(r, 150))
+    const queued = getCommandQueueSnapshot()
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ mode: 'poll-event', agentId: context.agentId, priority: 'next' })
+    expect(queued[0]!.pollEvent).toMatchObject({ kind: 'repl-eval', wake: true })
+    expect(queued[0]!.pollEvent!.envelope).toContain('<result>later</result>')
+    // Queued counts as delivered.
+    expect(findReplSession(context.agentId!)!.undelivered.size).toBe(0)
+  })
+
+  test('a turn abort keeps the script and marks the receipt', async () => {
+    const context = contextFor()
+    context.abortController.abort('turn-abort')
+    const receipt = await run(sleepCode(50, 'kept'), context)
+    expect(receipt.data).toMatchObject({ asyncDispatched: true, keptByTurnAbort: true })
+    expect((await poll(contextAfterAbort(context))).text).toContain('<result>kept</result>')
+  })
+
+  test('Esc stops the scripts; one still waiting for its turn says it never ran, and neither starts a turn', async () => {
+    const context = mainContext()
+    await REPLTool.call({ code: sleepCode(5_000, 'never'), timeout: 60_000 }, context, allow, undefined as never, undefined as never)
+    await REPLTool.call({ code: '"second"' }, context, allow, undefined as never, undefined as never)
+    context.abortController.abort('user-cancel')
+    await new Promise(r => setTimeout(r, 100))
+    const events = queuedEvalEvents()
+    expect(events.map(cmd => cmd.pollEvent!.startsTurn)).toEqual([false, false])
+    expect(events[1]!.pollEvent!.envelope).toContain(
+      'eval="2" ms="0" status="failed">eval #2 FAILED before settling:\ncancelled before start \u2014 the user stopped this eval while it waited for its turn; the script never ran</event>',
+    )
+  })
+
+  test('at the deadline Poll delivers the status line as an event of its own', async () => {
+    setPollWaitForTesting(50)
+    const context = contextFor()
+    await run(sleepCode(5_000, 'never'), context, { timeout: 60_000 })
+    const polled = await poll(context)
+    expect(polled.data.eventCount).toBe(1)
+    expect(polled.text).toMatch(/kind="repl-status" at="[^"]+" pending="1">no output yet \u2014 1 eval pending: #1 running for /)
+    expect(findReplSession(context.agentId!)!.statusLineGiven).toBe(true)
+  })
+
+  test('a message from the user ends a Poll wait', async () => {
+    const context = contextFor()
+    await run(sleepCode(5_000, 'never'), context, { timeout: 60_000 })
+    setTimeout(() => enqueue({ value: 'hi', mode: 'prompt', agentId: context.agentId as never }), 30)
+    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
+  })
+})
+
 describe('REPL async lane limits', () => {
   test(`at most ${REPL_MAX_PENDING_EVALS} dispatched scripts per context`, async () => {
     setReplAsyncTimingForTesting({ settleMs: 30 })

@@ -9,10 +9,14 @@ import {
   getCommandQueueSnapshot,
   POLL_EVENT_CHUNK_BYTES,
   POLL_EVENT_CHUNK_EVENTS,
+  REPL_EVAL_EVENT_KIND,
   REPL_STATUS_EVENT_KIND,
   removeByFilter,
 } from '../../utils/messageQueueManager.js'
+import { isReplSpliceWaitEnabled } from './codeModeGate.js'
+import { SCRIPT_ASK_DECLINED } from './constants.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
+import { isUserStop } from './stopReport.js'
 
 /** A script the async lane dispatched that has not ended yet. */
 export type ReplPendingEval = {
@@ -56,6 +60,8 @@ export type ReplEvalEvent = {
   text: string
   /** Whether the notification queue took it; one it didn't (a Mods hook dropped it) only Poll delivers. */
   queued?: boolean
+  /** False: the main thread's eval the user stopped, whose outcome waits for the next turn instead of starting one. */
+  startsTurn?: false
 }
 
 /** One persistent JavaScript context per conversation thread: the main thread or a subagent. */
@@ -153,6 +159,7 @@ function wake(session: ReplSession): void {
 export async function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): Promise<void> {
   if (session.released) return
   session.lateMessages.push(...messages)
+  if (isReplSpliceWaitEnabled()) return enqueueReplEvalEvent(session, event)
   try {
     await enqueuePendingNotification({ value: event.text, mode: 'task-notification', agentId: session.agentId as never })
   } finally {
@@ -163,6 +170,52 @@ export async function deliverReplEvent(session: ReplSession, event: ReplEvalEven
     if (!session.released) session.events.push(event)
     wake(session)
   }
+}
+
+/**
+ * Official `tr` under the splice wait: the outcome goes out as a `repl-eval`
+ * poll event, for the wait after tool calls, a turn's first request or Poll
+ * to deliver. It counts as delivered once queued.
+ */
+function enqueueReplEvalEvent(session: ReplSession, event: ReplEvalEvent): void {
+  const refused = (error: unknown) =>
+    logForDebugging(`async REPL eval #${event.id} outcome not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
+  try {
+    enqueuePollEvent({
+      kind: REPL_EVAL_EVENT_KIND,
+      element: event.text,
+      ...(event.startsTurn === false && { startsTurn: false }),
+      agentId: session.agentId as never,
+    }).catch(() => {})
+  } catch (error) {
+    refused(error)
+  } finally {
+    session.pending.delete(event.id)
+    markReplEvalDelivered(session, event.id)
+    wake(session)
+  }
+}
+
+/** Official `outstanding`: outcomes still to come, those of late evals' calls included. */
+export function outstandingReplEvals(session: ReplSession): number {
+  return session.undelivered.size + [...session.ledger.values()].filter(entry => entry.late).length
+}
+
+/** Official registry texts for an eval stopped while it waited for the scripts before it. */
+export function replCancelledBeforeStartText(reason: unknown): string {
+  if (reason === 'turn-abort')
+    return 'cancelled before start \u2014 the dispatching turn was aborted while this eval waited for its turn; the script never ran'
+  if (reason === 'interrupt')
+    return 'cancelled before start \u2014 the session was interrupted while this eval waited for its turn; the script never ran'
+  if (isUserStop(reason))
+    return 'cancelled before start \u2014 the user stopped this eval while it waited for its turn; the script never ran'
+  if (reason === SCRIPT_ASK_DECLINED)
+    return "cancelled before start \u2014 the user declined the permission dialog for an earlier script's call (a No or an Esc), which also cancels the scripts behind that one; the script never ran"
+  if (reason === 'task-stop')
+    return 'cancelled before start \u2014 a TaskStop call stopped this eval while it waited for its turn; the script never ran'
+  if (reason === 'script')
+    return 'cancelled before start \u2014 a script aborted this eval (self.running().abort()) while it waited for its turn; it never ran'
+  return 'cancelled before start \u2014 Claude Code stopped this eval while it waited for its turn; the script never ran'
 }
 
 function ledgerChanged(session: ReplSession): void {

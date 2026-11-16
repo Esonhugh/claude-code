@@ -2,17 +2,29 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import { getExtendedCacheTtlEnabled } from '../../services/api/claude.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { getCommandQueueSnapshot, subscribeToCommandQueue } from '../../utils/messageQueueManager.js'
-import { isReplEventDeliveryEnabled } from '../REPLTool/codeModeGate.js'
+import {
+  drainPollEventChunk,
+  getCommandQueueSnapshot,
+  settlePollEventsDelivered,
+  subscribeToCommandQueue,
+} from '../../utils/messageQueueManager.js'
+import { isReplEventDeliveryEnabled, isReplSpliceWaitEnabled } from '../REPLTool/codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from '../REPLTool/constants.js'
 import { isMainThreadSubagent, stopPendingOnAbort } from '../REPLTool/REPLTool.js'
 import {
+  enqueueReplStatus,
   findReplSession,
   formatReplStatus,
   MAIN_REPL_SESSION,
+  noteReplStatusLine,
+  onReplLedgerChange,
+  outstandingReplEvals,
+  replLedger,
   type ReplSession,
   takeReplEventChunk,
   takeReplLateMessages,
+  takeReplStatusLineGiven,
+  takeUnwaitedReplEvals,
   waitForReplEvent,
 } from '../REPLTool/sessions.js'
 import { formatPollDelivery } from './delivery.js'
@@ -67,12 +79,16 @@ export type Output = z.infer<OutputSchema>
 
 const NOTHING: Output = { content: NO_PENDING_EVENTS, eventCount: 0, remainingWakeCount: 0 }
 
+function hasQueuedInput(agentId: string | undefined): boolean {
+  return getCommandQueueSnapshot().some(cmd => cmd.mode === 'prompt' && cmd.agentId === agentId)
+}
+
 /** Aborts when `signal` does or the user types something, so their message isn't held behind the wait. */
 function untilUserInput(agentId: string | undefined, signal: AbortSignal): { signal: AbortSignal; dispose(): void } {
   const controller = new AbortController()
   const stop = () => controller.abort()
   const check = () => {
-    if (getCommandQueueSnapshot().some(cmd => cmd.mode === 'prompt' && cmd.agentId === agentId)) stop()
+    if (hasQueuedInput(agentId)) stop()
   }
   const unsubscribe = subscribeToCommandQueue(check)
   check()
@@ -124,6 +140,66 @@ async function poll(session: ReplSession, context: ToolUseContext): Promise<Outp
   return NOTHING
 }
 
+/** Resolves on the next queue or ledger change, a release, `ms` passing or `signal` aborting. */
+function nextChange(session: ReplSession, ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer)
+      unsubscribeQueue()
+      unsubscribeLedger()
+      signal.removeEventListener('abort', done)
+      session.waiters.delete(done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    const unsubscribeQueue = subscribeToCommandQueue(done)
+    const unsubscribeLedger = onReplLedgerChange(session, done)
+    signal.addEventListener('abort', done, { once: true })
+    session.waiters.add(done)
+  })
+}
+
+/**
+ * Official `Mso` (2.1.325 chunk-pg2sb68f.js) under the splice wait: delivers
+ * the thread's queued poll events, one chunk, waiting for them while evals
+ * are outstanding. At the deadline the status line is queued and delivered
+ * as an event of its own.
+ */
+async function pollQueue(session: ReplSession, context: ToolUseContext): Promise<Output> {
+  const signal = context.abortController.signal
+  const agentId = session.agentId
+  stopPendingOnAbort(session, signal)
+  takeReplStatusLineGiven(session)
+  const deadline = Date.now() + pollWaitMs(agentId)
+  let statusQueued = false
+  let eventCount = 0
+  try {
+    for (;;) {
+      if (signal.aborted || session.released) return NOTHING
+      const { commands, remainingWakeCount } = drainPollEventChunk(agentId as never)
+      if (commands.length > 0) {
+        settlePollEventsDelivered(commands)
+        eventCount = commands.length
+        // Not filled: official `Itn` names the tools used since the last delivery (see toolsUsedLine).
+        const envelopes = commands.map(cmd => cmd.pollEvent!.envelope)
+        return { content: formatPollDelivery(envelopes, remainingWakeCount), eventCount, remainingWakeCount }
+      }
+      if (hasQueuedInput(agentId)) return NOTHING
+      if (outstandingReplEvals(session) === 0 || statusQueued) return NOTHING
+      const left = deadline - Date.now()
+      if (left <= 0) {
+        enqueueReplStatus(session, replLedger(session))
+        noteReplStatusLine(session)
+        statusQueued = true
+        continue
+      }
+      await nextChange(session, left, signal)
+    }
+  } finally {
+    if (eventCount > 0) takeUnwaitedReplEvals(session)
+  }
+}
+
 export const PollTool = buildTool({
   name: POLL_TOOL_NAME,
   searchHint: 'wait for and receive queued harness events',
@@ -169,7 +245,7 @@ export const PollTool = buildTool({
     try {
       const session = findReplSession(key)
       if (!session) return { data: NOTHING }
-      const data = await poll(session, context)
+      const data = isReplSpliceWaitEnabled() ? await pollQueue(session, context) : await poll(session, context)
       return { data, newMessages: takeReplLateMessages(session) as never }
     } finally {
       activePolls.delete(key)

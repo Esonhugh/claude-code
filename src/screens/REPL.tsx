@@ -3771,6 +3771,13 @@ export function REPL({
       abortController?.abort('user-cancel')
     }
 
+    // Official `ReplSessions.interrupt([qx])`: a stop during a turn also stops
+    // the scripts dispatched in it, whose REPL calls have already returned.
+    if (!activeRemote.isRemoteMode) {
+      const replSession = findReplSession(MAIN_REPL_SESSION)
+      if (replSession) abortPendingReplEvals(replSession, 'user-cancel')
+    }
+
     // Clear the controller so subsequent Escape presses don't see a stale
     // aborted signal. Without this, canCancelRunningTask is false (signal
     // defined but .aborted === true), so isActive becomes false if no other
