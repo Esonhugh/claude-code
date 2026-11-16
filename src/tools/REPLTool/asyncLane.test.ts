@@ -504,6 +504,19 @@ describe('async-lane prompt', () => {
     }
   })
 
+  test('the MCP line names up to 40 servers', () => {
+    resetCodeModeGateForTesting()
+    noteReplLaunchPermissionMode('default')
+    const mcp = Array.from({ length: 41 }, (_, i) => ({
+      ...fakeRead,
+      name: `mcp__s${i}__t`,
+      isMcp: true,
+      mcpInfo: { serverName: `s${i}`, toolName: 't' },
+    }))
+    const prompt = getReplPrompt([REPLTool, PollTool, fakeRead, ...mcp], { ...getEmptyToolPermissionContext(), mode: 'default' })
+    expect(prompt).toContain('s38, s39 and 1 more. Find a tool with `searchTools`')
+  })
+
   test('Code Mode drops unsandboxedRetry from ShellOutput in both lanes', () => {
     for (const launch of ['default', 'auto'] as PermissionMode[]) {
       resetCodeModeGateForTesting()

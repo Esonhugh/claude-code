@@ -9,8 +9,8 @@ import { replCallableToolsFrom } from './toolWrappers.js'
 
 /** Doc lines in the declarations are cut to this many characters (official `zt`). */
 const DOC_CHARS = 120
-/** MCP servers named before "and N more"; the official cap is not known, this is a guess. */
-const MCP_SERVERS_LISTED = 10
+/** MCP servers named before "and N more" (official `Gl`). */
+const MCP_SERVERS_LISTED = 40
 const SKILL_TOOL_PREFIX = 'skill__'
 /** Official replSettleWindowMs (TWt); REPLTool.ts holds the same value, which can't be imported here without a cycle. */
 const SETTLE_WINDOW_SECONDS = 30
