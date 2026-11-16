@@ -143,6 +143,16 @@ export function getCommandQueueLength(): number {
 }
 
 /**
+ * Queued commands that will start or join a turn. A poll event that doesn't
+ * wake waits for the next prompt, so the spinner doesn't count it.
+ */
+export function countCommandsAwaitingTurn(): number {
+  return commandQueue.filter(
+    cmd => cmd.mode !== 'poll-event' || (cmd.pollEvent !== undefined && pollEventWakes(cmd.pollEvent)),
+  ).length
+}
+
+/**
  * Check if there are commands in the queue.
  */
 export function hasCommandsInQueue(): boolean {

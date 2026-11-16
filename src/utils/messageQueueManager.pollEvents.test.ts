@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { AgentId } from '../types/ids.js'
 import {
+  countCommandsAwaitingTurn,
   countRemainingWakePollEventsAfter,
   drainPollEventChunk,
   enqueue,
@@ -89,6 +90,16 @@ describe('poll-event queue mode (official 2.1.325)', () => {
     void enqueuePollEvent({ kind: 'repl-status', element: element(3, 'repl-status') })
     expect(getCommandQueueSnapshot().map(isWakingReplEvalEvent)).toEqual([true, false, false])
     expect(getCommandQueueSnapshot()[1]!.pollEvent!.startsTurn).toBe(false)
+  })
+
+  test('the spinner counts queued commands but not an event that waits for the next prompt', () => {
+    // The Esc report after an interrupted wait is queued with startsTurn:false.
+    void enqueuePollEvent({ kind: 'repl-eval', element: element(1), startsTurn: false })
+    void enqueuePollEvent({ kind: 'repl-status', element: element(2, 'repl-status'), wake: false })
+    expect(countCommandsAwaitingTurn()).toBe(0)
+    void enqueuePollEvent({ kind: 'repl-eval', element: element(3) })
+    enqueue({ value: 'hi', mode: 'prompt' })
+    expect(countCommandsAwaitingTurn()).toBe(2)
   })
 
   test('the promise settles when a delivery takes the event or it is dropped', async () => {

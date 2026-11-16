@@ -575,6 +575,7 @@ import {
   enqueueTracked,
   type SetAppState,
   getCommandQueue,
+  countCommandsAwaitingTurn,
   getCommandQueueLength,
   removeByFilter,
   remove,
@@ -2991,7 +2992,7 @@ export function REPL({
       // Without this, the spinner briefly disappears between consecutive notifications
       // (e.g., multiple background agents completing in rapid succession) because
       // isLoading goes false momentarily between processing each one.
-      getCommandQueueLength() > 0) &&
+      countCommandsAwaitingTurn() > 0) &&
     // Hide spinner when waiting for leader to approve permission request
     !pendingWorkerRequest &&
     !onlySleepToolActive &&
