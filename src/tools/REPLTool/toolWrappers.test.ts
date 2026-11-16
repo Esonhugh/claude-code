@@ -597,3 +597,18 @@ test('the virtual tool_result always carries is_error, as 2.1.325', async () => 
     .find(block => block.type === 'tool_result')
   expect(result).toMatchObject({ type: 'tool_result', content: '', is_error: false })
 })
+
+test("a script's call cannot set the turn's tool JSX, so Esc still reaches the dispatched script", async () => {
+  const shown: unknown[] = []
+  const seen: unknown[] = []
+  const tool = fixtureTool('Fixture', async (input, context) => {
+    seen.push(context.setToolJSX)
+    context.setToolJSX?.({ jsx: null, shouldHidePromptInput: false })
+    return { data: input }
+  })
+  const context = { ...contextFor([tool]), setToolJSX: (jsx: unknown) => shown.push(jsx) } as unknown as ToolUseContext
+  const { host } = hostFor([tool], { context })
+  await host.call('Fixture', { value: 'x' })
+  expect(seen).toEqual([undefined])
+  expect(shown).toEqual([])
+})

@@ -412,6 +412,9 @@ export function createReplToolHost(opts: {
       const markedTools = () => marked(refreshTools())
       for await (const update of runToolUse(block, assistant, canUseTool, {
         ...context,
+        // Official script calls have no tool JSX (Bash's background hint is a progress hint there);
+        // ours would outlive a dispatched script's turn and keep Esc from stopping it.
+        setToolJSX: undefined,
         innerCall: true,
         replScriptCall: true,
         ...(asyncLane && { shellWallCapMs: REPL_ASYNC_WALL_CAP_MS }),
