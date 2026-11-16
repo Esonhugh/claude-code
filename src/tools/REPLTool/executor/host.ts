@@ -38,6 +38,11 @@ export type ReplRunOptions = {
   failure?: Promise<string>
   /** Awaited once the script returns or throws; its lines follow what the script wrote to stderr. */
   onScriptEnd?: (failed: boolean) => Promise<string[]>
+  /**
+   * A line put after the error of a script that started and then threw
+   * (`stopped` false) or was stopped, unless its error is the stop report.
+   */
+  errorNote?: (stopped: boolean) => string
 }
 
 export type ReplToolDescription = {
@@ -245,7 +250,15 @@ function startWorker(): Worker {
   return new Worker(workerUrl)
 }
 
-type RunEnd = { value?: string; error?: string; timedOut?: boolean; interrupted?: boolean; notes?: string[] }
+type RunEnd = {
+  value?: string
+  error?: string
+  timedOut?: boolean
+  interrupted?: boolean
+  notes?: string[]
+  /** The error is interruptedError's stop report, which takes no errorNote. */
+  report?: boolean
+}
 
 type ActiveRun = {
   id: number
@@ -318,7 +331,8 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
   const execute = (code: string, o: ReplRunOptions): Promise<ReplRunResult> => {
     if (released) return Promise.reject(new Error('REPL executor released'))
     if (o.signal.aborted) {
-      const error = o.interruptedError?.() ?? INTERRUPTED
+      const report = o.interruptedError?.()
+      const error = report ?? (o.errorNote ? `${INTERRUPTED}\n${o.errorNote(true)}` : INTERRUPTED)
       return Promise.resolve({ output: formatReplOutput({ error }), error, interrupted: true })
     }
     const transpiled = transpileReplCode(code)
@@ -367,7 +381,10 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
         since = performance.now()
         arm()
       }
-      const onAbort = () => run.finish({ error: o.interruptedError?.() ?? INTERRUPTED, interrupted: true })
+      const onAbort = () => {
+        const report = o.interruptedError?.()
+        run.finish({ error: report ?? INTERRUPTED, interrupted: true, ...(report !== undefined && { report: true }) })
+      }
 
       const answer = (callId: number, work: () => unknown) => {
         if (pendingCalls++ === 0) pause()
@@ -415,6 +432,8 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
           active.delete(id)
           // The only way to stop the script; the context goes with it.
           if (end.timedOut || end.interrupted) kill()
+          if (end.error !== undefined && !end.report && o.errorNote)
+            end = { ...end, error: `${end.error}\n${o.errorNote(end.timedOut === true || end.interrupted === true)}` }
           const logged = stdout.empty ? '' : stdout.render()
           const errors = [...(stderr.empty ? [] : [stderr.render()]), ...(end.notes ?? [])].join('\n')
           const output = formatReplOutput({

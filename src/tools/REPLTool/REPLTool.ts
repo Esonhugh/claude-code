@@ -33,7 +33,7 @@ import {
   startReplEval,
   takeReplLateMessages,
 } from './sessions.js'
-import { isUserStop, replStopOf, replStopReport, type ReplStop } from './stopReport.js'
+import { isUserStop, partwayNote, replStopOf, replStopReport, type ReplStop } from './stopReport.js'
 import { createReplToolHost, getReplCallableTools, type ReplToolDescriptor } from './toolWrappers.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import { collectResultBlocks, resultBlockContent } from './resultBlocks.js'
@@ -407,6 +407,7 @@ export const REPLTool = buildTool({
         totalCapError: ms => host.wallClockError(ms),
         failure,
         onScriptEnd: failed => host.scriptEnded(failed),
+        ...(isCodeModeEnabled() && { errorNote: (stopped: boolean) => partwayNote(host.calls(), stopped) }),
         // Official `qu`: only a call the executor waits on reports the stop,
         // listing the calls as they stood when it came.
         interruptedError: () => {

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { isUserStop, replStopOf, replStopReport, type ReplCallRecord } from './stopReport.js'
+import { isUserStop, partwayNote, replStopOf, replStopReport, type ReplCallRecord } from './stopReport.js'
 
 const replUserStopReport = (calls: ReplCallRecord[]) => replStopReport({ by: 'user', calls })
 
@@ -96,4 +96,18 @@ test('a finished image Read shows the placeholder the script saw, not its base64
   ])
   expect(report).toContain('[40 base64 chars — image bytes moved to the REPL result, subject to its per-result image cap]')
   expect(report).not.toContain(base64)
+})
+
+test('the partway note counts the calls that completed (official nOi)', () => {
+  const calls: ReplCallRecord[] = [
+    { toolName: 'Read', toolInput: {}, phase: 'complete' },
+    { toolName: 'Bash', toolInput: {}, phase: 'error', error: 'exit 1' },
+    { toolName: 'Read', toolInput: {}, phase: 'complete' },
+    { toolName: 'Grep', toolInput: {}, phase: 'complete' },
+    { toolName: 'Glob', toolInput: {}, phase: 'executing' },
+  ]
+  expect(partwayNote(calls, false)).toBe(
+    'The script threw partway through: statements before the failing one ran. Tool calls that had completed: Read \u00d72, Grep \u00d71.',
+  )
+  expect(partwayNote([], true)).toBe('The script was stopped partway through: statements before the stop ran. No tool call had completed.')
 })

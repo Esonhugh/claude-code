@@ -188,7 +188,7 @@ describe('REPL async lane (official NUe)', () => {
     const context = contextFor()
     await run(`await new Promise(r => setTimeout(r, 50)); throw new Error('boom')`, context)
     const polled = await poll(context)
-    expect(polled.text).toContain('<error>Error: boom</error>')
+    expect(polled.text).toContain('<error>Error: boom\nThe script threw partway through: statements before the failing one ran. No tool call had completed.</error>')
     const messages = ((polled as { newMessages?: unknown }).newMessages ?? []) as {
       type: string
       isVirtual?: boolean
@@ -317,7 +317,7 @@ describe('REPL async lane limits', () => {
     const bgContext = contextFor()
     await run(sleepCode(5_000, 'never'), bgContext, { timeout: 60_000 })
     bgContext.abortController.abort('background')
-    expect((await poll(contextAfterAbort(bgContext))).text).toContain('<error>Error: REPL execution interrupted</error>')
+    expect((await poll(contextAfterAbort(bgContext))).text).toContain('<error>Error: REPL execution interrupted\nThe script was stopped partway through: statements before the stop ran. No tool call had completed.</error>')
 
     const turnContext = contextFor()
     await run(sleepCode(400, 'kept'), turnContext)
@@ -387,7 +387,7 @@ describe('REPL async lane limits', () => {
     expect((await run(`await new Promise(() => {})`, context)).text).toBe('(dispatched #1)')
     abortPendingReplEvals(findReplSession(context.agentId!)!, 'user-cancel')
     const { text } = await poll(contextAfterAbort(context))
-    expect(text).toContain('<error>Error: REPL execution interrupted</error>')
+    expect(text).toContain('<error>Error: REPL execution interrupted\nThe script was stopped partway through: statements before the stop ran. No tool call had completed.</error>')
   })
 
   test('a Poll wait with nothing to deliver ends in a status line', async () => {

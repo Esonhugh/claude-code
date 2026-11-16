@@ -227,6 +227,25 @@ describe('REPL executor', () => {
     const { run } = setup()
     expect((await run('const = 1')).error).toStartWith('Syntax error, so nothing ran\n')
   })
+
+  test('errorNote follows the error of a script that threw or was stopped, not a syntax error or a stop report', async () => {
+    const errorNote = (stopped: boolean) => (stopped ? 'stopped' : 'threw')
+    const { run } = setup({ errorNote })
+    expect((await run('throw new Error("boom")')).error).toBe('Error: boom\nthrew')
+    expect((await run('while (true) {}', { timeoutMs: 100 })).error).toEndWith('avoid unbounded awaits.\nstopped')
+    expect((await run('const = 1')).error).not.toContain('threw')
+    expect((await run('1')).value).toBe('1')
+    const controller = new AbortController()
+    const plain = run('await new Promise(() => {})', { signal: controller.signal })
+    await sleep(50)
+    controller.abort()
+    expect((await plain).error).toBe('Error: REPL execution interrupted\nstopped')
+    const reported = new AbortController()
+    const pending = run('await new Promise(() => {})', { signal: reported.signal, interruptedError: () => 'report' })
+    await sleep(50)
+    reported.abort()
+    expect((await pending).error).toBe('report')
+  })
 })
 
 describe('REPL executor, async lane', () => {

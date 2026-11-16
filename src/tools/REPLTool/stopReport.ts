@@ -65,6 +65,20 @@ export function replStopOf(reason: unknown, calls: ReplCallRecord[]): ReplStop |
   return isUserStop(reason) ? { by: 'user', calls } : undefined
 }
 
+/**
+ * Official `nOi`: the line after the error of a script that ran and then threw
+ * or was stopped (not one a stop report replaces), counting the calls that completed.
+ */
+export function partwayNote(calls: readonly ReplCallRecord[], stopped: boolean): string {
+  const completed = new Map<string, number>()
+  for (const call of calls) if (call.phase === 'complete') completed.set(call.toolName, (completed.get(call.toolName) ?? 0) + 1)
+  const head = stopped
+    ? 'The script was stopped partway through: statements before the stop ran.'
+    : 'The script threw partway through: statements before the failing one ran.'
+  if (completed.size === 0) return `${head} No tool call had completed.`
+  return `${head} Tool calls that had completed: ${[...completed].map(([name, n]) => `${name} \u00d7${n}`).join(', ')}.`
+}
+
 /** Official `Zu`: a call that had not got a concurrency slot was waiting; one that had, running. */
 function stoppedCalls(calls: readonly ReplCallRecord[]): StoppedCall[] {
   return calls.map((c, i) => {
