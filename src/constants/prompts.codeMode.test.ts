@@ -9,6 +9,7 @@ import type { Tool, Tools } from '../Tool.js'
 import { resetCodeModeGateForTesting, settleCodeModeGate } from '../tools/REPLTool/codeModeGate.js'
 import { BASE_CHROME_PROMPT, getChromeSystemPrompt } from '../utils/claudeInChrome/prompt.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
+import { getSystemPromptSections } from '../utils/systemPromptType.js'
 import { clearSystemPromptSections } from './systemPromptSections.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test', ISSUES_EXPLAINER: 'report an issue' }
@@ -90,4 +91,18 @@ test('Code Mode with REPL writes memory files from a script (official O0o)', () 
   )
   expect(memoryPromptForTools(MEMORY, pool.filter(t => t.name !== 'REPL'))).toBe(MEMORY)
   expect(memoryPromptForTools(null, pool)).toBeNull()
+})
+
+test('Code Mode adds the official repl_working section last, only on the full prompt (official s7r)', async () => {
+  const REPL_WORKING = "Few, full scripts: do a turn's investigating in as few REPL calls as the dependencies between its steps allow, reading and searching more widely than you strictly need, because each extra call is a round trip and each extra read inside one is nearly free."
+  const names = (prompt: string[]) => (getSystemPromptSections(prompt) ?? []).flatMap(s => 'name' in s && s.text !== null && s.name ? [s.name] : [])
+  const off = await getSystemPrompt(pool, 'claude-sonnet-4-6')
+  expect(off.join('\n')).not.toContain('Few, full scripts')
+  codeModeOn()
+  clearSystemPromptSections()
+  const full = await getSystemPrompt(pool, 'claude-sonnet-4-6')
+  expect(full.at(-1)).toBe(REPL_WORKING)
+  expect(names(full).at(-1)).toBe('repl_working')
+  clearSystemPromptSections()
+  expect((await getSystemPrompt(pool, 'claude-opus-5-5')).join('\n')).not.toContain('Few, full scripts')
 })

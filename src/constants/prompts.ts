@@ -562,6 +562,8 @@ ${CYBER_RISK_INSTRUCTION}`,
     ...(feature('KAIROS') || feature('KAIROS_BRIEF')
       ? [systemPromptSection('brief', () => getBriefSection())]
       : []),
+    // Official 325 places this last among the session sections.
+    systemPromptSection(lean ? 'repl_working:L' : 'repl_working', () => getReplWorkingSection(lean)),
   ]
 
   const resolvedDynamicSections =
@@ -885,6 +887,12 @@ const CONTEXT_MANAGEMENT_SECTION = `# Context management
 When the conversation grows long, some or all of the current context is summarized; the summary, along with any remaining unsummarized context, is provided in the next context window so work can continue \u2014 you don't need to wrap up early or hand off mid-task.`
 
 const FINISH_LINE_SECTION = 'Before you finish a coding task, run the relevant existing tests and fix what fails; remove build outputs and scratch files you created, leaving only what the task asked for.'
+
+// Official 325 `s7r(isReplMode, lean)`: Code Mode on and the full (not lean) prompt.
+export function getReplWorkingSection(lean: boolean): string | null {
+  if (!isReplModeEnabled() || lean) return null
+  return "Few, full scripts: do a turn's investigating in as few REPL calls as the dependencies between its steps allow, reading and searching more widely than you strictly need, because each extra call is a round trip and each extra read inside one is nearly free."
+}
 
 function getBriefSection(): string | null {
   if (!(feature('KAIROS') || feature('KAIROS_BRIEF'))) return null
