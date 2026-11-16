@@ -15,6 +15,7 @@ import {
   takeReplLateMessages,
   waitForReplEvent,
 } from '../REPLTool/sessions.js'
+import { formatPollDelivery } from './delivery.js'
 import { DESCRIPTION, NO_PENDING_EVENTS, PROMPT } from './prompt.js'
 
 /** Official HM (the default 5-minute prompt cache TTL) and the 1-hour one. */
@@ -86,18 +87,15 @@ function untilUserInput(agentId: string | undefined, signal: AbortSignal): { sig
   }
 }
 
-/** Official `fzs`: the note a chunked delivery ends with. */
-function chunkNote(remaining: number): string {
-  return `<system>delivery chunked: ${remaining} more queued event(s) follow in the next delivery, oldest first; nothing was dropped.</system>`
-}
-
-/** Official `nce`: the events of one chunk, oldest first, then the chunk note when more are queued. */
+/** The events of one chunk as one delivery (official `nce`). */
 function deliver(session: ReplSession): Output | undefined {
   const { events, remaining } = takeReplEventChunk(session)
   if (events.length === 0) return undefined
-  const texts = events.map(event => event.text)
-  if (remaining > 0) texts.push(chunkNote(remaining))
-  return { content: texts.join('\n'), eventCount: events.length, remainingWakeCount: remaining }
+  return {
+    content: formatPollDelivery(events.map(event => event.text), remaining),
+    eventCount: events.length,
+    remainingWakeCount: remaining,
+  }
 }
 
 async function poll(session: ReplSession, context: ToolUseContext): Promise<Output> {

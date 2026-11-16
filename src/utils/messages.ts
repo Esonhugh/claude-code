@@ -79,6 +79,7 @@ import {
   type HookAttachment,
   type HookPermissionDecisionAttachment,
   memoryHeader,
+  type PollEventsAttachment,
 } from './attachments.js'
 import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
@@ -141,6 +142,9 @@ import {
   FileReadTool,
   type Output as FileReadToolOutput,
 } from '../tools/FileReadTool/FileReadTool.js'
+import { formatPollDelivery, POLL_SPLICE_ID_PREFIX } from '../tools/PollTool/delivery.js'
+import { isReplEventDeliveryEnabled } from '../tools/REPLTool/codeModeGate.js'
+import { POLL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
@@ -2134,6 +2138,73 @@ export const attachmentMessagesForAPI = new WeakMap<
   UserMessage[]
 >()
 
+/** Official `U$o`: an assistant message of thinking only, some of it unsigned, cannot host a call. */
+function isUnsignedThinkingOnly(message: AssistantMessage): boolean {
+  const content = message.message.content
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(block => block.type === 'thinking' || block.type === 'redacted_thinking') &&
+    content.some(block => block.type === 'thinking' && !block.signature)
+  )
+}
+
+/**
+ * Official `qyi` (2.1.325 chunk-wqb2b4v0.js) for an unguarded delivery, mode
+ * `tail_text`: the chunk becomes a Poll call the harness made, appended to the
+ * last assistant message, with its result after the tool results of the user
+ * message that follows. A second delivery to the same assistant message goes
+ * as text at the end of the last user message. False when no assistant
+ * message can host the call, so the attachment is sent as text instead.
+ */
+function splicePollDelivery(
+  messages: (UserMessage | AssistantMessage)[],
+  attachment: PollEventsAttachment,
+): boolean {
+  const at = messages.findLastIndex(m => m.type === 'assistant')
+  if (at === -1) return false
+  const assistant = messages[at] as AssistantMessage
+  if (isUnsignedThinkingOnly(assistant)) return false
+  const id = `${POLL_SPLICE_ID_PREFIX}${assistant.uuid}`
+  const text = formatPollDelivery(attachment.envelopes, attachment.remainingWakeCount, attachment.toolsUsed)
+  type Content = UserMessage['message']['content']
+  const asContent = (content: Content): ContentBlockParam[] =>
+    typeof content === 'string' ? [{ type: 'text', text: content }] : (content.slice() as ContentBlockParam[])
+
+  if (assistant.message.content.some(block => block.type === 'tool_use' && block.id === id)) {
+    const tail = messages.at(-1)
+    const block: ContentBlockParam = { type: 'text', text: wrapInSystemReminder(text) }
+    if (tail?.type === 'user') {
+      messages[messages.length - 1] = {
+        ...tail,
+        message: { ...tail.message, content: [...asContent(tail.message.content), block] as Content },
+      }
+    } else {
+      messages.push(createUserMessage({ content: [block], isMeta: true }))
+    }
+    return true
+  }
+
+  messages[at] = {
+    ...assistant,
+    message: {
+      ...assistant.message,
+      content: [...assistant.message.content, { type: 'tool_use', id, name: POLL_TOOL_NAME, input: {} }],
+    },
+  }
+  const result: ContentBlockParam = { type: 'tool_result', tool_use_id: id, content: text }
+  const next = messages[at + 1]
+  if (next?.type === 'user') {
+    const content = asContent(next.message.content)
+    const after = content.findLastIndex(block => block.type === 'tool_result') + 1
+    content.splice(after, 0, result)
+    messages[at + 1] = { ...next, message: { ...next.message, content: content as Content } }
+  } else {
+    messages.splice(at + 1, 0, createUserMessage({ content: [result], isMeta: true }))
+  }
+  return true
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
@@ -2448,6 +2519,13 @@ export function normalizeMessagesForAPI(
           return
         }
         case 'attachment': {
+          if (
+            message.attachment.type === 'poll_events' &&
+            isReplEventDeliveryEnabled() &&
+            splicePollDelivery(result, message.attachment)
+          ) {
+            return
+          }
           const rawAttachmentMessage =
             attachmentMessagesForAPI.get(message) ??
             normalizeAttachmentForAPI(
@@ -4552,6 +4630,15 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return wrapMessagesInSystemReminder([
         createUserMessage({
           content: `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'poll_events': {
+      // Official `qvo.poll_events`: a delivery no Poll call could carry goes as text.
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: formatPollDelivery(attachment.envelopes, attachment.remainingWakeCount, attachment.toolsUsed),
           isMeta: true,
         }),
       ])

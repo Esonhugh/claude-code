@@ -476,6 +476,22 @@ export type HookNonBlockingErrorAttachment = {
   durationMs?: number
 }
 
+/**
+ * Official `poll_events` (2.1.325): one chunk of queued poll events, which
+ * reaches the model as a Poll call on the last assistant message.
+ */
+export type PollEventsAttachment = {
+  type: 'poll_events'
+  /** Nonce-stamped event elements, oldest first. */
+  envelopes: string[]
+  kinds: string[]
+  /** Tools used since the previous delivery. */
+  toolsUsed?: string[]
+  /** Waking events still queued after this chunk. */
+  remainingWakeCount: number
+  timestamp: string
+}
+
 export type Attachment =
   /**
    * User at-mentioned the file
@@ -595,6 +611,7 @@ export type Attachment =
       /** Carried from QueuedCommand.workload; 'cron' marks a scheduled task firing. */
       workload?: string
     }
+  | PollEventsAttachment
   | {
       type: 'output_style'
       style: string
