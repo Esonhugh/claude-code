@@ -3,6 +3,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import { randomBytes, randomUUID } from 'crypto'
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
+import { toolsUsedNames } from '../tools/PollTool/toolsUsed.js'
 import type { AppState } from '../state/AppState.js'
 import type {
   QueueOperation,
@@ -290,6 +291,7 @@ export function enqueuePollEvent(input: PollEventInput): Promise<void> {
     wake,
     ...(input.startsTurn === false && { startsTurn: false }),
     timestamp: new Date().toISOString(),
+    toolsUsed: toolsUsedNames(),
     settleDelivered: () => resolve(),
     settleDropped: reject,
   }

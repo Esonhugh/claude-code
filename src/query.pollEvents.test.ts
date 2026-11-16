@@ -126,7 +126,7 @@ describe('poll events fold into the turn (official 2.1.325)', () => {
     const [first] = await run([createUserMessage({ content: 'hi' }), previous, createUserMessage({ content: 'next' })])
 
     expect(pollEventsOf(first!)).toEqual([
-      { type: 'poll_events', envelopes: [envelope], kinds: ['repl-eval'], remainingWakeCount: 0, timestamp: expect.any(String) },
+      { type: 'poll_events', envelopes: [envelope], kinds: ['repl-eval'], remainingWakeCount: 0, timestamp: expect.any(String), provenance: [null] },
     ])
     expect(getCommandQueueSnapshot()).toEqual([])
     await delivered

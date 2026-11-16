@@ -485,11 +485,13 @@ export type PollEventsAttachment = {
   /** Nonce-stamped event elements, oldest first. */
   envelopes: string[]
   kinds: string[]
-  /** Tools used since the previous delivery. */
+  /** Tools the conversation used that its messages don't show yet. */
   toolsUsed?: string[]
   /** Waking events still queued after this chunk. */
   remainingWakeCount: number
   timestamp: string
+  /** Official per-event provenance; no event on this path carries one. */
+  provenance?: null[]
 }
 
 export type Attachment =

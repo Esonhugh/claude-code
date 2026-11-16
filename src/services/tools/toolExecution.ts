@@ -44,6 +44,7 @@ import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermis
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall, isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
 import { POLL_TOOL_NAME, REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { recordToolsUsed } from '../../tools/PollTool/toolsUsed.js'
 import { getAgentContext } from '../../utils/agentContext.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
@@ -642,6 +643,8 @@ export async function* runToolUse(
     }
     return
   }
+  // Official oca: the conversation's tools-used latch.
+  recordToolsUsed([toolName.trim(), tool.name])
 
   const toolInput = toolUse.input as { [key: string]: string }
   try {

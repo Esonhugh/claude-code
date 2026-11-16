@@ -26,6 +26,7 @@ import {
 } from '../REPLTool/sessions.js'
 import { formatPollDelivery } from './delivery.js'
 import { DESCRIPTION, NO_PENDING_EVENTS, PROMPT } from './prompt.js'
+import { toolsUsedForDelivery } from './toolsUsed.js'
 
 /** Official HM (the default 5-minute prompt cache TTL) and the 1-hour one. */
 const CACHE_TTL_MS = 300_000
@@ -61,6 +62,25 @@ const activePolls = new Set<string>()
 const inputSchema = lazySchema(() => z.strictObject({}))
 type InputSchema = ReturnType<typeof inputSchema>
 
+/** Official `X`: an image or PDF an event carries. */
+const mediaSchema = lazySchema(() =>
+  z.union([
+    z.object({
+      type: z.literal('image'),
+      source: z.object({
+        type: z.literal('base64'),
+        media_type: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
+        data: z.string(),
+      }),
+    }),
+    z.object({
+      type: z.literal('document'),
+      source: z.object({ type: z.literal('base64'), media_type: z.literal('application/pdf'), data: z.string() }),
+    }),
+  ]),
+)
+
+/** Official `Iso`. No event on this path carries media, provenance or declared fields yet. */
 const outputSchema = lazySchema(() =>
   z.object({
     content: z.string().describe(`Rendered event envelopes, or "${NO_PENDING_EVENTS}"`),
@@ -69,6 +89,25 @@ const outputSchema = lazySchema(() =>
       .number()
       .int()
       .describe('Wake events still queued after this chunk; they follow in the next delivery'),
+    media: z
+      .array(z.array(mediaSchema()))
+      .optional()
+      .describe("Each delivered event's images and documents, 1:1 with the events. Absent when none has any"),
+    toolsUsed: z.array(z.string()).optional(),
+    provenance: z
+      .array(
+        z
+          .object({
+            authority: z.enum(['human-principal', 'human-other', 'peer-agent', 'world-event']),
+            senderId: z.string().optional(),
+            senderText: z.string().optional(),
+          })
+          .nullable(),
+      )
+      .optional(),
+    declared: z
+      .array(z.object({ kind: z.string(), at: z.string(), fields: z.record(z.string(), z.unknown()) }).nullable())
+      .optional(),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -119,9 +158,15 @@ async function pollQueue(session: ReplSession, context: ToolUseContext): Promise
       if (commands.length > 0) {
         settlePollEventsDelivered(commands)
         eventCount = commands.length
-        // Not filled: official `Itn` names the tools used since the last delivery (see toolsUsedLine).
         const envelopes = commands.map(cmd => cmd.pollEvent!.envelope)
-        return { content: formatPollDelivery(envelopes, remainingWakeCount), eventCount, remainingWakeCount }
+        const toolsUsed = toolsUsedForDelivery(commands, context.messages)
+        return {
+          content: formatPollDelivery(envelopes, remainingWakeCount, toolsUsed),
+          eventCount,
+          remainingWakeCount,
+          ...(toolsUsed.length > 0 && { toolsUsed }),
+          provenance: commands.map(() => null),
+        }
       }
       if (hasQueuedInput(agentId)) return NOTHING
       if (outstandingReplEvals(session) === 0 || statusQueued) return NOTHING

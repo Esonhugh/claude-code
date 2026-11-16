@@ -550,11 +550,12 @@ function foldPollEvents(
   agentId: string | undefined,
   signal: AbortSignal,
   consumedCommandUuids: string[],
+  messages: readonly Message[],
 ): AttachmentMessage | undefined {
   const chunk = takePollEventChunk(
     queued.filter(cmd => cmd.mode === 'poll-event' && cmd.agentId === agentId),
   )
-  const attachment = pollEventsAttachment(chunk, countRemainingWakePollEventsAfter(chunk))
+  const attachment = pollEventsAttachment(chunk, countRemainingWakePollEventsAfter(chunk), messages)
   if (!attachment || signal.aborted) return undefined
   consumeFromQueue(chunk, { reason: 'absorbed_mid_turn' })
   settlePollEventsDelivered(chunk)
@@ -859,6 +860,7 @@ async function* queryLoop(
         toolUseContext.agentId,
         toolUseContext.abortController.signal,
         consumedCommandUuids,
+        toolUseContext.messages,
       )
       if (folded) {
         yield folded
@@ -2433,6 +2435,7 @@ async function* queryLoop(
             currentAgentId,
             toolUseContext.abortController.signal,
             consumedCommandUuids,
+            updatedToolUseContext.messages,
           )
         : undefined
     if (foldedPollEvents) {

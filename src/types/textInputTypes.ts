@@ -437,6 +437,8 @@ export type QueuedPollEvent = {
   startsTurn?: false
   /** When it was queued; a delivery is stamped with its last event's. */
   timestamp: string
+  /** The conversation's tools used when it was queued. */
+  toolsUsed?: string[]
   settleDelivered?: () => void
   settleDropped?: (reason: Error) => void
 }
