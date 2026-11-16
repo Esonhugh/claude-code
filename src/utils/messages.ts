@@ -495,6 +495,7 @@ export function createUserMessage({
   isVisibleInTranscriptOnly,
   isVirtual,
   isCompactSummary,
+  modelOnlyText,
   summarizeMetadata,
   toolUseResult,
   toolDenialKind,
@@ -513,6 +514,7 @@ export function createUserMessage({
   isVisibleInTranscriptOnly?: true
   isVirtual?: true
   isCompactSummary?: true
+  modelOnlyText?: string
   toolUseResult?: unknown // Matches tool's `Output` type
   toolDenialKind?: UserMessage['toolDenialKind']
   userFeedback?: string
@@ -548,6 +550,7 @@ export function createUserMessage({
     isVisibleInTranscriptOnly,
     isVirtual,
     isCompactSummary,
+    ...(modelOnlyText !== undefined && { modelOnlyText }),
     summarizeMetadata,
     uuid: (uuid as UUID | undefined) || randomUUID(),
     timestamp: timestamp ?? new Date().toISOString(),

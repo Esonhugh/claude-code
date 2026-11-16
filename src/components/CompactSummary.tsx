@@ -3,6 +3,7 @@ import { BLACK_CIRCLE } from '../constants/figures.js'
 import { Box, Text } from '../ink.js'
 import type { Screen } from '../screens/REPL.js'
 import type { NormalizedUserMessage } from '../types/message.js'
+import { withoutReplStateNote } from '../services/compact/replStateNote.js'
 import { getUserMessageText } from '../utils/messages.js'
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js'
 import { MessageResponse } from './MessageResponse.js'
@@ -14,7 +15,7 @@ type Props = {
 
 export function CompactSummary({ message, screen }: Props): React.ReactNode {
   const isTranscriptMode = screen === 'transcript'
-  const textContent = getUserMessageText(message) || ''
+  const textContent = withoutReplStateNote(getUserMessageText(message) || '', message.modelOnlyText)
   const metadata = message.summarizeMetadata
 
   // "Summarize from here" with metadata

@@ -40,6 +40,7 @@ import {
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
 import { getCompactUserSummaryMessage } from './prompt.js'
+import { replStateNoteForCompaction } from './replStateNote.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -448,6 +449,7 @@ function createCompactionResultFromSessionMemory(
   hookResults: HookResultMessage[],
   transcriptPath: string,
   agentId?: AgentId,
+  replNote?: string,
 ): CompactionResult {
   const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
 
@@ -474,6 +476,7 @@ function createCompactionResultFromSessionMemory(
     true,
     transcriptPath,
     true,
+    replNote,
   )
 
   if (wasTruncated) {
@@ -485,6 +488,7 @@ function createCompactionResultFromSessionMemory(
     createUserMessage({
       content: summaryContent,
       isCompactSummary: true,
+      modelOnlyText: replNote,
       isVisibleInTranscriptOnly: true,
     }),
   ]
@@ -603,6 +607,7 @@ export async function trySessionMemoryCompaction(
       hookResults,
       transcriptPath,
       agentId,
+      await replStateNoteForCompaction(agentId),
     )
 
     const postCompactMessages = buildPostCompactMessages(compactionResult)
