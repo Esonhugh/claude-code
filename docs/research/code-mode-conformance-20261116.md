@@ -26,7 +26,7 @@
 | F | 内层调用的权限、hook 与隔离 | 10 | 9 | 0 | 0 | 1 |
 | C / D / E / G | 权限对话框、规则、hook、子代理、transcript 形状、稳定性（L2 补充） | 27 | 19 | 2 | 4 | 2 |
 
-缺陷合计 38 项，按根因归成 22 组：17 组已修复，1 组部分修复（第 11 组 E02），4 组未修复。第 13 组的 A13、E09 按设计保留，记在功能说明的「与官方的差异」里；第 20–22 组（A61、计时器迟到宽限、A32）是 L3 之后新发现或仍有差异的部分。
+缺陷合计 38 项，按根因归成 22 组：19 组已修复，2 组部分修复（第 11 组 E02、第 21 组），1 组未修复（第 13 组）。第 13 组的 A13、E09 按设计保留，记在功能说明的「与官方的差异」里；第 20–22 组（A61、计时器迟到宽限、A32）是 L3 之后新发现或仍有差异的部分。
 
 ## 缺陷与处理
 
@@ -52,9 +52,9 @@
 | 17 | D「REPL 脚本里启动的 fork」（D-4） | REPL 脚本里启动的 fork 拿不到 REPL/Poll | 已修复 `4117d7d8`：内层 context 带上会话工具 `replSessionTools`，fork 路径用它 |
 | 18 | A11、A20、A30、B「async lane」4 项 | L3 证实官方的 detached lane 一直开着（见「L3：官方二进制对照」）：有 Poll 时每个 REPL 立即返回回执，结果在同一轮由 Poll splice 送回；本地是 30 秒 settle 窗口，没有 `zl()` 文本、`running()`、nonce manifest | 已修复，按官方移植 12 步：`545c12f5` ledger、`da429370` 状态文案、`ccbf1c75` poll-event 队列、`d071b354`+`b5a50f96` nonce manifest 与 splice、`0ec2de1e` 折叠、`8bed0b30` 工具调用后等待（Bu）、`a0f8c310` 始终派发、`bdb005ca` `zl()`/`running()`/Poll 说明、`a0a531e6` Esc、`d48d9451` lost 事件、`bf04f4f8` 删掉 settle 窗口、`07bdb0ed`+`e1cbf885` 场景；`1dad3e6a` 补 resume 和 splice 内层行 |
 | 19 | B「回合中 Esc 停掉后台脚本」 | Esc 打断工具调用后的等待时，官方这一轮记 `[Request interrupted by user]`，本地直接结束、没有这条记录 | 已修复 `2842064a`：循环开头刷新上下文时不再抛出 user-cancel；一次迭代开始时已被中止，就按官方写入 `[Request interrupted by user]`，以 `aborted_streaming` 结束 |
-| 20 | A61 | 脚本超时或抛错时，官方在错误后加一句 `The script was stopped partway through: …` / `The script threw partway through: …` 和已完成调用的计数，本地没有 | 未修复 |
-| 21 | B「预算计时迟到宽限」 | 官方 `sleep(33000)` 正常返回结果，本地在 30 秒超时 | 未修复：官方 `ic` 的迟到宽限没有移植 |
-| 22 | A32 | Poll 输出 schema 少 `media`、`toolsUsed`、`provenance`、`declared` 4 个字段；`<tools-used-before-summary>` 行（官方 `Itn`）没有内容 | 未修复 |
+| 20 | A61 | 脚本超时或抛错时，官方在错误后加一句 `The script was stopped partway through: …` / `The script threw partway through: …` 和已完成调用的计数，本地没有 | 已修复 `b1bd9e7f`：按官方 `nOi` 移植 `partwayNote`（`stopReport.ts:72`），执行器在脚本抛错、超时或被停后接在错误后面；语法错误和停止报告不接。`vfy6-L3x` 第 1 次 eval 的错误和官方逐字相同 |
+| 21 | B「预算计时迟到宽限」 | 官方 `sleep(33000)` 正常返回结果，本地在 30 秒超时 | 部分修复 `15265d59`：按官方 `ic` 移植 `scriptDeadline`（`host.ts:294`），计时器迟到超过 1000 ms 时一次性改为 5000 ms，单元测试覆盖。但 L3 的 LATE 探针仍不同（`vfy6-L3x` 第 3 次 eval 30003 ms 超时，官方 33007 ms 返回 `late-inline`）：官方计时器准时触发时 `ic` 不给宽限，所以这个结果不是 `ic` 带来的，原因没有找到（候选是官方经宿主桥接的 `sleep` 和 `sc` 的 pauseForOthers/charge，都未确认） |
+| 22 | A32 | Poll 输出 schema 少 `media`、`toolsUsed`、`provenance`、`declared` 4 个字段；`<tools-used-before-summary>` 行（官方 `Itn`）没有内容 | 已修复 `3e332cb7`：schema 补齐 4 个字段（官方 `Iso`）；按官方 `Itn`/`yNt` 移植 `toolsUsedForDelivery`（`toolsUsed.ts:95`）：`runToolUse` 找到工具后记进会话的 tools-used 记录（官方 `oca`），poll 事件入队时带上，delivery 只列消息里还看不到的名字；`poll_events` 附件和 Poll 结果都带 `provenance`。`media`、`declared` 只有 schema：本路径上没有事件带这两项。`vfy6-L3x`、`vfy6-B-asyncx`、`vfy6-WAKE` 每次 delivery 的 tools-used 行和官方相同（L3x 只有第 1 次 `REPL`；B-asyncx 第 1 次 `REPL`、第 2 次 `Bash`；WAKE `Bash, REPL`） |
 
 修复后全量复跑 20 个场景两次：`vfy4-*` 用 `e1cbf885` 的 `built-claude`，328 项检查过 327 项；`vfy5-*` 用最终构建 `2842064a`，328 项全部通过。
 
@@ -123,7 +123,7 @@
 | A | A29 Poll isEnabled（是否发给模型） | HR()：需 ownEventsRequested，即交互启动时 mode∈{auto,bypassPermissions}（x0o/mrr） | isCodeModeEnabled() | L1 | 缺陷 → 已修复 `90df295e` | 官方 `chunk-jsrfnb7z.js HR; chunk-sbb5xach.js t8t; chunk-m8nhymg4.js mrr/It`；本地 `src/tools/PollTool/PollTool.ts:139-140` |
 | A | A30 Poll prompt：nonce manifest / chunk marker / n_a（harness 追加调用）段 | mLo(t_a(),n_a(),…) 含这三段 | 检查时删去，代码注释说明本地无 nonce、无追加调用；移植后 harness 会追加 Poll 调用、带 nonce manifest，Poll prompt 与官方 off-bypass-Poll.txt 逐字节相同 | L1+L3 | 缺陷 → 已修复 `d071b354`、`bdb005ca` | 官方 `chunk-paf3y2vg.js mLo/n_a`；本地 `src/tools/PollTool/prompt.ts:7` |
 | A | A31 Poll prompt：开头句与 U 的第二句、t_a 末尾 queued 子句 | 'delivered by your harness (for example notifications from the surface hosting this session).'；U 第二句 'Something may still be queued that this tool never delivers, for example a scheduled prompt…'；'if something is queued for the end of your turn, it ends by then with "(no pending events)" instead.' | 开头改写为 'the outcomes of `REPL` scripts that were dispatched…'；后两处删除 | L1 | 缺陷 → 已修复 `c0c505fa` | 官方 `chunk-paf3y2vg.js U/t_a/mLo`；本地 `src/tools/PollTool/prompt.ts:11-15` |
-| A | A32 Poll 输出 schema | content,eventCount,remainingWakeCount,media,toolsUsed,provenance,declared | 移植后仍只有 content、eventCount、remainingWakeCount 3 个字段；content 说明自拟 | L1 | 缺陷（未修复） | 官方 `chunk-pg2sb68f.js outputSchema`；本地 `src/tools/PollTool/PollTool.ts:64-73` |
+| A | A32 Poll 输出 schema | content,eventCount,remainingWakeCount,media,toolsUsed,provenance,declared | 同官方 7 个字段；toolsUsed、provenance 按官方填，media、declared 本路径上没有事件带 | L1 | 缺陷 → 已修复 `3e332cb7` | 官方 `chunk-pg2sb68f.js Iso`；本地 `src/tools/PollTool/PollTool.ts:83-114` |
 | A | A33 Poll 拒绝文案 / 重复调用结果 | REFUSED 文案；重复调用返回 wBe + hideRow | 同 | L1 | 一致 | 官方 `chunk-pg2sb68f.js`；本地 `src/tools/PollTool/PollTool.ts:46,86` |
 | A | A34 无事件结果 wBe | '(no pending events)' | 同 | L1 | 一致 | 官方 `chunk-paf3y2vg.js wBe`；本地 `src/tools/PollTool/prompt.ts:2` |
 | A | A35 输入已关闭时的 gzs 变体 | '(no pending events) No script or background task of this session is still due to report, and its input has closed, so no event can arrive.' | 无 | L1 | 未验证 | 官方 `chunk-paf3y2vg.js gzs`；本地 `—（调用点未读，交互入口是否可达未定）` |
@@ -152,7 +152,7 @@
 | A | A58 启动拒绝提示（bad_value/entrypoint/unattended） | a$r：'Code Mode (experimental) isn't available: <F0o>. Starting with the ordinary tools.' | 同 | L1 | 一致 | 官方 `chunk-yw5xfhrq.js F0o/a$r`；本地 `src/tools/REPLTool/codeModeGate.ts:17-31` |
 | A | A59 其余拒绝原因与 declined/opt-in 文案 | own_settings/admin/engine/no_bash/no_setup/tools/unsaved/declined | 无 | L1 | 有意不同 | 官方 `chunk-yw5xfhrq.js F0o/a$r`；本地 `docs/plan/code-mode.md D3（env-only 开关）` |
 | A | A60 Remote Control 拒绝与未连接提示 | 'Remote Control isn't available in Code Mode (experimental) yet[, so this session isn't connected]. To use Remote Control, quit Claude Code and start it again with … set to 0.' | 同 | L1 | 一致 | 官方 `chunk-yw5xfhrq.js qjs/zfa; chunk-maa0yxxe.js`；本地 `src/tools/REPLTool/codeModeGate.ts:50-66` |
-| A | A61 脚本超时或被停后错误末尾的说明（nOi） | `The script was stopped partway through: statements before the stop ran.` 或 `The script threw partway through: …`，再接 `No tool call had completed.` 或已完成调用的 `名字 ×次数`；L3 的 `await sleep(40000)` 超时结果里有这句 | 无 | L1+L3 | 缺陷（未修复） | 官方 `chunk-3f6f8668.js nOi`；本地 `src/tools/REPLTool/executor/host.ts:147`（只有超时句） |
+| A | A61 脚本超时或被停后错误末尾的说明（nOi） | `The script was stopped partway through: statements before the stop ran.` 或 `The script threw partway through: …`，再接 `No tool call had completed.` 或已完成调用的 `名字 ×次数`；L3 的 `await sleep(40000)` 超时结果里有这句 | 同（`partwayNote`，按已完成的调用计数） | L1+L3 | 缺陷 → 已修复 `b1bd9e7f` | 官方 `chunk-3f6f8668.js nOi`；本地 `src/tools/REPLTool/stopReport.ts:72`，`REPLTool.ts:410` 接入；`vfy6-L3x` WAIT |
 | E | E01 虚拟 tool_use 消息 | va()：Ha({content:[tool_use{id:repl_…,name,input}],isVirtual:true})，跳过 start/executing | createAssistantMessage({content:[block],isVirtual:true})，id repl_<uuid> | L1 | 一致 | 官方 `g61t94xb:6058-6066`；本地 `src/tools/REPLTool/toolWrappers.ts:237,358` |
 | E | E02 虚拟 tool_result 消息字段 | content: error 或 ''；is_error 恒有（false/true）；toolUseResult, permissionDecision, toolDenialKind, toolDenialAfterRun, sandboxViolations, sandboxed, isVirtual | is_error 仅为 true 时写；无 toolDenialAfterRun/sandboxViolations/sandboxed；多 sourceToolAssistantUUID | L1 | 缺陷 → 部分修复 `c2ce8beb` | 官方 `g61t94xb:6067-6090`；本地 `src/tools/REPLTool/toolWrappers.ts:304-316` |
 | E | E03 后台脚本失败的虚拟 REPL 对 | 计划 Phase 4.3 所述 | failurePair：repl_eval_<uuid> | L1 | 未验证 | 官方 `—（官方构造点未定位）`；本地 `src/tools/REPLTool/REPLTool.ts:174-187` |
@@ -186,8 +186,8 @@
 | B | async lane：空闲时事件唤醒模型 | 空闲时结束的脚本开始新一轮，事件在 Poll splice 里 | 检查时：以 task-notification 唤醒；移植后走 Poll splice | L2+L3 | 缺陷 → 已修复 `ccbf1c75`、`0ec2de1e`、`a0f8c310` | B-async AUTO |
 | B | async lane：回合间 Esc 停止已派发脚本 | Esc 停止脚本并给 user-stop 报告 | 内层 Bash 运行中时 Esc 无效：`sleep 100` 继续，Poll 之后拿到 `<result>never</result>`（ms=100079） | L2 | 缺陷 → 已修复 `4b27ac4d` | src/screens/REPL.tsx:7511-7520；src/tools/BashTool/BashTool.tsx:1563 |
 | B | async lane：回合中 Esc 停掉后台脚本 | 这一轮记 `[Request interrupted by user]` | 检查时：停止脚本、user-stop 报告照常送到，但这一轮直接结束，没有这条记录；`2842064a` 之后同官方 | L2+L3 | 缺陷 → 已修复 `2842064a` | B-async ESC_BG「Esc: the turn is marked interrupted」 |
-| B | async lane：纯 JS 等待（`await sleep(40000)`） | L3：30040 ms 时超时，`REPL execution timed out after 30000ms…`，后面接 nOi 说明（A61） | 30 s 时同一句超时文案 | L1+L3 | 一致 | l3-off-L3x WAIT；host.ts:147 |
-| B | 预算计时迟到宽限 | `ic`：计时器迟到 >1000 ms 时一次性改为 5000 ms。L3：`await sleep(33000); 'late-inline'` 返回 `late-inline`（ms=33007） | 本地无对应逻辑：同一脚本在 30000 ms 超时（l3-our-L3x 第 3 次 eval，旧构建；`ic` 之后没有移植） | L1+L3 | 缺陷（未修复） | chunk-g61t94xb.js:7647-7680；l3-off-L3x LATE |
+| B | async lane：纯 JS 等待（`await sleep(40000)`） | L3：30040 ms 时超时，`REPL execution timed out after 30000ms…`，后面接 nOi 说明（A61） | 30 s 时同一句超时文案，后面接同一句 nOi 说明（`b1bd9e7f` 之后） | L1+L3 | 一致 | l3-off-L3x、vfy6-L3x WAIT；host.ts:152 |
+| B | 预算计时迟到宽限 | `ic`：计时器迟到 >1000 ms 时一次性改为 5000 ms。L3：`await sleep(33000); 'late-inline'` 返回 `late-inline`（ms=33007） | `scriptDeadline` 按 `ic` 移植（host.test.ts 覆盖迟到、准时、调用开始时发现的停顿）。同一脚本仍在 30003 ms 超时（vfy6-L3x 第 3 次 eval）：计时器准时触发，`ic` 不给宽限，官方的 `late-inline` 另有原因，没有找到 | L1+L3 | 缺陷 → 部分修复 `15265d59` | chunk-g61t94xb.js:7647-7680；l3-off-L3x、vfy6-L3x LATE |
 | G | 子 agent 中运行 REPL | 子 agent 拿 Code Mode 工具 | 子 agent 请求 tools 含 REPL、不含 Bash/Read，REPL `6*7`→42 | L2 | 一致 | G-agent-compact SUB |
 | G | REPL 内 `Agent()` 返回值 | — | fork 模式下交互会话默认异步：返回 `async_launched`，答案以 task-notification 到主线程 | L2 | 一致 | src/tools/AgentTool/forkSubagent.ts:50；AgentTool.tsx:764-785 |
 | G | /compact 后 REPL 全局变量 | replStateNote（chunk-nhpp4fne） | 摘要附 `Your REPL VM state was kept… These bindings are still defined: \`cx\`…`；compact 后 `cx + cy`=15 | L2 | 一致 | src/services/compact/replStateNote.ts:29,62；compact/prompt.ts:372 |
@@ -270,9 +270,9 @@ L3x 场景（`/tmp/cmx/conformance/l3/L3x.json`）逐项对照（本地是移植
 
 | 探针 | 官方 | 本地 | 结论 |
 |---|---|---|---|
-| WAIT `await sleep(40000)` | 30040 ms 时超时；delivery 里有 `<tools-used-before-summary>REPL</tools-used-before-summary>`，错误后接 `The script was stopped partway through: statements before the stop ran. No tool call had completed.` | 30 s 超时，同一句超时文案；没有 nOi 说明。移植后 delivery 能输出 tools-used 行，但没人填（`Itn` 没移植，`PollTool.ts:122`），所以不出现 | 超时一致；A61、第 22 组 |
+| WAIT `await sleep(40000)` | 30040 ms 时超时；delivery 里有 `<tools-used-before-summary>REPL</tools-used-before-summary>`，错误后接 `The script was stopped partway through: statements before the stop ran. No tool call had completed.` | `vfy6-L3x`：30003 ms 超时，delivery 文本除 nonce、`at`、`ms` 外和官方逐字相同，含 `REPL` 那一行和 nOi 说明；之后的 delivery 两边都没有 tools-used 行 | 一致（`b1bd9e7f`、`3e332cb7`） |
 | EVALT `eval` / `Function` / WebAssembly | `EvalError:Code generation from strings disallowed for this context`，WebAssembly 为 undefined | 同 | 一致（F 表隔离那一行）；官方失败只因 step 计数 |
-| LATE `await sleep(33000); 'late-inline'` | 返回 `late-inline`（ms=33007） | 30000 ms 超时（`l3-our-L3x`，旧构建） | 第 21 组 |
+| LATE `await sleep(33000); 'late-inline'` | 返回 `late-inline`（ms=33007） | 30003 ms 超时（`vfy6-L3x`，`ic` 移植之后） | 第 21 组，原因未定位 |
 | BGFAIL 后台子 agent 失败 | 第 2 步在 Poll 结果里送回 | 移植后没有用 L3x 重跑；`vfy4-G-robust` 的子 agent 529 检查走同一路径，失败在同一轮以事件送回 | 一致 |
 
 G-resume-lost 在官方上：开关 on 时第一次启动会先重启自己（`Restarting Claude Code in Code Mode…`），开关 off 时拒绝 resume（`This session was started in Code Mode (experimental), which is off, so it can't be resumed.`），所以 off 分支的检查不适用，本地继续会话是有意不同（G 表）。开关 on 的两项（交互下 lost 事件不开始新一轮、bypass 下下一请求带 lost 事件）官方通过，本地复跑也通过。「lost row is shown」官方失败，本地也不显示这一行，两边一致，没有列成缺陷。
@@ -286,7 +286,7 @@ G-robust 在官方上跑的是 18:27 的旧版：失败的是旧检查「529 …
 - **A35 `gzs`、A39 Chrome `F()` 变体**：调用点或条件未读，可达性未定。
 - **A49** 停止后多余的调用：官方没有文案（promise 永不 settle），本地抛错，归 B 维度。
 - **E03** 后台脚本失败的虚拟 REPL 对：官方构造点未定位。
-- **计时器迟到宽限 `ic`**（`J1r=1000` → `Q1r=5000`）：L3 证实官方有，本地没有移植（第 21 组）。纯 JS 等待本身两边都在 30 秒超时，已改为一致。
+- **计时器迟到宽限 `ic`**（`J1r=1000` → `Q1r=5000`）：已移植（`15265d59`），但 L3 LATE 探针官方 33007 ms 返回、本地 30 秒超时的差别不是 `ic` 造成的，原因没有找到（第 21 组）。`sc` 的 pauseForOthers/charge 也没有移植。纯 JS 等待本身两边都在 30 秒超时。
 - **`--rc`**：本构建没打开 BRIDGE_MODE，选项不存在；unattended 的拒绝文案改用 `CLAUDE_BRIDGE_REATTACH_SESSION` 触发验证。
 - **Worker 内存**：没有 heap 上限，脚本能分配 2 GiB ArrayBuffer（主进程 RSS 仍为 110 MB）。只会耗尽自己会话的资源，不绕过权限判定；官方是否设上限没有查。
 - **auto 模式分类器**只审一次整段 `code`（`REPLTool.ts:329-335`），每次内层调用仍走 `hasPermissionsToUseTool`。这是计划里记录的风险 D3，Phase 5 的确认对话框会告诉用户。
@@ -294,7 +294,7 @@ G-robust 在官方上跑的是 18:27 的旧版：失败的是旧检查「529 …
 - **REPL 里的 `Agent()`** 默认异步来自 fork 模式（`isForkAsyncDefault`），与 Code Mode 无关。
 - B、C、D、E、G 是假 API 下的 L2，F 只审本地代码路径；官方二进制在同一假 API 下跑过的场景见「L3：官方二进制对照」，其余场景没有在官方上跑。
 - **detached lane 移植后的剩余部分**：
-  - `Itn`（delivery 里的 `<tools-used-before-summary>` 行）没有移植，本地不输出这一行（第 22 组）。
+  - `Itn` 已移植（`3e332cb7`），但官方 `xO` 只移植了 poll_events 附件、tool_use / server_tool_use 名字和 Poll 结果 manifest 后的那一行；REPL 输出里的 frame 行、压缩摘要、`queued_command.toolsUsedDelta`、mcp_tool_use 的 `server:name` 没有移植。tools-used 记录是进程级的，`/clear` 时不像官方那样带到新会话。REPL 结果里的 tools-used 行（官方 `bNt`/`SNt`）也没有移植。
   - `KKa`（子 agent resume 时的 lost 事件）没有移植，只做了主线程的 `qKa`。
   - Poll splice 的 refuse 和 second_pair 两种方式没有移植；同一条 assistant 消息的第二次 delivery 改成 user 消息末尾的文本（`delivery.test.ts`）。
   - 官方 `Es` 的去重和 `TGt` 的合并没有移植。
