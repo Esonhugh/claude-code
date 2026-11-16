@@ -518,6 +518,9 @@ export function createSubagentContext(
     },
     fileReadingLimits: parentContext.fileReadingLimits,
     userModified: parentContext.userModified,
+    // A fork's REPL scripts keep the parent's primitives; runAgent replaces
+    // this for an agent with its own definition.
+    primitiveToolGrant: parentContext.primitiveToolGrant,
     criticalSystemReminder_EXPERIMENTAL:
       overrides?.criticalSystemReminder_EXPERIMENTAL,
     requireCanUseTool: overrides?.requireCanUseTool,

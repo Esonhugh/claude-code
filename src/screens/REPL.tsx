@@ -424,7 +424,7 @@ import {
   subscribeLspInitialization,
 } from '../services/lsp/manager.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
-import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
+import { primitiveToolGrant, resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
 import { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } from '../utils/model/model.js'
@@ -4226,6 +4226,11 @@ export function REPL({
           appendSystemPrompt,
           refreshTools: computeTools,
         },
+        // An --agent main thread limits its REPL scripts the way a subagent's are.
+        primitiveToolGrant:
+          mainThreadAgentDefinition && isCodeModeEnabled()
+            ? primitiveToolGrant(mainThreadAgentDefinition)
+            : undefined,
         getAppState: () => store.getState(),
         setAppState,
         requestPermissionModeChange,

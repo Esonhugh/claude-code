@@ -1170,12 +1170,10 @@ export async function* runAgent({
     agentToolUseContext.preserveToolUseResults = true
   }
 
-  // A fork keeps its parent's grant; any other agent gets the primitives its
-  // own tools list names (official VQt).
-  if (isCodeModeEnabled()) {
-    agentToolUseContext.primitiveToolGrant = useExactTools
-      ? toolUseContext.primitiveToolGrant
-      : primitiveToolGrant(agentDefinition)
+  // A fork keeps its parent's grant (createSubagentContext copies it); any
+  // other agent gets the primitives its own tools list names (official VQt).
+  if (isCodeModeEnabled() && !useExactTools) {
+    agentToolUseContext.primitiveToolGrant = primitiveToolGrant(agentDefinition)
   }
 
   // Record initial messages before the query loop starts, plus the agentType
@@ -1476,6 +1474,11 @@ export async function* runAgent({
     // `run_in_background` shell loop (e.g. test fixture fake-logs.sh) outlives
     // the agent as a PPID=1 zombie once the main session eventually exits.
     if (!keepBackgroundShells) killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
+    // End this agent's REPL context (Code Mode); a resumed agent starts a new one.
+    if (isCodeModeEnabled()) {
+      const { releaseReplSession } = await import('../REPLTool/sessions.js')
+      releaseReplSession(agentId)
+    }
     /* eslint-disable @typescript-eslint/no-require-imports */
     if (feature('MONITOR_TOOL')) {
       const mcpMod =
