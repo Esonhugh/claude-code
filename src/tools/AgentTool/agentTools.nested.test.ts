@@ -24,6 +24,7 @@ for (const source of ['built-in', 'projectSettings', 'plugin'] as const) {
         hasWildcard: false,
         validTools: [specification, 'Read'],
         invalidTools: [],
+        unavailableTools: [],
         resolvedTools: [agentTool, readTool],
         allowedAgentTypes: ['worker', 'researcher'],
       })
@@ -44,6 +45,7 @@ for (const isAsync of [false, true]) {
         hasWildcard: false,
         validTools: [specification, 'Read'],
         invalidTools: [],
+        unavailableTools: [],
         resolvedTools: [readTool],
         allowedAgentTypes: ['worker', 'researcher'],
       })
@@ -55,13 +57,13 @@ test('main-thread Agent follows normal availability resolution', () => {
   expect(resolveAgentTools(
     { tools: [specification], source: 'projectSettings' }, [agentTool], false, true,
   )).toEqual({
-    hasWildcard: false, validTools: [specification], invalidTools: [],
+    hasWildcard: false, validTools: [specification], invalidTools: [], unavailableTools: [],
     resolvedTools: [agentTool], allowedAgentTypes: ['worker', 'researcher'],
   })
   expect(resolveAgentTools(
     { tools: [specification], source: 'projectSettings' }, [], false, true,
   )).toEqual({
-    hasWildcard: false, validTools: [], invalidTools: [specification],
+    hasWildcard: false, validTools: [], invalidTools: [specification], unavailableTools: [],
     resolvedTools: [], allowedAgentTypes: ['worker', 'researcher'],
   })
 })
@@ -71,7 +73,7 @@ test('a bare Agent declaration resolves in both foreground and background childr
     expect(resolveAgentTools(
       { tools: [AGENT_TOOL_NAME], source: 'projectSettings' }, [agentTool], isAsync,
     )).toEqual({
-      hasWildcard: false, validTools: [AGENT_TOOL_NAME], invalidTools: [],
+      hasWildcard: false, validTools: [AGENT_TOOL_NAME], invalidTools: [], unavailableTools: [],
       resolvedTools: [agentTool], allowedAgentTypes: undefined,
     })
   }
@@ -92,7 +94,7 @@ for (const tools of [undefined, ['*']]) {
       [agentTool, readTool, goalTool],
     )
     expect(result).toEqual({
-      hasWildcard: true, validTools: [], invalidTools: [], resolvedTools: [agentTool],
+      hasWildcard: true, validTools: [], invalidTools: [], unavailableTools: [], resolvedTools: [agentTool],
     })
   })
 }
@@ -103,7 +105,7 @@ test('nested Agent availability does not bypass adjacent main-thread tool restri
     [agentTool, goalTool],
   )
   expect(result).toEqual({
-    hasWildcard: false, validTools: [specification], invalidTools: [GOAL_TOOL_NAME],
+    hasWildcard: false, validTools: [specification], invalidTools: [], unavailableTools: [GOAL_TOOL_NAME],
     resolvedTools: [agentTool], allowedAgentTypes: ['worker', 'researcher'],
   })
 })

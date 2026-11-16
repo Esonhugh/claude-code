@@ -126,6 +126,7 @@ import {
   isToolDisallowedForAgent,
   primitiveToolGrant,
   resolveAgentTools,
+  zeroToolSpawnRefusal,
 } from './agentToolUtils.js'
 import { isCodeModeEnabled, withoutCodeModeTools } from '../REPLTool/codeModeGate.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
@@ -812,8 +813,8 @@ export async function* runAgent({
     availableTools,
     appState.toolPermissionContext,
   )
-  const resolvedTools = useExactTools
-    ? filterToolsForExactAgent(agentAvailableTools)
+  const toolResolution = useExactTools
+    ? undefined
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
         agentAvailableTools,
@@ -824,7 +825,8 @@ export async function* runAgent({
           subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
           spawnDepth,
         }),
-      ).resolvedTools
+      )
+  const resolvedTools = toolResolution?.resolvedTools ?? filterToolsForExactAgent(agentAvailableTools)
 
   logForDebugging(
     `[runAgent] agentId=${agentId}, agentType=${agentDefinition.agentType}, model=${resolvedAgentModel}, tools=${resolvedTools.map(tool => tool.name).join(',')}`,
@@ -1033,6 +1035,21 @@ export async function* runAgent({
     agentMcpTools.length > 0
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
+
+  if (mergedTools.length === 0) {
+    const refusal = zeroToolSpawnRefusal(agentDefinition, toolResolution, agentAvailableTools.length, {
+      isAsync,
+      isContinuation: (recordedUuids?.size ?? 0) > 0,
+    })
+    if (refusal !== undefined) {
+      // Official undoes what this run set up so far before refusing.
+      await mcpCleanup()
+      if (agentDefinition.hooks) clearSessionHooks(rootSetAppState, agentId)
+      clearAgentTranscriptSubdir(agentId)
+      unregisterPerfettoAgent(agentId)
+      throw new Error(refusal)
+    }
+  }
 
   // Like official 2.1.311, a new agent that can SendMessage learns which other
   // named agents in this session it can reach. A transcript with recorded

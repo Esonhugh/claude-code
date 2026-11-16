@@ -106,6 +106,8 @@ export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
   invalidTools: string[]
+  /** Specs naming a tool this session has that subagents may not use. */
+  unavailableTools: string[]
   resolvedTools: Tools
   allowedAgentTypes?: string[]
 }
@@ -288,6 +290,7 @@ export function resolveAgentTools(
       hasWildcard: true,
       validTools: [],
       invalidTools: [],
+      unavailableTools: [],
       resolvedTools: withoutOrphanPoll(allowedAvailableTools, isMainThread),
     }
   }
@@ -300,6 +303,8 @@ export function resolveAgentTools(
 
   const validTools: string[] = []
   const invalidTools: string[] = []
+  const unavailableTools: string[] = []
+  const poolNames = new Set(availableTools.map(tool => tool.name))
   const resolved: Tool[] = []
   const resolvedToolsSet = new Set<Tool>()
   let allowedAgentTypes: string[] | undefined
@@ -380,6 +385,10 @@ export function resolveAgentTools(
         resolved.push(replTool)
         resolvedToolsSet.add(replTool)
       }
+    } else if (isDisallowed({ name: toolName } as Tool)) {
+      // Official yM: a spec the agent's own disallowedTools removes is neither.
+    } else if (poolNames.has(toolName)) {
+      unavailableTools.push(toolSpec)
     } else {
       invalidTools.push(toolSpec)
     }
@@ -394,9 +403,53 @@ export function resolveAgentTools(
     hasWildcard: false,
     validTools,
     invalidTools,
+    unavailableTools,
     resolvedTools: withoutOrphanPoll(resolved, isMainThread),
     allowedAgentTypes,
   }
+}
+
+/**
+ * Official 2.1.325 runAgent: an agent left with no tools at all is refused
+ * when its own tools list is why (named tools, none of them usable here) and
+ * the session had tools to give; a wildcard or a continuation only logs it.
+ * Returns the refusal text, or undefined to spawn the agent anyway.
+ */
+export function zeroToolSpawnRefusal(
+  agentDefinition: Pick<AgentDefinition, 'agentType' | 'disallowedTools' | 'source'>,
+  resolution: ResolvedAgentTools | undefined,
+  availablePoolSize: number,
+  { isAsync, isContinuation }: { isAsync: boolean; isContinuation: boolean },
+): string | undefined {
+  const invalid = resolution?.invalidTools ?? []
+  const unavailable = resolution?.unavailableTools ?? []
+  const isDisallowed = isToolDisallowedForAgent(agentDefinition.disallowedTools)
+  const validButEmpty = (resolution?.validTools ?? []).filter(spec => !isDisallowed({ name: spec } as Tool))
+  const reasons = [
+    invalid.length ? `unrecognized [${invalid.join(', ')}]` : '',
+    unavailable.length ? `not available to subagents [${unavailable.join(', ')}]` : '',
+    validButEmpty.length ? `recognized but matched no tools in this session [${validButEmpty.join(', ')}]` : '',
+  ]
+    .filter(Boolean)
+    .join('; ')
+  const refused =
+    reasons !== '' && resolution !== undefined && !resolution.hasWildcard && availablePoolSize > 0 && !isContinuation
+  logEvent('tengu_subagent_zero_tools', {
+    isBuiltIn: agentDefinition.source === 'built-in',
+    invalidCount: invalid.length,
+    unavailableCount: unavailable.length,
+    validButEmptyCount: validButEmpty.length,
+    availablePoolSize,
+    hadWildcard: resolution?.hasWildcard ?? false,
+    isContinuation,
+    refused,
+    isAsync,
+  })
+  if (!refused) return undefined
+  return (
+    `Agent '${agentDefinition.agentType}' would be spawned with zero tools \u2014 refusing. ` +
+    `Its tools list resolved to nothing: ${reasons}. Fix the agent's tools frontmatter or pass a different subagent_type.`
+  )
 }
 
 /** Poll only answers REPL runs, so a subagent left without REPL loses it too (official Ma). */
