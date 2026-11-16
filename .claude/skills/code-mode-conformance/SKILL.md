@@ -49,7 +49,7 @@ version: 0.1.0
 
 ## 已知有意不同（不要当缺陷报）
 
-以 `docs/plan/code-mode.md` 的 D1–D5 和"Phase 3 遗留"为准，执行前重读。截至 2026-11-15：
+以 `docs/plan/code-mode.md` 的 D1–D5、"Phase 3 遗留"和"Phase 4 已知差异"为准，执行前重读。截至 2026-11-16：
 
 - 开关只有 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` 环境变量；不移植官方的 GrowthBook gate `tengu_rustling_blossom`，也不加 settings 或 `/config` 开关。
 - 支持 API billing（API key）：不移植官方的 provider、credentials、订阅类拒绝原因，自定义 `ANTHROPIC_BASE_URL` 下也能开启。
@@ -57,7 +57,8 @@ version: 0.1.0
 - D3：开关拒绝原因只有少数几种；teammate 拿普通工具。ant 构建例外。
 - D4：mods 的 tool.call hook 照常触发；官方装了这类 mod 拒绝开启。
 - 开关关闭时 resume Code Mode 会话：本地注入提醒继续；官方交互界面拒绝。
-- `$` 是官方 shell helper 的子集；超时重置文案是自拟的；prompt 里 MCP server 上限 10 是猜测。
+- `$` 是官方 shell helper 的子集；prompt 里 MCP server 上限 10 是猜测。超时文案已是官方原文，只有 `CONTEXT_LOST` 提示和 Poll schema 的 `content` 说明是自拟的。
+- Phase 4 未移植：`imagesRefused`、`imagePagesFailed`、`stripForStorage`、后台结果带图片、`startsTurn:false`、`ranBefore`、`rerunByHook`、`onStopWaitChange`；1 小时缓存判断读配置。后台进度视图和任务行属于 Phase 5。
 
 ## Scripts
 
