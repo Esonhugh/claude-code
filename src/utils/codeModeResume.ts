@@ -70,7 +70,7 @@ export function inferCodeModeFromMessages(messages: readonly Message[]): boolean
 }
 
 const DISPATCHED = /^\(dispatched #(\d+)\)/
-const DELIVERED = /<event kind="repl-eval"[^>]* eval="(\d+)"/g
+const DELIVERED = /<event (?:nonce="[^"]+" )?kind="repl-eval"[^>]* eval="(\d+)"/g
 
 /**
  * Official `npr`: evals dispatched to the background whose outcome never

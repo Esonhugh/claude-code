@@ -112,6 +112,7 @@ import {
 } from './utils/messageQueueManager.js'
 import { pollEventsAttachment } from './tools/PollTool/delivery.js'
 import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
+import { findReplSession, MAIN_REPL_SESSION, takeReplLateMessages } from './tools/REPLTool/sessions.js'
 import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
@@ -2426,6 +2427,11 @@ async function* queryLoop(
     if (foldedPollEvents) {
       yield foldedPollEvents
       toolResults.push(foldedPollEvents)
+    }
+    // The inner calls of the scripts it delivered are recorded with it (virtual rows, not sent to the API).
+    if (foldedPollEvents) {
+      const replSession = findReplSession(currentAgentId ?? MAIN_REPL_SESSION)
+      for (const message of replSession ? takeReplLateMessages(replSession) : []) yield message
     }
 
     // Memory prefetch consume: only if settled and not already consumed on

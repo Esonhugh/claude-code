@@ -146,7 +146,7 @@ describe('reportLostReplEvals (official qKa)', () => {
       use('t2', 'REPL'),
       earlier(result('t2', '(dispatched #2)')),
       use('p1', 'Poll'),
-      result('p1', '<event kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="1" ms="5" status="settled">done</event>'),
+      result('p1', '<event nonce="AbC-12_x" kind="repl-eval" at="2026-11-16T00:00:00.000Z" eval="1" ms="5" status="settled">done</event>'),
     ])
     const queued = events()
     expect(queued).toHaveLength(1)
