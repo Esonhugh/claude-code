@@ -46,11 +46,33 @@ export function codeModeChromeUnavailableText(): string {
   return `Claude in Chrome and computer use are not available while this session is in ${CODE_MODE_DISPLAY_NAME}, where the API does not yet add its safety rules for them. If the user asks for either, tell them why, and this: To use them, exit and start a new session with Code Mode off: ${withCodeModeEnv(0)} (add --chrome, if you started with it). This conversation can only be continued in Code Mode.`
 }
 
+const REMOTE_CONTROL_RESTART_HINT = `To use Remote Control, quit Claude Code and start it again with ${CODE_MODE_ENV} set to 0.`
+
+/**
+ * Why Remote Control can't be turned on, or null. A Code Mode session keeps
+ * Code Mode and refuses the bridge (official wun/qjs, reason `repl_mode`).
+ */
+export function codeModeRemoteControlRefusal(): string | null {
+  if (!getProcessCodeModeState().enabled) return null
+  return `Remote Control isn't available in ${CODE_MODE_DISPLAY_NAME} yet. ${REMOTE_CONTROL_RESTART_HINT}`
+}
+
+/**
+ * The startup notice for a Code Mode session whose Remote Control default is
+ * on: Code Mode stays on and the bridge does not connect (official zfa,
+ * notice `code-mode-remote-control`).
+ */
+export function codeModeRemoteControlNotConnectedText(): string {
+  return `Remote Control isn't available in ${CODE_MODE_DISPLAY_NAME} yet, so this session isn't connected. ${REMOTE_CONTROL_RESTART_HINT}`
+}
+
 /**
  * What main.tsx knows once startup has settled the session's shape. Remote
- * Control is the user's ask (--rc, the config default, an assistant session):
- * the tool pool is built before the bridge entitlement check, so a refused
- * bridge still leaves Code Mode off for that session.
+ * Control is the user's ask on the command line (--rc, or an assistant
+ * session, which always runs the bridge); a reattached bridge child counts
+ * too. The remoteControlAtStartup default does not: official keeps Code Mode
+ * on and refuses the bridge instead. The tool pool is built before the
+ * bridge entitlement check, so a refused --rc still leaves Code Mode off.
  */
 export type CodeModeStartup = { remoteControl: boolean; remote: boolean }
 
@@ -59,14 +81,8 @@ let settled: CodeModeState | undefined
 
 function startedWithRemoteControl(): boolean {
   if (process.env.CLAUDE_BRIDGE_REATTACH_SESSION !== undefined) return true
-  if (startup) {
-    if (startup.remoteControl) return true
-  } else if (process.argv.some(arg => arg === '--remote-control' || arg === '--rc' || arg.startsWith('--remote-control=') || arg.startsWith('--rc='))) {
-    return true
-  }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getRemoteControlAtStartup } = require('../../utils/config.js') as typeof import('../../utils/config.js')
-  return getRemoteControlAtStartup()
+  if (startup) return startup.remoteControl
+  return process.argv.some(arg => arg === '--remote-control' || arg === '--rc' || arg.startsWith('--remote-control=') || arg.startsWith('--rc='))
 }
 
 // Session modules are required lazily: this module is imported by tools.ts,

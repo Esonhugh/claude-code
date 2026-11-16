@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { getEmptyToolPermissionContext, type Tool } from '../../Tool.js'
 import { getIsInteractive, getIsRemoteMode, setIsInteractive, setIsRemoteMode } from '../../bootstrap/state.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { clearDynamicTeamContext, setDynamicTeamContext } from '../../utils/teammate.js'
 import { createTeammateContext, runWithTeammateContext } from '../../utils/teammateContext.js'
 import {
@@ -8,6 +9,8 @@ import {
   codeModeOnlyToolError,
   codeModeOnlyToolSuffix,
   codeModeRefusesDirectCall,
+  codeModeRemoteControlNotConnectedText,
+  codeModeRemoteControlRefusal,
   codeModeUnavailableMessage,
   getCodeModeState,
   hideCodeModeOnlyTools,
@@ -31,6 +34,11 @@ const savedEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
 const savedArgv = process.argv
 const savedInteractive = getIsInteractive()
 const savedRemoteMode = getIsRemoteMode()
+const savedRemoteControlAtStartup = getGlobalConfig().remoteControlAtStartup
+
+function setRemoteControlAtStartup(value: boolean | undefined): void {
+  saveGlobalConfig(current => ({ ...current, remoteControlAtStartup: value }))
+}
 
 function turnOn(): void {
   process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
@@ -70,6 +78,7 @@ afterEach(() => {
   process.argv = savedArgv
   setIsInteractive(savedInteractive)
   setIsRemoteMode(savedRemoteMode)
+  setRemoteControlAtStartup(savedRemoteControlAtStartup)
   clearDynamicTeamContext()
   resetCodeModeGateForTesting()
 })
@@ -119,6 +128,24 @@ describe('isCodeModeEnabled', () => {
     turnOn()
     expect(settleCodeModeGate({ remoteControl: true, remote: false })).toEqual({ enabled: false, reason: 'unattended' })
     expect(settleCodeModeGate({ remoteControl: false, remote: true })).toEqual({ enabled: false, reason: 'entrypoint' })
+  })
+
+  // Official asks only about --rc and the reattach variable; the default
+  // (toe) keeps Code Mode on and the bridge refuses itself (wun, repl_mode).
+  test('the remoteControlAtStartup default is not a Remote Control ask', () => {
+    turnOn()
+    setRemoteControlAtStartup(true)
+    expect(getCodeModeState()).toEqual({ enabled: true })
+    expect(settleCodeModeGate({ remoteControl: false, remote: false })).toEqual({ enabled: true })
+  })
+
+  test('--rc and the reattach variable still refuse it with the default on', () => {
+    turnOn()
+    setRemoteControlAtStartup(true)
+    expect(settleCodeModeGate({ remoteControl: true, remote: false })).toEqual({ enabled: false, reason: 'unattended' })
+    resetCodeModeGateForTesting()
+    process.env.CLAUDE_BRIDGE_REATTACH_SESSION = 'sess'
+    expect(settleCodeModeGate({ remoteControl: false, remote: false })).toEqual({ enabled: false, reason: 'unattended' })
   })
 
   test('in-process teammates are refused per context while the leader keeps it', async () => {
@@ -270,4 +297,35 @@ test('the Chrome stand-in text follows the official wording', () => {
   expect(codeModeChromeUnavailableText()).toBe(
     'Claude in Chrome and computer use are not available while this session is in Code Mode (experimental), where the API does not yet add its safety rules for them. If the user asks for either, tell them why, and this: To use them, exit and start a new session with Code Mode off: CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=0 claude (add --chrome, if you started with it). This conversation can only be continued in Code Mode.',
   )
+})
+
+describe('Remote Control turned on mid-session', () => {
+  test('is refused with the official text while Code Mode is on', () => {
+    turnOn()
+    settleCodeModeGate({ remoteControl: false, remote: false })
+    expect(codeModeRemoteControlRefusal()).toBe(
+      "Remote Control isn't available in Code Mode (experimental) yet. To use Remote Control, quit Claude Code and start it again with CLAUDE_CODE_EXPERIMENTAL_CODE_MODE set to 0.",
+    )
+  })
+
+  test('is not refused when Code Mode is off or was refused at startup', () => {
+    expect(codeModeRemoteControlRefusal()).toBeNull()
+    turnOn()
+    settleCodeModeGate({ remoteControl: true, remote: false })
+    expect(codeModeRemoteControlRefusal()).toBeNull()
+  })
+
+  test('the startup notice text follows the official wording', () => {
+    expect(codeModeRemoteControlNotConnectedText()).toBe(
+      "Remote Control isn't available in Code Mode (experimental) yet, so this session isn't connected. To use Remote Control, quit Claude Code and start it again with CLAUDE_CODE_EXPERIMENTAL_CODE_MODE set to 0.",
+    )
+  })
+
+  test('the leader still refuses it from an in-process teammate context', async () => {
+    turnOn()
+    settleCodeModeGate({ remoteControl: false, remote: false })
+    await runWithTeammateContext(teammateContext(), async () => {
+      expect(codeModeRemoteControlRefusal()).not.toBeNull()
+    })
+  })
 })

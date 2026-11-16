@@ -2265,12 +2265,11 @@ async function run(): Promise<CommanderCommand> {
 
       // Code Mode decides here: interactivity is set and the Remote Control
       // ask is known, before the Chrome prompt and the first tool pool. The
-      // bridge entitlement check comes later, so the ask decides.
+      // bridge entitlement check comes later, so the ask decides. The
+      // remoteControlAtStartup default is not an ask: like official, Code
+      // Mode stays on and initReplBridge refuses the bridge.
       settleCodeModeGate({
-        remoteControl:
-          remoteControlOption !== undefined ||
-          getRemoteControlAtStartup() ||
-          kairosEnabled,
+        remoteControl: remoteControlOption !== undefined || kairosEnabled,
         remote: remote !== null,
       })
 
