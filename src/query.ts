@@ -769,7 +769,18 @@ async function* queryLoop(
       stopHookBlockingCount,
       turnCount,
     } = state
-    await refreshContext(messages)
+    try {
+      await refreshContext(messages)
+    } catch (error) {
+      // An iteration that starts aborted (Esc ended the wait for its scripts,
+      // Bu) ends as an interrupted request, as official 2.1.325 does when the
+      // request of that iteration aborts (7qa83fnn.js:10127).
+      if (!toolUseContext.abortController.signal.aborted) throw error
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
+        yield createUserInterruptionMessage({ toolUse: false })
+      }
+      return { reason: 'aborted_streaming' }
+    }
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the

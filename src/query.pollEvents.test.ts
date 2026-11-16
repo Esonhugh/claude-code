@@ -167,3 +167,44 @@ describe('poll events fold into the turn (official 2.1.325)', () => {
     expect(getCommandQueueSnapshot()).toEqual([])
   })
 })
+
+describe('an iteration that starts aborted (official 2.1.325)', () => {
+  test('Esc that ends the wait for the scripts ends the turn as an interrupted request', async () => {
+    const toolUseContext = createToolUseContext()
+    let contextChecks = 0
+    // A prompt.context mod: the second iteration's context refresh sees the Esc first.
+    toolUseContext.modsSnapshot = {
+      hasHooks: (hook: string) => {
+        if (hook !== 'prompt.context') return false
+        if (++contextChecks === 2) toolUseContext.abortController.abort('user-cancel')
+        return contextChecks >= 2
+      },
+    } as unknown as ToolUseContext['modsSnapshot']
+    let requests = 0
+    const yielded: Message[] = []
+    const iterator = query({
+      messages: [createUserMessage({ content: 'go' })],
+      systemPrompt: asSystemPrompt([]), userContext: {}, systemContext: {},
+      canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      toolUseContext,
+      querySource: 'repl_main_thread' as QuerySource,
+      deps: {
+        uuid: () => crypto.randomUUID(),
+        microcompact: async messages => ({ messages }),
+        autocompact: async messages => ({ messages, wasCompacted: false }),
+        callModel: async function* () {
+          requests++
+          yield createAssistantMessage({ content: [{ type: 'tool_use', id: 'toolu_settle', name: 'Settle', input: {} }] })
+        },
+      },
+    })
+    let step = await iterator.next()
+    for (; !step.done; step = await iterator.next()) if ((step.value as Message).type) yielded.push(step.value as Message)
+
+    expect(requests).toBe(1)
+    expect(step.value).toEqual({ reason: 'aborted_streaming' })
+    const last = yielded.at(-1)!
+    expect(last.type).toBe('user')
+    expect(JSON.stringify(last.type === 'user' && last.message.content)).toContain('[Request interrupted by user]')
+  })
+})
