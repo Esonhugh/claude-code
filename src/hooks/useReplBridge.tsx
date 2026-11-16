@@ -6,9 +6,31 @@ import {
   type BridgePermissionResponse,
   isBridgePermissionResponse,
 } from '../bridge/bridgePermissionCallbacks.js'
+import {
+  accountOfCurrentLogin,
+  AUTH_BASELINE_PENDING,
+  AUTH_REVIVE_POLL_MS,
+  type AuthBaselineToken,
+  type BridgeAccount,
+  decideAuthRevive,
+  readBridgeCredential,
+  shouldBrakeAuthRevive,
+} from '../bridge/bridgeAuthRevive.js'
+import { withBridgeDisconnectedLine } from '../bridge/bridgeDisconnectLine.js'
+import {
+  BRIDGE_FAILED_NOTIFICATION_KEY,
+  BRIDGE_FUSE_DETAIL,
+  BRIDGE_LOGIN_DETAIL,
+  bridgeFailedTitle,
+} from '../bridge/bridgeFailure.js'
+import { isBridgeEnabled } from '../bridge/bridgeEnabled.js'
 import { buildBridgeConnectUrl } from '../bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from '../bridge/inboundMessages.js'
-import type { BridgeState, ReplBridgeHandle } from '../bridge/replBridge.js'
+import type {
+  BridgeErrorKind,
+  BridgeState,
+  ReplBridgeHandle,
+} from '../bridge/replBridge.js'
 import { setReplBridgeHandle } from '../bridge/replBridgeHandle.js'
 import type { Command } from '../commands.js'
 import { getSlashCommandToolSkills, isBridgeSafeCommand } from '../commands.js'
@@ -32,10 +54,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
 import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
 import { buildSystemInitMessage } from '../utils/messages/systemInit.js'
-import {
-  createBridgeStatusMessage,
-  createSystemMessage,
-} from '../utils/messages.js'
+import { createBridgeStatusMessage } from '../utils/messages.js'
 import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
@@ -99,6 +118,15 @@ export function useReplBridge(
   // only on successful init. Hits MAX_CONSECUTIVE_INIT_FAILURES → fuse blown
   // for the session, regardless of replBridgeEnabled re-toggling.
   const consecutiveFailuresRef = useRef(0)
+  // Auth-revive state (official 2.1.325). The baseline is the credential the
+  // bridge failed with; the watcher re-enables once a different one for the
+  // same account appears. Revives are capped unless /login ran in-process.
+  const authBaselineRef = useRef<AuthBaselineToken>(undefined)
+  const authBaselineAccountRef = useRef<BridgeAccount | undefined>(undefined)
+  const authBaselineVersionRef = useRef(0)
+  const authBaselineGenerationRef = useRef(0)
+  const authRevivesRef = useRef(0)
+  const authRevivedRef = useRef(false)
   const setAppState = useSetAppState()
   const commandsRef = useRef(commands)
   commandsRef.current = commands
@@ -107,7 +135,7 @@ export function useReplBridge(
   const messagesRef = useRef(messages)
   messagesRef.current = messages
   const store = useAppStateStore()
-  const { addNotification } = useNotifications()
+  const { addNotification, removeNotification } = useNotifications()
   const replBridgeEnabled = feature('BRIDGE_MODE')
     ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
       useAppState(s => s.replBridgeEnabled)
@@ -120,6 +148,15 @@ export function useReplBridge(
     ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
       useAppState(s => s.replBridgeOutboundOnly)
     : false
+  const replBridgeError = feature('BRIDGE_MODE')
+    ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
+      useAppState(s => s.replBridgeError)
+    : undefined
+  const replBridgeErrorKind = feature('BRIDGE_MODE')
+    ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
+      useAppState(s => s.replBridgeErrorKind)
+    : undefined
+  const authVersion = useAppState(s => s.authVersion)
   const replBridgeInitialName = feature('BRIDGE_MODE')
     ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
       useAppState(s => s.replBridgeInitialName)
@@ -136,41 +173,127 @@ export function useReplBridge(
       if (!replBridgeEnabled) return
 
       const outboundOnly = replBridgeOutboundOnly
-      function notifyBridgeFailed(detail?: string): void {
+      const explicit = store.getState().replBridgeExplicit
+      let cancelled = false
+      // A fresh attempt starts clean: drop the last failure's toast and error.
+      if (!outboundOnly) {
+        removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
+        setAppState(prev =>
+          prev.replBridgeError === undefined
+            ? prev
+            : {
+                ...prev,
+                replBridgeError: undefined,
+                replBridgeErrorKind: undefined,
+              },
+        )
+      }
+
+      // "disconnected" once the session had a live handle, "failed" before.
+      function notifyBridgeFailed(detail?: string, wasConnected = false): void {
         if (outboundOnly) return
         addNotification({
-          key: 'bridge-failed',
+          key: BRIDGE_FAILED_NOTIFICATION_KEY,
           jsx: (
             <>
-              <Text color="error">Remote Control failed</Text>
-              {detail && <Text dimColor> · {detail}</Text>}
+              <Text color="error">{bridgeFailedTitle(wasConnected)}</Text>
+              <Text dimColor> · {detail || '/remote-control'}</Text>
             </>
           ),
           priority: 'immediate',
+          invalidates: [BRIDGE_FAILED_NOTIFICATION_KEY],
         })
       }
 
-      if (consecutiveFailuresRef.current >= MAX_CONSECUTIVE_INIT_FAILURES) {
+      // Official writes this transcript line on every failure the
+      // notification reports, outbound-only mirrors excepted.
+      function noteBridgeDisconnected(
+        detail: string | undefined,
+        kind: BridgeErrorKind,
+      ): void {
+        if (outboundOnly) return
+        setMessages(prev => withBridgeDisconnectedLine(prev, detail, kind))
+      }
+
+      // Set once the 10s timer turned the bridge off; the cleanup then keeps
+      // the error so the dialog and the auth watcher still see it.
+      let autoDisabled = false
+      function scheduleAutoDisable(): void {
+        clearTimeout(failureTimeoutRef.current)
+        failureTimeoutRef.current = setTimeout(() => {
+          if (cancelled) return
+          failureTimeoutRef.current = undefined
+          setAppState(prev => {
+            if (!prev.replBridgeError) return prev
+            autoDisabled = true
+            return { ...prev, replBridgeEnabled: false }
+          })
+        }, BRIDGE_FAILURE_DISMISS_MS)
+      }
+
+      function failBridge(
+        detail: string,
+        kind: BridgeErrorKind = 'terminal',
+      ): void {
+        notifyBridgeFailed(detail)
+        noteBridgeDisconnected(detail, kind)
+        setAppState(prev => ({
+          ...prev,
+          replBridgeError: detail,
+          replBridgeErrorKind: kind,
+        }))
+        if (kind === 'auth') baselineAuth()
+        scheduleAutoDisable()
+      }
+
+      // Snapshot the credential the bridge failed with, so the watcher can
+      // tell a later sign-in from the token that was already rejected.
+      function baselineAuth(): void {
+        authBaselineRef.current = AUTH_BASELINE_PENDING
+        authBaselineVersionRef.current = store.getState().authVersion
+        const generation = ++authBaselineGenerationRef.current
+        void readBridgeCredential().then(credential => {
+          if (authBaselineGenerationRef.current !== generation) return
+          authBaselineAccountRef.current = accountOfCurrentLogin()
+          authBaselineRef.current =
+            store.getState().authVersion !== authBaselineVersionRef.current
+              ? undefined
+              : credential?.accessToken
+        })
+      }
+
+      // A revive was granted by a fresh sign-in, so this attempt doesn't count
+      // toward the fuse and its failures are treated as auth failures.
+      const authRevived = authRevivedRef.current
+      authRevivedRef.current = false
+
+      if (
+        consecutiveFailuresRef.current >= MAX_CONSECUTIVE_INIT_FAILURES &&
+        !authRevived
+      ) {
         logForDebugging(
           `[bridge:repl] Hook: ${consecutiveFailuresRef.current} consecutive init failures, not retrying this session`,
         )
         // Clear replBridgeEnabled so /remote-control doesn't mistakenly show
         // BridgeDisconnectDialog for a bridge that never connected.
-        const fuseHint = 'disabled after repeated failures · restart to retry'
-        notifyBridgeFailed(fuseHint)
+        notifyBridgeFailed(BRIDGE_FUSE_DETAIL)
+        noteBridgeDisconnected(BRIDGE_FUSE_DETAIL, 'terminal')
         setAppState(prev => {
-          if (prev.replBridgeError === fuseHint && !prev.replBridgeEnabled)
+          if (
+            prev.replBridgeError === BRIDGE_FUSE_DETAIL &&
+            !prev.replBridgeEnabled
+          )
             return prev
           return {
             ...prev,
-            replBridgeError: fuseHint,
+            replBridgeError: BRIDGE_FUSE_DETAIL,
+            replBridgeErrorKind: 'terminal',
             replBridgeEnabled: false,
           }
         })
         return
       }
 
-      let cancelled = false
       const inboundController = new AbortController()
       // Capture messages.length now so we don't re-send initial messages
       // through writeMessages after the bridge connects.
@@ -278,6 +401,7 @@ export function useReplBridge(
           function handleStateChange(
             state: BridgeState,
             detail?: string,
+            kind?: BridgeErrorKind,
           ): void {
             if (cancelled) return
             if (outboundOnly) {
@@ -302,6 +426,7 @@ export function useReplBridge(
             const handle = handleRef.current
             switch (state) {
               case 'ready':
+                removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
                 setAppState(prev => {
                   const connectUrl =
                     handle && handle.environmentId !== ''
@@ -339,10 +464,12 @@ export function useReplBridge(
                     replBridgeEnvironmentId: envId,
                     replBridgeSessionId: sessionId,
                     replBridgeError: undefined,
+                    replBridgeErrorKind: undefined,
                   }
                 })
                 break
               case 'connected': {
+                removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
                 setAppState(prev => {
                   if (prev.replBridgeSessionActive) return prev
                   return {
@@ -351,6 +478,7 @@ export function useReplBridge(
                     replBridgeSessionActive: true,
                     replBridgeReconnecting: false,
                     replBridgeError: undefined,
+                    replBridgeErrorKind: undefined,
                   }
                 })
                 // Send system/init so remote clients (web/iOS/Android) get
@@ -416,31 +544,26 @@ export function useReplBridge(
                   }
                 })
                 break
-              case 'failed':
-                // Clear any previous failure dismiss timer
+              case 'failed': {
                 clearTimeout(failureTimeoutRef.current)
-                notifyBridgeFailed(detail)
+                notifyBridgeFailed(detail, handle !== null)
+                // Unclassified failures right after an auth revive are
+                // still auth trouble.
+                const errorKind = kind ?? (authRevived ? 'auth' : 'terminal')
                 setAppState(prev => ({
                   ...prev,
                   replBridgeError: detail,
+                  replBridgeErrorKind: errorKind,
                   replBridgeReconnecting: false,
                   replBridgeSessionActive: false,
                   replBridgeConnected: false,
                 }))
+                if (errorKind === 'auth') baselineAuth()
+                noteBridgeDisconnected(detail, errorKind)
                 // Auto-disable after timeout so the hook stops retrying.
-                failureTimeoutRef.current = setTimeout(() => {
-                  if (cancelled) return
-                  failureTimeoutRef.current = undefined
-                  setAppState(prev => {
-                    if (!prev.replBridgeError) return prev
-                    return {
-                      ...prev,
-                      replBridgeEnabled: false,
-                      replBridgeError: undefined,
-                    }
-                  })
-                }, BRIDGE_FAILURE_DISMISS_MS)
+                scheduleAutoDisable()
                 break
+              }
             }
           }
 
@@ -595,28 +718,24 @@ export function useReplBridge(
             // cases (no_oauth, policy_denied, etc.) onStateChange('failed')
             // already fired with a specific hint. The GrowthBook-gate-off case
             // is intentionally silent — not a failure, just not rolled out.
-            consecutiveFailuresRef.current++
+            if (!authRevived) consecutiveFailuresRef.current++
             logForDebugging(
               `[bridge:repl] Init returned null (precondition or session creation failed); consecutive failures: ${consecutiveFailuresRef.current}`,
             )
             clearTimeout(failureTimeoutRef.current)
-            setAppState(prev => ({
-              ...prev,
-              replBridgeError:
-                prev.replBridgeError ?? 'check debug logs for details',
-            }))
-            failureTimeoutRef.current = setTimeout(() => {
-              if (cancelled) return
-              failureTimeoutRef.current = undefined
-              setAppState(prev => {
-                if (!prev.replBridgeError) return prev
-                return {
-                  ...prev,
-                  replBridgeEnabled: false,
-                  replBridgeError: undefined,
-                }
-              })
-            }, BRIDGE_FAILURE_DISMISS_MS)
+            if (store.getState().replBridgeError !== undefined) {
+              scheduleAutoDisable()
+            } else if (explicit && !outboundOnly && isBridgeEnabled()) {
+              // An explicit /remote-control that came back with no reason
+              // most likely lacks a claude.ai sign-in.
+              failBridge(BRIDGE_LOGIN_DETAIL, 'auth')
+            } else {
+              setAppState(prev =>
+                prev.replBridgeEnabled
+                  ? { ...prev, replBridgeEnabled: false }
+                  : prev,
+              )
+            }
             return
           }
           handleRef.current = handle
@@ -761,37 +880,20 @@ export function useReplBridge(
           // into the UI. Also fixes pre-existing spurious setAppState/
           // setMessages on cancelled throws.
           if (cancelled) return
-          consecutiveFailuresRef.current++
+          if (!authRevived) consecutiveFailuresRef.current++
           const errMsg = errorMessage(err)
           logForDebugging(
             `[bridge:repl] Init failed: ${errMsg}; consecutive failures: ${consecutiveFailuresRef.current}`,
           )
           clearTimeout(failureTimeoutRef.current)
-          notifyBridgeFailed(errMsg)
-          setAppState(prev => ({
-            ...prev,
-            replBridgeError: errMsg,
-          }))
-          failureTimeoutRef.current = setTimeout(() => {
-            if (cancelled) return
-            failureTimeoutRef.current = undefined
-            setAppState(prev => {
-              if (!prev.replBridgeError) return prev
-              return {
-                ...prev,
-                replBridgeEnabled: false,
-                replBridgeError: undefined,
-              }
-            })
-          }, BRIDGE_FAILURE_DISMISS_MS)
-          if (!outboundOnly) {
-            setMessages(prev => [
-              ...prev,
-              createSystemMessage(
-                `Remote Control failed to connect: ${errMsg}`,
-                'warning',
-              ),
-            ])
+          if (outboundOnly) {
+            setAppState(prev =>
+              prev.replBridgeEnabled
+                ? { ...prev, replBridgeEnabled: false }
+                : prev,
+            )
+          } else {
+            failBridge(errMsg, authRevived ? 'auth' : 'terminal')
           }
         }
       })()
@@ -810,11 +912,19 @@ export function useReplBridge(
           handleRef.current = null
           setReplBridgeHandle(null)
         }
+        // An auto-disabled failure keeps its toast and error: the dialog,
+        // /remote-control and the auth watcher still need them.
+        const keepError = autoDisabled || outboundOnly
+        if (!keepError) removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
         setAppState(prev => {
+          const error = keepError ? prev.replBridgeError : undefined
+          const errorKind = keepError ? prev.replBridgeErrorKind : undefined
           if (
             !prev.replBridgeConnected &&
             !prev.replBridgeSessionActive &&
-            !prev.replBridgeError
+            !prev.replBridgeReconnecting &&
+            prev.replBridgeError === error &&
+            prev.replBridgeErrorKind === errorKind
           ) {
             return prev
           }
@@ -827,7 +937,8 @@ export function useReplBridge(
             replBridgeSessionUrl: undefined,
             replBridgeEnvironmentId: undefined,
             replBridgeSessionId: undefined,
-            replBridgeError: undefined,
+            replBridgeError: error,
+            replBridgeErrorKind: errorKind,
             replBridgePermissionCallbacks: undefined,
           }
         })
@@ -840,6 +951,89 @@ export function useReplBridge(
     setAppState,
     setMessages,
     addNotification,
+    removeNotification,
+  ])
+
+  // Auth-revive watcher: while an auth failure keeps the bridge off, poll for
+  // a fresh same-account sign-in and turn Remote Control back on. /login
+  // bumps authVersion, which re-runs this at once and lifts the revive cap.
+  useEffect(() => {
+    if (feature('BRIDGE_MODE')) {
+      if (
+        replBridgeEnabled ||
+        replBridgeError === undefined ||
+        replBridgeErrorKind !== 'auth' ||
+        replBridgeOutboundOnly
+      ) {
+        return
+      }
+      let stopped = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      async function tick(): Promise<void> {
+        const signedInSinceFailure =
+          store.getState().authVersion !== authBaselineVersionRef.current
+        const braked = shouldBrakeAuthRevive(
+          signedInSinceFailure,
+          authRevivesRef.current,
+        )
+        if (braked) {
+          logForDebugging(
+            '[bridge:repl] Auth-revive watcher: revive brake engaged — still polling; an in-process /login bypasses',
+          )
+        }
+        const pending = authBaselineRef.current === AUTH_BASELINE_PENDING
+        const credential =
+          braked || pending ? undefined : await readBridgeCredential()
+        if (stopped) return
+        const decision = decideAuthRevive({
+          baseline: authBaselineRef.current,
+          baselineAccount: authBaselineAccountRef.current,
+          credential,
+        })
+        if (decision === 'disarm') {
+          logForDebugging(
+            '[bridge:repl] Auth-revive watcher: credential belongs to a different account — disarming',
+          )
+          return
+        }
+        if (decision === 'revive') {
+          logForDebugging(
+            '[bridge:repl] Auth-revive watcher: fresh same-account credential — re-enabling Remote Control',
+          )
+          let revived = false
+          setAppState(prev => {
+            if (prev.replBridgeEnabled || prev.replBridgeError === undefined)
+              return prev
+            revived = true
+            return {
+              ...prev,
+              replBridgeEnabled: true,
+              replBridgeError: undefined,
+              replBridgeErrorKind: undefined,
+            }
+          })
+          if (revived) {
+            authRevivesRef.current++
+            authRevivedRef.current = true
+          }
+          return
+        }
+        timer = setTimeout(() => void tick(), AUTH_REVIVE_POLL_MS)
+      }
+      void tick()
+      return () => {
+        stopped = true
+        clearTimeout(timer)
+      }
+    }
+  }, [
+    replBridgeEnabled,
+    replBridgeError,
+    replBridgeErrorKind,
+    replBridgeOutboundOnly,
+    authVersion,
+    setAppState,
+    store,
   ])
 
   useEffect(() => () => {

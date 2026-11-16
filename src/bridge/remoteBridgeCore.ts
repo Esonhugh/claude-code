@@ -62,7 +62,11 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
-import type { ReplBridgeHandle, BridgeState } from './replBridge.js'
+import type {
+  ReplBridgeHandle,
+  BridgeStateChangeHandler,
+} from './replBridge.js'
+import { describeCloseCode } from './bridgeFailure.js'
 import type { Message } from '../types/message.js'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
@@ -121,7 +125,7 @@ export type EnvLessBridgeParams = {
   onSetPermissionMode?: (
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
-  onStateChange?: (state: BridgeState, detail?: string) => void
+  onStateChange?: BridgeStateChangeHandler
   /**
    * When true, skip opening the SSE read stream — only the CCRClient write
    * path is activated. Threaded to createV2ReplTransport and
@@ -201,7 +205,11 @@ export async function initEnvLessBridgeCore(
     cfg,
   )
   if (!credentials) {
-    onStateChange?.('failed', 'Remote credentials fetch failed — see debug log')
+    onStateChange?.(
+      'failed',
+      'Remote credentials fetch failed — see debug log',
+      'terminal',
+    )
     logBridgeSkip('v2_remote_creds_failed', undefined, true)
     void archiveSession(
       sessionId,
@@ -368,7 +376,11 @@ export async function initEnvLessBridgeCore(
             'bridge_repl_v2_proactive_refresh_failed',
           )
           if (!tornDown) {
-            onStateChange?.('failed', `Refresh failed: ${errorMessage(err)}`)
+            onStateChange?.(
+              'failed',
+              `Refresh failed: ${errorMessage(err)}`,
+              'terminal',
+            )
           }
         } finally {
           authRecoveryInFlight = false
@@ -465,7 +477,11 @@ export async function initEnvLessBridgeCore(
         void recoverFromAuthFailure()
         return
       }
-      onStateChange?.('failed', `Transport closed (code ${code})`)
+      onStateChange?.(
+        'failed',
+        `Transport closed: ${describeCloseCode(code)}`,
+        'terminal',
+      )
     })
   }
 
@@ -549,7 +565,11 @@ export async function initEnvLessBridgeCore(
       const oauthToken = getAccessToken() ?? stale
       if (!oauthToken || tornDown) {
         if (!tornDown) {
-          onStateChange?.('failed', 'JWT refresh failed: no OAuth token')
+          onStateChange?.(
+            'failed',
+            'JWT refresh failed: no OAuth token — run /login',
+            'auth',
+          )
         }
         return
       }
@@ -567,7 +587,11 @@ export async function initEnvLessBridgeCore(
       )
       if (!fresh || tornDown) {
         if (!tornDown) {
-          onStateChange?.('failed', 'JWT refresh failed after 401')
+          onStateChange?.(
+            'failed',
+            'OAuth token refresh failed — run /login to re-authenticate',
+            'auth',
+          )
         }
         return
       }
@@ -586,7 +610,11 @@ export async function initEnvLessBridgeCore(
       )
       logForDiagnosticsNoPII('error', 'bridge_repl_v2_jwt_refresh_failed')
       if (!tornDown) {
-        onStateChange?.('failed', `JWT refresh failed: ${errorMessage(err)}`)
+        onStateChange?.(
+          'failed',
+          `JWT refresh failed: ${errorMessage(err)}`,
+          'terminal',
+        )
       }
     } finally {
       authRecoveryInFlight = false
