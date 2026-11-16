@@ -302,10 +302,11 @@ export type PromptInputMode =
   | 'prompt'
   | 'orphaned-permission'
   | 'task-notification'
+  | 'poll-event'
 
 export type EditablePromptInputMode = Exclude<
   PromptInputMode,
-  `${string}-notification`
+  `${string}-notification` | 'poll-event'
 >
 
 /**
@@ -416,6 +417,22 @@ export type QueuedCommand = {
   taskId?: string
   /** The task already sent its SDK task_notification; print.ts must not send it again. */
   sdkTaskNotificationSent?: true
+  /** The event a `poll-event` command carries (official 2.1.325 `pollEvent`). */
+  pollEvent?: QueuedPollEvent
+}
+
+/** A Poll event waiting in the queue for the next delivery. */
+export type QueuedPollEvent = {
+  kind: string
+  /** The `<event nonce=…>` element as delivered. */
+  envelope: string
+  nonce: string
+  /** Whether it counts toward waking a turn; false ones wait for the next delivery. */
+  wake: boolean
+  /** False: it never starts a turn itself (an eval the user stopped, its late output). */
+  startsTurn?: false
+  settleDelivered?: () => void
+  settleDropped?: (reason: Error) => void
 }
 
 /**

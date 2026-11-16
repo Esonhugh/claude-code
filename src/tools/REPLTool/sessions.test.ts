@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import {
   detachReplEval,
   dispatchReplEval,
   endLateReplEval,
+  enqueueReplStatus,
   finishReplEval,
   formatReplStatusEvent,
   getReplSession,
@@ -20,7 +22,10 @@ import {
   takeUnwaitedReplEvals,
 } from './sessions.js'
 
-afterEach(() => releaseAllReplSessions())
+afterEach(() => {
+  releaseAllReplSessions()
+  resetCommandQueue()
+})
 
 let nextKey = 0
 const freshSession = () => getReplSession(`ledger-${nextKey++}`)
@@ -189,6 +194,15 @@ describe('repl-status wording (official 2.1.325 chunk-2p8jywjd.js)', () => {
   test('the element carries the pending count and escapes its text', () => {
     expect(formatReplStatusEvent([row(1, 'waiting')], new Date('2026-11-16T00:00:00.000Z'))).toBe(
       '<event kind="repl-status" at="2026-11-16T00:00:00.000Z" pending="1">no output yet \u2014 1 eval pending: #1 waiting for its turn. Poll again to keep waiting.</event>',
+    )
+  })
+
+  test("enqueueReplStatus queues the element as a poll event for the session's thread", () => {
+    enqueueReplStatus(getReplSession('a-status'), [row(1, 'detached', 31_000)], true)
+    const [queued] = getCommandQueueSnapshot()
+    expect(queued).toMatchObject({ mode: 'poll-event', agentId: 'a-status', pollEvent: { kind: 'repl-status', wake: true } })
+    expect(queued!.value).toMatch(
+      /^<event nonce="[A-Za-z0-9_-]{8}" kind="repl-status" at="[^"]+" pending="1">1 eval still pending: #1 running for 31s \(detached: later evals run beside it\)\.<\/event>$/,
     )
   })
 })

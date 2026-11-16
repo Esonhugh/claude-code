@@ -4,7 +4,7 @@ import { getIsInteractive, setIsInteractive } from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
-import { enqueue, getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
+import { enqueue, getCommandQueueSnapshot, POLL_EVENT_CHUNK_EVENTS, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import {
   getSessionSettingsCache,
@@ -22,7 +22,6 @@ import {
   findReplSession,
   formatReplEvalEvent,
   getReplSession,
-  POLL_CHUNK_EVENTS,
   releaseAllReplSessions,
   replLedger,
 } from './sessions.js'
@@ -406,9 +405,9 @@ describe('REPL async lane limits', () => {
   test('Poll delivers at most 20 events at a time and says how many follow', async () => {
     const context = contextFor()
     const session = getReplSession(context.agentId!)
-    for (let id = 1; id <= POLL_CHUNK_EVENTS + 3; id++) session.events.push({ id, text: `e${id}`, queued: false })
+    for (let id = 1; id <= POLL_EVENT_CHUNK_EVENTS + 3; id++) session.events.push({ id, text: `e${id}`, queued: false })
     const first = await poll(context)
-    expect(first.data).toMatchObject({ eventCount: POLL_CHUNK_EVENTS, remainingWakeCount: 3 })
+    expect(first.data).toMatchObject({ eventCount: POLL_EVENT_CHUNK_EVENTS, remainingWakeCount: 3 })
     expect(first.text.endsWith(
       '<system>delivery chunked: 3 more queued event(s) follow in the next delivery, oldest first; nothing was dropped.</system>',
     )).toBe(true)

@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import { randomBytes, randomUUID } from 'crypto'
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
 import type { AppState } from '../state/AppState.js'
@@ -7,10 +8,12 @@ import type {
   QueueOperation,
   QueueOperationMessage,
 } from '../types/messageQueueTypes.js'
+import type { AgentId } from '../types/ids.js'
 import type {
   EditablePromptInputMode,
   PromptInputMode,
   QueuedCommand,
+  QueuedPollEvent,
   QueuePriority,
 } from '../types/textInputTypes.js'
 import type { PastedContent } from './config.js'
@@ -192,6 +195,154 @@ export function enqueuePendingNotification(command: QueuedCommand): void | Promi
     })
   }
   enqueue(pending)
+}
+
+// ============================================================================
+// Poll events (official 2.1.325 chunk-jsrfnb7z.js and the queue's
+// enqueuePollEvent / drainPollEventChunk)
+// ============================================================================
+
+/** Official Zk and Cge: the kinds REPL evals produce. */
+export const REPL_EVAL_EVENT_KIND = 'repl-eval'
+export const REPL_STATUS_EVENT_KIND = 'repl-status'
+
+/** Official H6t and SBe: one delivery holds at most this many events and bytes (always at least one event). */
+export const POLL_EVENT_CHUNK_EVENTS = 20
+export const POLL_EVENT_CHUNK_BYTES = 32_768
+/** Official V and Tge (`L6t`): an envelope's cap after nonce stamping, larger for an eval's outcome. */
+export const POLL_EVENT_REPL_EVAL_BYTES = 163_840
+export const POLL_EVENT_BYTES = 49_152
+/** Official yBe: poll events the queue holds at most. */
+export const POLL_EVENT_QUEUE_CAP = 1000
+const POLL_EVENT_KIND = /^[a-z][a-z0-9-]{0,63}$/
+/** Official x: random bytes in a nonce. */
+const NONCE_BYTES = 6
+
+export type PollEventInput = {
+  kind: string
+  /** A single `<event kind=… at=…>` element; the queue stamps its nonce. */
+  element: string
+  /** Defaults to true. */
+  wake?: boolean
+  startsTurn?: false
+  /** The subagent the event is for (undefined: the main thread). */
+  agentId?: AgentId
+}
+
+function pollEventCap(kind: string): number {
+  return kind === REPL_EVAL_EVENT_KIND ? POLL_EVENT_REPL_EVAL_BYTES : POLL_EVENT_BYTES
+}
+
+/** Official `bpn` (element form): the nonce goes in as the first attribute. */
+function stampNonce(element: string, nonce: string): string {
+  return `<event nonce="${nonce}"${element.slice('<event'.length)}`
+}
+
+function isPollEventFor(cmd: QueuedCommand, agentId: AgentId | undefined): boolean {
+  return cmd.mode === 'poll-event' && cmd.agentId === agentId
+}
+
+/** Official `uzs`: an event starts a turn unless held, told not to wake, or told not to start one. */
+export function pollEventWakes(event: { passive?: boolean; wake?: boolean; startsTurn?: false }): boolean {
+  return event.passive !== true && event.wake === true && event.startsTurn !== false
+}
+
+/** Official `DBr`: whether a queued command is an eval's outcome that starts a turn. */
+export function isWakingReplEvalEvent(cmd: QueuedCommand): boolean {
+  return (
+    cmd.mode === 'poll-event' &&
+    cmd.pollEvent?.kind === REPL_EVAL_EVENT_KIND &&
+    pollEventWakes({ wake: cmd.pollEvent.wake, startsTurn: cmd.pollEvent.startsTurn })
+  )
+}
+
+/**
+ * Official `enqueuePollEvent`: stamps a nonce on the element and queues it,
+ * a waking one at `next` priority and the rest at `later`. Throws when the
+ * queue is full or the envelope is over its cap; the promise settles when a
+ * delivery takes the event or it is dropped undelivered.
+ */
+export function enqueuePollEvent(input: PollEventInput): Promise<void> {
+  const queued = commandQueue.filter(cmd => cmd.mode === 'poll-event').length
+  if (queued + 1 > POLL_EVENT_QUEUE_CAP) throw new Error(`poll event rejected: ${POLL_EVENT_QUEUE_CAP} events already queued`)
+  if (!POLL_EVENT_KIND.test(input.kind))
+    throw new Error('poll event rejected: invalid kind (a lowercase letter, then lowercase letters, digits and hyphens, at most 64 characters)')
+  const nonce = randomBytes(NONCE_BYTES).toString('base64url')
+  const envelope = stampNonce(input.element, nonce)
+  const bytes = Buffer.byteLength(envelope, 'utf8')
+  if (bytes > pollEventCap(input.kind))
+    throw new Error(`poll event rejected: envelope is ${bytes} bytes after nonce stamping (cap ${pollEventCap(input.kind)})`)
+  const wake = input.wake ?? true
+  const { promise, resolve, reject } = Promise.withResolvers<void>()
+  // Nobody has to listen for a drop.
+  promise.catch(() => {})
+  const pollEvent: QueuedPollEvent = {
+    kind: input.kind,
+    envelope,
+    nonce,
+    wake,
+    ...(input.startsTurn === false && { startsTurn: false }),
+    settleDelivered: () => resolve(),
+    settleDropped: reject,
+  }
+  enqueueCommand({
+    value: envelope,
+    mode: 'poll-event',
+    agentId: input.agentId,
+    priority: wake ? 'next' : 'later',
+    uuid: randomUUID(),
+    isMeta: true,
+    pollEvent,
+  })
+  return promise
+}
+
+/** Official `R3n`: the oldest events that fit one delivery. */
+export function takePollEventChunk(commands: readonly QueuedCommand[]): QueuedCommand[] {
+  const chunk: QueuedCommand[] = []
+  let bytes = 0
+  for (const cmd of commands) {
+    const size = Buffer.byteLength(cmd.pollEvent?.envelope ?? '', 'utf8')
+    if (chunk.length > 0 && (chunk.length + 1 > POLL_EVENT_CHUNK_EVENTS || bytes + size > POLL_EVENT_CHUNK_BYTES)) break
+    chunk.push(cmd)
+    bytes += size
+  }
+  return chunk
+}
+
+/** Official `countPendingWakePollEvents`: waking events queued for the agent. */
+export function countPendingWakePollEvents(agentId: AgentId | undefined): number {
+  return commandQueue.filter(cmd => isPollEventFor(cmd, agentId) && cmd.pollEvent?.wake === true).length
+}
+
+/** Official `countRemainingWakePollEventsAfter`: waking events left once `taken` is delivered. */
+export function countRemainingWakePollEventsAfter(taken: readonly QueuedCommand[]): number {
+  const agentId = taken.find(cmd => cmd.mode === 'poll-event')?.agentId
+  const inTaken = taken.filter(cmd => cmd.pollEvent?.wake === true).length
+  return Math.max(0, countPendingWakePollEvents(agentId) - inTaken)
+}
+
+/** Official `drainPollEventChunk`: takes the agent's oldest events that fit one delivery out of the queue. */
+export function drainPollEventChunk(agentId: AgentId | undefined): { commands: QueuedCommand[]; remainingWakeCount: number } {
+  const chunk = takePollEventChunk(commandQueue.filter(cmd => isPollEventFor(cmd, agentId)))
+  if (chunk.length === 0) return { commands: [], remainingWakeCount: 0 }
+  const taken = new Set(chunk)
+  const rest = commandQueue.filter(cmd => !taken.has(cmd))
+  commandQueue.length = 0
+  commandQueue.push(...rest)
+  notifySubscribers()
+  for (const _cmd of chunk) logOperation('dequeue')
+  return { commands: chunk, remainingWakeCount: countPendingWakePollEvents(agentId) }
+}
+
+/** Official `OKe`: the events went out in a delivery. */
+export function settlePollEventsDelivered(commands: readonly QueuedCommand[]): void {
+  for (const cmd of commands) cmd.pollEvent?.settleDelivered?.()
+}
+
+/** Official `c0`: the events will never be delivered. */
+export function settlePollEventsDropped(commands: readonly QueuedCommand[], why: string): void {
+  for (const cmd of commands) cmd.pollEvent?.settleDropped?.(new Error(`poll event discarded undelivered: ${why}`))
 }
 
 const PRIORITY_ORDER: Record<QueuePriority, number> = {
@@ -391,6 +542,7 @@ export function resetCommandQueue(): void {
 // @ts-ignore - recovered code
 const NON_EDITABLE_MODES = new Set<PromptInputMode>([
   'task-notification',
+  'poll-event',
 // @ts-ignore - recovered code
 ] satisfies Permutations<Exclude<PromptInputMode, EditablePromptInputMode>>)
 

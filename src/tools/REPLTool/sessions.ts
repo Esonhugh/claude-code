@@ -1,10 +1,15 @@
 import { getSessionId } from '../../bootstrap/state.js'
 import type { Message } from '../../types/message.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { formatDuration } from '../../utils/format.js'
 import {
   enqueuePendingNotification,
+  enqueuePollEvent,
   getCommandQueueSnapshot,
+  POLL_EVENT_CHUNK_BYTES,
+  POLL_EVENT_CHUNK_EVENTS,
+  REPL_STATUS_EVENT_KIND,
   removeByFilter,
 } from '../../utils/messageQueueManager.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
@@ -253,10 +258,6 @@ export function onReplLedgerChange(session: ReplSession, listener: () => void): 
   return () => void session.ledgerListeners.delete(listener)
 }
 
-/** Official H6t and SBe: one Poll delivery holds at most this many events and bytes (always at least one event). */
-export const POLL_CHUNK_EVENTS = 20
-export const POLL_CHUNK_BYTES = 32_768
-
 /**
  * Official `drainPollEventChunk`: the oldest events the next turn has not
  * taken yet that fit one delivery, out of the notification queue so they
@@ -264,8 +265,8 @@ export const POLL_CHUNK_BYTES = 32_768
  */
 export function takeReplEventChunk(
   session: ReplSession,
-  maxEvents = POLL_CHUNK_EVENTS,
-  maxBytes = POLL_CHUNK_BYTES,
+  maxEvents = POLL_EVENT_CHUNK_EVENTS,
+  maxBytes = POLL_EVENT_CHUNK_BYTES,
 ): { events: ReplEvalEvent[]; remaining: number } {
   // An event no longer queued (and not one the queue refused) was delivered with a turn.
   const live = session.events.filter(
@@ -419,7 +420,25 @@ export function replStatusText(rows: readonly ReplLedgerRow[], stillPending = fa
 
 /** Official `enqueueReplStatus` element: the status text as a `repl-status` event. */
 export function formatReplStatusEvent(rows: readonly ReplLedgerRow[], at = new Date(), stillPending = false): string {
-  return `<event kind="repl-status" at="${attribute(at.toISOString())}" pending="${rows.length}">${escapeContent(replStatusText(rows, stillPending))}</event>`
+  return `<event kind="${REPL_STATUS_EVENT_KIND}" at="${attribute(at.toISOString())}" pending="${rows.length}">${escapeContent(replStatusText(rows, stillPending))}</event>`
+}
+
+/**
+ * Official `enqueueReplStatus`: queues the status line as a poll event for
+ * the session's thread; one the queue refuses is only logged.
+ */
+export function enqueueReplStatus(session: ReplSession, rows: readonly ReplLedgerRow[], stillPending = false): void {
+  const refused = (error: unknown) =>
+    logForDebugging(`async REPL status line not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
+  try {
+    void enqueuePollEvent({
+      kind: REPL_STATUS_EVENT_KIND,
+      element: formatReplStatusEvent(rows, new Date(), stillPending),
+      agentId: session.agentId as never,
+    }).catch(refused)
+  } catch (error) {
+    refused(error)
+  }
 }
 
 /**
