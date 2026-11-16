@@ -53,7 +53,7 @@ function fakeTool(name: string, inputSchema: z.ZodObject, call: (input: Record<s
     description: async () => `${name} fake`,
     prompt: async () => `${name} fake prompt`,
     renderToolUseMessage: () => null,
-    call: async (input: Record<string, unknown>) => ({ data: call(input) }),
+    call: async (input: Record<string, unknown>) => ({ data: await call(input) }),
     mapToolResultToToolResultBlockParam: (data: unknown, id: string) => ({
       type: 'tool_result',
       tool_use_id: id,
@@ -64,7 +64,10 @@ function fakeTool(name: string, inputSchema: z.ZodObject, call: (input: Record<s
 
 const PNG = 'iVBORw0KGgo'
 const fakeRead = fakeTool('Read', z.object({ file_path: z.string() }), input =>
-  String(input.file_path).endsWith('.png')
+  // A path like `slow:50` takes that many ms to read.
+  /^slow:\d+$/.test(String(input.file_path))
+    ? new Promise(r => setTimeout(() => r({ type: 'text', file: { filePath: input.file_path, content: 'slow' } }), Number(String(input.file_path).slice(5))))
+    : String(input.file_path).endsWith('.png')
     ? { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 8 } }
     : { type: 'text', file: { filePath: input.file_path, content: `contents of ${String(input.file_path)}` } },
 )
@@ -120,6 +123,13 @@ describe('REPL end to end through the executor', () => {
     const [use] = (messages[0] as unknown as { message: { content: { id: string; name: string }[] } }).message.content
     expect(use!.name).toBe('Read')
     expect(use!.id).toMatch(/^repl_/)
+  })
+
+  test('a call still pending at script end is reported', async () => {
+    const { text } = await run(`Read({file_path: "slow:50"}); 'ok'`, contextFor())
+    expect(text).toBe(
+      "<repl-output>\n<log>[stderr] \u26a0 1 tool call(s) still pending at script end \u2014 results discarded: Read. Add 'await'.</log>\n<result>ok</result>\n</repl-output>",
+    )
   })
 
   test('variables persist between calls of one thread', async () => {

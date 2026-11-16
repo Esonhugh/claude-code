@@ -174,6 +174,7 @@ Phase 4 已知差异（留给一致性检查）：
 
 - 没有移植：`imagesRefused`、`imagePagesFailed`、`stripForStorage`（transcript 保留完整 base64）、后台结果带图片、`startsTurn:false`、`ranBefore`、`rerunByHook`、等待计数界面 `onStopWaitChange`。
 - 自拟文案：`CONTEXT_LOST` 和 Poll schema 的 `content` 说明，官方没有对应原文。
+- 脚本结束时未 await 的调用（官方 `Ze`/`Da`）：脚本出错时，仍在运行后失败的调用也用逐条文案（官方此时用合并文案，并把错误列在脚本错误下，我们的错误路径不列调用错误）。没有移植 async lane 的迟到日志文案 `Xl`、`is`；脚本结束后 timer 已清掉，只有 promise 链还能发起调用。
 - 1 小时缓存判断读配置，官方用上一次主线程请求实际用的 TTL。
 - 后台脚本的进度视图和任务行（`NUe`/`Kds`）放到 Phase 5。
 

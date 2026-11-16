@@ -21,6 +21,7 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { POWERSHELL_TOOL_NAME } from '../PowerShellTool/toolName.js'
 import { filterToolsByDenyRules } from '../../tools.js'
 import { POLL_TOOL_NAME, REPL_ASYNC_WALL_CAP_MS, REPL_TOOL_NAME, SCRIPT_ASK_DECLINED } from './constants.js'
+import { elide } from './executor/host.js'
 import { getReplPrimitiveTools } from './primitiveTools.js'
 import { type ReplImage, scriptValue } from './resultBlocks.js'
 import type { ReplCallRecord } from './stopReport.js'
@@ -46,9 +47,46 @@ export type ReplToolHost = {
   call(name: string, input: unknown): Promise<unknown>
   drainMessages(): Message[]
   stop(): void
+  /** The script returned or threw: lines its stderr gets about calls it did not await. */
+  scriptEnded(failed: boolean): Promise<string[]>
   readonly callCount: number
   /** Copies of the calls the script started, in order (official `Zu` input). */
   calls(): ReplCallRecord[]
+}
+
+/** Official `ss`: a call made after its script ended. */
+const REPL_CALL_AFTER_SCRIPT_END =
+  "This tool call did not run. The piece of code that it belongs to had already finished, and a timer or promise that finished code leaves running can't make tool calls. To run these steps, send them again in one piece of code that awaits each of them."
+/** Official `Ln`: a call still waiting for a slot when its script ended. */
+const REPL_CALL_NOT_STARTED =
+  'This tool call did not run. The code that made it finished or was stopped before the call could start. If it is still needed and nobody stopped the code, make the call again in code that awaits it.'
+
+function toolList(calls: readonly ReplCallRecord[]): string {
+  const counts = new Map<string, number>()
+  for (const call of calls) counts.set(call.toolName, (counts.get(call.toolName) ?? 0) + 1)
+  return [...counts].map(([name, n]) => (n > 1 ? `${name} \u00d7${n}` : name)).join(', ')
+}
+
+/**
+ * Official `Da`: Code Mode's sync lane waits at script end for the calls that
+ * were running and starts none of the queued ones, then says what became of them.
+ */
+function leftoverCallLines(left: readonly ReplCallRecord[], running: readonly ReplCallRecord[], scriptFailed: boolean): string[] {
+  // A call refused at its slot ends as an error; a failed script reports only the ones still queued.
+  const notStarted = left.filter(call => (scriptFailed ? call.phase === 'start' : call.phase !== 'complete'))
+  const failed = running.filter(call => call.phase === 'error')
+  const ran = running.filter(call => call.phase !== 'error')
+  return [
+    ...(notStarted.length > 0
+      ? [`\u26a0 ${notStarted.length} tool call(s) had not started when the script ended, and did not run: ${toolList(notStarted)}. Add 'await'.`]
+      : []),
+    ...(ran.length > 0
+      ? [`\u26a0 ${ran.length} tool call(s) were still running when the script ended. They ran to their end, but the script ended before their results came: ${toolList(ran)}. Do not make them again. Add 'await' next time.`]
+      : []),
+    ...failed.map(
+      call => `\u26a0 ${call.toolName} was still running when the script ended, and then failed. Add 'await' next time. Its error:\n${elide(call.error ?? '', 2000)}`,
+    ),
+  ]
 }
 
 /** An MCP tool reported an error; `detail` is its text parsed as JSON when possible. */
@@ -188,9 +226,11 @@ export function createReplToolHost(opts: {
   parentToolUseId: string
   signal: AbortSignal
   asyncLane?: boolean
+  /** Code Mode's sync lane ends a script as official `Ze` does. */
+  codeMode?: boolean
   onProgress?: (p: REPLToolCallProgress) => void
 }): ReplToolHost {
-  const { context, canUseTool, signal, asyncLane, onProgress } = opts
+  const { context, canUseTool, signal, asyncLane, codeMode, onProgress } = opts
   const callable = getReplCallableTools(context)
   const byName = new Map<string, Tool>()
   const tools: ReplToolDescriptor[] = []
@@ -221,6 +261,14 @@ export function createReplToolHost(opts: {
   let callCount = 0
   let stopped = false
   let afterStop = 0
+  let noMoreCalls = false
+  const callSettled = new Set<() => void>()
+
+  /** Official `Xe`: a refused built-in call resolves {error}; an MCP call throws. */
+  function refusal(tool: Tool, text: string): { error: string } {
+    if (tool.isMcp) throw new McpToolError(text, undefined)
+    return { error: text }
+  }
 
   async function run(
     tool: Tool,
@@ -331,6 +379,34 @@ export function createReplToolHost(opts: {
     stop() {
       stopped = true
     },
+    async scriptEnded(failed) {
+      const left = started.filter(call => call.phase === 'start' || call.phase === 'executing')
+      if (asyncLane) {
+        return failed || left.length === 0
+          ? []
+          : [`\u26a0 ${left.length} tool call(s) still running at script end (${left.map(call => call.toolName).join(', ')}) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.`]
+      }
+      if (!codeMode) {
+        return failed || left.length === 0
+          ? []
+          : [`\u26a0 ${left.length} tool call(s) still pending at script end \u2014 results discarded: ${left.map(call => call.toolName).join(', ')}. Add 'await'.`]
+      }
+      noMoreCalls = true
+      const queued = left.filter(call => call.phase === 'start')
+      const running = left.filter(call => call.phase === 'executing')
+      while (running.some(call => call.phase === 'executing') && !signal.aborted) {
+        await new Promise<void>(resolve => {
+          const done = () => {
+            callSettled.delete(done)
+            signal.removeEventListener('abort', done)
+            resolve()
+          }
+          callSettled.add(done)
+          signal.addEventListener('abort', done, { once: true })
+        })
+      }
+      return leftoverCallLines(queued, running, failed)
+    },
     calls() {
       return started.map(call => ({ ...call }))
     },
@@ -344,6 +420,7 @@ export function createReplToolHost(opts: {
       if (!tool) throw new Error(`${name} is not available in this REPL call`)
       if (stopped && ++afterStop > REPL_CALLS_AFTER_STOP)
         throw new Error('The REPL script was stopped; no further tool calls are made')
+      if (noMoreCalls) return refusal(tool, REPL_CALL_AFTER_SCRIPT_END)
       if (callCount >= REPL_MAX_TOOL_CALLS)
         throw new Error(`The REPL script reached the limit of ${REPL_MAX_TOOL_CALLS} tool calls`)
       callCount++
@@ -365,6 +442,11 @@ export function createReplToolHost(opts: {
       progress('start')
       await slots.acquire()
       try {
+        if (noMoreCalls) {
+          record.error = REPL_CALL_NOT_STARTED
+          progress('error')
+          return refusal(tool, REPL_CALL_NOT_STARTED)
+        }
         progress('executing')
         const { value, raw, mcpContent, isError, declined } = await run(
           tool,
@@ -386,6 +468,7 @@ export function createReplToolHost(opts: {
         throw error
       } finally {
         slots.release()
+        for (const notify of [...callSettled]) notify()
       }
     },
   }

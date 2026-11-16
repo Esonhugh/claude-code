@@ -71,7 +71,12 @@ const fakeRead = buildTool({
   description: async () => 'Read fake',
   prompt: async () => 'Read fake prompt',
   renderToolUseMessage: () => null,
-  call: async (input: { file_path: string }) => ({ data: `contents of ${input.file_path}` }),
+  call: async (input: { file_path: string }) => {
+    // A path like `slow:150` takes that many ms to read.
+    const ms = /^slow:(\d+)$/.exec(input.file_path)?.[1]
+    if (ms) await new Promise(r => setTimeout(r, Number(ms)))
+    return { data: `contents of ${input.file_path}` }
+  },
   mapToolResultToToolResultBlockParam: (data: unknown, id: string) => ({ type: 'tool_result', tool_use_id: id, content: String(data) }),
 } as Parameters<typeof buildTool>[0]) as Tool
 
@@ -413,6 +418,41 @@ describe('outside the async lane', () => {
       expect(text).toBe('<repl-output>\n<result>waited</result>\n</repl-output>')
       expect(data.asyncDispatched).toBeUndefined()
     })
+})
+
+describe('calls left running at script end', () => {
+  const savedConcurrency = process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
+  afterEach(() => restore('CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY', savedConcurrency))
+
+  test('the async lane says they run on', async () => {
+    const { text } = await run(`Read({file_path: 'slow:150'}); 'ok'`, contextFor('bypassPermissions'))
+    expect(text).toBe(
+      "<repl-output eval=\"1\">\n<log>[stderr] \u26a0 1 tool call(s) still running at script end (Read) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.</log>\n<result>ok</result>\n</repl-output>",
+    )
+  })
+
+  test('the sync lane waits for a running call and does not start one still queued', async () => {
+    process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '1'
+    const context = contextFor('default')
+    const startedAt = Date.now()
+    const { text } = await run(`Read({file_path: 'slow:150'}); Read({file_path: 'queued'}); 'ok'`, context)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(140)
+    expect(text).toBe(
+      "<repl-output>\n<log>[stderr] \u26a0 1 tool call(s) had not started when the script ended, and did not run: Read. Add 'await'.\n\u26a0 1 tool call(s) were still running when the script ended. They ran to their end, but the script ended before their results came: Read. Do not make them again. Add 'await' next time.</log>\n<result>ok</result>\n</repl-output>",
+    )
+  })
+
+  test('the sync lane refuses a call made after the script ended', async () => {
+    const context = contextFor('default')
+    // The chain's call comes after the script's end, while the end waits for the running Read.
+    await run(
+      `Read({file_path: 'slow:150'}); globalThis.later = (async () => { for (let i = 0; i < 1000; i++) await null; return Read({file_path: 'x'}) })(); 'ok'`,
+      context,
+    )
+    expect((await run('await later', context)).text).toContain(
+      "This tool call did not run. The piece of code that it belongs to had already finished, and a timer or promise that finished code leaves running can't make tool calls.",
+    )
+  })
 })
 
 describe('async-lane prompt', () => {

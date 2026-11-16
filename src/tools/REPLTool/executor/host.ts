@@ -22,6 +22,8 @@ export type ReplRunOptions = {
   onStart?: () => void
   /** The error for a signal abort, read as the signal fires; INTERRUPTED when it gives none. */
   interruptedError?: () => string | undefined
+  /** Awaited once the script returns or throws; its lines follow what the script wrote to stderr. */
+  onScriptEnd?: (failed: boolean) => Promise<string[]>
 }
 
 export type ReplToolDescription = {
@@ -227,7 +229,7 @@ function startWorker(): Worker {
   return new Worker(workerUrl)
 }
 
-type RunEnd = { value?: string; error?: string; timedOut?: boolean; interrupted?: boolean }
+type RunEnd = { value?: string; error?: string; timedOut?: boolean; interrupted?: boolean; notes?: string[] }
 
 type ActiveRun = {
   id: number
@@ -365,7 +367,15 @@ export function createReplExecutor(): ReplExecutor {
         onMessage(message) {
           if (settled) return
           if (message.t === 'log') (message.stream === 1 ? stderr : stdout).push(`${message.text}\n`)
-          else if (message.t === 'done') run.finish({ value: message.value, error: message.error })
+          else if (message.t === 'done') {
+            const end = { value: message.value, error: message.error }
+            if (!o.onScriptEnd) run.finish(end)
+            else
+              void o.onScriptEnd(end.error !== undefined).then(
+                notes => run.finish({ ...end, notes }),
+                () => run.finish(end),
+              )
+          }
           else if (message.t === 'call') {
             const input = message.input === undefined ? undefined : JSON.parse(message.input)
             if (message.kind === 'search') {
@@ -387,7 +397,7 @@ export function createReplExecutor(): ReplExecutor {
           // The only way to stop the script; the context goes with it.
           if (end.timedOut || end.interrupted) kill()
           const logged = stdout.empty ? '' : stdout.render()
-          const errors = stderr.empty ? '' : stderr.render()
+          const errors = [...(stderr.empty ? [] : [stderr.render()]), ...(end.notes ?? [])].join('\n')
           const output = formatReplOutput({
             stdout: logged || undefined,
             stderr: errors || undefined,

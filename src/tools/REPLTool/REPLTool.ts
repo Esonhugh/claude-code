@@ -378,6 +378,7 @@ export const REPLTool = buildTool({
       parentToolUseId: context.toolUseId ?? '',
       signal: controller.signal,
       asyncLane,
+      codeMode: isCodeModeEnabled(),
       // The call has returned once dispatched: progress then has no row to go to.
       onProgress: data => {
         if (!dispatched) onProgress?.({ toolUseID: data.toolUseId, data })
@@ -404,6 +405,7 @@ export const REPLTool = buildTool({
         describeTool: name => descriptions.get(name),
         searchTools: (query, max) => searchReplTools(query, max, callable, descriptions),
         prelude: REPL_HELPERS_PRELUDE,
+        onScriptEnd: failed => host.scriptEnded(failed),
         // Official `qu`: only a call the executor waits on reports the stop,
         // listing the calls as they stood when it came.
         interruptedError: () => {
