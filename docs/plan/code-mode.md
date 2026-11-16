@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - **类型**：实施计划
-- **状态**：实施中。D1–D5 按建议方案执行；Phase 0–3 已完成（2026-11-15），Phase 4–5 未开始
+- **状态**：实施中。D1–D5 按建议方案执行；Phase 0–4 已完成（2026-11-16），Phase 5 未开始
 - **日期**：2026-11-15
 - **对照版本**：官方 2.1.325，分析见 [`research/code-mode-325-20261115.md`](../research/code-mode-325-20261115.md)，模块备份在 [`recover/claude-v2.1.325-code-mode/`](../../recover/claude-v2.1.325-code-mode/README.md)
 - **证据边界**：官方行为来自静态阅读，没有用真实账号运行过 Code Mode；本地调用点按 2026-11-15 的工作树核对，实施前要重新检查
@@ -165,13 +165,17 @@ Phase 3 完成后开始，用 `./official-claude`（先 `make download-claude` �
 
 官方的 GrowthBook gate 在没有资格的账号上会拒绝，这时只能比较请求体和 prompt 文本，不能比较运行结果。
 
-Phase 3 遗留：
+Phase 3 遗留（2026-11-16 处理完）：
 
-- 主线程 `--agent` 启动时，脚本内可调用工具没有按 agent 定义限定（`REPL.tsx`、`print.ts`）。
-- 子 agent 结束时没有调用 `releaseReplSession(agentId)`。
-- compaction 附件里列出脚本全局变量；官方 prompt 的 `repl_working` 段未移植。
-- Remote Control 在会话中途开启时，开关不会重新判定。
-- 超时后上下文重置的提示文案是自拟的，不是官方原文。
+- 主线程 `--agent` 的脚本工具限定（`REPL.tsx`）、子 agent 结束时 `releaseReplSession`、compaction 列出脚本全局变量、`repl_working` 段、超时文案改为官方原文，都已完成。`print.ts` 的 `--agent` 路径没有改：非交互入口照官方拒绝 Code Mode。
+- Remote Control 在会话中途开启时，开关仍不重新判定；bridge 在 Code Mode 下拒绝启动并报 failed。
+
+Phase 4 已知差异（留给一致性检查）：
+
+- 没有移植：`imagesRefused`、`imagePagesFailed`、`stripForStorage`（transcript 保留完整 base64）、后台结果带图片、`startsTurn:false`、`ranBefore`、`rerunByHook`、等待计数界面 `onStopWaitChange`。
+- 自拟文案：`CONTEXT_LOST` 和 Poll schema 的 `content` 说明，官方没有对应原文。
+- 1 小时缓存判断读配置，官方用上一次主线程请求实际用的 TTL。
+- 后台脚本的进度视图和任务行（`NUe`/`Kds`）放到 Phase 5。
 
 ## 6. 风险
 
