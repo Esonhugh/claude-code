@@ -18,6 +18,8 @@ export type ReplRunOptions = {
    * run this long (official replDetachAfterMs), so the two overlap.
    */
   detachAfterMs?: number
+  /** Called when detachAfterMs passes with the script still running, as the next one is let start. */
+  onDetach?: () => void
   /** Called when the script starts, after the scripts queued before it let it. */
   onStart?: () => void
   /** The error for a signal abort, read as the signal fires; INTERRUPTED when it gives none. */
@@ -447,9 +449,10 @@ export function createReplExecutor(): ReplExecutor {
       let started!: () => void
       const start = new Promise<void>(resolve => (started = resolve))
       const result = queue.then(() => execute(code, { ...o, onStart: () => (started(), o.onStart?.()) }))
+      let done = false
       const ended = result.then(
-        () => {},
-        () => {},
+        () => void (done = true),
+        () => void (done = true),
       )
       const detach = o.detachAfterMs
       queue =
@@ -460,7 +463,10 @@ export function createReplExecutor(): ReplExecutor {
               start.then(
                 () =>
                   new Promise<void>(resolve => {
-                    const timer = setTimeout(resolve, Math.max(0, detach))
+                    const timer = setTimeout(() => {
+                      if (!done) o.onDetach?.()
+                      resolve()
+                    }, Math.max(0, detach))
                     ;(timer as { unref?: () => void }).unref?.()
                   }),
               ),

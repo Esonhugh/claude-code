@@ -24,10 +24,15 @@ import { getReplPrompt, schemaToTypeScript, toolInputSchema } from './prompt.js'
 import {
   abortPendingReplEvals,
   deliverReplEvent,
+  detachReplEval,
+  dispatchReplEval,
+  finishReplEval,
   formatReplEvalEvent,
   getReplSession,
   MAIN_REPL_SESSION,
+  markReplEvalDelivered,
   type ReplSession,
+  startReplEval,
   takeReplLateMessages,
 } from './sessions.js'
 import { replStopOf, replStopReport, type ReplStop } from './stopReport.js'
@@ -108,7 +113,7 @@ export type Output = z.infer<OutputSchema> & {
 /** Official replSettleWindowMs and replDetachAfterMs (both 30000 in 2.1.325). */
 export const REPL_SETTLE_WINDOW_MS = 30_000
 export { REPL_ASYNC_WALL_CAP_MS }
-/** Official sLo: unsettled evals one context holds before a dispatch is refused. */
+/** Official sLo: evals waiting, running or detached on one context (its `depth`) before a dispatch is refused. */
 export const REPL_MAX_PENDING_EVALS = 8
 
 const asyncTiming = { settleMs: REPL_SETTLE_WINDOW_MS, wallCapMs: REPL_ASYNC_WALL_CAP_MS }
@@ -354,8 +359,8 @@ export const REPLTool = buildTool({
     const asyncLane = isReplAsyncLane(context, mode)
     const outer = context.abortController.signal
     stopPendingOnAbort(session, outer)
-    if (asyncLane && session.pending.size >= REPL_MAX_PENDING_EVALS) {
-      const error = pendingCapMessage(session.pending.size)
+    if (asyncLane && session.depth >= REPL_MAX_PENDING_EVALS) {
+      const error = pendingCapMessage(session.depth)
       return {
         data: { code: input.code, stdout: '', stderr: '', error, output: formatReplOutput({ error }), asyncDispatched: true },
         newMessages: takeReplLateMessages(session) as never,
@@ -399,6 +404,7 @@ export const REPLTool = buildTool({
       let settleTimer: ReturnType<typeof setTimeout> | undefined
       let settled!: () => void
       const settleWindow = new Promise<null>(resolve => (settled = () => resolve(null)))
+      if (evalId !== undefined) dispatchReplEval(session, evalId, input.code)
       const running = session.executor.run(input.code, {
         timeoutMs: input.timeout,
         totalCapMs: asyncLane ? asyncTiming.wallCapMs : replTotalCapFor(mode),
@@ -420,12 +426,18 @@ export const REPLTool = buildTool({
         },
         ...(asyncLane && {
           detachAfterMs: asyncTiming.settleMs,
+          onDetach: () => detachReplEval(session, evalId!),
           onStart: () => {
             startedAt = Date.now()
+            startReplEval(session, evalId!)
             settleTimer = setTimeout(settled, asyncTiming.settleMs)
           },
         }),
       })
+      if (evalId !== undefined) {
+        const finish = () => finishReplEval(session, evalId)
+        void running.then(finish, finish)
+      }
       const result = asyncLane ? await Promise.race([running, settleWindow]) : await running
       clearTimeout(settleTimer)
       if (result === null && evalId !== undefined) {
@@ -487,6 +499,8 @@ export const REPLTool = buildTool({
       return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
     } finally {
       if (!dispatched) cleanup()
+      // A script answered in this call's own result was delivered with it.
+      if (!dispatched && evalId !== undefined) markReplEvalDelivered(session, evalId)
     }
   },
   mapToolResultToToolResultBlockParam(data, toolUseID) {

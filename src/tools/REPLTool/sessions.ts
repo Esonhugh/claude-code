@@ -16,6 +16,32 @@ export type ReplPendingEval = {
   abort(reason?: unknown): void
 }
 
+/** Official ledger states (2.1.325 chunk-gcw6cvys.js `ledger()`). */
+export type ReplEvalState = 'waiting' | 'running' | 'detached' | 'late'
+
+/** An async-lane eval from its dispatch until it finished (official registry entry). */
+export type ReplLedgerEval = {
+  /** Unset while it waits for the scripts before it. */
+  startedAt: number | undefined
+  /** The executor let the next script start beside it. */
+  detached: boolean
+  /** It settled with calls still running (official `holdLate`). */
+  late: boolean
+  snippet: string
+  /** The calls it made that have not started yet, for the status line. */
+  readNotYetStarted?: () => string[]
+}
+
+export type ReplLedgerRow = {
+  id: number
+  state: ReplEvalState
+  runningMs: number
+  snippet: string
+  notYetStarted: string[]
+}
+
+const SNIPPET_CHARS = 100
+
 /** A dispatched script's outcome, queued as a notification until a Poll call or the next turn takes it. */
 export type ReplEvalEvent = {
   id: number
@@ -40,6 +66,17 @@ export type ReplSession = {
   lateMessages: Message[]
   /** Poll calls waiting for the next event. */
   waiters: Set<() => void>
+  /** Async-lane evals from dispatch until they finished; a late one stays until its calls end. */
+  ledger: Map<number, ReplLedgerEval>
+  /** Evals dispatched and not finished yet (official `depth`), what the dispatch cap counts. */
+  depth: number
+  /** Evals no wait after tool calls or Poll has waited on yet. */
+  unwaited: Set<number>
+  /** Evals whose outcome has not been delivered yet. */
+  undelivered: Set<number>
+  /** A status line for the pending evals was given since the last dispatch. */
+  statusLineGiven: boolean
+  ledgerListeners: Set<() => void>
   /** Which agent's queue the notifications go to (undefined: the main thread). */
   agentId: string | undefined
   released: boolean
@@ -65,6 +102,12 @@ export function getReplSession(key: string): ReplSession {
     events: [],
     lateMessages: [],
     waiters: new Set(),
+    ledger: new Map(),
+    depth: 0,
+    unwaited: new Set(),
+    undelivered: new Set(),
+    statusLineGiven: false,
+    ledgerListeners: new Set(),
     agentId: key === MAIN_REPL_SESSION ? undefined : key,
     released: false,
   }
@@ -108,9 +151,103 @@ export async function deliverReplEvent(session: ReplSession, event: ReplEvalEven
     // Listed once the queue has it (or refused it), so Poll never misses it in between.
     event.queued = getCommandQueueSnapshot().some(cmd => cmd.mode === 'task-notification' && cmd.value === event.text)
     session.pending.delete(event.id)
+    markReplEvalDelivered(session, event.id)
     if (!session.released) session.events.push(event)
     wake(session)
   }
+}
+
+function ledgerChanged(session: ReplSession): void {
+  for (const listener of [...session.ledgerListeners]) listener()
+}
+
+/** Official `dispatch`: the eval is waiting for its turn, unwaited and undelivered until its outcome goes out. */
+export function dispatchReplEval(session: ReplSession, id: number, code: string): ReplLedgerEval {
+  const entry: ReplLedgerEval = {
+    startedAt: undefined,
+    detached: false,
+    late: false,
+    snippet: code.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS),
+  }
+  session.ledger.set(id, entry)
+  session.depth++
+  session.unwaited.add(id)
+  session.undelivered.add(id)
+  session.statusLineGiven = false
+  ledgerChanged(session)
+  return entry
+}
+
+export function startReplEval(session: ReplSession, id: number): void {
+  const entry = session.ledger.get(id)
+  if (!entry) return
+  entry.startedAt = Date.now()
+  ledgerChanged(session)
+}
+
+export function detachReplEval(session: ReplSession, id: number): void {
+  const entry = session.ledger.get(id)
+  if (!entry) return
+  entry.detached = true
+  ledgerChanged(session)
+}
+
+/** The script ended; one holding late calls stays in the ledger until endLateReplEval. */
+export function finishReplEval(session: ReplSession, id: number, { late = false } = {}): void {
+  const entry = session.ledger.get(id)
+  if (!entry) return
+  session.depth--
+  if (late) entry.late = true
+  else session.ledger.delete(id)
+  ledgerChanged(session)
+}
+
+export function endLateReplEval(session: ReplSession, id: number): void {
+  if (session.ledger.get(id)?.late !== true) return
+  session.ledger.delete(id)
+  ledgerChanged(session)
+}
+
+/** Official `T`: the outcome went out, so nothing waits on it any more. */
+export function markReplEvalDelivered(session: ReplSession, id: number): void {
+  session.unwaited.delete(id)
+  session.undelivered.delete(id)
+  ledgerChanged(session)
+}
+
+/** Official `ledger()`, in dispatch order. */
+export function replLedger(session: ReplSession, now = Date.now()): ReplLedgerRow[] {
+  return [...session.ledger].map(([id, entry]) => ({
+    id,
+    state: entry.late ? 'late' : entry.startedAt === undefined ? 'waiting' : entry.detached ? 'detached' : 'running',
+    runningMs: entry.startedAt === undefined ? 0 : now - entry.startedAt,
+    snippet: entry.snippet,
+    notYetStarted: entry.readNotYetStarted?.() ?? [],
+  }))
+}
+
+/** Official `takeUnwaited`: the unwaited evals (those in `ids` when given), no longer unwaited. */
+export function takeUnwaitedReplEvals(session: ReplSession, ids?: ReadonlySet<number>): number[] {
+  const taken = [...session.unwaited].filter(id => ids?.has(id) ?? true)
+  for (const id of taken) session.unwaited.delete(id)
+  return taken
+}
+
+export function noteReplStatusLine(session: ReplSession): void {
+  session.statusLineGiven = true
+}
+
+/** Official `takeStatusLineGiven`: whether a status line was given, and clears it. */
+export function takeReplStatusLineGiven(session: ReplSession): boolean {
+  const given = session.statusLineGiven
+  session.statusLineGiven = false
+  return given
+}
+
+/** Official `onRunningScriptsChange`: called on every ledger change; returns the unsubscribe. */
+export function onReplLedgerChange(session: ReplSession, listener: () => void): () => void {
+  session.ledgerListeners.add(listener)
+  return () => void session.ledgerListeners.delete(listener)
 }
 
 /** Official H6t and SBe: one Poll delivery holds at most this many events and bytes (always at least one event). */

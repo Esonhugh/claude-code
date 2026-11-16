@@ -24,6 +24,7 @@ import {
   getReplSession,
   POLL_CHUNK_EVENTS,
   releaseAllReplSessions,
+  replLedger,
 } from './sessions.js'
 
 const savedCodeMode = process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE
@@ -155,6 +156,20 @@ describe('REPL async lane', () => {
     const { text, data } = await run('1 + 1', context)
     expect(text).toBe('<repl-output eval="1">\n<result>2</result>\n</repl-output>')
     expect(data.asyncDispatched).toBeUndefined()
+    const session = findReplSession(context.agentId!)!
+    expect([session.ledger.size, session.depth, session.undelivered.size]).toEqual([0, 0, 0])
+  })
+
+  test('the ledger holds a dispatched script as detached until its outcome is delivered', async () => {
+    const context = contextFor()
+    await run(sleepCode(400, 'done'), context)
+    const session = findReplSession(context.agentId!)!
+    // The executor's detach timer starts a tick after the settle window's.
+    await new Promise(r => setTimeout(r, 20))
+    expect(replLedger(session).map(row => [row.id, row.state])).toEqual([[1, 'detached']])
+    expect(session.depth).toBe(1)
+    await poll(context)
+    expect([session.ledger.size, session.depth, session.undelivered.size]).toEqual([0, 0, 0])
   })
 
   test('a second script runs while one is pending and shares its variables', async () => {

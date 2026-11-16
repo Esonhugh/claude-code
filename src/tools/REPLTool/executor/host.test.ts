@@ -243,6 +243,16 @@ describe('REPL executor, async lane', () => {
     expect(calls.map(call => call.input)).toEqual([{ who: 2 }, { who: 1 }])
   })
 
+  test('onDetach fires once detachAfterMs passes with the script still running, not for one that ended first', async () => {
+    const { run } = setup()
+    const detached: string[] = []
+    const slow = run('await new Promise(r => setTimeout(r, 200)); 1', { detachAfterMs: 30, onDetach: () => detached.push('slow') })
+    const quick = run('2', { detachAfterMs: 30, onDetach: () => detached.push('quick') })
+    await Promise.all([slow, quick])
+    await new Promise(r => setTimeout(r, 60))
+    expect(detached).toEqual(['slow'])
+  })
+
   test('without detachAfterMs scripts still run one after another', async () => {
     const { run } = setup()
     const order: string[] = []
