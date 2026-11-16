@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import type { Message } from '../../types/message.js'
+import { normalizeMessagesForAPI } from '../../utils/messages.js'
+import { buildPostCompactMessages } from './compact.js'
 import {
-  CODEX_COMPACT_TRUNCATED_TOOL_OUTPUT,
   buildCodexCompactMetadata,
   buildCodexStyleCompactionResult,
   createCodexStyleCompactionResultFromSummary,
   selectRetainedMessagesForCodexCompact,
-  truncateLargeToolResultsForCodexCompact,
 } from './codexCompact.js'
 
 function userToolResultMessage(content: string): Message {
@@ -29,47 +29,11 @@ function userToolResultMessage(content: string): Message {
 }
 
 describe('codex compact helpers', () => {
-  test('truncates large text tool_result bodies', () => {
-    const large = 'x'.repeat(120_000)
-    const [message] = truncateLargeToolResultsForCodexCompact([
-      userToolResultMessage(large),
-    ])
-
-    expect(message?.type).toBe('user')
-    if (message?.type !== 'user') return
-    const content = message.message.content
-    expect(Array.isArray(content)).toBe(true)
-    if (!Array.isArray(content)) return
-    const block = content[0]
-    expect(block?.type).toBe('tool_result')
-    if (block?.type !== 'tool_result') return
-    expect(block.tool_use_id).toBe('toolu_1')
-    expect(block.content).toBe(CODEX_COMPACT_TRUNCATED_TOOL_OUTPUT)
-  })
-
-  test('does not truncate small tool_result bodies', () => {
-    const small = 'small output'
-    const [message] = truncateLargeToolResultsForCodexCompact([
-      userToolResultMessage(small),
-    ])
-
-    expect(message?.type).toBe('user')
-    if (message?.type !== 'user') return
-    const content = message.message.content
-    expect(Array.isArray(content)).toBe(true)
-    if (!Array.isArray(content)) return
-    const block = content[0]
-    expect(block?.type).toBe('tool_result')
-    if (block?.type !== 'tool_result') return
-    expect(block.content).toBe(small)
-  })
-
   test('builds codex compact metadata', () => {
     expect(
       buildCodexCompactMetadata({
         retainedMessageCount: 3,
         retainedApproxTokens: 1234,
-        truncatedToolResultCount: 2,
         droppedAttachmentCount: 4,
         retainedUserMessageTokens: 20000,
       }),
@@ -77,7 +41,6 @@ describe('codex compact helpers', () => {
       mode: 'codex',
       retainedMessageCount: 3,
       retainedApproxTokens: 1234,
-      truncatedToolResultCount: 2,
       droppedAttachmentCount: 4,
       retainedUserMessageTokens: 20000,
     })
@@ -96,7 +59,7 @@ function userTextMessage(uuid: string, text: string): Message {
   } as Message
 }
 
-function assistantToolUseMessage(uuid: string, id: string): Message {
+function assistantWriteMessage(uuid: string, id: string, content: string): Message {
   return {
     type: 'assistant',
     uuid,
@@ -109,8 +72,8 @@ function assistantToolUseMessage(uuid: string, id: string): Message {
         {
           type: 'tool_use',
           id,
-          name: 'Read',
-          input: { file_path: '/tmp/example.txt' },
+          name: 'Write',
+          input: { file_path: '/tmp/example.txt', content },
         },
       ],
       stop_reason: 'tool_use',
@@ -145,40 +108,90 @@ describe('selectRetainedMessagesForCodexCompact', () => {
         userTextMessage('00000000-0000-4000-8000-000000000010', 'a'.repeat(1000)),
         userTextMessage('00000000-0000-4000-8000-000000000020', 'recent'),
       ],
-      10,
+      1000,
     )
 
     expect(result.messages.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000010',
       '00000000-0000-4000-8000-000000000020',
     ])
     expect(result.approxTokens).toBeGreaterThan(0)
   })
 
-  test('keeps a tool_use with its matching tool_result when retaining the result', () => {
+  test('truncates the user message that overflows the budget and stops', () => {
     const result = selectRetainedMessagesForCodexCompact(
       [
-        userTextMessage(
-          '00000000-0000-4000-8000-000000000001',
-          'old context '.repeat(1000),
-        ),
-        assistantToolUseMessage(
-          '00000000-0000-4000-8000-000000000002',
-          'toolu_1',
-        ),
-        matchingToolResultMessage(
-          '00000000-0000-4000-8000-000000000003',
-          'toolu_1',
-        ),
-        userTextMessage('00000000-0000-4000-8000-000000000004', 'continue'),
+        userTextMessage('00000000-0000-4000-8000-000000000005', 'oldest'),
+        userTextMessage('00000000-0000-4000-8000-000000000010', 'a'.repeat(1000)),
+        userTextMessage('00000000-0000-4000-8000-000000000020', 'recent'),
       ],
-      2000,
+      10,
     )
 
     expect(result.messages.map(m => m.uuid)).toEqual([
-      '00000000-0000-4000-8000-000000000002',
+      '00000000-0000-4000-8000-000000000010',
+      '00000000-0000-4000-8000-000000000020',
+    ])
+    const truncated = result.messages[0]
+    if (truncated?.type !== 'user') throw new Error('expected user message')
+    expect(truncated.message.content).toBe('a'.repeat(32))
+    expect(result.approxTokens).toBe(10)
+  })
+
+  test('drops assistant turns and tool calls, so large Write inputs are not retained', () => {
+    const messages: Message[] = [
+      userTextMessage('00000000-0000-4000-8000-000000000001', 'write the files'),
+    ]
+    for (let i = 0; i < 30; i++) {
+      messages.push(
+        assistantWriteMessage(`00000000-0000-4000-8000-0000000001${String(i).padStart(2, '0')}`, `toolu_${i}`, 'x'.repeat(40_000)),
+        matchingToolResultMessage(`00000000-0000-4000-8000-0000000002${String(i).padStart(2, '0')}`, `toolu_${i}`),
+      )
+    }
+    messages.push(userTextMessage('00000000-0000-4000-8000-000000000003', 'continue'))
+
+    const result = selectRetainedMessagesForCodexCompact(messages, 20_000)
+
+    expect(result.messages.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000001',
       '00000000-0000-4000-8000-000000000003',
+    ])
+  })
+
+  test('skips summaries, meta messages, and tool results', () => {
+    const result = selectRetainedMessagesForCodexCompact(
+      [
+        { ...userTextMessage('00000000-0000-4000-8000-000000000001', 'old summary'), isCompactSummary: true } as Message,
+        { ...userTextMessage('00000000-0000-4000-8000-000000000002', 'injected'), isMeta: true } as Message,
+        userToolResultMessage('tool output'),
+        userTextMessage('00000000-0000-4000-8000-000000000004', 'real prompt'),
+      ],
+      20_000,
+    )
+
+    expect(result.messages.map(m => m.uuid)).toEqual([
       '00000000-0000-4000-8000-000000000004',
     ])
+  })
+
+  test('keeps only the text of a user message with images', () => {
+    const withImage = {
+      type: 'user',
+      uuid: '00000000-0000-4000-8000-000000000001',
+      timestamp: '2026-06-23T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'look at this' },
+        ],
+      },
+    } as Message
+
+    const [message] = selectRetainedMessagesForCodexCompact([withImage], 20_000).messages
+
+    if (message?.type !== 'user') throw new Error('expected user message')
+    expect(message.message.content).toBe('look at this')
   })
 })
 
@@ -224,7 +237,6 @@ describe('buildCodexStyleCompactionResult', () => {
       metadata: buildCodexCompactMetadata({
         retainedMessageCount: 1,
         retainedApproxTokens: 3,
-        truncatedToolResultCount: 0,
         droppedAttachmentCount: 2,
         retainedUserMessageTokens: 20000,
       }),
@@ -265,7 +277,7 @@ describe('buildCodexStyleCompactionResult', () => {
 })
 
 describe('createCodexStyleCompactionResultFromSummary', () => {
-  test('truncates large tool output, retains recent messages, and records metadata', () => {
+  test('retains recent user messages without tool output and records metadata', () => {
     const messages = [
       userTextMessage(
         '00000000-0000-4000-8000-000000000099',
@@ -315,16 +327,10 @@ describe('createCodexStyleCompactionResultFromSummary', () => {
       (result.boundaryMarker as unknown as { compactMetadata: { mode: string } })
         .compactMetadata.mode,
     ).toBe('codex')
-    expect(
-      (result.boundaryMarker as unknown as {
-        compactMetadata: { truncatedToolResultCount: number }
-      }).compactMetadata.truncatedToolResultCount,
-    ).toBe(1)
-    expect(
-      result.messagesToKeep?.some(
-        m => m.uuid === '00000000-0000-4000-8000-000000000003',
-      ),
-    ).toBe(true)
+    expect(result.messagesToKeep?.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000099',
+      '00000000-0000-4000-8000-000000000003',
+    ])
   })
 })
 
@@ -469,5 +475,143 @@ describe('codex compact keeps loaded deferred tools', () => {
 
   test('keeps the deferred tool list when other attachments are dropped', () => {
     expect(result.attachments).toEqual([deferredList])
+  })
+})
+
+describe('codex compact retention edges', () => {
+  test('skips transcript-only rows and image-only messages without spending budget', () => {
+    const imageOnly = {
+      type: 'user',
+      uuid: '00000000-0000-4000-8000-0000000000e2',
+      timestamp: '2026-06-23T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }],
+      },
+    } as Message
+    const result = selectRetainedMessagesForCodexCompact(
+      [
+        userTextMessage('00000000-0000-4000-8000-0000000000e1', 'abcdefgh'),
+        imageOnly,
+        { ...userTextMessage('00000000-0000-4000-8000-0000000000e3', 'shown only'), isVisibleInTranscriptOnly: true } as Message,
+      ],
+      2,
+    )
+
+    expect(result.messages.map(m => m.uuid)).toEqual(['00000000-0000-4000-8000-0000000000e1'])
+    expect(result.approxTokens).toBe(2)
+  })
+
+  test('retains nothing when the budget is zero', () => {
+    expect(
+      selectRetainedMessagesForCodexCompact(
+        [userTextMessage('00000000-0000-4000-8000-0000000000e4', 'hello')],
+        0,
+      ),
+    ).toEqual({ messages: [], approxTokens: 0 })
+  })
+})
+
+function writeSession(writes: number): Message[] {
+  const messages: Message[] = [
+    userTextMessage('00000000-0000-4000-8000-000000000f01', 'write the files'),
+  ]
+  for (let i = 0; i < writes; i++) {
+    const n = String(i).padStart(2, '0')
+    messages.push(
+      assistantWriteMessage(`00000000-0000-4000-8000-000000000a${n}`, `toolu_w${n}`, 'x'.repeat(40_000)),
+      matchingToolResultMessage(`00000000-0000-4000-8000-000000000b${n}`, `toolu_w${n}`),
+    )
+  }
+  messages.push(userTextMessage('00000000-0000-4000-8000-000000000f02', 'now add tests'))
+  return messages
+}
+
+const codexBoundary = (uuid: string) =>
+  ({
+    type: 'system',
+    uuid,
+    timestamp: '2026-06-23T00:00:00.000Z',
+    subtype: 'compact_boundary',
+    isMeta: true,
+    compactMetadata: {},
+    content: 'compact boundary',
+  }) as never
+
+const codexSummary = (uuid: string, text: string) =>
+  ({
+    type: 'user',
+    uuid,
+    timestamp: '2026-06-23T00:00:00.000Z',
+    isCompactSummary: true,
+    isVisibleInTranscriptOnly: true,
+    message: { role: 'user', content: text },
+  }) as Message
+
+const compactWrites = (originalMessages: Message[], summaryUuid: string) =>
+  createCodexStyleCompactionResultFromSummary({
+    originalMessages,
+    boundaryMarker: codexBoundary('00000000-0000-4000-8000-000000000c01'),
+    summaryMessages: [codexSummary(summaryUuid, `summary ${summaryUuid}`)] as never,
+    attachments: [],
+    hookResults: [],
+    options: { retainedUserMessageTokens: 20_000, keepPostCompactAttachments: false },
+    preCompactTokenCount: 300_000,
+    postCompactTokenCount: 500,
+  })
+
+describe('codex compaction of a Write-heavy session', () => {
+  test('records metadata that matches what was retained', () => {
+    const result = compactWrites(writeSession(30), '00000000-0000-4000-8000-000000000d01')
+    const metadata = (result.boundaryMarker as unknown as {
+      compactMetadata: { retainedMessageCount: number; retainedApproxTokens: number; postCompactTokens: number }
+    }).compactMetadata
+
+    expect(result.messagesToKeep?.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000f01',
+      '00000000-0000-4000-8000-000000000f02',
+    ])
+    expect(metadata.retainedMessageCount).toBe(2)
+    expect(metadata.retainedApproxTokens).toBe(7)
+    expect(result.truePostCompactTokenCount).toBe(507)
+    expect(metadata.postCompactTokens).toBe(507)
+  })
+
+  test('a second compaction drops the first summary and keeps the user messages', () => {
+    const first = compactWrites(writeSession(30), '00000000-0000-4000-8000-000000000d01')
+    const second = compactWrites(
+      [
+        first.boundaryMarker,
+        ...first.summaryMessages,
+        ...(first.messagesToKeep ?? []),
+        ...writeSession(5).slice(1, -1),
+        userTextMessage('00000000-0000-4000-8000-000000000f03', 'one more thing'),
+      ],
+      '00000000-0000-4000-8000-000000000d02',
+    )
+
+    expect(second.messagesToKeep?.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000f01',
+      '00000000-0000-4000-8000-000000000f02',
+      '00000000-0000-4000-8000-000000000f03',
+    ])
+  })
+
+  test('the next request is a valid conversation with no tool blocks or file contents', () => {
+    const result = compactWrites(writeSession(30), '00000000-0000-4000-8000-000000000d01')
+    const api = normalizeMessagesForAPI([
+      ...buildPostCompactMessages(result),
+      userTextMessage('00000000-0000-4000-8000-000000000f09', 'continue'),
+    ])
+    const blocks = api.flatMap(m =>
+      typeof m.message.content === 'string' ? [] : m.message.content,
+    )
+
+    expect(api[0]?.type).toBe('user')
+    expect(api.every((m, i) => i === 0 || m.type !== api[i - 1]!.type)).toBe(true)
+    expect(blocks.some(b => b.type === 'tool_use' || b.type === 'tool_result')).toBe(false)
+    expect(blocks.some(b => b.type === 'text' && !b.text)).toBe(false)
+    expect(JSON.stringify(api)).not.toContain('x'.repeat(100))
+    expect(JSON.stringify(api)).toContain('now add tests')
   })
 })
