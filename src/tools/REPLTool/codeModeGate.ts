@@ -178,6 +178,16 @@ export function isReplEventDeliveryEnabled(): boolean {
   return ownEventsRequested && isCodeModeEnabled()
 }
 
+/**
+ * Official `NUe()` (exported as isReplSpliceWaitEnabled): with event delivery
+ * on, every async-lane script is dispatched at once and its outcome is
+ * spliced into the turn after the reply's tool calls (`oV()` is always false
+ * in 2.1.325, so this is `j7()`).
+ */
+export function isReplSpliceWaitEnabled(): boolean {
+  return isCodeModeEnabled() && isReplEventDeliveryEnabled()
+}
+
 export function resetCodeModeGateForTesting(): void {
   startup = undefined
   settled = undefined

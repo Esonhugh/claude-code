@@ -107,9 +107,11 @@ import {
   getCommandsByMaxPriority,
   isSlashCommand,
   settlePollEventsDelivered,
+  subscribeToCommandQueue,
   takePollEventChunk,
 } from './utils/messageQueueManager.js'
 import { pollEventsAttachment } from './tools/PollTool/delivery.js'
+import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
 import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
@@ -2353,6 +2355,25 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
+    // Official 2.1.325 `Bu`: wait for the outcomes of the scripts this reply
+    // dispatched, so they fold into this turn below.
+    if (
+      (isMainThread || currentAgentId !== undefined) &&
+      shouldWaitAfterToolCalls({
+        isMainThread,
+        lastIteration: !!maxTurns && turnCount + 1 > maxTurns,
+      })
+    ) {
+      await waitForReplScriptsAfterToolCalls(currentAgentId, toolUseContext.abortController.signal, {
+        queued: () =>
+          getCommandsByMaxPriority('next').filter(cmd =>
+            isMainThread
+              ? cmd.agentId === undefined
+              : (cmd.mode === 'task-notification' || cmd.mode === 'poll-event') && cmd.agentId === currentAgentId,
+          ),
+        subscribe: subscribeToCommandQueue,
+      })
+    }
     const queuedForDrain = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
     )
