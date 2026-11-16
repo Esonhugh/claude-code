@@ -454,7 +454,7 @@ export function createReplToolHost(opts: {
             type: 'tool_result',
             tool_use_id: toolUseId,
             content: isError ? error : '',
-            ...(isError && { is_error: true }),
+            is_error: isError,
           }],
           isVirtual: true,
           toolUseResult: value,

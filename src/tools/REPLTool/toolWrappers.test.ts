@@ -272,7 +272,7 @@ test('an allowed call resolves the tool output and records a virtual pair', asyn
   expect(user.isVirtual).toBe(true)
   expect(user.toolUseResult).toEqual({ value: 'hi' })
   expect(user.sourceToolAssistantUUID).toBe(assistant.uuid)
-  expect(user.message.content).toEqual([{ type: 'tool_result', tool_use_id: use.id, content: '' }])
+  expect(user.message.content).toEqual([{ type: 'tool_result', tool_use_id: use.id, content: '', is_error: false }])
   expect(progress.map(p => p.phase)).toEqual(['start', 'executing', 'complete'])
   expect(progress.every(p => p.toolUseId === use.id && p.toolName === 'Fixture')).toBe(true)
 })
@@ -586,4 +586,14 @@ test('an MCP image block reaches the script as a placeholder, marked as MCP cont
   const value = await host.call('mcp__s__shot', { value: 'x' })
   expect(value).toEqual([blocks[0], { ...blocks[1], source: { ...blocks[1]!.source, data: moved(PNG) } }])
   expect(host.calls()[0]).toMatchObject({ mcpContent: true, value: blocks })
+})
+
+test('the virtual tool_result always carries is_error, as 2.1.325', async () => {
+  const { host } = hostFor([fixtureTool()])
+  await host.call('Fixture', { value: 'x' })
+  const result = host
+    .drainMessages()
+    .flatMap(message => (message.type === 'user' && Array.isArray(message.message.content) ? message.message.content : []))
+    .find(block => block.type === 'tool_result')
+  expect(result).toMatchObject({ type: 'tool_result', content: '', is_error: false })
 })
