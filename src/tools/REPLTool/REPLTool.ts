@@ -393,7 +393,7 @@ export const REPLTool = buildTool({
       let startedAt = Date.now()
       let began = false
       let stop: ReplStop | undefined
-      if (evalId !== undefined) dispatchReplEval(session, evalId, input.code)
+      if (evalId !== undefined) dispatchReplEval(session, evalId, input.code, input.description)
       const running = session.executor.run(input.code, {
         timeoutMs: input.timeout,
         totalCapMs: asyncLane ? asyncTiming.wallCapMs : replTotalCapFor(mode),

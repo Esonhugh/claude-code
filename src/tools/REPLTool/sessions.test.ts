@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import {
+  describeMainReplScripts,
+  describeRunningReplScripts,
   detachReplEval,
   dispatchReplEval,
   endLateReplEval,
@@ -8,8 +10,12 @@ import {
   finishReplEval,
   formatReplStatusEvent,
   getReplSession,
+  isMainReplScriptRunning,
+  isReplScriptRunning,
+  MAIN_REPL_SESSION,
   markReplEvalDelivered,
   noteReplStatusLine,
+  onMainReplScriptsChange,
   onReplLedgerChange,
   releaseAllReplSessions,
   replLedger,
@@ -21,6 +27,7 @@ import {
   takeReplStatusLineGiven,
   takeUnwaitedReplEvals,
 } from './sessions.js'
+import { replScriptLabel } from './scriptLabel.js'
 
 afterEach(() => {
   releaseAllReplSessions()
@@ -204,5 +211,61 @@ describe('repl-status wording (official 2.1.325 chunk-2p8jywjd.js)', () => {
     expect(queued!.value).toMatch(
       /^<event nonce="[A-Za-z0-9_-]{8}" kind="repl-status" at="[^"]+" pending="1">1 eval still pending: #1 running for 31s \(detached: later evals run beside it\)\.<\/event>$/,
     )
+  })
+})
+
+describe('running scripts for the spinner (official 2.1.325 chunk-h2wk9qp9.js ros/oos)', () => {
+  test('a running script shows its description; the others count as more', () => {
+    const session = freshSession()
+    dispatchReplEval(session, 1, 'a', 'Run the slow build')
+    expect(describeRunningReplScripts(session)).toBe('Run the slow build')
+    expect(isReplScriptRunning(session)).toBe(false)
+    startReplEval(session, 1)
+    dispatchReplEval(session, 2, 'b', 'Check the logs')
+    dispatchReplEval(session, 3, 'c')
+    expect(describeRunningReplScripts(session)).toBe('Run the slow build +1 more')
+    expect(isReplScriptRunning(session)).toBe(true)
+    finishReplEval(session, 1)
+    expect(describeRunningReplScripts(session)).toBe('Check the logs')
+    expect(isReplScriptRunning(session)).toBe(false)
+  })
+
+  test('nothing when the earliest script has no description to show', () => {
+    const session = freshSession()
+    dispatchReplEval(session, 1, 'a')
+    dispatchReplEval(session, 2, 'b', 'Check the logs')
+    startReplEval(session, 1)
+    expect(describeRunningReplScripts(session)).toBeNull()
+    expect(describeRunningReplScripts(undefined)).toBeNull()
+  })
+
+  test('the description is cut to 48 columns', () => {
+    const session = freshSession()
+    dispatchReplEval(session, 1, 'a', 'x'.repeat(60))
+    expect(describeRunningReplScripts(session)).toBe(`${'x'.repeat(47)}\u2026`)
+  })
+
+  test('a label is the first line, empty when blank or holding an unshowable character', () => {
+    expect(replScriptLabel('  Build it \r\nthen test')).toBe('Build it')
+    expect(replScriptLabel('   ')).toBe('')
+    expect(replScriptLabel('Build\u200b it')).toBe('')
+    expect(replScriptLabel(undefined)).toBe('')
+  })
+
+  test("the main thread's scripts notify across a new session id", () => {
+    let calls = 0
+    const unsubscribe = onMainReplScriptsChange(() => calls++)
+    const main = getReplSession(MAIN_REPL_SESSION)
+    dispatchReplEval(main, 1, 'a', 'Run the slow build')
+    startReplEval(main, 1)
+    expect(calls).toBe(2)
+    expect(describeMainReplScripts()).toBe('Run the slow build')
+    expect(isMainReplScriptRunning()).toBe(true)
+    dispatchReplEval(freshSession(), 1, 'b', 'other')
+    expect(calls).toBe(2)
+    releaseAllReplSessions()
+    expect(calls).toBe(3)
+    expect(describeMainReplScripts()).toBeNull()
+    unsubscribe()
   })
 })

@@ -480,7 +480,15 @@ import {
 import { deserializeMessages } from '../utils/conversationRecovery.js'
 import { planCodeModeResume, reportLostReplEvals } from '../utils/codeModeResume.js'
 import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
-import { abortPendingReplEvals, findReplSession, interruptReplSession, MAIN_REPL_SESSION } from '../tools/REPLTool/sessions.js'
+import {
+  abortPendingReplEvals,
+  describeMainReplScripts,
+  findReplSession,
+  interruptReplSession,
+  isMainReplScriptRunning,
+  MAIN_REPL_SESSION,
+  onMainReplScriptsChange,
+} from '../tools/REPLTool/sessions.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
 import {
@@ -6935,6 +6943,19 @@ export function REPL({
       : `running stop hooks… ${completedCount}/${total}`
   }, [messages, isLoading])
 
+  // Official 2.1.325 (chunk-rz2q8akm.js): in the main thread's view the
+  // running background script's description goes in the spinner, before a
+  // stop hook's status unless no script has started.
+  const scriptsDescription = React.useSyncExternalStore(onMainReplScriptsChange, describeMainReplScripts)
+  const scriptRunning = React.useSyncExternalStore(onMainReplScriptsChange, isMainReplScriptRunning)
+  const spinnerSuffix = !isLoading
+    ? null
+    : viewedAgentTask !== undefined
+      ? stopHookSpinnerSuffix
+      : scriptRunning
+        ? scriptsDescription
+        : (stopHookSpinnerSuffix ?? scriptsDescription)
+
   // Capture the active context when entering transcript mode so the view
   // remains on the selected agent while the transcript is rendered.
   const handleEnterTranscript = useCallback(() => {
@@ -7650,7 +7671,7 @@ export function REPL({
                   responseLengthRef={responseLengthRef}
                   apiMetricsRef={apiMetricsRef}
                   overrideMessage={spinnerMessage}
-                  spinnerSuffix={stopHookSpinnerSuffix}
+                  spinnerSuffix={spinnerSuffix}
                   verbose={verbose}
                   loadingStartTimeRef={loadingStartTimeRef}
                   totalPausedMsRef={totalPausedMsRef}

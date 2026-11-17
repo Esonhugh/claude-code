@@ -3,9 +3,11 @@ import type { Message } from '../../types/message.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { formatDuration } from '../../utils/format.js'
+import { truncateToWidth } from '../../utils/truncate.js'
 import { enqueuePollEvent, REPL_EVAL_EVENT_KIND, REPL_STATUS_EVENT_KIND } from '../../utils/messageQueueManager.js'
 import { SCRIPT_ASK_DECLINED } from './constants.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
+import { replScriptLabel } from './scriptLabel.js'
 import { isUserStop } from './stopReport.js'
 
 /** A script the async lane dispatched that has not ended yet. */
@@ -27,6 +29,8 @@ export type ReplLedgerEval = {
   /** It settled with calls still running (official `holdLate`). */
   late: boolean
   snippet: string
+  /** The REPL call's `description`, what the spinner shows while it runs. */
+  description: string | undefined
   /** The calls it made that have not started yet, for the status line. */
   readNotYetStarted?: () => ReplNotYetStartedCall[]
 }
@@ -86,6 +90,12 @@ export const MAIN_REPL_SESSION = 'main'
 
 const sessions = new Map<string, ReplSession>()
 let unregisterCleanup: (() => void) | undefined
+/** Listeners to the main thread's ledger, across the sessions a new session id makes. */
+const mainScriptsListeners = new Set<() => void>()
+
+function mainScriptsChanged(): void {
+  for (const listener of [...mainScriptsListeners]) listener()
+}
 
 /** The context for `key`, made on first use or when the session id moved on. */
 export function getReplSession(key: string): ReplSession {
@@ -112,6 +122,7 @@ export function getReplSession(key: string): ReplSession {
   }
   sessions.set(key, session)
   unregisterCleanup ??= registerCleanup(async () => releaseAllReplSessions())
+  if (existing && session.agentId === undefined) mainScriptsChanged()
   return session
 }
 
@@ -123,6 +134,7 @@ export function releaseReplSession(key: string): void {
   session.released = true
   session.executor.release()
   wake(session)
+  if (session.agentId === undefined) mainScriptsChanged()
 }
 
 /** The context for `key` if one exists in this session id, without making one. */
@@ -199,6 +211,7 @@ function ledgerChanged(session: ReplSession): void {
     })),
   )
   for (const listener of [...session.ledgerListeners]) listener()
+  if (session.agentId === undefined && sessions.get(MAIN_REPL_SESSION) === session) mainScriptsChanged()
 }
 
 function ledgerState(entry: ReplLedgerEval): ReplEvalState {
@@ -217,12 +230,13 @@ export function abortReplEval(session: ReplSession, id: number): void {
 }
 
 /** Official `dispatch`: the eval is waiting for its turn, unwaited and undelivered until its outcome goes out. */
-export function dispatchReplEval(session: ReplSession, id: number, code: string): ReplLedgerEval {
+export function dispatchReplEval(session: ReplSession, id: number, code: string, description?: string): ReplLedgerEval {
   const entry: ReplLedgerEval = {
     startedAt: undefined,
     detached: false,
     late: false,
     snippet: code.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS),
+    description,
   }
   session.ledger.set(id, entry)
   session.depth++
@@ -303,6 +317,53 @@ export function takeReplStatusLineGiven(session: ReplSession): boolean {
 export function onReplLedgerChange(session: ReplSession, listener: () => void): () => void {
   session.ledgerListeners.add(listener)
   return () => void session.ledgerListeners.delete(listener)
+}
+
+/** Official `onRunningScriptsChange` for the main thread, whichever session id its scripts run under. */
+export function onMainReplScriptsChange(listener: () => void): () => void {
+  mainScriptsListeners.add(listener)
+  return () => void mainScriptsListeners.delete(listener)
+}
+
+/** Official `MAX_DESCRIPTION_WIDTH` (2.1.325 chunk-h2wk9qp9.js `sOn`), in columns. */
+export const REPL_SCRIPT_DESCRIPTION_WIDTH = 48
+
+/** Official phase order: running, then waiting for its turn, then late. */
+function scriptPhase(entry: ReplLedgerEval): number {
+  return entry.late ? 2 : entry.startedAt === undefined ? 1 : 0
+}
+
+/**
+ * Official `describeRunningScripts` (2.1.325 chunk-h2wk9qp9.js `ros`): the
+ * description of the first script in the earliest phase, cut to 48 columns,
+ * with `+N more` for the other described scripts. Null when that script has
+ * no description to show.
+ */
+export function describeRunningReplScripts(session: ReplSession | undefined): string | null {
+  if (!session) return null
+  const entries = [...session.ledger].sort(([a, x], [b, y]) => scriptPhase(x) - scriptPhase(y) || a - b)
+  const lowest = entries[0] === undefined ? 0 : scriptPhase(entries[0][1])
+  const described = entries
+    .map(([, entry]) => ({ phase: scriptPhase(entry), text: replScriptLabel(entry.description) }))
+    .filter(({ text }) => text !== '')
+  const first = described[0]
+  if (first === undefined || first.phase !== lowest) return null
+  const text = truncateToWidth(first.text, REPL_SCRIPT_DESCRIPTION_WIDTH)
+  return described.length === 1 ? text : `${text} +${described.length - 1} more`
+}
+
+/** Official `isScriptRunning` (`oos`): a script has started and not ended. */
+export function isReplScriptRunning(session: ReplSession | undefined): boolean {
+  return !!session && [...session.ledger.values()].some(entry => scriptPhase(entry) === 0)
+}
+
+/** The spinner's view of the main thread's scripts, as useSyncExternalStore snapshots. */
+export function describeMainReplScripts(): string | null {
+  return describeRunningReplScripts(findReplSession(MAIN_REPL_SESSION))
+}
+
+export function isMainReplScriptRunning(): boolean {
+  return isReplScriptRunning(findReplSession(MAIN_REPL_SESSION))
 }
 
 export function takeReplLateMessages(session: ReplSession): Message[] {
