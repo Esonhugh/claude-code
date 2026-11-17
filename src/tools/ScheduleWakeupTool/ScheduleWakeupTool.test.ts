@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, test } from 'bun:test'
+import { afterEach, spyOn, test } from 'bun:test'
+import chokidar from 'chokidar'
 
 import {
   addSessionCronTask,
@@ -94,6 +95,7 @@ test('stop cancels pending loop wakeups but leaves other cron tasks alone', asyn
 })
 
 test('the cron scheduler fires a loop wakeup at scheduledFor instead of its cron minute', async () => {
+  const watch = spyOn(chokidar, 'watch')
   const previousRoot = getProjectRoot()
   const root = mkdtempSync(join(tmpdir(), 'wakeup-scheduler-'))
   setProjectRoot(root)
@@ -123,10 +125,15 @@ test('the cron scheduler fires a loop wakeup at scheduledFor instead of its cron
     }
     assert.equal(fired.length, 1)
     assert.equal(fired[0]!.prompt, '/loop check CI')
+    assert.equal(watch.mock.calls.length, 1)
+    assert.equal(watch.mock.calls[0]![1]!.usePolling, true)
+    assert.equal(watch.mock.calls[0]![1]!.interval, 500)
     assert.ok(Date.now() >= now + 1200)
     assert.equal(getSessionCronTasks().length, 0)
   } finally {
     scheduler.stop()
+    await (watch.mock.results[0]?.value as ReturnType<typeof chokidar.watch> | undefined)?.close()
+    watch.mockRestore()
     setProjectRoot(previousRoot)
     rmSync(root, { recursive: true, force: true })
   }
