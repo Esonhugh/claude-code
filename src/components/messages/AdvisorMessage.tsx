@@ -1,12 +1,21 @@
 import figures from 'figures'
 import React from 'react'
 import { Box, Text } from '../../ink.js'
-import type { AdvisorBlock } from '../../utils/advisor.js'
+import { logEvent } from '../../services/analytics/index.js'
+import {
+  type AdvisorBlock,
+  getAdvisorErrorCode,
+  getAdvisorRefusalText,
+  isAdvisorRefusal,
+} from '../../utils/advisor.js'
 import { renderModelName } from '../../utils/model/model.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { MessageResponse } from '../MessageResponse.js'
 import { ToolUseLoader } from '../ToolUseLoader.js'
+
+// tool_use_ids whose unknown advisor content was already reported.
+const reportedUnknownContent = new Set<string>()
 
 type Props = {
   block: AdvisorBlock
@@ -49,32 +58,63 @@ export function AdvisorMessage({
   }
 
   let body: React.ReactNode
-  switch (block.content.type) {
-    case 'advisor_tool_result_error':
-      body = (
-        <Text color="error">
-          Advisor unavailable ({block.content.error_code})
-        </Text>
-      )
-      break
-    case 'advisor_result':
-      body = verbose ? (
-        <Text dimColor>{block.content.text}</Text>
+  if (isAdvisorRefusal(block)) {
+    const reason = getAdvisorRefusalText(block)
+    const line = (
+      <Text>
+        <Text color="warning">Advisor declined to advise on this request</Text>
+        {reason !== undefined && !verbose ? (
+          <>
+            {' '}
+            <CtrlOToExpand />
+          </>
+        ) : null}
+      </Text>
+    )
+    body =
+      verbose && reason !== undefined ? (
+        <Box flexDirection="column">
+          {line}
+          <Text dimColor>{reason}</Text>
+        </Box>
       ) : (
-        <Text dimColor>
-          {figures.tick} Advisor has reviewed the conversation and will apply
-          the feedback <CtrlOToExpand />
-        </Text>
+        line
       )
-      break
-    case 'advisor_redacted_result':
-      body = (
-        <Text dimColor>
-          {figures.tick} Advisor has reviewed the conversation and will apply
-          the feedback
-        </Text>
-      )
-      break
+  } else {
+    const content = block.content as { type?: string } | null | undefined
+    switch (content?.type) {
+      case 'advisor_tool_result_error':
+        body = (
+          <Text color="error">
+            Advisor unavailable ({getAdvisorErrorCode(block)})
+          </Text>
+        )
+        break
+      case 'advisor_result':
+        body = verbose ? (
+          <Text dimColor>{(block.content as { text: string }).text}</Text>
+        ) : (
+          <Text dimColor>
+            {figures.tick} Advisor has reviewed the conversation and will
+            apply the feedback <CtrlOToExpand />
+          </Text>
+        )
+        break
+      case 'advisor_redacted_result':
+        body = (
+          <Text dimColor>
+            {figures.tick} Advisor has reviewed the conversation and will
+            apply the feedback
+          </Text>
+        )
+        break
+      default:
+        if (content != null && !reportedUnknownContent.has(block.tool_use_id)) {
+          reportedUnknownContent.add(block.tool_use_id)
+          logEvent('tengu_advisor_unknown_content', {})
+        }
+        return null
+    }
   }
 
   return (
