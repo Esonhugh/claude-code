@@ -232,7 +232,7 @@ export function hostManagedSettings(root = HOST_MANAGED_ROOT, platform = process
         try {
           const value = JSON.parse(content)
           empty = value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0
-        } catch {}
+        } catch { empty = false }
       }
       if (!empty) problems.push(`${name}: not empty settings`)
     }
