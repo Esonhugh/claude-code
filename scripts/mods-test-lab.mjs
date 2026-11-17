@@ -448,7 +448,7 @@ export function isIdlePrompt(text) {
   return /^❯\s*$/m.test(text) && !/[·✢✳✶✻✽*]\s+[^\n]*…/m.test(text)
 }
 
-export function assessBuiltinAcceptance(pair) {
+export function assessBuiltinAcceptance(pair, evidenceLocation = () => undefined) {
   const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled', 'securityOrdinary', 'securityTeam', 'securityEnterprise']
   const sides = names.map(name => pair[name])
   const complete = sides.every(side => side && !side.error && !side.ledgerError && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
@@ -515,7 +515,7 @@ export function assessBuiltinAcceptance(pair) {
     privacyOff.length === 0 && privacyOn.length === 0
   // Native captures carry closed shared-slot evidence; only PTY-recorder captures use the legacy files.
   const frameEvidence = sides.every(side => side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1'
-    ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side))
+    ? validateNativeTerminalEvidence(side, {}, evidenceLocation(side)) : validateBuiltinTerminalEvidence(side))
   const timingEquivalent = sides.every(side => side?.cleanup?.terminalCapture?.productTimingEquivalent === true)
   // Product timing equivalence has no capture protocol yet; it is reported, not gated.
   return {

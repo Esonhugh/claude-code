@@ -5,7 +5,7 @@ import * as evidence from './builtin-terminal-evidence.mjs'
 const validated = []
 mock.module('./builtin-terminal-evidence.mjs', () => ({
   ...evidence,
-  validateNativeTerminalEvidence: side => { validated.push(['native', side.name]); return true },
+  validateNativeTerminalEvidence: (side, _, location) => { validated.push(['native', side.name, location]); return true },
   validateBuiltinTerminalEvidence: side => { validated.push(['legacy', side.name]); return false },
 }))
 const { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs')
@@ -37,4 +37,16 @@ test('native captures are judged by the native validator, others by the legacy o
   const partial = assessBuiltinAcceptance(mixed).terminalEvidence
   expect(partial.frameEvidence).toBe(false)
   expect(partial.verdict).toBe('failed')
+})
+
+test('archived sides are validated through the evidence location the caller resolves', () => {
+  validated.length = 0
+  const locations = []
+  const result = assessBuiltinAcceptance(pair('native-shared-slot-v1'), side => {
+    locations.push(side.name)
+    return { archived: side.name }
+  }).terminalEvidence
+  expect(result.verdict).toBe('passed')
+  expect(locations).toEqual(names)
+  expect(validated).toEqual(names.map(name => ['native', name, { archived: name }]))
 })

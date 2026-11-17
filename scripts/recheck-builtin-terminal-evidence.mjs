@@ -123,7 +123,15 @@ export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath
   const report = JSON.parse(readFileSync(input, 'utf8')),
     saved = JSON.parse(readFileSync(savedPath, 'utf8')),
     { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs'),
-    assertions = assessBuiltinAcceptance(report.pair),
+    // Archived sides are read through the archive receipt, as the side recheck does.
+    assertions = assessBuiltinAcceptance(report.pair, side => {
+      try {
+        const launch = JSON.parse(readOwnedNativeFile(join(side.run, 'capture-launch.json')))
+        return nativeEvidenceLocation(side.run, launch.run !== realpathSync(side.run) ? archiveReceiptPath : undefined)
+      } catch {
+        return undefined
+      }
+    }),
     current = JSON.parse(JSON.stringify(await recheckBuiltinEvidence(report, binarySha256, archiveReceiptPath)))
   // The acknowledged v1 recorder changes the product render schedule. Product
   // timing equivalence itself has no capture protocol yet and is not gated.
