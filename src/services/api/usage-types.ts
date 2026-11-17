@@ -44,7 +44,7 @@ export type UsageLimitRow = {
 export type ChatGPTUsageCredits = {
   has_credits?: boolean
   unlimited?: boolean
-  balance?: number | null
+  balance?: string | number | null
   overage_limit_reached?: boolean
 }
 

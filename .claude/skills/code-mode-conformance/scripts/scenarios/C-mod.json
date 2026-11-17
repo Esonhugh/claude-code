@@ -1,0 +1,94 @@
+{
+ "name": "C-mod",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "mod/.claude-plugin/plugin.json": "{\"name\": \"cd-mod\", \"version\": \"0.1.0\", \"description\": \"conformance tool.call probe\"}",
+  "mod/hooks/hooks.json": "{\"modules\": [\"./register.ts\"]}",
+  "mod/hooks/register.ts": "import type { Register } from 'claude-code'\n\nexport const register: Register = on => {\n  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {\n    const command = String(e.command)\n    if (command.includes('MOD_DENY')) return { deny: 'cd-mod: denied by the tool.call hook' }\n    if (command.includes('MOD_REWRITE')) return next({ ...e, command: 'echo rewritten-by-mod' })\n    return next(e)\n  })\n}\n"
+ },
+ "commands": {
+  "MOD": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const s = x => x?.error ?? x?.stdout?.trim()\nconst out = {}\nout.deny = s(await Bash({command: 'touch mod-denied.txt; echo MOD_DENY ran'}))\nout.rewrite = s(await Bash({command: 'echo MOD_REWRITE original'}))\nout.plain = s(await Bash({command: 'echo plain-ok'}))\nJSON.stringify(out)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} mod"
+   }
+  ],
+  "OUTER": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "'outer-ok'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} outer"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions",
+    "args": "--plugin-dir ./mod"
+   }
+  },
+  {
+   "capture": "mod-start"
+  },
+  {
+   "turn": "MOD",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "D4: mod tool.call deny reaches the script as {error}",
+    "cmd": "MOD",
+    "step": 1,
+    "match": "deny\\\\?\":\\\\?\"[^\"]*cd-mod: denied by the tool.call hook"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "D4: denied command did not run",
+    "path": "mod-denied.txt",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "D4: mod tool.call input rewrite takes effect",
+    "cmd": "MOD",
+    "step": 1,
+    "match": "rewrite\\\\?\":\\\\?\"rewritten-by-mod"
+   }
+  },
+  {
+   "expect": {
+    "name": "D4: unmatched inner call runs normally",
+    "cmd": "MOD",
+    "step": 1,
+    "match": "plain\\\\?\":\\\\?\"plain-ok"
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

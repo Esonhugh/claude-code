@@ -1,0 +1,301 @@
+{
+ "name": "B-interrupt",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "commands": {
+  "PERM_YES": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const b = await Bash({command: 'touch {{work}}/perm-yes.txt && echo perm-yes-ok', description: 'perm probe'})\nb.stdout.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} perm-yes"
+   }
+  ],
+  "PERM_NO": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const b = await Bash({command: 'touch {{work}}/perm-no.txt && echo perm-no-ran', description: 'perm probe no'})\nlog('after-decline')\n'reached-end'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} perm-no"
+   }
+  ],
+  "AFTER_NO": [
+   {
+    "text": "DONE {{nonce}} after-no"
+   }
+  ],
+  "SETV": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "globalThis.survivor = 'alive'; 'set'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} setv"
+   }
+  ],
+  "SPIN": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const t0 = Date.now(); while (Date.now() - t0 < 45000) {} 'spun'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} spin"
+   }
+  ],
+  "AFTER_SPIN": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "typeof survivor",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} after-spin"
+   }
+  ],
+  "SLEEPY": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "await sleep(25000); 'woke'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} sleepy"
+   }
+  ],
+  "AFTER_ESC": [
+   {
+    "text": "DONE {{nonce}} after-esc"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "send": "PERM_YES"
+  },
+  {
+   "wait_pane": "Do you want to proceed",
+   "timeout": 30
+  },
+  {
+   "capture": "perm-yes-prompt"
+  },
+  {
+   "expect_pane": {
+    "name": "inner Bash prompt shows the command",
+    "match": "touch .*perm-yes\\.txt"
+   }
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "wait_req": {
+    "cmd": "PERM_YES",
+    "step": 1,
+    "timeout": 30
+   }
+  },
+  {
+   "expect": {
+    "name": "accept: inner Bash ran, result returned",
+    "cmd": "PERM_YES",
+    "step": 1,
+    "match": "<result>perm-yes-ok</result>"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "accept: command ran",
+    "path": "perm-yes.txt",
+    "match": "^$"
+   }
+  },
+  {
+   "sleep": 2
+  },
+  {
+   "send": "PERM_NO"
+  },
+  {
+   "wait_pane": "Do you want to proceed",
+   "timeout": 30
+  },
+  {
+   "capture": "perm-no-prompt"
+  },
+  {
+   "keys": [
+    "Escape"
+   ]
+  },
+  {
+   "sleep": 4
+  },
+  {
+   "capture": "perm-no-after"
+  },
+  {
+   "turn": "AFTER_NO"
+  },
+  {
+   "expect": {
+    "name": "decline: refusal report reaches the model",
+    "cmd": "AFTER_NO",
+    "step": 0,
+    "match": "doesn't want to proceed with this tool use.*declined the permission prompt for .*so the script stopped"
+   }
+  },
+  {
+   "expect": {
+    "name": "decline: script did not continue past the call",
+    "cmd": "AFTER_NO",
+    "step": 0,
+    "match": "after-decline|reached-end",
+    "absent": true
+   }
+  },
+  {
+   "expect_file": {
+    "name": "decline: command did not run",
+    "path": "perm-no.txt",
+    "match": "^$",
+    "absent": true
+   }
+  },
+  {
+   "turn": "SETV"
+  },
+  {
+   "turn": "SPIN",
+   "timeout": 120
+  },
+  {
+   "expect": {
+    "name": "timeout: official text",
+    "cmd": "SPIN",
+    "step": 1,
+    "match": "Error: REPL execution timed out after 30000ms of script time \\(inner tool calls excluded\\)\\. Script may still be running"
+   }
+  },
+  {
+   "turn": "AFTER_SPIN",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "after timeout: contextReset note (D2)",
+    "cmd": "AFTER_SPIN",
+    "step": 1,
+    "match": "This REPL context is new.*previous script was stopped"
+   }
+  },
+  {
+   "expect": {
+    "name": "after timeout: globals gone (D2)",
+    "cmd": "AFTER_SPIN",
+    "step": 1,
+    "match": "<result>undefined</result>"
+   }
+  },
+  {
+   "send": "SLEEPY"
+  },
+  {
+   "wait_req": {
+    "cmd": "SLEEPY",
+    "step": 0,
+    "timeout": 30
+   }
+  },
+  {
+   "sleep": 4
+  },
+  {
+   "keys": [
+    "Escape"
+   ]
+  },
+  {
+   "sleep": 4
+  },
+  {
+   "capture": "esc-after"
+  },
+  {
+   "turn": "AFTER_ESC"
+  },
+  {
+   "expect": {
+    "name": "Esc: user-stop report reaches the model",
+    "cmd": "AFTER_ESC",
+    "step": 0,
+    "match": "The user interrupted this script, so it stopped\\. STOP what you are doing"
+   }
+  },
+  {
+   "expect": {
+    "name": "Esc: no late result from the stopped script",
+    "cmd": "AFTER_ESC",
+    "step": 0,
+    "match": "<result>woke</result>",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

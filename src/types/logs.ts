@@ -50,6 +50,7 @@ export type LogOption = {
   prRepository?: string // Repository in "owner/repo" format
   mode?: 'coordinator' | 'normal' // Session mode for coordinator/normal detection
   permissionMode?: PermissionMode // Last recorded permission mode, restored on resume
+  replMode?: boolean // Last recorded Code Mode state (repl-mode entry); undefined for sessions that never wrote one
   worktreeSession?: PersistedWorktreeSession | null // Worktree state at session end (null = exited, undefined = never entered)
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
   devModsFolder?: string // Positive session-scoped Mods authoring consent
@@ -185,6 +186,14 @@ export type PermissionModeEntry = {
   type: 'permission-mode'
   sessionId: UUID
   permissionMode: PermissionMode
+}
+
+/** Whether the session runs in Code Mode (official 2.1.325 `repl-mode`, last wins). */
+export type ReplModeEntry = {
+  type: 'repl-mode'
+  sessionId: UUID
+  replMode: boolean
+  typedEvents?: true
 }
 
 /**
@@ -360,6 +369,7 @@ export type Entry =
   | SpeculationAcceptMessage
   | ModeEntry
   | PermissionModeEntry
+  | ReplModeEntry
   | WorktreeStateEntry
   | DevModsMessage
   | SessionStartedAtEntry

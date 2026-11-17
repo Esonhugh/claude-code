@@ -1,0 +1,217 @@
+{
+ "name": "C-perm",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "edit-me.txt": "alpha\n"
+ },
+ "commands": {
+  "PERM_BASH": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const b = await Bash({command: 'touch perm-c.txt && echo perm-c-ok', description: 'perm c probe'})\nb.stdout?.trim() ?? JSON.stringify(b)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} perm-bash"
+   }
+  ],
+  "PERM_NO": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const b = await Bash({command: 'touch perm-no.txt && echo ran', description: 'perm no probe'})\nlog('after-no')\n'end:' + JSON.stringify(b)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} perm-no"
+   }
+  ],
+  "PERM_EDIT": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "await Read({file_path: '{{work}}/edit-me.txt'})\nconst e = await Edit({file_path: '{{work}}/edit-me.txt', old_string: 'alpha', new_string: 'beta'})\nJSON.stringify(e).slice(0, 200)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} perm-edit"
+   }
+  ],
+  "AFTER_NO": [
+   {
+    "text": "DONE {{nonce}} after-no"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "send": "PERM_BASH"
+  },
+  {
+   "wait_pane": "Do you want to proceed",
+   "timeout": 30
+  },
+  {
+   "capture": "bash-dialog"
+  },
+  {
+   "expect_pane": {
+    "name": "default: inner Bash dialog shows the inner command",
+    "match": "Bash\\(touch perm-c\\.txt && echo perm-c-ok\\)|touch perm-c\\.txt && echo perm-c-ok"
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "default: inner Bash dialog is the Bash dialog (title 'Bash command')",
+    "match": "(?m)^\\s*Bash command( \\(unsandboxed\\))?\\s*$"
+   }
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "wait_req": {
+    "cmd": "PERM_BASH",
+    "step": 1,
+    "timeout": 30
+   }
+  },
+  {
+   "expect": {
+    "name": "accept: inner Bash ran",
+    "cmd": "PERM_BASH",
+    "step": 1,
+    "match": "<result>perm-c-ok</result>"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "accept: file created",
+    "path": "perm-c.txt",
+    "match": "^$"
+   }
+  },
+  {
+   "send": "PERM_NO"
+  },
+  {
+   "wait_pane": "Do you want to proceed",
+   "timeout": 30
+  },
+  {
+   "keys": ["Down", "Down", "Down"]
+  },
+  {
+   "capture": "no-selected"
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "sleep": 3
+  },
+  {
+   "capture": "after-no"
+  },
+  {
+   "expect_pane": {
+    "name": "No: the turn stops (refusal shown, model not called again)",
+    "match": "Permission denied for Bash: The user doesn't want to proceed with this tool use"
+   }
+  },
+  {
+   "turn": "AFTER_NO"
+  },
+  {
+   "expect": {
+    "name": "No: REPL result carries the refusal report",
+    "cmd": "AFTER_NO",
+    "step": 0,
+    "field": "messages",
+    "match": "<error>The user doesn't want to proceed with this tool use\\. STOP what you are doing[^\"]*The user declined the permission prompt for Bash\\(.*so the script stopped\\..*did not run\\. The user declined it\\."
+   }
+  },
+  {
+   "expect": {
+    "name": "No: script stopped at the declined call (no later log)",
+    "cmd": "AFTER_NO",
+    "step": 0,
+    "field": "messages",
+    "match": "after-no</|<result>end:",
+    "absent": true
+   }
+  },
+  {
+   "expect_file": {
+    "name": "No: file not created",
+    "path": "perm-no.txt",
+    "absent": true
+   }
+  },
+  {
+   "send": "PERM_EDIT"
+  },
+  {
+   "wait_pane": "Do you want to (proceed|make this edit)",
+   "timeout": 30
+  },
+  {
+   "capture": "edit-dialog"
+  },
+  {
+   "expect_pane": {
+    "name": "default: inner Edit dialog is the Edit dialog (title 'Edit file')",
+    "match": "Edit file"
+   }
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "wait_req": {
+    "cmd": "PERM_EDIT",
+    "step": 1,
+    "timeout": 30
+   }
+  },
+  {
+   "expect_file": {
+    "name": "Edit accepted: file changed",
+    "path": "edit-me.txt",
+    "match": "^beta"
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

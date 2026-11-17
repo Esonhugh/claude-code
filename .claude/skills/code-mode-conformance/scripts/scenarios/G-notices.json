@@ -1,0 +1,157 @@
+{
+ "name": "G-notices",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "commands": {
+  "RC": [
+   {
+    "text": "DONE {{nonce}} rc"
+   }
+  ],
+  "BAD": [
+   {
+    "text": "DONE {{nonce}} bad"
+   }
+  ],
+  "ON": [
+   {
+    "text": "DONE {{nonce}} on"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "on: 'is on' notice",
+    "match": "Code Mode \\(experimental\\) is on \u00b7 this session can be resumed only with Code Mode on"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--rc",
+    "may_exit": true
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "--rc: this build has no BRIDGE_MODE, so the --rc notice is unverified here",
+    "match": "unknown option '--rc'"
+   }
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "env": {
+     "CLAUDE_BRIDGE_REATTACH_SESSION": "cmx-fake"
+    }
+   }
+  },
+  {
+   "capture": "reattach"
+  },
+  {
+   "expect_pane": {
+    "name": "bridge reattach: refused notice (unattended)",
+    "match": "isn.t available: for now it doesn.t work in background jobs, in teammates. panes or with Remote Control\\. Starting with the ordinary\\s+tools\\."
+   }
+  },
+  {
+   "turn": "RC"
+  },
+  {
+   "expect": {
+    "name": "bridge reattach: ordinary tools",
+    "cmd": "RC",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "bridge reattach: no REPL",
+    "cmd": "RC",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)REPL(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "2"
+    }
+   }
+  },
+  {
+   "capture": "bad"
+  },
+  {
+   "expect_pane": {
+    "name": "=2: refused notice (bad_value)",
+    "match": "isn.t available: CLAUDE_CODE_EXPERIMENTAL_CODE_MODE must be 1 to turn it on\\. Starting with the ordinary\\s+tools\\."
+   }
+  },
+  {
+   "turn": "BAD"
+  },
+  {
+   "expect": {
+    "name": "=2: ordinary tools",
+    "cmd": "BAD",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "headless": {
+    "prompt": "@@ hp1 ON",
+    "as": "p",
+    "args": "--debug-file debug-p.log"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "-p: entrypoint refusal (debug log only; official shows notices only in the REPL UI)",
+    "path": "debug-p.log",
+    "match": "\\[CodeMode\\] Code Mode \\(experimental\\) isn't available: for now it only works in the interactive terminal"
+   }
+  },
+  {
+   "expect": {
+    "name": "-p: ordinary tools",
+    "cmd": "ON",
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "-p: no REPL",
+    "cmd": "ON",
+    "field": "tools",
+    "match": "(^|,)REPL(,|$)",
+    "absent": true
+   }
+  }
+ ]
+}

@@ -107,6 +107,7 @@ import {
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
 import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
+import { withoutCodeModeTools } from '../../tools/REPLTool/codeModeGate.js'
 import {
   createIdleNotification,
   createShutdownApprovedMessage,
@@ -1143,11 +1144,9 @@ export async function runInProcessTeammate(
     if (systemPromptMode === 'replace' && systemPrompt) {
       teammateSystemPrompt = asSystemPrompt([systemPrompt])
     } else {
-      const fullSystemPromptParts = await getSystemPrompt(
-        toolUseContext.options.tools,
-        toolUseContext.options.mainLoopModel,
-        undefined,
-        toolUseContext.options.mcpClients,
+      const fullSystemPromptParts = await getTeammateDefaultSystemPrompt(
+        teammateContext,
+        toolUseContext,
       )
 
       const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
@@ -1796,6 +1795,25 @@ export async function runInProcessTeammate(
   } finally {
     finishModConversation?.()
   }
+}
+
+/**
+ * The default system prompt for a teammate, built in its context from the
+ * pool it runs with, so a leader in Code Mode does not hand it the Code Mode
+ * prompt text (D3).
+ */
+export function getTeammateDefaultSystemPrompt(
+  teammateContext: TeammateContext,
+  context: Pick<ToolUseContext, 'options' | 'getAppState'>,
+): Promise<string[]> {
+  return runWithTeammateContext(teammateContext, () =>
+    getSystemPrompt(
+      withoutCodeModeTools(context.options.tools, context.getAppState().toolPermissionContext),
+      context.options.mainLoopModel,
+      undefined,
+      context.options.mcpClients,
+    ),
+  )
 }
 
 /**

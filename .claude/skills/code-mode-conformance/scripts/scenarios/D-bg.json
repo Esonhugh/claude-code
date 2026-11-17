@@ -1,0 +1,157 @@
+{
+ "name": "D-bg",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Agent"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello\n",
+  ".claude/agents/reader.md": "---\nname: reader\ndescription: Reads files for the conformance run\ntools: Read, Bash\n---\nYou are the reader agent.\n",
+  ".claude/agents/norepl.md": "---\nname: norepl\ndescription: Agent with REPL disallowed\ntools: Read, Bash\ndisallowedTools: REPL\n---\nYou are the norepl agent.\n"
+ },
+ "agents": {
+  "BGKEY": [
+   {
+    "text": "bg-final"
+   }
+  ]
+ },
+ "commands": {
+  "BG": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Agent({description: 'd', subagent_type: 'reader', prompt: 'BGKEY probe', run_in_background: true})\nJSON.stringify(r).slice(0, 400)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} bg"
+   }
+  ],
+  "BG:notif": [
+   {
+    "text": "NOTIF {{nonce}} bg"
+   }
+  ],
+  "FORK": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Agent({description: 'fork probe', subagent_type: 'fork', prompt: 'FORKKEY probe'})\nJSON.stringify(r).slice(0, 400)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} fork"
+   }
+  ],
+  "FORK:notif": [
+   {
+    "text": "fork-final"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions"
+   }
+  },
+  {
+   "turn": "BG",
+   "timeout": 90
+  },
+  {
+   "wait_req": {
+    "role": "^agent:BGKEY$",
+    "timeout": 60
+   }
+  },
+  {
+   "expect": {
+    "name": "background subagent (bypass launch): tools are REPL and Poll",
+    "role": "^agent:BGKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "^(Poll,REPL|REPL,Poll)$"
+   }
+  },
+  {
+   "expect": {
+    "name": "background subagent: REPL prompt has the two-tools line",
+    "role": "^agent:BGKEY$",
+    "step": 0,
+    "field": "tool:REPL",
+    "match": "Your two tools are `REPL` and `Poll`"
+   }
+  },
+  {
+   "sleep": 3
+  },
+  {
+   "turn": "FORK",
+   "timeout": 90
+  },
+  {
+   "wait_req": {
+    "role": "^main:FORK:notif$",
+    "timeout": 60
+   }
+  },
+  {
+   "expect": {
+    "name": "fork: child request carries the fork directive (last step-0 FORK request)",
+    "role": "^main:FORK$",
+    "step": 0,
+    "field": "lastUser",
+    "match": "<fork-boilerplate>[\\s\\S]*FORKKEY"
+   }
+  },
+  {
+   "expect": {
+    "name": "fork: child request carries the parent's history",
+    "role": "^main:FORK$",
+    "step": 0,
+    "field": "messages",
+    "match": "@@ n1 BG[\\s\\S]*@@ n2 FORK"
+   }
+  },
+  {
+   "expect": {
+    "name": "fork inherits the parent's grant: child tools are REPL and Poll",
+    "role": "^main:FORK$",
+    "step": 0,
+    "field": "tools",
+    "match": "^(Poll,REPL|REPL,Poll)$"
+   }
+  },
+  {
+   "expect": {
+    "name": "fork: child gets no ordinary Bash/Read",
+    "role": "^main:FORK$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(Bash|Read)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

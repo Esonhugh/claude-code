@@ -302,10 +302,11 @@ export type PromptInputMode =
   | 'prompt'
   | 'orphaned-permission'
   | 'task-notification'
+  | 'poll-event'
 
 export type EditablePromptInputMode = Exclude<
   PromptInputMode,
-  `${string}-notification`
+  `${string}-notification` | 'poll-event'
 >
 
 /**
@@ -356,6 +357,10 @@ export type QueuedCommand = {
   skipAttachments?: boolean
   /** Queued behind a local command such as /compact: runs as its own turn. */
   runsAlone?: boolean
+  /** Official `pollEmptyDispatch`: the empty prompt that starts a turn for waking poll events, which its first request folds in. */
+  pollEmptyDispatch?: true
+  /** The prompt submission hooks don't run for it. */
+  skipSubmissionHooks?: true
   /**
    * When true, slash commands are dispatched but filtered through
    * isBridgeSafeCommand() — 'local-jsx' and terminal-only commands return
@@ -416,6 +421,26 @@ export type QueuedCommand = {
   taskId?: string
   /** The task already sent its SDK task_notification; print.ts must not send it again. */
   sdkTaskNotificationSent?: true
+  /** The event a `poll-event` command carries (official 2.1.325 `pollEvent`). */
+  pollEvent?: QueuedPollEvent
+}
+
+/** A Poll event waiting in the queue for the next delivery. */
+export type QueuedPollEvent = {
+  kind: string
+  /** The `<event nonce=…>` element as delivered. */
+  envelope: string
+  nonce: string
+  /** Whether it counts toward waking a turn; false ones wait for the next delivery. */
+  wake: boolean
+  /** False: it never starts a turn itself (an eval the user stopped, its late output). */
+  startsTurn?: false
+  /** When it was queued; a delivery is stamped with its last event's. */
+  timestamp: string
+  /** The conversation's tools used when it was queued. */
+  toolsUsed?: string[]
+  settleDelivered?: () => void
+  settleDropped?: (reason: Error) => void
 }
 
 /**

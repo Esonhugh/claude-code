@@ -13,6 +13,9 @@ import {
   type Tools,
 } from '../../Tool.js'
 import { findRemoteDisplayTool } from '../../remote/remoteDisplayTools.js'
+import { isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
+import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { ScriptSourceRow } from '../../tools/REPLTool/ScriptSourceRow.js'
 import type { ProgressMessage } from '../../types/message.js'
 import { useIsClassifierChecking } from '../../utils/classifierApprovalsHook.js'
 import { logError } from '../../utils/log.js'
@@ -110,9 +113,23 @@ export function AssistantToolUseMessage({
   const isWaitingForPermission = pendingWorkerRequest?.toolUseId === param.id
 
   if (isTransparentWrapper) {
-    if (isQueued || isResolved) return null
+    const resultMsg = lookups.toolResultByToolUseID.get(param.id)
+    const scriptSource =
+      isTranscriptMode && isCodeModeEnabled() && param.name === REPL_TOOL_NAME ? (
+        <ScriptSourceRow
+          tool={tool}
+          input={param.input}
+          output={resultMsg?.type === 'user' ? resultMsg.toolUseResult : undefined}
+          shouldAnimate={shouldAnimate}
+          isUnresolved={!isResolved}
+          isError={lookups.erroredToolUseIDs.has(param.id)}
+          addMargin={addMargin}
+        />
+      ) : null
+    if (isQueued || isResolved) return scriptSource
     return (
       <Box flexDirection="column" width="100%" backgroundColor={bg}>
+        {scriptSource}
         {renderToolUseProgressMessage(
           tool,
           tools,

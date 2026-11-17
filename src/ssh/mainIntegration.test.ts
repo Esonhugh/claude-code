@@ -805,7 +805,7 @@ test('routes SSH bash input to the remote shell executor instead of the model', 
   )
   assert.match(
     handlePromptSubmitSource,
-    /skipAttachments: cmd\.skipAttachments \|\| skipLocalContext \|\| !isFirst,\s+skipHooks: cmd\.origin\?\.kind === 'peer' \|\| skipLocalContext/,
+    /skipAttachments: cmd\.skipAttachments \|\| skipLocalContext \|\| !isFirst,\s+skipHooks: cmd\.origin\?\.kind === 'peer' \|\| cmd\.skipSubmissionHooks === true \|\| skipLocalContext/,
   )
   assert.match(
     handlePromptSubmitSource,

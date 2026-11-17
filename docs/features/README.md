@@ -56,6 +56,7 @@
 |  | [Bash 沙箱](sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认 |
 | 工具 | [Tmux 工具（原 Terminal）](terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
 |  | [Monitor 工具](monitor-tool.md) | 让 Claude 在后台盯着日志或命令输出，有新内容就自动叫醒它，不用反复 sleep 轮询 |
+|  | [Code Mode（实验性）](code-mode.md) | 设 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 后，Claude 写一段 JavaScript 一次调用多个工具；每次调用照常走权限确认和 hook，慢脚本可以转到后台 |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持的终端能在标签页上显示 Claude 正在忙、在等你批准、还是已经做完，不用切回来看 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
@@ -142,6 +143,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Bash sandbox](sandbox.md) | Commands Claude runs can only write the project directory, reach the domains you allow and never read the secrets you name; with it on, commands no longer need one-by-one approval |
 | Tools | [Tmux tool (formerly Terminal)](terminal-tool.md) | A terminal Claude can keep interacting with: open a REPL, drive a TUI, press Ctrl+C, get notified when done; it also runs in the Bash sandbox when that is on |
 |  | [Monitor tool](monitor-tool.md) | Claude watches logs or command output in the background and is woken by each new line, instead of polling with sleep |
+|  | [Code Mode (experimental)](code-mode.md) | With `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`, Claude writes one JavaScript script that calls several tools at once; every call still goes through permission prompts and hooks, and slow scripts can move to the background |
 |  | [Scheduled tasks: Cron, /loop and ScheduleWakeup](scheduled-tasks.md) | Claude does things on a schedule: "check the build every 5 minutes", "summarise PRs at 9 a.m. on weekdays"; `/loop` sets it up in one sentence |
 |  | [Terminal program status (OSC 7501)](terminal-status.md) | Terminals that support it show on the tab whether Claude is busy, waiting for approval or done, without switching back to look |
 | Context and memory | [Memory: auto memory and SQLite FTS5 search](memory.md) | Claude writes down what is useful across sessions (project conventions, your preferences) and brings it next time; can switch to SQLite full-text search on demand |
@@ -229,6 +231,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Bash 沙箱](sandbox.md) | 讓 Claude 跑的命令只能寫專案目錄、只能連你允許的域名、讀不到你指定的金鑰；開了以後命令可以不再逐條確認 |
 | 工具 | [Tmux 工具（原 Terminal）](terminal-tool.md) | 給 Claude 一個能持續互動的終端：開 REPL、操作 TUI、按 Ctrl+C，跑完自動通知；開了 Bash 沙箱時終端也在沙箱裡跑 |
 |  | [Monitor 工具](monitor-tool.md) | 讓 Claude 在後台盯著日誌或命令輸出，有新內容就自動叫醒它，不用反覆 sleep 輪詢 |
+|  | [Code Mode（實驗性）](code-mode.md) | 設 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 後，Claude 寫一段 JavaScript 一次呼叫多個工具；每次呼叫照常走權限確認和 hook，慢腳本可以轉到後台 |
 |  | [定時任務：Cron、/loop 與 ScheduleWakeup](scheduled-tasks.md) | 讓 Claude 按時間自動做事：「每 5 分鐘看一下構建」「工作日早上 9 點彙總 PR」；`/loop` 一句話設定 |
 |  | [終端程式狀態（OSC 7501）](terminal-status.md) | 支援的終端能在標籤頁上顯示 Claude 正在忙、在等你批准、還是已經做完，不用切回來看 |
 | 上下文與記憶 | [記憶：auto memory 與 SQLite FTS5 檢索](memory.md) | Claude 把跨會話有用的事（專案約定、你的偏好）記到檔案裡，下次自動帶上；可改成 SQLite 全文檢索，按需查詢 |

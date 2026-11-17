@@ -10,7 +10,7 @@ import figures from 'figures'
 import { getCwd } from './cwd.js'
 import { relative } from 'path'
 import { formatNumber } from './format.js'
-import type { getGlobalConfig } from './config.js'
+import { type getGlobalConfig, getRemoteControlAtStartup } from './config.js'
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromConfigOrMacOSKeychain,
@@ -28,6 +28,14 @@ import {
   getTerminalIdeType,
 } from './ide.js'
 import { isJetBrainsPluginInstalledCachedSync } from './jetbrains.js'
+import { isBridgeEnabled } from '../bridge/bridgeEnabled.js'
+import { isPolicyAllowed } from '../services/policyLimits/index.js'
+import {
+  CODE_MODE_DISPLAY_NAME,
+  codeModeRemoteControlNotConnectedText,
+  codeModeUnavailableMessage,
+  getProcessCodeModeState,
+} from '../tools/REPLTool/codeModeGate.js'
 
 // Types
 export type StatusNoticeType = 'warning' | 'info'
@@ -46,6 +54,46 @@ export type StatusNoticeDefinition = {
 }
 
 // Individual notice definitions
+
+/** Official ku: a warning icon, then the text in the warning colour. */
+function WarningLine({ children }: { children: string }): React.ReactNode {
+  return (
+    <Box flexDirection="row">
+      <Text color="warning">{isScreenReaderEnabled() ? 'warning: ' : `${figures.warning} `}</Text>
+      <Text color="warning">{children}</Text>
+    </Box>
+  )
+}
+
+/** Official Ry: why a Code Mode ask was refused, or that Code Mode is on (Gfa). */
+function codeModeOptInMessage(): string | undefined {
+  const state = getProcessCodeModeState()
+  if (state.enabled) return `${CODE_MODE_DISPLAY_NAME} is on · this session can be resumed only with Code Mode on`
+  if (!('reason' in state) || !state.reason) return undefined
+  return codeModeUnavailableMessage(state.reason)
+}
+
+// CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 was set: either Code Mode is on, or the
+// session was refused, e.g. started with --rc (official code-mode-opt-in).
+const codeModeOptInNotice: StatusNoticeDefinition = {
+  id: 'code-mode-opt-in',
+  type: 'warning',
+  isActive: () => codeModeOptInMessage() !== undefined,
+  render: () => <WarningLine>{codeModeOptInMessage() ?? ''}</WarningLine>,
+}
+
+// Code Mode is on and the remoteControlAtStartup default would have connected
+// this session; initReplBridge refuses it (official pVn() && toe()).
+const codeModeRemoteControlNotice: StatusNoticeDefinition = {
+  id: 'code-mode-remote-control',
+  type: 'warning',
+  isActive: () =>
+    getProcessCodeModeState().enabled &&
+    isBridgeEnabled() &&
+    isPolicyAllowed('allow_remote_control') &&
+    getRemoteControlAtStartup(),
+  render: () => <WarningLine>{codeModeRemoteControlNotConnectedText()}</WarningLine>,
+}
 const largeMemoryFilesNotice: StatusNoticeDefinition = {
   id: 'large-memory-files',
   type: 'warning',
@@ -250,6 +298,8 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
 
 // All notice definitions
 export const statusNoticeDefinitions: StatusNoticeDefinition[] = [
+  codeModeOptInNotice,
+  codeModeRemoteControlNotice,
   largeMemoryFilesNotice,
   largeAgentDescriptionsNotice,
   claudeAiSubscriberExternalTokenNotice,
