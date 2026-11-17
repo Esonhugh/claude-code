@@ -676,7 +676,14 @@ async function harness() {
     default: {
       watch: (...args: Parameters<typeof watch>) => {
         watcher = watch(...args)
-        ready = new Promise((resolve) => watcher.once('ready', resolve))
+        ready = new Promise((resolve) =>
+          watcher.once('ready', () => {
+            // Bun's stat poller takes its first sample after chokidar's ready
+            // event, and a write that lands before it is never reported.
+            if (watcher.options.usePolling) setTimeout(resolve, 200)
+            else resolve()
+          }),
+        )
         return watcher
       },
     },
