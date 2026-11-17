@@ -126,7 +126,14 @@ DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
 OFFICIAL_BUILTIN_MODS_SHA256 = '7529d618a2048f43b92070be542bfa6171d78932cdd24aed73b3392a33c6f161'
 CUSTOM_SYSTEM_PROMPT_MARKER = 'RELEASE_CUSTOM_SYSTEM_PROMPT_MARKER'
-TITLE_GENERATION_INSTRUCTION = 'Generate a concise, sentence-case title'
+# src/tools/TerminalTool/prompt.ts TERMINAL_TOOL_NAME; 'Terminal' is only an alias.
+TERMINAL_TOOL_NAME = 'Tmux'
+# src/utils/sessionTitle.ts SESSION_TITLE_PROMPT; the wire instructions carry it
+# after the billing header and identity prefix, so both ends are matched.
+TITLE_GENERATION_INSTRUCTIONS = (
+    'You are naming a coding session so the user can pick it out of a long list of sessions.',
+    'Return JSON with a single "title" field. Capitalize the first letter of the title.',
+)
 BUN_BUILD_TEMPORARY_PATTERN = re.compile(
     r'^\.[0-9a-f]{16}-[0-9a-f]{8}\.bun-build$'
 )
@@ -402,13 +409,76 @@ CODE_REVIEW_FINDINGS = [{
 CODE_REVIEW_CELL_TAG = '`high effort \u2192 8 inline angles \u2192 dedup (no verify) \u2192 \u226410 findings`'
 
 
+def composer_prompt_indexes(lines):
+    # The composer's prompt sits in column 0; suggestion, permission and
+    # teammate menus mark their selected row with an indented pointer.
+    return [index for index, line in enumerate(lines) if line.startswith('❯')]
+
+
+def session_team_name(run_dir):
+    # src/utils/swarm/sessionTeam.ts getSessionTeamName: session-<first 8 of the session id>.
+    files = list((Path(run_dir) / 'config' / 'teams').glob('*/config.json'))
+    try:
+        session_id = json.loads(files[0].read_text()).get('leadSessionId') if len(files) == 1 else None
+    except (OSError, json.JSONDecodeError):
+        return None
+    return f'session-{session_id[:8]}' if isinstance(session_id, str) and session_id else None
+
+
+def leader_idle_notifications(run_dir, team_config, inbox_path):
+    # src/utils/teammateMailbox.ts markMessagesAsRead drops delivered messages
+    # from the inbox, so delivered idle notifications are read back from the
+    # leader transcript (teammate_mailbox attachments and <teammate-message>
+    # prompts) and undelivered ones from the inbox file.
+    texts = []
+    try:
+        if inbox_path and Path(inbox_path).exists():
+            texts.extend(message.get('text', '') for message in json.loads(Path(inbox_path).read_text())
+                         if isinstance(message, dict))
+        session_id = team_config.get('leadSessionId') if isinstance(team_config, dict) else None
+        transcripts = list((Path(run_dir) / 'config' / 'projects').glob(f'*/{session_id}.jsonl')) if session_id else []
+        for line in (transcripts[0].read_text().splitlines() if len(transcripts) == 1 else []):
+            entry = json.loads(line)
+            attachment = entry.get('attachment') or {}
+            if attachment.get('type') == 'teammate_mailbox':
+                texts.extend(message.get('text', '') for message in attachment.get('messages', [])
+                             if isinstance(message, dict))
+            content = (entry.get('message') or {}).get('content') if entry.get('type') == 'user' else None
+            if isinstance(content, str):
+                texts.extend(re.findall(r'<teammate-message [^>]*>\n(.*?)\n</teammate-message>', content, re.S))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return []
+    notifications = {}
+    for text in texts:
+        try:
+            payload = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get('type') == 'idle_notification':
+            notifications.setdefault((payload.get('from'), payload.get('timestamp')), payload)
+    return list(notifications.values())
+
+
+def agent_panel_selection(text):
+    # src/components/CoordinatorAgentStatus.tsx SessionRow: the selected panel
+    # row starts with figures.pointer, then its icon and name.
+    match = re.search(r'(?m)^\s*❯ [●○◯⏺⏸] (\S+)', strip_ansi(text))
+    return match.group(1) if match else None
+
+
+def agent_panel_has_row(text, name):
+    return re.search(rf'(?m)^\s*(?:❯ )?[●○◯⏺⏸] {re.escape(name)}(?:\s|$)', strip_ansi(text)) is not None
+
+
+def background_tasks_dialog_visible(text):
+    # src/components/tasks/BackgroundTasksDialog.tsx: <Dialog title="Background">.
+    return any(line.strip() == 'Background' for line in strip_ansi(text).splitlines())
+
+
 def submitted_input_pending(pane):
     plain = strip_ansi(pane).replace('\u00a0', ' ')
     lines = plain.splitlines()
-    prompt_indexes = [
-        index for index, line in enumerate(lines)
-        if '❯' in line
-    ]
+    prompt_indexes = composer_prompt_indexes(lines)
     if not prompt_indexes:
         return False
     prompt_index = prompt_indexes[-1]
@@ -451,7 +521,9 @@ def submitted_input_pending(pane):
         ]
         if not content_after_separator:
             return True
-        return all(line.lstrip().startswith('/') for line in content_after_separator)
+        # Only the slash suggestion menu, whose selected row carries a pointer.
+        return all(line.removeprefix('❯').lstrip().startswith('/')
+                   for line in content_after_separator)
     return not any(
         not is_terminal_chrome(line)
         for line in trailing_content
@@ -461,10 +533,7 @@ def submitted_input_pending(pane):
 def submitted_input_visible(pane, text):
     plain = strip_ansi(pane).replace('\u00a0', ' ')
     lines = plain.splitlines()
-    prompt_indexes = [
-        index for index, line in enumerate(lines)
-        if '❯' in line
-    ]
+    prompt_indexes = composer_prompt_indexes(lines)
     if not prompt_indexes:
         return False
     prompt_index = prompt_indexes[-1]
@@ -2770,6 +2839,12 @@ def sse_function_call(call_id, name, arguments):
     return sse_function_calls([(call_id, name, arguments)])
 
 
+def forked_skill_task_description(invocation):
+    # src/utils/forkedSkill.ts: the task description is the invocation, cut to 50.
+    invocation = invocation.strip()
+    return f'{invocation[:49]}…' if len(invocation) > 50 else invocation
+
+
 def is_main_response_request(request):
     if (
         request.get('method') != 'POST'
@@ -2777,7 +2852,13 @@ def is_main_response_request(request):
     ):
         return False
     body = request.get('body') if isinstance(request.get('body'), dict) else {}
-    return TITLE_GENERATION_INSTRUCTION not in str(body.get('instructions', ''))
+    return not is_title_instructions(body.get('instructions'))
+
+
+def is_title_instructions(instructions):
+    text = instructions if isinstance(instructions, str) else ''
+    return (TITLE_GENERATION_INSTRUCTIONS[0] in text
+            and text.endswith(TITLE_GENERATION_INSTRUCTIONS[1]))
 
 
 class MockOpenAIServer:
@@ -3058,10 +3139,10 @@ class MockOpenAIServer:
                                 text, re.DOTALL):
                     continue
                 texts.append(text)
-            caveat = ('<local-command-caveat>Caveat: The messages below were generated by the user '
-                      'while running local commands. DO NOT respond to these messages or otherwise '
-                      'consider them in your response unless the user explicitly asks you to.'
-                      '</local-command-caveat>')
+            # src/utils/messages.ts createLocalCommandCaveatMessage (a01c5843).
+            caveat = ('<local-command-caveat>The command below was run directly in Claude Code, '
+                      'not sent to you as a request, and its output goes straight to the user. '
+                      "It's recorded here as context for later messages.</local-command-caveat>")
             if texts and texts[0].strip() == caveat:
                 if (len(texts) != 4
                         or not re.fullmatch(r'<command-name>/diff</command-name>\s*'
@@ -3263,12 +3344,8 @@ class MockOpenAIServer:
                 if isinstance(item, dict)
                 and item.get('type') == 'function_call_output'
             }
-            if 'fc_team_create' not in outputs:
-                return 'team-create', sse_function_call(
-                    'fc_team_create',
-                    'TeamCreate',
-                    {'team_name': 'release-team-concurrency'},
-                )
+            # Named Agent calls join the implicit session team
+            # (src/utils/swarm/sessionTeam.ts); there is no TeamCreate tool.
             worker_calls = [
                 (
                     f'fc_team_worker_{suffix}',
@@ -3296,14 +3373,14 @@ class MockOpenAIServer:
                        and item.get('type') == 'function_call_output'}
             if 'fc_deferred-search' not in outputs:
                 return 'deferred-search', sse_function_call(
-                    'fc_deferred-search', 'ToolSearch', {'query': 'select:Terminal,Workflow'})
+                    'fc_deferred-search', 'ToolSearch', {'query': f'select:{TERMINAL_TOOL_NAME},Workflow'})
             if self.label.endswith('-off'):
                 if 'fc_deferred-workflow-off' not in outputs:
                     return 'deferred-workflow-off', sse_function_call(
                         'fc_deferred-workflow-off', 'ToolSearch', {'query': 'select:Workflow'})
                 return 'deferred-completed', sse_completed('RELEASE_DEFERRED_DONE')
             if 'fc_deferred-open' not in outputs:
-                return 'deferred-open', sse_function_call('fc_deferred-open', 'Terminal', {
+                return 'deferred-open', sse_function_call('fc_deferred-open', TERMINAL_TOOL_NAME, {
                     'action': 'new-session', 'command': '/bin/sh',
                     'args': ['-c', 'stty -echo; exec cat'],
                     'cwd': str(self.run_dir), 'cols': 80, 'rows': 24,
@@ -3328,7 +3405,7 @@ class MockOpenAIServer:
                 call_id = f'fc_deferred-{step}'
                 if call_id not in outputs:
                     return call_id.removeprefix('fc_'), sse_function_call(
-                        call_id, 'Terminal', {**arguments, 'target': target})
+                        call_id, TERMINAL_TOOL_NAME, {**arguments, 'target': target})
             if BinaryGate.deferred_terminal_notifications(body):
                 return 'deferred-notification-ack', sse_completed('RELEASE_DEFERRED_NOTIFICATION_ACK')
             return 'deferred-completed', sse_completed('RELEASE_DEFERRED_DONE')
@@ -3421,8 +3498,9 @@ class MockOpenAIServer:
                     self.retention_child_release.wait(timeout=180)
                     return 'retention-child-cancelled', sse_incomplete('retention initial turn released')
                 return 'retention-worker-marker', sse_completed('RELEASE_RETENTION_WORKER_DONE')
+            # ToolSearch results add a 'Tool loaded.' turn boundary (src/utils/messages.ts).
             latest_user = next((text.strip() for text in reversed(user_texts)
-                                if text.strip() and not re.fullmatch(
+                                if text.strip() and text.strip() != 'Tool loaded.' and not re.fullmatch(
                                     r'<system-reminder>.*</system-reminder>', text.strip(), re.DOTALL)), '')
             probe = re.fullmatch(r'RELEASE_RETENTION_PROBE ([A-Za-z0-9_-]+) (before|after)', latest_user)
             if probe:
@@ -3431,8 +3509,13 @@ class MockOpenAIServer:
                 if call_id in outputs:
                     return f'retention-probe-{phase}-completed', sse_completed(
                         f'RELEASE_RETENTION_PROBE_{phase.upper()}_DONE')
+                # TaskOutput was removed (7b158d0f). TaskStop's validateInput reads
+                # AppState.tasks without stopping a terminal task; it is deferred.
+                if 'fc_retention_probe_search' not in outputs:
+                    return f'retention-probe-{phase}-search', sse_function_call(
+                        'fc_retention_probe_search', 'ToolSearch', {'query': 'select:TaskStop'})
                 return f'retention-probe-{phase}-call', sse_function_call(
-                    call_id, 'TaskOutput', {'task_id': task, 'block': False})
+                    call_id, 'TaskStop', {'task_id': task})
             if latest_user == 'RELEASE_RETENTION_GC_TICK':
                 return 'retention-gc-tick', sse_completed('RELEASE_RETENTION_GC_TICK_DONE')
             if 'fc_retention_shutdown' in outputs:
@@ -3445,15 +3528,12 @@ class MockOpenAIServer:
                     'fc_retention_shutdown', 'SendMessage',
                     {'to': 'retention-worker', 'message': {'type': 'shutdown_request'}},
                 )
-            if 'fc_retention_team' in outputs:
-                return 'retention-agent-call', sse_function_call(
-                    'fc_retention_agent', 'Agent',
-                    {'description': 'release transcript retention worker', 'name': 'retention-worker',
-                     'subagent_type': 'general-purpose', 'run_in_background': True,
-                     'prompt': 'RELEASE_RETENTION_CHILD_REQUEST: Reply RELEASE_RETENTION_WORKER_DONE. Approve a subsequent shutdown request using its actual request ID.'},
-                )
-            return 'retention-team-call', sse_function_call(
-                'fc_retention_team', 'TeamCreate', {'team_name': 'release-transcript-retention'},
+            # The named Agent joins the implicit session team; there is no TeamCreate tool.
+            return 'retention-agent-call', sse_function_call(
+                'fc_retention_agent', 'Agent',
+                {'description': 'release transcript retention worker', 'name': 'retention-worker',
+                 'subagent_type': 'general-purpose', 'run_in_background': True,
+                 'prompt': 'RELEASE_RETENTION_CHILD_REQUEST: Reply RELEASE_RETENTION_WORKER_DONE. Approve a subsequent shutdown request using its actual request ID.'},
             )
         main_responses = [
             request
@@ -3631,7 +3711,7 @@ def analyze_openai_wire_debug(debug_text, requests):
         match = pattern.fullmatch(text)
         body = request.get('body', {})
         kind = 'compact' if request.get('response_kind') == 'compaction' else 'create'
-        main_request = body.get('instructions') != TITLE_GENERATION_INSTRUCTION
+        main_request = not is_title_instructions(body.get('instructions'))
         if main_request:
             kinds.append(kind)
         cache_keys.append(body.get('prompt_cache_key'))
@@ -7396,7 +7476,7 @@ else:
             'typed-effort-on-wire': review.get('body', {}).get('reasoning', {}).get('effort') == 'high',
             'no-workflow-launch': 'Workflow launched in background' not in self.transcript(run_dir),
             'background-notification': any(
-                f'<summary>Agent "{prompt}"' in text
+                f'<summary>Agent "{forked_skill_task_description(prompt)}" finished</summary>' in text
                 and f'<result>{json.dumps(CODE_REVIEW_FINDINGS)}</result>' in text
                 for text in notifications),
             'pane-result': 'Running in the background as @code-review' in plain
@@ -7868,11 +7948,14 @@ else:
                     outputs[item.get('call_id')] = item.get('output')
         tools = [{tool.get('name'): tool for tool in body.get('tools', [])}
                  for body in bodies]
+        # Tmux sits behind ToolSearch; Workflow loads up front when workflows are
+        # enabled (src/tools/WorkflowTool has no shouldDefer) and is absent otherwise.
         checks['initially_deferred'] = bool(tools) and (
-            'ToolSearch' in tools[0] and 'Terminal' not in tools[0]
-            and 'Workflow' not in tools[0])
+            'ToolSearch' in tools[0] and TERMINAL_TOOL_NAME not in tools[0]
+            and 'Terminal' not in tools[0]
+            and ('Workflow' in tools[0]) == enabled)
         next_tools = tools[1] if len(tools) > 1 else {}
-        terminal = next_tools.get('Terminal', {}).get('parameters', {})
+        terminal = next_tools.get(TERMINAL_TOOL_NAME, {}).get('parameters', {})
         properties = terminal.get('properties', {})
         checks['terminal_schema'] = (
             terminal.get('type') == 'object' and 'action' in terminal.get('required', [])
@@ -7883,7 +7966,7 @@ else:
                     [('target', 'string'), ('text', 'string'), ('cols', 'integer'),
                      ('rows', 'integer'), ('enter', 'boolean')]))
         search = str(outputs.get('fc_deferred-search', ''))
-        checks['search_result'] = 'Terminal' in search
+        checks['search_result'] = TERMINAL_TOOL_NAME in search
         workflow = next_tools.get('Workflow', {}).get('parameters', {})
         if enabled:
             checks['workflow_opt_in'] = ('Workflow' in search
@@ -7941,7 +8024,7 @@ else:
                 for item in items if item.get('type') == 'function_call_output')
             checks['call_result_sequence'] &= all(item.get('name') == (
                 'ToolSearch' if item.get('call_id') in ('fc_deferred-search', 'fc_deferred-workflow-off')
-                else 'Terminal') for item in items if item.get('type') == 'function_call')
+                else TERMINAL_TOOL_NAME) for item in items if item.get('type') == 'function_call')
         notifications = [BinaryGate.deferred_terminal_notifications(body) for body in bodies]
         task_id = None
         checks['notification_phase'] = not any(notifications)
@@ -10017,13 +10100,12 @@ else:
         marker_path = run_dir / 'debug-marker-search.txt'
         config_evidence = run_dir / 'team-config.json'
         artifact_evidence = run_dir / 'team-artifacts.json'
-        team_name = 'release-team-concurrency'
         terminal = False
         if ready:
             prompt = (
-                f'Binary-side team concurrency validation. Use TeamCreate once with team_name "{team_name}". '
-                'Then launch exactly three named general-purpose teammates concurrently in one response using the Agent tool, '
-                'with names worker-a, worker-b, and worker-c and the created team. Each teammate must reply exactly with its own '
+                'Binary-side team concurrency validation. '
+                'Launch exactly three named general-purpose teammates concurrently in one response using the Agent tool, '
+                'with names worker-a, worker-b, and worker-c. Each teammate must reply exactly with its own '
                 'name and must not use tools or modify files. Wait until all three Agent tool calls have returned, then print '
                 'RELEASE_TEAM_CONCURRENCY_DONE. Do not create tasks, worktrees, commits, or other tools.'
             )
@@ -10042,9 +10124,10 @@ else:
             self.capture(target, terminal_path)
             if terminal:
                 self.send(target, run_dir, '/tasks', 'input-team-tasks.txt')
-                tasks_visible = self.wait_until(
+                team_name = session_team_name(run_dir)
+                tasks_visible = team_name is not None and self.wait_until(
                     lambda: (
-                        'Background tasks' in (
+                        background_tasks_dialog_visible(
                             text := strip_ansi(self.capture(
                                 target, tasks_path, history=False
                             ))
@@ -10096,7 +10179,9 @@ else:
             if isinstance(member, dict) and member.get('name') in {'worker-a', 'worker-b', 'worker-c'}
         }
         config_ok = (
-            len(members) == 4
+            isinstance(team_config, dict)
+            and team_config.get('name') == session_team_name(run_dir)
+            and len(members) == 4
             and len(agent_ids) == 4
             and len(set(agent_ids)) == 4
             and worker_names == {'worker-a', 'worker-b', 'worker-c'}
@@ -10116,16 +10201,7 @@ else:
             log,
         )))
         leader_inbox_path = team_dir / 'inboxes' / 'team-lead.json' if team_dir else None
-        idle_notifications = []
-        if leader_inbox_path and leader_inbox_path.exists():
-            try:
-                messages = json.loads(leader_inbox_path.read_text())
-                for message in messages:
-                    payload = json.loads(message.get('text', '')) if isinstance(message, dict) else None
-                    if isinstance(payload, dict) and payload.get('type') == 'idle_notification':
-                        idle_notifications.append(payload)
-            except (json.JSONDecodeError, OSError):
-                idle_notifications = []
+        idle_notifications = leader_idle_notifications(run_dir, team_config, leader_inbox_path)
         idle_workers = [item.get('from') for item in idle_notifications]
         artifact_evidence.write_text(json.dumps({
             'inbox_paths': inbox_paths,
@@ -10519,31 +10595,29 @@ else:
             items = body.get('input', [])
             calls = [item for item in items if isinstance(item, dict)
                      and item.get('type') == 'function_call' and item.get('call_id') == call_id
-                     and item.get('name') == 'TaskOutput']
+                     and item.get('name') == 'TaskStop']
             if not calls:
                 continue
             try:
                 arguments = json.loads(calls[-1].get('arguments', '{}'))
             except (ValueError, TypeError):
                 continue
-            if arguments.get('task_id') != task_id or arguments.get('block') is not False:
+            if arguments != {'task_id': task_id}:
                 continue
+            # src/tools/TaskStopTool/TaskStopTool.ts validateInput messages.
+            message = (f'No task found with ID: {task_id}' if phase == 'after'
+                       else f'Task {task_id} is not running (status: completed)')
             for item in items:
                 if not isinstance(item, dict) or item.get('type') != 'function_call_output' or item.get('call_id') != call_id:
                     continue
                 output = item.get('output', '')
                 if not isinstance(output, str):
                     continue
-                if phase == 'after':
-                    if re.fullmatch(
-                        re.escape(f'<tool_use_error>No task found with ID: {task_id}</tool_use_error>')
-                        + r'(?:\s*<system-reminder>(?:(?!</?system-reminder>).)*</system-reminder>)*',
-                        output.strip(), re.DOTALL,
-                    ):
-                        return True
-                elif (f'<task_id>{task_id}</task_id>' in output
-                      and '<task_type>in_process_teammate</task_type>' in output
-                      and '<status>completed</status>' in output):
+                if re.fullmatch(
+                    re.escape(f'<tool_use_error>{message}</tool_use_error>')
+                    + r'(?:\s*<system-reminder>(?:(?!</?system-reminder>).)*</system-reminder>)*',
+                    output.strip(), re.DOTALL,
+                ):
                     return True
         return False
 
@@ -10680,7 +10754,9 @@ else:
         active_abort_passed = False
         mock_server = self.mock_servers.get(run_dir.name)
         task_id = None
-        routes = {name: False for name in ('footer', 'shift', 'spinner', 'tasks')}
+        # The agent panel and /tasks are the entry paths since the @pill row and
+        # the shift+↓ spinner tree were removed (02c7033d).
+        routes = {name: False for name in ('footer', 'tasks')}
         route_evidence = {name: [] for name in routes}
         exit_checks = []
         grace_deadline = None
@@ -10694,28 +10770,42 @@ else:
         def key_state(key, path, predicate):
             before = self.capture(target, path, history=False)
             self.tmux('send-keys', '-t', target, key, check=True)
-            if key in ('Down', 'Right') and 'footer' in path.name:
-                # Only the pill row may establish footer progress; unrelated
-                # spinner/token updates must not satisfy the keyboard barrier.
-                def pill_row(text):
-                    return [line for line in text.splitlines()
-                            if '@main' in line and '@retention-worker' in line]
+            if key == 'Down' and 'footer' in path.name:
+                # Only the panel selection may establish footer progress;
+                # unrelated spinner/token updates must not satisfy the barrier.
+                def selected_row(text):
+                    return agent_panel_selection(text)
                 return pane_ready(path, lambda text:
-                    bool(pill_row(text)) and pill_row(text) != pill_row(before)
+                    selected_row(text) is not None and selected_row(text) != selected_row(before)
                     and predicate(strip_ansi(text)))
             return pane_ready(path, lambda text: text != before and predicate(strip_ansi(text)))
 
         def footer_open(path):
-            # Selection is rendered as a pill highlight, so retain raw pane bytes
-            # for the transition check without interpreting ANSI styles.
+            # ↓ from the empty prompt selects the panel's main row, the next ↓
+            # the teammate row with its "Enter to view" hint.
             return (
-                pane_ready(path, lambda text: '@retention-worker' in strip_ansi(text))
-                and key_state('Down', path, lambda text: '@main' in text)
-                and key_state('Right', path, lambda text: '@retention-worker' in text)
+                pane_ready(path, lambda text: agent_panel_has_row(text, 'retention-worker'))
+                and key_state('Down', path, lambda text: agent_panel_selection(text) == 'main')
+                and key_state('Down', path, lambda text:
+                    agent_panel_selection(text) == 'retention-worker' and 'Enter to view' in text)
             )
+
+        def leave_panel(path):
+            # Viewing from the agent panel keeps its row selected (PromptInput
+            # footer:openSelected); that Esc only clears the panel selection.
+            if agent_panel_selection(self.capture(target, path, history=False)) is None:
+                return True
+            offset = len(self.debug(run_dir))
+            self.tmux('send-keys', '-t', target, 'Escape', check=True)
+            return pane_ready(path, lambda text: agent_panel_selection(text) is None) and not any(
+                marker in self.debug(run_dir)[offset:]
+                for marker in ('viewed_agent_changed', 'current work aborted'))
 
         def exit_view(path):
             nonlocal grace_deadline, grace_upper_deadline
+            if not leave_panel(path):
+                exit_checks.append(False)
+                return False
             offset = len(self.debug(run_dir))
             grace_deadline = time.monotonic() + 30
             self.tmux('send-keys', '-t', target, 'Escape', check=True)
@@ -10757,8 +10847,7 @@ else:
 
         if ready:
             prompt = (
-                'Transcript retention binary validation. Use TeamCreate once with team_name '
-                '"release-transcript-retention". Launch exactly one named general-purpose '
+                'Transcript retention binary validation. Launch exactly one named general-purpose '
                 'teammate named retention-worker with run_in_background=true. Its initial task '
                 'must reply exactly RELEASE_RETENTION_WORKER_DONE. Tell it that after replying, '
                 'if it receives a shutdown request, it must approve that request using '
@@ -10796,7 +10885,7 @@ else:
                     r'\[spawnInProcessTeammate\] Spawning retention-worker@[^\s]+ \(taskId: ([^)]+)\)',
                     self.debug(run_dir),
                 )
-                viewed = bool(viewed and spawned and task_id == spawned.group(1))
+                viewed = bool(viewed and spawned and task_id == spawned.group(1)) and leave_panel(viewed_path)
                 if viewed:
                     active_abort_passed = self.retention_active_abort(run_dir, target, mock_server, task_id)
                 viewed = viewed and active_abort_passed and self.wait_until(
@@ -10832,40 +10921,19 @@ else:
                     exited = exit_view(main_path)
                 if exited and footer_open(run_dir / 'footer-selection.txt'):
                     reopened = confirm_view('footer', 'Enter', reopened_path)
-                if reopened and exit_view(run_dir / 'shift-main.txt'):
-                    selection = run_dir / 'shift-selection.txt'
-                    route_evidence['shift'].append(selection)
-                    if (key_state('S-Down', selection, lambda text: 'team-lead' in text and 'hide' in text)
-                            and key_state('S-Down', selection, lambda text:
-                                'retention-worker' in text and 'enter to view' in text)):
-                        confirm_view('shift', 'Enter', run_dir / 'shift-viewed.txt')
-                if routes['shift'] and exit_view(run_dir / 'spinner-main.txt'):
-                    selection = run_dir / 'spinner-selection.txt'
-                    route_evidence['spinner'].append(selection)
-                    # Selection remains on worker after viewing. Visit hide, then
-                    # step back to the worker and use the spinner's f shortcut.
-                    if (key_state('S-Down', selection, lambda text: 'enter to collapse' in text)
-                            and key_state('S-Up', selection, lambda text:
-                                'retention-worker' in text and 'enter to view' in text)):
-                        confirm_view('spinner', 'f', run_dir / 'spinner-viewed.txt')
-                if routes['spinner'] and exit_view(run_dir / 'tasks-main.txt'):
-                    selection = run_dir / 'tasks-collapse.txt'
+                if reopened and exit_view(run_dir / 'tasks-main.txt'):
                     tasks_path = run_dir / 'tasks-list.txt'
                     detail_path = run_dir / 'tasks-detail.txt'
-                    route_evidence['tasks'].extend([selection, tasks_path, detail_path])
-                    # BackgroundTasksDialog excludes teammates while the spinner
-                    # tree is expanded. Collapse via its actual hide row first.
-                    if (key_state('S-Down', selection, lambda text: 'enter to collapse' in text)
-                            and key_state('Enter', selection, lambda text: 'enter to collapse' not in text)):
-                        self.send(target, run_dir, '/tasks', 'input-retention-tasks.txt')
-                        if (pane_ready(tasks_path, lambda text:
-                                'Background tasks' in strip_ansi(text) and '@retention-worker' in strip_ansi(text))
-                                and key_state('Down', tasks_path, lambda text:
-                                    re.search(r'[›❯].*@retention-worker', text) is not None)
-                                and key_state('Enter', detail_path, lambda text:
-                                    '@retention-worker' in text and 'Completed' in text
-                                    and 'Prompt' in text and 'foreground' in text)):
-                            confirm_view('tasks', 'f', run_dir / 'tasks-viewed.txt')
+                    route_evidence['tasks'].extend([tasks_path, detail_path])
+                    self.send(target, run_dir, '/tasks', 'input-retention-tasks.txt')
+                    if (pane_ready(tasks_path, lambda text:
+                            background_tasks_dialog_visible(text) and '@retention-worker' in strip_ansi(text))
+                            and key_state('Down', tasks_path, lambda text:
+                                re.search(r'[›❯].*@retention-worker', text) is not None)
+                            and key_state('Enter', detail_path, lambda text:
+                                '@retention-worker' in text and 'Completed' in text
+                                and 'Prompt' in text and 'foreground' in text)):
+                        confirm_view('tasks', 'f', run_dir / 'tasks-viewed.txt')
                 if routes['tasks'] and exit_view(run_dir / 'final-main.txt'):
                     escape_window_passed = self.retention_escape_window(
                         run_dir, target, task_id, grace_deadline - 30)
@@ -10890,7 +10958,7 @@ else:
         passed = (
             ready and bool(task_id) and viewed and retained and terminal_visible
             and exited and reopened and all(routes.values()) and same_task
-            and len(exit_checks) == 5 and all(exit_checks) and gc_passed and escape_window_passed
+            and len(exit_checks) == 3 and all(exit_checks) and gc_passed and escape_window_passed
             and self.cleanup_passed(cleanup)
         )
         evidence = [
@@ -10927,9 +10995,9 @@ else:
             ))
         assertions.append(self.required_assertion(
             run_dir, 'transcript-retention-single-escape', 'Single Escape exits',
-            'Each of five views exits to main using exactly one Escape.',
+            'Each of three views exits to main using exactly one Escape.',
             [main_path, run_dir / 'final-main.txt', marker_path],
-            passed=len(exit_checks) == 5 and all(exit_checks),
+            passed=len(exit_checks) == 3 and all(exit_checks),
             reason='single Escape did not exit every view',
         ))
         assertions.append(self.required_assertion(
@@ -10953,7 +11021,7 @@ else:
         ))
         assertions.append(self.required_assertion(
             run_dir, 'transcript-retention-gc', 'Real attachment GC after grace',
-            'TaskOutput finds the same completed task before grace and reports it missing after a new GC turn.',
+            'TaskStop finds the same completed task before grace and reports it missing after a new GC turn.',
             [run_dir / 'gc-evidence.json', run_dir / 'gc-before-pane.txt',
              run_dir / 'gc-tick-pane.txt', run_dir / 'gc-after-pane.txt',
              run_dir / 'mock-openai-requests.json'],

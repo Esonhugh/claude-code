@@ -37,6 +37,14 @@ def load_driver():
     return module
 
 
+def title_instructions(module):
+    # The OpenAI wire shape of a session title request's instructions.
+    head, tail = module.TITLE_GENERATION_INSTRUCTIONS
+    return ('x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\n\n'
+            "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+            + head + ' The title is a name for what the session is about.\n\n' + tail)
+
+
 def load_baseline():
     spec = importlib.util.spec_from_file_location(
         'capture_release_baseline', BASELINE_PATH
@@ -2224,16 +2232,19 @@ def assert_driver_behavior(module, baseline_module):
         def probe_request(phase, task, output):
             return {'body': {'input': [
                 {'type': 'function_call', 'call_id': f'fc_retention_probe_{phase}',
-                 'name': 'TaskOutput', 'arguments': json.dumps({'task_id': task, 'block': False})},
+                 'name': 'TaskStop', 'arguments': json.dumps({'task_id': task})},
                 {'type': 'function_call_output', 'call_id': f'fc_retention_probe_{phase}', 'output': output},
             ]}}
-        before = '<task_id>task-real</task_id>\n<task_type>in_process_teammate</task_type>\n<status>completed</status>'
+        before = '<tool_use_error>Task task-real is not running (status: completed)</tool_use_error>'
         server.requests = [{'method': 'GET', 'path': '/v1/models', 'body': None}]
         assert not gate.retention_probe_result(server, 'task-real', 'before')
         server.requests.append(probe_request('before', 'task-real', before))
         assert gate.retention_probe_result(server, 'task-real', 'before')
         assert not gate.retention_probe_result(server, 'wrong-task', 'before')
         assert not gate.retention_probe_result(server, 'task-real', 'after')
+        server.requests[-1]['body']['input'][-1]['output'] = before.replace('completed', 'running')
+        assert not gate.retention_probe_result(server, 'task-real', 'before')
+        server.requests[-1]['body']['input'][-1]['output'] = before
         missing = '<tool_use_error>No task found with ID: task-real</tool_use_error>'
         server.requests.append(probe_request('after', 'task-real', missing))
         assert gate.retention_probe_result(server, 'task-real', 'after')
@@ -2379,13 +2390,20 @@ def assert_driver_behavior(module, baseline_module):
         ' \x1b[1m\x1b[38;5;153m❯ \x1b[0;3m\x1b[38;5;153m(current)\x1b[0m\n\n'
         ' \x1b[3m\x1b[38;5;246mEnter to continue · Esc to exit\x1b[0m\n'
     )
+    panel = ('  ❯ ⏺ retention-worker  release transcript retention worker  5s\n'
+             '    ● main\n  Enter to view · Esc to cancel')
+    assert module.agent_panel_selection(panel) == 'retention-worker'
+    assert module.agent_panel_selection('❯ Launch retention-worker now\n    ● main') is None
+    assert module.agent_panel_has_row('    ◯ retention-worker  release', 'retention-worker')
+    assert not module.agent_panel_has_row('⏺ Agent(release transcript retention-worker)', 'retention-worker')
+    assert not module.agent_panel_has_row('@main @retention-worker', 'retention-worker')
     for scenario in ('no-active-abort', 'no-escape-window', 'no-gc', 'second-exit-rewind', 'parent-only', 'rewind-with-input',
                      'pass', 'team-only', 'wrong-task', 'no-reopen', 'no-marker',
-                     'no-shift', 'no-spinner', 'no-tasks', 'stale-entry',
+                     'no-tasks', 'stale-entry',
                      'duplicate-spawn', 'no-exit', 'no-selection',
                      'no-pills', 'input-only', 'stale-exit', 'wrong-exit-task',
                      'still-viewing', 'empty-main', 'unrelated-main',
-                     'no-shift-transcript', 'no-spinner-transcript', 'no-tasks-transcript'):
+                     'no-tasks-transcript', 'panel-selected'):
         with tempfile.TemporaryDirectory(prefix='release-retention-handler-') as root_string:
             run_dir = Path(root_string)
             gate = object.__new__(module.BinaryGate)
@@ -2419,7 +2437,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.retention_escape_window = lambda *args: scenario != 'no-escape-window'
             gate.retention_active_abort = lambda *args: scenario != 'no-active-abort'
 
-            ui = {'state': 'main', 'tree': False, 'index': -1, 'captures': 0}
+            ui = {'state': 'main', 'captures': 0, 'panel': False}
             commands = []
             gate.send = lambda *args: ui.update(state='tasks') if args[2] == '/tasks' else None
 
@@ -2427,17 +2445,18 @@ def assert_driver_behavior(module, baseline_module):
                 ui['captures'] += 1
                 state = ui['state']
                 text = {
-                    'main': '@main @retention-worker shift + ↓ expand',
-                    'footer': '@main @retention-worker selected main',
-                    'worker': '@main @retention-worker selected worker',
-                    'selection': ('› ╒═ team-lead hide' if ui['index'] == -1 else
-                                  '› ├─ retention-worker enter to view hide' if ui['index'] == 0 else
-                                  '› ╘═ hide enter to collapse'),
-                    'tasks': 'Background tasks › @team-lead @retention-worker',
-                    'task-row': 'Background tasks › @retention-worker',
+                    'main': '    ● main\n    ◯ retention-worker  release transcript retention worker',
+                    'footer': ('  ❯ ● main\n    ◯ retention-worker  release transcript retention worker\n'
+                               '  Enter to view · Esc to cancel'),
+                    'worker': ('    ● main\n  ❯ ⏺ retention-worker  release transcript retention worker\n'
+                               '  Enter to view · x to clear · Esc to cancel'),
+                    'tasks': '  Background\n › @team-lead @retention-worker',
+                    'task-row': '  Background\n › @retention-worker',
                     'detail': '@retention-worker Completed Prompt f to foreground go back',
                     'view': '@retention-worker RELEASE_RETENTION_WORKER_DONE',
                 }[state]
+                if state == 'view' and ui['panel']:
+                    text += '\n    ○ main\n  ❯ ⏺ retention-worker  release\n  Enter to view · Esc to cancel'
                 if scenario == 'no-marker' or (opens and scenario == f'no-{opens[-1]}-transcript'):
                     text = text.replace('RELEASE_RETENTION_WORKER_DONE', '')
                 if state == 'main':
@@ -2465,24 +2484,18 @@ def assert_driver_behavior(module, baseline_module):
                 ui['captures'] = 0
                 state = ui['state']
                 if key == 'Down':
-                    ui['state'] = 'task-row' if state == 'tasks' else 'footer'
-                elif key == 'Right':
-                    if scenario != 'no-selection':
-                        ui['state'] = 'worker'
-                elif key == 'S-Down':
-                    ui['index'] = ui['index'] + 1 if ui['tree'] else -1
-                    ui.update(tree=True, state='selection')
-                elif key == 'S-Up':
-                    ui.update(index=ui['index'] - 1, state='selection')
+                    if state == 'tasks':
+                        ui['state'] = 'task-row'
+                    elif state == 'footer':
+                        if scenario != 'no-selection':
+                            ui['state'] = 'worker'
+                    else:
+                        ui['state'] = 'footer'
                 elif key in ('Enter', 'f'):
-                    if state == 'selection' and ui['index'] == 1:
-                        ui.update(tree=False, index=-1, state='main')
-                        return
                     if state == 'task-row':
                         ui['state'] = 'detail'
                         return
-                    route = ('tasks' if state == 'detail' else 'spinner' if key == 'f'
-                             else 'shift' if state == 'selection' else 'footer')
+                    route = 'tasks' if state == 'detail' else 'footer'
                     opens.append(route)
                     blocked = scenario == f'no-{route}' or (scenario == 'no-reopen' and len(opens) > 1)
                     if not blocked:
@@ -2491,9 +2504,11 @@ def assert_driver_behavior(module, baseline_module):
                             log.append('[viewed_agent_changed] before=task-real after=main reason=exit\n')
                         if scenario != 'stale-entry' or len(opens) == 1:
                             log.append(f'[viewed_agent_changed] before=main after={task} type=in_process_teammate\n')
-                        ui['state'] = 'view'
+                        ui.update(state='view', panel=scenario == 'panel-selected' and route == 'footer')
                         if scenario == 'duplicate-spawn' and len(opens) == 2:
                             log.append('[spawnInProcessTeammate] Spawning retention-worker@test (taskId: task-extra)\n')
+                elif key == 'Escape' and ui['panel']:
+                    ui['panel'] = False
                 elif key == 'Escape' and scenario != 'no-exit':
                     if scenario != 'stale-exit':
                         task = 'wrong' if scenario == 'wrong-exit-task' else 'task-real'
@@ -2504,7 +2519,13 @@ def assert_driver_behavior(module, baseline_module):
             gate.capture = retention_capture
             gate.tmux = retention_tmux
             module.BinaryGate.transcript_retention(gate)
-            assert recorded[0]['validation_verdict'] == ('passed' if scenario == 'pass' else 'failed'), scenario
+            assert recorded[0]['validation_verdict'] == (
+                'passed' if scenario in ('pass', 'panel-selected') else 'failed'), scenario
+            if scenario == 'panel-selected':
+                # Two footer views each need one panel Esc before the timed exit Esc.
+                assert opens == ['footer', 'footer', 'tasks']
+                assert commands.count('Escape') == 5
+                assert recorded[0]['single_escape_exits'] == [True, True, True]
             if scenario == 'no-gc':
                 assert recorded[0]['assertions'][0]['passed']
             if scenario in ('no-pills', 'input-only'):
@@ -2518,11 +2539,9 @@ def assert_driver_behavior(module, baseline_module):
                 assert recorded[0]['single_escape_exits'] == [True, False], scenario
                 assert commands.count('Escape') == 2
                 assert opens == ['footer', 'footer']
-                assert not any(key in ('S-Down', 'S-Up') for key in commands)
-                assert recorded[0]['entry_paths'] == {
-                    'footer': True, 'shift': False, 'spinner': False, 'tasks': False,
-                }
-                assert not (run_dir / 'shift-selection.txt').exists()
+                assert commands.count('Down') == 4
+                assert recorded[0]['entry_paths'] == {'footer': True, 'tasks': False}
+                assert not (run_dir / 'tasks-list.txt').exists()
                 assert log[-1] == '[viewed_agent_changed] before=task-real after=main reason=exit\n'
             if scenario in ('no-exit', 'stale-exit', 'wrong-exit-task',
                             'still-viewing', 'empty-main', 'unrelated-main',
@@ -2534,11 +2553,11 @@ def assert_driver_behavior(module, baseline_module):
                 assert not opens
             assert server.retention_stopped.is_set()
             if scenario == 'pass':
-                assert opens == ['footer', 'footer', 'shift', 'spinner', 'tasks']
-                assert commands.count('Escape') == 5
+                assert opens == ['footer', 'footer', 'tasks']
+                assert commands.count('Escape') == 3
                 assert all(recorded[0]['entry_paths'].values())
-                assert len(recorded[0]['assertions']) == 9
-            if scenario in ('no-shift', 'no-spinner', 'no-tasks'):
+                assert len(recorded[0]['assertions']) == 7
+            if scenario == 'no-tasks':
                 assert not recorded[0]['entry_paths'][scenario[3:]]
                 assert any(not assertion['passed'] for assertion in recorded[0]['assertions'])
 
@@ -2588,28 +2607,34 @@ def assert_driver_behavior(module, baseline_module):
                  {'role': 'user', 'content': 'RELEASE_RETENTION_RESUME'}]
         results = []
         try:
-            team = retention_request(parent)
-            assert '"name":"TeamCreate"' in team
-            assert retention_request(parent + [{'type': 'function_call', 'arguments': 'RELEASE_RETENTION_CHILD_REQUEST'}]) == team
-            agent = retention_request(parent + [retention_output('team')])
+            agent = retention_request(parent)
+            assert 'TeamCreate' not in agent
+            assert retention_request(parent + [{'type': 'function_call', 'arguments': 'RELEASE_RETENTION_CHILD_REQUEST'}]) == agent
             assert '"name":"Agent"' in agent
             assert '\\"run_in_background\\":true' in agent
             assert 'retention-worker' in agent
             assert 'RELEASE_RETENTION_WORKER_DONE' in retention_request(child)
-            assert server.response_for({'instructions': module.TITLE_GENERATION_INSTRUCTION})[0] == 'title'
+            assert server.response_for({'instructions': title_instructions(module)})[0] == 'title'
             probe_input = parent + [retention_output('shutdown'), {
                 'role': 'user', 'content': 'RELEASE_RETENTION_PROBE task-real before',
             }]
             probe = retention_request(probe_input)
             reminder = {'type': 'input_text', 'text': '<system-reminder>Reminder</system-reminder>'}
-            for command, marker in [('RELEASE_RETENTION_PROBE task-real before', '"name":"TaskOutput"'),
+            for command, marker in [('RELEASE_RETENTION_PROBE task-real before', '"name":"ToolSearch"'),
                                     ('RELEASE_RETENTION_GC_TICK', 'RELEASE_RETENTION_GC_TICK_DONE')]:
                 assert marker in retention_request(parent + [retention_output('shutdown'), {
                     'role': 'user', 'content': [{'type': 'input_text', 'text': command}, reminder],
                 }])
-            assert '"name":"TaskOutput"' in probe
+            assert '"name":"ToolSearch"' in probe and 'select:TaskStop' in probe
+            probe_input = probe_input + [
+                {'type': 'function_call', 'call_id': 'fc_retention_probe_search', 'name': 'ToolSearch',
+                 'arguments': '{"query":"select:TaskStop"}'},
+                {'type': 'function_call_output', 'call_id': 'fc_retention_probe_search', 'output': 'loaded'},
+                {'role': 'user', 'content': [{'type': 'input_text', 'text': 'Tool loaded.'}]},
+            ]
+            probe = retention_request(probe_input)
+            assert '"name":"TaskStop"' in probe and 'TaskOutput' not in probe
             assert '\\"task_id\\":\\"task-real\\"' in probe
-            assert '\\"block\\":false' in probe
             probe_result = probe_input + [{
                 'type': 'function_call_output', 'call_id': 'fc_retention_probe_before',
                 'output': 'actual tool result',
@@ -2622,7 +2647,7 @@ def assert_driver_behavior(module, baseline_module):
             worker.start()
             assert server.retention_parent_waiting.wait(2)
             assert worker.is_alive()
-            assert retention_request(parent) == team
+            assert retention_request(parent) == agent
             server.retention_release.set()
             worker.join(3)
             assert not worker.is_alive()
@@ -2746,7 +2771,7 @@ def assert_driver_behavior(module, baseline_module):
                 'type': 'function_call', 'name': 'Agent',
                 'arguments': json.dumps({'prompt': 'RELEASE_COORDINATOR_CHILD_REQUEST'}),
             }]) == agent
-            assert server.response_for({'instructions': module.TITLE_GENERATION_INSTRUCTION, 'input': parent})[0] == 'title'
+            assert server.response_for({'instructions': title_instructions(module), 'input': parent})[0] == 'title'
             assert coordinator_request(child + [tool_output('unrelated', 'ok')]) == bash
             parent_done = coordinator_request(parent + [tool_output('fc_release_coordinator_agent', 'background task result')])
             assert 'RELEASE_COORDINATOR_PARENT_OK' in parent_done
@@ -2858,7 +2883,7 @@ def assert_driver_behavior(module, baseline_module):
 
             title_sse = post_response(
                 base_url,
-                instructions=module.TITLE_GENERATION_INSTRUCTION,
+                instructions=title_instructions(module),
             )
             title_events = [
                 json.loads(line[6:])
@@ -3292,6 +3317,13 @@ def assert_driver_behavior(module, baseline_module):
         'different input',
     ) is False
     assert module.submitted_input_pending('❯ \n') is False
+    menu_pane = ('────────\n❯ /stats\n────────\n'
+                 '  ❯ /stats      Show your Claude Code usage statistics and activity\n'
+                 '    /status     Show Claude Code status\n')
+    assert module.submitted_input_visible(menu_pane, '/stats') is True
+    assert module.submitted_input_pending(menu_pane) is True
+    assert module.submitted_input_visible(menu_pane.replace('❯ /stats\n', '❯ /sta\n', 1), '/stats') is False
+    assert module.submitted_input_visible('────────\n❯ \n────────\n ❯ 1. Yes\n', '1. Yes') is False
     assert module.input_prompt_ready('❯ /goal wait for token\nGoal is set\n') is False
     assert module.input_prompt_ready(
         '❯ /goal wait for token\nGoal is set\n✶ Working…\n❯ \n'
@@ -3306,13 +3338,17 @@ def assert_driver_behavior(module, baseline_module):
         'method': 'POST',
         'path': '/v1/responses',
         'body': {
-            'instructions': (
-                'system prefix\n'
-                + module.TITLE_GENERATION_INSTRUCTION
-                + ' (3-7 words)\nReturn JSON.'
-            ),
+            'instructions': title_instructions(module),
         },
     }
+    for stale in (
+        'Generate a concise, sentence-case title (3-7 words)\nReturn JSON.',
+        module.TITLE_GENERATION_INSTRUCTIONS[0],
+        title_instructions(module) + '\nmore system prompt',
+    ):
+        assert module.is_main_response_request({
+            'method': 'POST', 'path': '/v1/responses',
+            'body': {'instructions': stale}})
     main_request = {
         'method': 'POST',
         'path': '/v1/responses',
@@ -3395,7 +3431,7 @@ def assert_driver_behavior(module, baseline_module):
         'target': 'session:0.0',
     }
 
-    with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
+    with tempfile.TemporaryDirectory(prefix='release-driver-assertions-', dir=module.HOST_TMP_ROOT) as root_string:
         root = Path(root_string)
         source_run = root / 'run-a'
         source_run.mkdir()
@@ -3816,6 +3852,10 @@ def assert_driver_behavior(module, baseline_module):
     for faulty in (None, 'alias-model', 'explicit-model', 'missing-response', 'missing-pane', 'duplicate-response'):
         with tempfile.TemporaryDirectory(prefix='release-driver-default-model-') as root_string:
             run_dir = Path(root_string)
+            # The picker opens only once discovery is cached in the global config.
+            (run_dir / 'config').mkdir()
+            (run_dir / 'config/.claude.json').write_text(json.dumps({
+                'additionalModelOptionsCache': [{'value': 'gpt-release-discovered'}]}))
             gate = object.__new__(module.BinaryGate)
             gate.start = lambda _label: (run_dir, 'model-session', 'model-target', True)
             requests = [{
@@ -4221,8 +4261,8 @@ def assert_driver_behavior(module, baseline_module):
     assert module.analyze_openai_wire_debug(diagnostic_text, with_models)['matched']
     title_only = json.loads(json.dumps(wire_requests))
     for request in title_only:
-        request['body']['instructions'] = module.TITLE_GENERATION_INSTRUCTION
-    title_text = diagnostic_text.replace('19B', str(len(module.TITLE_GENERATION_INSTRUCTION.encode())) + 'B')
+        request['body']['instructions'] = title_instructions(module)
+    title_text = diagnostic_text.replace('19B', str(len(title_instructions(module).encode())) + 'B')
     title_analysis = module.analyze_openai_wire_debug(title_text, title_only)
     assert title_analysis['matched']
     assert not title_analysis['create_compact_isolated']
@@ -4943,10 +4983,12 @@ def assert_deferred_tool_discovery(module):
         label = 'deferred-tool-discovery' if enabled else 'deferred-tool-discovery-off'
         with tempfile.TemporaryDirectory() as tmp:
             server = module.MockOpenAIServer(Path(tmp), label)
-            body = {'tools': [{'name': 'ToolSearch'}], 'input': []}
+            workflow_tool = {'name': 'Workflow', 'parameters': {'type': 'object', 'properties': {
+                name: {'type': 'string'} for name in ('name', 'script', 'scriptPath')}}}
+            body = {'tools': [{'name': 'ToolSearch'}, *([workflow_tool] if enabled else [])], 'input': []}
             requests = []
             results = {
-                'deferred-search': 'Terminal, Workflow' if enabled else 'Terminal',
+                'deferred-search': 'Tmux, Workflow' if enabled else 'Tmux',
                 'deferred-workflow-off': 'No matching deferred tools found',
                 'deferred-open': json.dumps({'target': 'unit-session', 'isRunning': True, 'pid': 88097,
                     'command': '/bin/sh', 'args': ['-c', 'stty -echo; exec cat'],
@@ -4978,14 +5020,13 @@ def assert_deferred_tool_discovery(module):
                 assert all(event.get('item', {}).get('id', 'fc_').startswith('fc_') for event in events)
                 arguments = json.loads(call['arguments'])
                 if kind not in ('deferred-search', 'deferred-workflow-off', 'deferred-open'):
-                    assert call['name'] == 'Terminal' and arguments['target'] == 'unit-session'
+                    assert call['name'] == 'Tmux' and arguments['target'] == 'unit-session'
                 body['input'].append({'type': 'function_call', 'call_id': call['call_id'],
                                       'name': call['name'], 'arguments': call['arguments']})
                 body['input'].append({'type': 'function_call_output', 'call_id': 'fc_' + kind, 'output': results[kind]})
-                body['tools'] = [{'name': 'ToolSearch'}, {'name': 'Terminal', 'parameters': terminal_schema}]
+                body['tools'] = [{'name': 'ToolSearch'}, {'name': 'Tmux', 'parameters': terminal_schema}]
                 if enabled:
-                    body['tools'].append({'name': 'Workflow', 'parameters': {'type': 'object', 'properties': {
-                        name: {'type': 'string'} for name in ('name', 'script', 'scriptPath')}}})
+                    body['tools'].append(workflow_tool)
             if enabled:
                 notification = ('<task-notification>\n<task-id>unit-task</task-id>\n'
                     '<tool-use-id>fc_deferred-open</tool-use-id>\n'
@@ -5105,6 +5146,16 @@ def assert_deferred_tool_discovery(module):
                 else:
                     broken[0]['body']['tools'].append({'name': 'Terminal'})
                 assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed'], mutation
+            for name in ('Tmux', 'Terminal'):
+                broken = json.loads(json.dumps(requests))
+                broken[0]['body']['tools'].append({'name': name})
+                assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed'], name
+            # Workflow is loaded up front exactly when workflows are enabled.
+            broken = json.loads(json.dumps(requests))
+            first_tools = broken[0]['body']['tools']
+            broken[0]['body']['tools'] = ([tool for tool in first_tools if tool['name'] != 'Workflow']
+                                          if enabled else [*first_tools, workflow_tool])
+            assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed']
 
 
 def assert_plugins_reload(module):
@@ -5353,8 +5404,37 @@ def assert_team_concurrency_mock(module):
         '    def team_concurrency(self):', 1
     )[1].split('\n    def ', 1)[0]
     assert "if terminal:\n                self.send(target, run_dir, '/tasks'" in source
-    assert "'Background tasks' in (" in source
+    assert 'background_tasks_dialog_visible(' in source
     assert "f'Team: {team_name} (4)' in text" in source
+    assert 'TeamCreate' not in source
+    assert module.background_tasks_dialog_visible('  Background\n  3 agents\n')
+    assert not module.background_tasks_dialog_visible('Background tasks dialog dismissed\n')
+    with tempfile.TemporaryDirectory(prefix='release-session-team-') as directory:
+        assert module.session_team_name(directory) is None
+        team_dir = Path(directory) / 'config' / 'teams' / 'session-8fef6dbb'
+        team_dir.mkdir(parents=True)
+        (team_dir / 'config.json').write_text(json.dumps({'leadSessionId': '8fef6dbb-9530-4031'}))
+        assert module.session_team_name(directory) == 'session-8fef6dbb'
+        # Delivered notifications leave the inbox; the leader transcript keeps them.
+        def idle(name):
+            return json.dumps({'type': 'idle_notification', 'from': name,
+                               'timestamp': 't0', 'idleReason': 'available'})
+        inbox = team_dir / 'inboxes' / 'team-lead.json'
+        inbox.parent.mkdir()
+        inbox.write_text(json.dumps([{'from': 'worker-c', 'text': idle('worker-c')}]))
+        transcript = Path(directory) / 'config' / 'projects' / 'p' / '8fef6dbb-9530-4031.jsonl'
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text('\n'.join(json.dumps(entry) for entry in (
+            {'type': 'attachment', 'attachment': {'type': 'teammate_mailbox', 'messages': [
+                {'from': 'worker-a', 'text': idle('worker-a')}]}},
+            {'type': 'user', 'message': {'role': 'user', 'content': (
+                f'<teammate-message teammate_id="worker-b">\n{idle("worker-b")}\n</teammate-message>\n\n'
+                f'<teammate-message teammate_id="worker-c">\n{idle("worker-c")}\n</teammate-message>')}},
+        )) + '\n')
+        config = {'leadSessionId': '8fef6dbb-9530-4031'}
+        assert sorted(item['from'] for item in module.leader_idle_notifications(directory, config, inbox)) == [
+            'worker-a', 'worker-b', 'worker-c']
+        assert [item['from'] for item in module.leader_idle_notifications(directory, None, inbox)] == ['worker-c']
     assert "not submitted_input_pending(text)" in source
 
     assert 'team-concurrency' in module.MOCK_OPENAI_TARGETS
@@ -5371,7 +5451,6 @@ def assert_team_concurrency_mock(module):
     assert child_kind == 'team-worker-completed'
     assert 'worker-a' in child_sse
     expected = [
-        ('team-create', 'fc_team_create', 'TeamCreate'),
         ('team-agents', 'fc_team_worker_a', 'Agent'),
         ('team-completed', None, None),
     ]
@@ -5391,17 +5470,14 @@ def assert_team_concurrency_mock(module):
             for event in events
             if event['type'] == 'response.function_call_arguments.done'
         ]
-        if expected_kind == 'team-create':
-            assert len(calls) == 1
-        else:
-            assert len(calls) == 3
-            assert [call['call_id'] for call in calls] == [
-                'fc_team_worker_a', 'fc_team_worker_b', 'fc_team_worker_c',
-            ]
-            assert [json.loads(call['arguments'])['name'] for call in calls] == [
-                'worker-a', 'worker-b', 'worker-c',
-            ]
-            assert all(json.loads(call['arguments'])['run_in_background'] for call in calls)
+        assert len(calls) == 3
+        assert [call['call_id'] for call in calls] == [
+            'fc_team_worker_a', 'fc_team_worker_b', 'fc_team_worker_c',
+        ]
+        assert [json.loads(call['arguments'])['name'] for call in calls] == [
+            'worker-a', 'worker-b', 'worker-c',
+        ]
+        assert all(json.loads(call['arguments'])['run_in_background'] for call in calls)
         assert calls[0]['call_id'] == expected_call_id
         assert calls[0]['name'] == expected_name
         for call in calls:
@@ -5663,7 +5739,7 @@ def assert_terminal_request_predicate(module):
     assert not module.terminal_request_submitted([old, request('中文'), request('wrong')], 1, '中文')
 
     title = request('中文')
-    title['body']['instructions'] = module.TITLE_GENERATION_INSTRUCTION
+    title['body']['instructions'] = title_instructions(module)
     main = request_with_blocks(
         '<available-deferred-tools>ToolSearch</available-deferred-tools>',
         '<system-reminder>context</system-reminder>',
@@ -6423,7 +6499,7 @@ def _code_review_fork_fixture(module, root):
     }
     notification = (
         '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n'
-        f'<summary>Agent "{prompt}" completed</summary>\n'
+        f'<summary>Agent "{prompt[:49]}…" finished</summary>\n'
         f'<result>{json.dumps(module.CODE_REVIEW_FINDINGS)}</result>\n</task-notification>')
     notified = {
         **review, 'sequence': 2, 'headers': {'session-id': 'parent-session'},
@@ -6481,6 +6557,9 @@ def test_retained_code_review_runs_as_forked_skill():
         ('no notification', write_file('config/projects/owned-project/session-one.jsonl', ''),
          {'background-notification'}),
         ('not persisted', write_file('config/.claude.json', '{}'), {'typed-level-persisted'}),
+        ('untruncated summary', lambda gate, run: (run / 'config/projects/owned-project/session-one.jsonl').write_text(
+            (run / 'config/projects/owned-project/session-one.jsonl').read_text().replace('\\u2026', 'a...HEAD', 1)),
+         {'background-notification'}),
     ):
         with tempfile.TemporaryDirectory(prefix='code-review-fork-') as directory:
             gate, run, prompt, terminal = _code_review_fork_fixture(module, Path(directory))
@@ -6654,7 +6733,7 @@ def _canonical_wire_fixture(module, root):
                      'prompt_cache_key': session, 'stream': True, 'store': False,
                      'input': json.loads(json.dumps(items))}})
     append('title', [{'role': 'user', 'content': f'RELEASE_CANONICAL_DIFF:{nonce}:alpha'}],
-           module.TITLE_GENERATION_INSTRUCTION)
+           title_instructions(module))
     history = []
     for file in ('alpha', 'omega'):
         history.append({'role': 'user', 'content': f'RELEASE_CANONICAL_DIFF:{nonce}:{file}'})
@@ -7660,7 +7739,7 @@ def test_retained_canonical_diff_accepts_real_local_command_message_envelope():
         # Actual Native12 wire shape: processUserInput merges local /diff receipts
         # with the next user prompt; prior alpha tool calls precede this message.
         texts = [
-            '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>\n',
+            "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>\n",
             '<command-name>/diff</command-name>\n            <command-message>diff</command-message>\n            <command-args></command-args>\n',
             '<local-command-stdout>Diff panel shown</local-command-stdout>\n',
             prompt,
