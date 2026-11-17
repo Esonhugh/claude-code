@@ -52,7 +52,7 @@
 - macOS 上 PTY 输出队列满时，内核对 ONLCR 换行会输出 `\r\r\n`；原生帧重放现在每个换行最多接受一个重复的 CR，且只在原始字节里确实有时接受。此前重放把它当成来源不明的字节，产生不了 Ink 帧。
 - 终端 target 的覆盖检查也改用 bounded 校验；此前覆盖检查仍跑完整校验，已通过的终端 target 被列为 invalid。
 - 门禁 target 分为 7 组（terminal、mods、agents、workflow、openai、models、ssh），可以用 `--group` 或 `--only-target` 单独跑。只跑一部分时结果写 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`；`--merge-manifests` 合并 HEAD、binary、baseline、driver 的 sha256 和 required targets 都相同的几次结果，同一 target 以较新的一次为准。
-- 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；代码修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖、构建配置和构建打包脚本的改动仍作废全部四路。
+- 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；产品代码和仓库根 `scripts/` 的修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖、构建配置和构建打包脚本的改动仍作废全部四路。
 - 除上面列出的改动，这几个 target 原有的检查没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测和虚拟滚动，这些路径的改动不会触发任何 binary target。
 
 ### 测试覆盖
