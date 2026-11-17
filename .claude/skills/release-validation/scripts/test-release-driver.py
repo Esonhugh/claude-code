@@ -8307,5 +8307,24 @@ def test_retained_bounded_terminal_verify_gates_and_full_coverage_is_reported_on
         assert result['full_terminal_coverage'] == 'not covered'
 
 
+def test_retained_terminal_assertion_revalidation_uses_bounded_verify():
+    # Required-target coverage re-runs the capture verify; it must apply the
+    # same bounded standard as the target, or a passed target reads as invalid.
+    module = load_driver()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        launch = {'capture': {'captureId': 'cap-1'}, 'binarySha256': 'b' * 64}
+        (root / 'capture-launch.json').write_text(json.dumps(launch))
+        seen = []
+        def run(command, **_):
+            seen.append(command)
+            verdict = 'passed' if '--bounded' in command else 'failed'
+            out = {'verdict': verdict, 'run': str(root), 'captureId': 'cap-1', 'binarySha256': 'b' * 64}
+            return subprocess.CompletedProcess(command, 0 if verdict == 'passed' else 1, json.dumps(out), '')
+        with patch.object(module.subprocess, 'run', side_effect=run):
+            assert module.revalidate_terminal_assertion(root) is True
+        assert len(seen) == 1 and seen[0][-1] == '--bounded'
+
+
 if __name__ == '__main__':
     main()

@@ -1021,7 +1021,7 @@ def revalidate_terminal_assertion(source_root):
     try:
         completed = subprocess.run(
             [shutil.which('bun') or 'bun', '--no-env-file', str(script), 'verify',
-             str(source_root / 'capture-launch.json')],
+             str(source_root / 'capture-launch.json'), '--bounded'],
             cwd=script.parent.parent,
             env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
                  'TMPDIR': HOST_TMP_ROOT, 'DISABLE_TELEMETRY': '1',
