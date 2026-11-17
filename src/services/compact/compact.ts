@@ -556,6 +556,9 @@ export async function compactConversation(
   keptRounds = 1,
 ): Promise<CompactionResult> {
   const compactStartedAt = Date.now()
+  // Official 2.1.325: a manual /compact summarizes without the advisor;
+  // automatic compaction keeps the conversation's.
+  if (!isAutoCompact) cacheSafeParams = { ...cacheSafeParams, advisorModel: undefined }
   let compactFailure: unknown
   try {
     if (messages.length === 0) {
