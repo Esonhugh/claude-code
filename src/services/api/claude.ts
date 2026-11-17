@@ -86,6 +86,7 @@ import {
   createAssistantAPIErrorMessage,
   createUserMessage,
   ensureToolResultPairing,
+  getAdvisorStrippedMessageIds,
   normalizeContentFromAPI,
   normalizeMessagesForAPI,
   stripAdvisorBlocks,
@@ -160,11 +161,13 @@ import { addToTotalSessionCost } from 'src/cost-tracker.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
-  ADVISOR_TOOL_INSTRUCTIONS,
-  getExperimentAdvisorModels,
+  getAdvisorErrorCode,
+  isAdvisorBlock,
   isAdvisorEnabled,
-  isValidAdvisorModel,
+  isAdvisorToolAllowed,
   modelSupportsAdvisor,
+  recordAdvisorRefusal,
+  resolveAdvisorModelId,
 } from 'src/utils/advisor.js'
 import { getAgentContext } from 'src/utils/agentContext.js'
 import { isClaudeAISubscriber } from 'src/utils/auth.js'
@@ -210,6 +213,11 @@ import {
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
+import {
+  type AdvisorRefusal,
+  classifyAdvisorRefusal,
+  isAdvisorResultUnprocessableError,
+} from './advisorRefusal.js'
 import {
   formatDeferredToolLines,
   isDeferredTool,
@@ -838,6 +846,19 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Internal: this request retries one whose tool search the endpoint refused. */
   toolSearchRefused?: true
+  /** The request continues a parent's prompt as a fork, so it may keep the parent's advisor. */
+  forkAdvisor?: true
+  /** Called once when the server refused this conversation's advisor, before the retry. */
+  onAdvisorRefused?: () => void
+  /** Internal: this request retries one whose advisor the server refused. */
+  advisorRefused?: true
+  /**
+   * Called when the server could not process earlier advisor results and the
+   * retry left them out, so the caller records that for later requests.
+   */
+  onAdvisorBlocksStripped?: () => void
+  /** Internal: this request retries one without any advisor blocks. */
+  advisorBlocksStripped?: true
 }
 
 export async function queryModelWithoutStreaming({
@@ -1157,6 +1178,21 @@ export function stripExcessMediaItems(
   }) as (UserMessage | AssistantMessage)[]
 }
 
+class AdvisorRefusedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: AdvisorRefusal,
+  ) {
+    super('advisor refused', { cause: refusal })
+  }
+}
+
+class AdvisorResultUnprocessableError extends Error {
+  constructor(readonly refusal: APIError) {
+    super('advisor result unprocessable', { cause: refusal })
+  }
+}
+
 class ToolSearchRefusedError extends Error {
   constructor(
     readonly refusal: APIError,
@@ -1184,7 +1220,7 @@ async function* queryModel(
 > {
   let refused: ToolSearchRefusedError
   try {
-    return yield* queryModelRequest(
+    return yield* queryModelAdvisorRetry(
       messages,
       systemPrompt,
       thinkingConfig,
@@ -1207,7 +1243,7 @@ async function* queryModel(
     ),
     isMeta: true,
   })
-  for await (const message of queryModelRequest(
+  for await (const message of queryModelAdvisorRetry(
     [...messages, reminder],
     systemPrompt,
     thinkingConfig,
@@ -1220,6 +1256,96 @@ async function* queryModel(
     }
     yield message
   }
+}
+
+/**
+ * Like 2.1.325: when the server refuses the advisor, send the request again
+ * once without it. An organization-wide refusal turns the advisor off for the
+ * process, an unknown tool type or beta for the host, anything else only for
+ * the conversation (through `onAdvisorRefused`). When the server cannot
+ * process an advisor result in the history, send the request again once with
+ * the advisor blocks removed, and record that (through
+ * `onAdvisorBlocksStripped`) so later requests leave them out too.
+ */
+async function* queryModelAdvisorRetry(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  thinkingConfig: ThinkingConfig,
+  tools: Tools,
+  signal: AbortSignal,
+  options: Options,
+): AsyncGenerator<
+  StreamEvent | AssistantMessage | SystemAPIErrorMessage,
+  void
+> {
+  let requestOptions = options
+  for (;;) {
+    try {
+      return yield* queryModelRequest(
+        messages,
+        systemPrompt,
+        thinkingConfig,
+        tools,
+        signal,
+        requestOptions,
+      )
+    } catch (error) {
+      if (error instanceof AdvisorResultUnprocessableError) {
+        requestOptions = {
+          ...requestOptions,
+          advisorBlocksStripped: true,
+        }
+        logAdvisorStripRetry(messages, requestOptions)
+        continue
+      }
+      if (!(error instanceof AdvisorRefusedError)) throw error
+      const { scope, betaHeader } = error.kind
+      if (scope !== 'conversation') recordAdvisorRefusal(scope)
+      options.onAdvisorRefused?.()
+      logForDebugging(
+        `[advisor] the server refused the advisor ${betaHeader ? 'beta header' : 'entry'} (scope: ${scope}); retrying once without the advisor`,
+        { level: 'warn' },
+      )
+      logEvent('tengu_advisor_entry_refused_retry', {
+        query_source:
+          options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        organization_wide: scope === 'process',
+        host_wide: scope === 'host',
+        beta_header_refused: betaHeader,
+      })
+      requestOptions = {
+        ...requestOptions,
+        advisorModel: undefined,
+        advisorRefused: true,
+      }
+    }
+  }
+}
+
+/** Official `K0o`'s log line and event; records the strip when it removed anything. */
+function logAdvisorStripRetry(messages: Message[], options: Options): void {
+  const alreadyStripped = getAdvisorStrippedMessageIds(messages)
+  const stripped = messages.filter(
+    m =>
+      m.type === 'assistant' &&
+      !alreadyStripped.has(m.message.id) &&
+      m.message.content.some(isAdvisorBlock),
+  ).length
+  const recorded = stripped > 0 && options.onAdvisorBlocksStripped !== undefined
+  if (recorded) options.onAdvisorBlocksStripped!()
+  logForDebugging(
+    stripped === 0
+      ? '[advisor] the server could not process an advisor result sent earlier in this conversation; nothing to remove, retrying as sent.'
+      : `[advisor] the server could not process an advisor result sent earlier in this conversation; retrying with the advisor blocks removed from ${stripped} message(s)${recorded ? '; recorded, so later requests leave them out too.' : '; not recorded, so the next request sends them again.'}`,
+    { level: 'warn' },
+  )
+  logEvent('tengu_advisor_strip_retry', {
+    query_source:
+      options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    strip_recorded: recorded,
+    stripped_message_count: stripped,
+    thinking_also_stripped: false,
+  })
 }
 
 async function* queryModelRequest(
@@ -1278,49 +1404,23 @@ async function* queryModelRequest(
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
 
-  // Always send the advisor beta header when advisor is enabled, so
-  // non-agentic queries (compact, side_question, extract_memories, etc.)
-  // can parse advisor server_tool_use blocks already in the conversation history.
-  if (isAdvisorEnabled()) {
+  // Official 2.1.325: the query loop already picked this request's advisor;
+  // only main-loop, agent and fork requests carry it.
+  const advisorModel =
+    (isAgenticQuery || options.forkAdvisor) &&
+    options.advisorModel !== undefined &&
+    isAdvisorToolAllowed() &&
+    modelSupportsAdvisor(options.model)
+      ? resolveAdvisorModelId(options.advisorModel)
+      : undefined
+  // The beta goes on every request while the advisor is on, so requests that
+  // do not carry it (compact, side questions) still accept advisor blocks in
+  // the history.
+  if (
+    isAdvisorToolAllowed() &&
+    (isAdvisorEnabled() || advisorModel !== undefined)
+  ) {
     betas.push(ADVISOR_BETA_HEADER)
-  }
-
-  let advisorModel: string | undefined
-  if (isAgenticQuery && isAdvisorEnabled()) {
-    let advisorOption = options.advisorModel
-
-    const advisorExperiment = getExperimentAdvisorModels()
-    if (advisorExperiment !== undefined) {
-      if (
-        normalizeModelStringForAPI(advisorExperiment.baseModel) ===
-        normalizeModelStringForAPI(options.model)
-      ) {
-        // Override the advisor model if the base model matches. We
-        // should only have experiment models if the user cannot
-        // configure it themselves.
-        advisorOption = advisorExperiment.advisorModel
-      }
-    }
-
-    if (advisorOption) {
-      const normalizedAdvisorModel = normalizeModelStringForAPI(
-        parseUserSpecifiedModel(advisorOption),
-      )
-      if (!modelSupportsAdvisor(options.model)) {
-        logForDebugging(
-          `[AdvisorTool] Skipping advisor - base model ${options.model} does not support advisor`,
-        )
-      } else if (!isValidAdvisorModel(normalizedAdvisorModel)) {
-        logForDebugging(
-          `[AdvisorTool] Skipping advisor - ${normalizedAdvisorModel} is not a valid advisor model`,
-        )
-      } else {
-        advisorModel = normalizedAdvisorModel
-        logForDebugging(
-          `[AdvisorTool] Server-side tool enabled with ${advisorModel} as the advisor model`,
-        )
-      }
-    }
   }
 
   const modDescriptions = await resolveModToolDescriptions(tools, {
@@ -1623,10 +1723,13 @@ async function* queryModelRequest(
   // tool_uses and strips orphaned tool_results referencing non-existent tool_uses.
   messagesForAPI = ensureToolResultPairing(messagesForAPI)
 
-  // Strip advisor blocks — the API rejects them without the beta header.
-  if (!betas.includes(ADVISOR_BETA_HEADER)) {
-    messagesForAPI = stripAdvisorBlocks(messagesForAPI)
-  }
+  // Strip advisor blocks whenever this request does not carry the advisor,
+  // or the server could not process them; otherwise only the ones an earlier
+  // advisor_stripped attachment recorded.
+  messagesForAPI =
+    advisorModel === undefined || options.advisorBlocksStripped
+      ? stripAdvisorBlocks(messagesForAPI)
+      : stripAdvisorBlocks(messagesForAPI, getAdvisorStrippedMessageIds(messages))
 
   // Strip excess media items before making the API call.
   // The API rejects requests with >100 media items but returns a confusing error.
@@ -1673,7 +1776,6 @@ async function* queryModelRequest(
         hasAppendSystemPrompt: options.hasAppendSystemPrompt,
       }),
       ...prompt,
-      ...(advisorModel ? [ADVISOR_TOOL_INSTRUCTIONS] : []),
     ].filter(Boolean),
   )
 
@@ -2421,6 +2523,35 @@ async function* queryModelRequest(
                 ) {
                   isAdvisorInProgress = false
                   logForDebugging(`[AdvisorTool] Advisor tool result received`)
+                  const errorCode = getAdvisorErrorCode(part.content_block)
+                  const eventModels = {
+                    model:
+                      options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    advisor_model: (advisorModel ??
+                      'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    query_source:
+                      options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                  }
+                  if (errorCode !== undefined) {
+                    logForDebugging(
+                      `[AdvisorTool] Advisor tool result error: ${errorCode}`,
+                    )
+                    logEvent('tengu_advisor_tool_error', {
+                      ...eventModels,
+                      error_code:
+                        errorCode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                  } else {
+                    const stopReason = (
+                      part.content_block as { content?: { stop_reason?: unknown } }
+                    ).content?.stop_reason
+                    logEvent('tengu_advisor_tool_result', {
+                      ...eventModels,
+                      stop_reason: (typeof stopReason === 'string'
+                        ? stopReason
+                        : 'none') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                  }
                 }
                 break
             }
@@ -3212,6 +3343,25 @@ async function* queryModelRequest(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      if (
+        !options.advisorBlocksStripped &&
+        isAdvisorResultUnprocessableError(error)
+      ) {
+        throw new AdvisorResultUnprocessableError(error as APIError)
+      }
+
+      const advisorRefusal =
+        !options.advisorRefused &&
+        (advisorModel !== undefined || betas.includes(ADVISOR_BETA_HEADER))
+          ? classifyAdvisorRefusal(error, betas)
+          : undefined
+      if (
+        advisorRefusal &&
+        (advisorModel !== undefined || advisorRefusal.betaHeader)
+      ) {
+        throw new AdvisorRefusedError(error as APIError, advisorRefusal)
       }
 
       const toolSearchRefusal =
