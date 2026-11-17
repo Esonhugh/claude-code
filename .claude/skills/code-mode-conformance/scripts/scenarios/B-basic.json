@@ -1,0 +1,268 @@
+{
+ "name": "B-basic",
+ "anchors": {
+  "repl-output": "official <repl-output> wrapper (L1 anchor `<repl-output`)"
+ },
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Bash",
+    "Write",
+    "Edit"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello world\n",
+  "sub/two.txt": "second world\n"
+ },
+ "commands": {
+  "TOOLS": [
+   {
+    "text": "DONE {{nonce}} tools"
+   }
+  ],
+  "EXPR": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "1 + 2",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} expr"
+   }
+  ],
+  "PRIMS": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Read({file_path: '{{work}}/hello.txt'})\nconst g = await Glob({pattern: '**/*.txt'})\nconst gr = await Grep({pattern: 'world', path: '{{work}}'})\nconst b = await Bash({command: 'echo bash-ok'})\n;[r.file.content.trim(), g.filenames.length, gr.numFiles, b.stdout.trim()].join('|')",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} prims"
+   }
+  ],
+  "SHELL": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const o = await $`echo dollar-ok`\n;[o.exitCode, o.output.trim()].join('|')",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} shell"
+   }
+  ],
+  "FILES": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "await write('{{work}}/new.txt', 'alpha beta\\n')\nconst e = await edit('{{work}}/new.txt', 'beta', 'gamma')\nconst t = await file('{{work}}/new.txt').text()\n;JSON.stringify({ok: e.ok, t})",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} files"
+   }
+  ],
+  "SETVAR": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "globalThis.kept = 41; var kept2 = 'k2'; 'set'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} setvar"
+   }
+  ],
+  "GETVAR": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "[kept + 1, kept2].join('|')",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} getvar"
+   }
+  ],
+  "DIRECT": [
+   {
+    "tools": [
+     {
+      "name": "Bash",
+      "input": {
+       "command": "echo direct",
+       "description": "direct"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} direct"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "startup notice: Code Mode is on",
+    "match": "Code Mode \\(experimental\\) is on"
+   }
+  },
+  {
+   "turn": "TOOLS"
+  },
+  {
+   "expect": {
+    "name": "default start: API tools are REPL only",
+    "cmd": "TOOLS",
+    "step": 0,
+    "field": "tools",
+    "match": "^REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "lean prompt (opus-5-5) omits repl_working, as official s7r",
+    "cmd": "TOOLS",
+    "step": 0,
+    "field": "system",
+    "match": "Few, full scripts",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "system prompt memory section uses write(path, content)",
+    "cmd": "TOOLS",
+    "step": 0,
+    "field": "system",
+    "match": "write\\(path"
+   }
+  },
+  {
+   "turn": "EXPR"
+  },
+  {
+   "expect": {
+    "name": "expression result in <repl-output>",
+    "cmd": "EXPR",
+    "step": 1,
+    "match": "<repl-output>.*<result>3</result>"
+   }
+  },
+  {
+   "turn": "PRIMS",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "await Read/Glob/Grep/Bash",
+    "cmd": "PRIMS",
+    "step": 1,
+    "match": "hello world\\|2\\|2\\|bash-ok"
+   }
+  },
+  {
+   "turn": "SHELL"
+  },
+  {
+   "expect": {
+    "name": "$ shell helper",
+    "cmd": "SHELL",
+    "step": 1,
+    "match": "0\\|dollar-ok"
+   }
+  },
+  {
+   "turn": "FILES"
+  },
+  {
+   "expect": {
+    "name": "write/edit/file helpers",
+    "cmd": "FILES",
+    "step": 1,
+    "match": "\\\\\"ok\\\\\":true.*alpha gamma|\"ok\":true.*alpha gamma"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "edit landed on disk",
+    "path": "new.txt",
+    "match": "^alpha gamma\\n$"
+   }
+  },
+  {
+   "turn": "SETVAR"
+  },
+  {
+   "turn": "GETVAR"
+  },
+  {
+   "expect": {
+    "name": "variables persist across calls",
+    "cmd": "GETVAR",
+    "step": 1,
+    "match": "42\\|k2"
+   }
+  },
+  {
+   "turn": "DIRECT"
+  },
+  {
+   "expect": {
+    "name": "direct Bash call answered with REPL-only error",
+    "cmd": "DIRECT",
+    "step": 1,
+    "match": "only available inside REPL|No such tool"
+   }
+  },
+  {
+   "capture": "end"
+  },
+  {
+   "exit": true
+  }
+ ]
+}

@@ -91,6 +91,13 @@ import {
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import {
+  CODE_MODE_ONLY_TOOLS,
+  POLL_TOOL_NAME,
+  REPL_PRIMITIVE_TOOL_NAMES,
+  REPL_TOOL_NAME,
+} from '../REPLTool/constants.js'
+import { isCodeModeEnabled } from '../REPLTool/codeModeGate.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import { APPLY_PATCH_TOOL_NAME } from '../ApplyPatchTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
@@ -99,6 +106,8 @@ export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
   invalidTools: string[]
+  /** Specs naming a tool this session has that subagents may not use. */
+  unavailableTools: string[]
   resolvedTools: Tools
   allowedAgentTypes?: string[]
 }
@@ -281,7 +290,8 @@ export function resolveAgentTools(
       hasWildcard: true,
       validTools: [],
       invalidTools: [],
-      resolvedTools: allowedAvailableTools,
+      unavailableTools: [],
+      resolvedTools: withoutOrphanPoll(allowedAvailableTools, isMainThread),
     }
   }
 
@@ -289,9 +299,12 @@ export function resolveAgentTools(
   for (const tool of allowedAvailableTools) {
     availableToolMap.set(tool.name, tool)
   }
+  const replTool = isCodeModeEnabled() ? availableToolMap.get(REPL_TOOL_NAME) : undefined
 
   const validTools: string[] = []
   const invalidTools: string[] = []
+  const unavailableTools: string[] = []
+  const poolNames = new Set(availableTools.map(tool => tool.name))
   const resolved: Tool[] = []
   const resolvedToolsSet = new Set<Tool>()
   let allowedAgentTypes: string[] | undefined
@@ -364,18 +377,101 @@ export function resolveAgentTools(
         resolved.push(tool)
         resolvedToolsSet.add(tool)
       }
+    } else if (replTool && CODE_MODE_ONLY_TOOLS.has(toolName)) {
+      // Code Mode took Read, Bash, ... out of the pool; the agent reaches them
+      // through REPL, limited by its primitiveToolGrant (official yM).
+      validTools.push(toolSpec)
+      if (!resolvedToolsSet.has(replTool)) {
+        resolved.push(replTool)
+        resolvedToolsSet.add(replTool)
+      }
+    } else if (isDisallowed({ name: toolName } as Tool)) {
+      // Official yM: a spec the agent's own disallowedTools removes is neither.
+    } else if (poolNames.has(toolName)) {
+      unavailableTools.push(toolSpec)
     } else {
       invalidTools.push(toolSpec)
     }
+  }
+
+  const pollTool = availableToolMap.get(POLL_TOOL_NAME)
+  if (replTool && resolvedToolsSet.has(replTool) && pollTool && !resolvedToolsSet.has(pollTool)) {
+    resolved.push(pollTool)
   }
 
   return {
     hasWildcard: false,
     validTools,
     invalidTools,
-    resolvedTools: resolved,
+    unavailableTools,
+    resolvedTools: withoutOrphanPoll(resolved, isMainThread),
     allowedAgentTypes,
   }
+}
+
+/**
+ * Official 2.1.325 runAgent: an agent left with no tools at all is refused
+ * when its own tools list is why (named tools, none of them usable here) and
+ * the session had tools to give; a wildcard or a continuation only logs it.
+ * Returns the refusal text, or undefined to spawn the agent anyway.
+ */
+export function zeroToolSpawnRefusal(
+  agentDefinition: Pick<AgentDefinition, 'agentType' | 'disallowedTools' | 'source'>,
+  resolution: ResolvedAgentTools | undefined,
+  availablePoolSize: number,
+  { isAsync, isContinuation }: { isAsync: boolean; isContinuation: boolean },
+): string | undefined {
+  const invalid = resolution?.invalidTools ?? []
+  const unavailable = resolution?.unavailableTools ?? []
+  const isDisallowed = isToolDisallowedForAgent(agentDefinition.disallowedTools)
+  const validButEmpty = (resolution?.validTools ?? []).filter(spec => !isDisallowed({ name: spec } as Tool))
+  const reasons = [
+    invalid.length ? `unrecognized [${invalid.join(', ')}]` : '',
+    unavailable.length ? `not available to subagents [${unavailable.join(', ')}]` : '',
+    validButEmpty.length ? `recognized but matched no tools in this session [${validButEmpty.join(', ')}]` : '',
+  ]
+    .filter(Boolean)
+    .join('; ')
+  const refused =
+    reasons !== '' && resolution !== undefined && !resolution.hasWildcard && availablePoolSize > 0 && !isContinuation
+  logEvent('tengu_subagent_zero_tools', {
+    isBuiltIn: agentDefinition.source === 'built-in',
+    invalidCount: invalid.length,
+    unavailableCount: unavailable.length,
+    validButEmptyCount: validButEmpty.length,
+    availablePoolSize,
+    hadWildcard: resolution?.hasWildcard ?? false,
+    isContinuation,
+    refused,
+    isAsync,
+  })
+  if (!refused) return undefined
+  return (
+    `Agent '${agentDefinition.agentType}' would be spawned with zero tools \u2014 refusing. ` +
+    `Its tools list resolved to nothing: ${reasons}. Fix the agent's tools frontmatter or pass a different subagent_type.`
+  )
+}
+
+/** Poll only answers REPL runs, so a subagent left without REPL loses it too (official Ma). */
+function withoutOrphanPoll(tools: Tools, isMainThread: boolean): Tools {
+  if (isMainThread || !isCodeModeEnabled() || tools.some(tool => toolMatchesName(tool, REPL_TOOL_NAME))) {
+    return tools
+  }
+  return tools.filter(tool => !toolMatchesName(tool, POLL_TOOL_NAME))
+}
+
+/**
+ * The Code Mode primitives an agent's REPL scripts may call: its tools list
+ * resolved against REPL_PRIMITIVE_TOOL_NAMES, so a wildcard or no list grants
+ * all of them and disallowedTools takes some away (official VQt).
+ */
+export function primitiveToolGrant(
+  agentDefinition: Pick<AgentDefinition, 'tools' | 'disallowedTools' | 'source' | 'permissionMode'>,
+): ReadonlySet<string> {
+  const primitives = [...REPL_PRIMITIVE_TOOL_NAMES].map(name => ({ name }) as Tool)
+  return new Set(
+    resolveAgentTools(agentDefinition, primitives, false, true).resolvedTools.map(tool => tool.name),
+  )
 }
 
 export const agentToolResultSchema = lazySchema(() =>

@@ -28,6 +28,7 @@ import type { IDESelection } from '../hooks/useIdeSelection.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
+import { codeModeHidesTools } from '../tools/REPLTool/codeModeGate.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import type { TodoList } from './todo/types.js'
@@ -475,6 +476,24 @@ export type HookNonBlockingErrorAttachment = {
   durationMs?: number
 }
 
+/**
+ * Official `poll_events` (2.1.325): one chunk of queued poll events, which
+ * reaches the model as a Poll call on the last assistant message.
+ */
+export type PollEventsAttachment = {
+  type: 'poll_events'
+  /** Nonce-stamped event elements, oldest first. */
+  envelopes: string[]
+  kinds: string[]
+  /** Tools the conversation used that its messages don't show yet. */
+  toolsUsed?: string[]
+  /** Waking events still queued after this chunk. */
+  remainingWakeCount: number
+  timestamp: string
+  /** Official per-event provenance; no event on this path carries one. */
+  provenance?: null[]
+}
+
 export type Attachment =
   /**
    * User at-mentioned the file
@@ -594,6 +613,7 @@ export type Attachment =
       /** Carried from QueuedCommand.workload; 'cron' marks a scheduled task firing. */
       workload?: string
     }
+  | PollEventsAttachment
   | {
       type: 'output_style'
       style: string
@@ -1707,6 +1727,8 @@ export function getDeferredToolsDeltaAttachment(
   if (!isToolSearchEnabledOptimistic()) return []
   if (!modelSupportsToolReference(model)) return []
   if (!isToolSearchToolAvailable(tools)) return []
+  // Code Mode sends no ToolSearch: hidden tools are called from REPL scripts.
+  if (codeModeHidesTools(tools)) return []
   const delta = getDeferredToolsDelta(tools, messages ?? [], scanContext)
   if (!delta) return []
   return [{ type: 'deferred_tools_delta', ...delta }]

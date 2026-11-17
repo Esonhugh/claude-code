@@ -42,3 +42,29 @@ test('a prompt submitted while a local command runs is queued to run alone', asy
   const queued = getCommandQueueSnapshot() as QueuedCommand[]
   expect(queued.map(c => [c.value, c.runsAlone, c.admitted])).toEqual([['after compact', true, undefined]])
 })
+
+test('a waking poll event starts a turn as an empty prompt; one that does not wake waits', () => {
+  const executed: QueuedCommand[][] = []
+  const executeInput = async (cmds: QueuedCommand[]) => void executed.push(cmds)
+  const event = (wake: boolean, startsTurn?: false): QueuedCommand => ({
+    value: '<event/>',
+    mode: 'poll-event',
+    priority: wake ? 'next' : 'later',
+    isMeta: true,
+    pollEvent: { kind: 'repl-eval', envelope: '<event/>', nonce: 'n', wake, ...(startsTurn === false && { startsTurn }), timestamp: '' },
+  })
+  enqueue(event(false))
+  enqueue(event(true, false))
+  expect(processQueueIfReady({ executeInput }).processed).toBe(false)
+  enqueue(event(true))
+  expect(processQueueIfReady({ executeInput }).processed).toBe(true)
+  expect(executed).toEqual([[{ value: [], mode: 'prompt', isMeta: true, pollEmptyDispatch: true, skipSubmissionHooks: true }]])
+  // The events stay queued for the turn's first request to fold in.
+  expect(getCommandQueueSnapshot()).toHaveLength(3)
+  // Still the head after its dispatch: the turn did not take it, so no second one.
+  expect(processQueueIfReady({ executeInput }).processed).toBe(false)
+  // A prompt queued beside the events goes as itself.
+  enqueue({ value: 'A', mode: 'prompt' })
+  expect(processQueueIfReady({ executeInput }).processed).toBe(true)
+  expect(executed[1]!.map(c => c.value)).toEqual(['A'])
+})

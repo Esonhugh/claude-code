@@ -655,6 +655,84 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
   }
 })
 
+test('Code Mode sends only REPL, Poll and StructuredOutput, with nothing deferred', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { resetCodeModeGateForTesting } =
+    await import('../../tools/REPLTool/codeModeGate.js')
+  const state = await import('../../bootstrap/state.js')
+  const keys = ['ENABLE_TOOL_SEARCH', 'CLAUDE_CODE_EXPERIMENTAL_CODE_MODE', 'CLAUDE_CODE_ENTRYPOINT'] as const
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
+  const wasInteractive = state.getIsInteractive()
+  const fake = (name: string, extra: object = {}) => ({
+    name,
+    inputSchema: z.object({ code: z.string() }),
+    async prompt() {
+      return `${name} tool`
+    },
+    ...extra,
+  }) as unknown as import('../../Tool.js').Tool
+  const repl = fake('REPL')
+  const mcp = fake('mcp__corp__lookup', { isMcp: true })
+  const tools = [ToolSearchTool, repl, fake('Poll'), fake('StructuredOutput'), fake('Write'), fake('Edit'), mcp]
+  const send = async () => {
+    requests.length = 0
+    await queryModelWithoutStreaming({
+      messages: [createUserMessage({ content: 'test' })],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools,
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [mcp],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: false,
+        enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    const request = requests.at(-1)!
+    return {
+      names: (request.tools ?? []).map(tool => ('name' in tool ? tool.name : undefined)),
+      deferred: (request.tools ?? []).some(tool => 'defer_loading' in tool),
+      body: JSON.stringify(request.messages),
+    }
+  }
+  try {
+    process.env.ENABLE_TOOL_SEARCH = 'true'
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
+    state.setIsInteractive(true)
+    clearToolSchemaCache()
+    resetCodeModeGateForTesting()
+    const off = await send()
+    expect(off.names).toContain('Write')
+    expect(off.names).toContain('ToolSearch')
+    expect(off.deferred).toBe(true)
+
+    process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE = '1'
+    clearToolSchemaCache()
+    resetCodeModeGateForTesting()
+    const on = await send()
+    expect(on.names).toEqual(['REPL', 'Poll', 'StructuredOutput'])
+    expect(on.deferred).toBe(false)
+    expect(on.body).not.toContain('available-deferred-tools')
+  } finally {
+    clearToolSchemaCache()
+    resetCodeModeGateForTesting()
+    state.setIsInteractive(wasInteractive)
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+  }
+})
+
 test('a loaded deferred tool that leaves the pool stays declared so history is unchanged', async () => {
   const deltaGate = spyOn(
     growthbook,

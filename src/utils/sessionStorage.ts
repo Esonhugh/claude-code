@@ -635,6 +635,8 @@ class Project {
   currentSessionAgentSetting: string | undefined
   currentSessionMode: 'coordinator' | 'normal' | undefined
   currentSessionPermissionMode: PermissionMode | undefined
+  // Code Mode state; undefined = never recorded (not written).
+  currentSessionCodeMode: boolean | undefined
   // Tri-state: undefined = never touched (don't write), null = exited worktree,
   // object = currently in worktree. reAppendSessionMetadata writes null so
   // --resume knows the session exited (vs. crashed while inside).
@@ -947,6 +949,13 @@ class Project {
       appendEntryToFile(this.sessionFile, {
         type: 'permission-mode',
         permissionMode: this.currentSessionPermissionMode,
+        sessionId,
+      })
+    }
+    if (this.currentSessionCodeMode !== undefined) {
+      appendEntryToFile(this.sessionFile, {
+        type: 'repl-mode',
+        replMode: this.currentSessionCodeMode,
         sessionId,
       })
     }
@@ -1343,7 +1352,11 @@ class Project {
     } else if (entry.type === 'speculation-accept') {
       // Speculation accept entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
-    } else if (entry.type === 'mode' || entry.type === 'permission-mode') {
+    } else if (
+      entry.type === 'mode' ||
+      entry.type === 'permission-mode' ||
+      entry.type === 'repl-mode'
+    ) {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
@@ -2959,6 +2972,7 @@ export function restoreSessionMetadata(meta: {
   agentSetting?: string
   mode?: 'coordinator' | 'normal'
   permissionMode?: PermissionMode
+  replMode?: boolean
   worktreeSession?: PersistedWorktreeSession | null
   prNumber?: number
   prUrl?: string
@@ -2979,6 +2993,7 @@ export function restoreSessionMetadata(meta: {
   if (meta.mode) project.currentSessionMode = meta.mode
   if (meta.permissionMode)
     project.currentSessionPermissionMode = meta.permissionMode
+  if (meta.replMode !== undefined) project.currentSessionCodeMode = meta.replMode
   if (meta.worktreeSession !== undefined)
     project.currentSessionWorktree = meta.worktreeSession
   if (meta.prNumber !== undefined)
@@ -3002,6 +3017,7 @@ export function clearSessionMetadata(): void {
   project.currentSessionAgentSetting = undefined
   project.currentSessionMode = undefined
   project.currentSessionPermissionMode = undefined
+  project.currentSessionCodeMode = undefined
   project.currentSessionWorktree = undefined
   project.currentSessionPrNumber = undefined
   project.currentSessionPrUrl = undefined
@@ -3114,6 +3130,28 @@ export function savePermissionMode(mode: PermissionMode): void {
 }
 
 /**
+ * Record whether the main session runs in Code Mode (official `repl-mode`
+ * entry, last wins). Written only on a change; cached for
+ * reAppendSessionMetadata and appended at once when the transcript exists.
+ */
+export function saveCodeMode(on: boolean): void {
+  const project = getProject()
+  if (project.currentSessionCodeMode === on) return
+  project.currentSessionCodeMode = on
+  if (project.sessionFile) {
+    void project.appendEntry({
+      type: 'repl-mode',
+      replMode: on,
+      sessionId: getSessionId() as UUID,
+    })
+  }
+}
+
+export function getRecordedCodeMode(): boolean | undefined {
+  return getProject().currentSessionCodeMode
+}
+
+/**
  * Record the session's worktree state for --resume. Written to disk by
  * materializeSessionFile on the first user message and re-stamped by
  * reAppendSessionMetadata on exit. Pass null when exiting a worktree
@@ -3206,6 +3244,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prRepositories,
       modes,
       permissionModes,
+      replModes,
       worktreeStates,
       devModsFolders,
       sessionStartedAts,
@@ -3255,6 +3294,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       permissionMode: sessionId
         ? permissionModes.get(sessionId)
         : log.permissionMode,
+      replMode: sessionId ? replModes.get(sessionId) : log.replMode,
       worktreeSession:
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
@@ -3740,6 +3780,7 @@ export async function loadTranscriptFile(
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
   permissionModes: Map<UUID, PermissionMode>
+  replModes: Map<UUID, boolean>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
@@ -3770,6 +3811,7 @@ export async function loadTranscriptFile(
       permissionModes.set(sessionId, mode as PermissionMode)
     }
   }
+  const replModes = new Map<UUID, boolean>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
   const devModsFolders = new Map<UUID, string>()
   const sessionStartedAts = new Map<UUID, number>()
@@ -3884,6 +3926,9 @@ export async function loadTranscriptFile(
           modes.set(entry.sessionId, entry.mode)
         } else if (entry.type === 'permission-mode' && entry.sessionId) {
           keepPermissionMode(entry.sessionId, entry.permissionMode)
+        } else if (entry.type === 'repl-mode' && entry.sessionId) {
+          if (typeof entry.replMode === 'boolean')
+            replModes.set(entry.sessionId, entry.replMode)
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
         } else if (entry.type === 'session-started-at' && entry.sessionId) {
@@ -3960,6 +4005,9 @@ export async function loadTranscriptFile(
         modes.set(entry.sessionId, entry.mode)
       } else if (entry.type === 'permission-mode' && entry.sessionId) {
         keepPermissionMode(entry.sessionId, entry.permissionMode)
+      } else if (entry.type === 'repl-mode' && entry.sessionId) {
+        if (typeof entry.replMode === 'boolean')
+          replModes.set(entry.sessionId, entry.replMode)
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
       } else if (entry.type === 'session-started-at' && entry.sessionId) {
@@ -4099,6 +4147,7 @@ export async function loadTranscriptFile(
     prRepositories,
     modes,
     permissionModes,
+    replModes,
     worktreeStates,
     devModsFolders,
     sessionStartedAts: new Map([...Array.from(costStates, ([id, state]) => [id, state.startTime] as const), ...sessionStartedAts]),
@@ -4124,6 +4173,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   agentNames: Map<UUID, string>
   agentSettings: Map<UUID, string>
   permissionModes: Map<UUID, PermissionMode>
+  replModes: Map<UUID, boolean>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
@@ -4188,6 +4238,7 @@ export async function getLastSessionLog(
     agentNames,
     agentSettings,
     permissionModes,
+    replModes,
     worktreeStates,
     devModsFolders,
     sessionStartedAts,
@@ -4237,6 +4288,7 @@ export async function getLastSessionLog(
     ),
     agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
     permissionMode: permissionModes.get(sessionId),
+    replMode: replModes.get(sessionId),
     worktreeSession: worktreeStates.get(sessionId),
     devModsFolder: devModsFolders.get(sessionId),
     startedAt: sessionStartedAts.get(sessionId),
@@ -4768,12 +4820,26 @@ function transformMessagesForExternalTranscript(
   }) as Transcript
 }
 
+/**
+ * A Code Mode session keeps the REPL wrapper and its virtual pairs in the
+ * transcript, like official `j4e`: the inner results live in the REPL's
+ * `<repl-output>`, and the virtual tool_results are empty. The recorded
+ * state wins; before anything was recorded the gate decides.
+ */
+function isCodeModeTranscript(): boolean {
+  const recorded = getProject().currentSessionCodeMode
+  if (recorded !== undefined) return recorded
+  // Lazy: the gate reaches session state whose import graph loops back here.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return (require('../tools/REPLTool/codeModeGate.js') as typeof import('../tools/REPLTool/codeModeGate.js')).isCodeModeEnabled()
+}
+
 export function cleanMessagesForLogging(
   messages: Message[],
   allMessages: readonly Message[] = messages,
 ): Transcript {
   const filtered = messages.filter(isLoggableMessage) as Transcript
-  return getUserType() !== 'ant'
+  return getUserType() !== 'ant' && !isCodeModeTranscript()
     ? transformMessagesForExternalTranscript(
         filtered,
         collectReplIds(allMessages),
@@ -4933,6 +4999,7 @@ export async function loadAllLogsFromSessionFile(
     prRepositories,
     modes,
     permissionModes,
+    replModes,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -5000,6 +5067,7 @@ export async function loadAllLogsFromSessionFile(
       agentSetting: agentSettings.get(sessionId),
       mode: modes.get(sessionId) as LogOption['mode'],
       permissionMode: permissionModes.get(sessionId),
+      replMode: replModes.get(sessionId),
       prNumber: prNumbers.get(sessionId),
       prUrl: prUrls.get(sessionId),
       prRepository: prRepositories.get(sessionId),

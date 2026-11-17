@@ -569,7 +569,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
                 bridgeOrigin: cmd.bridgeOrigin,
                 isMeta: cmd.isMeta,
                 skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
-                skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
+                skipHooks: cmd.origin?.kind === 'peer' || cmd.skipSubmissionHooks === true || skipLocalContext,
                 promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
                   origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
                     cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :

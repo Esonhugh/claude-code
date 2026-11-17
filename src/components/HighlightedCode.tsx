@@ -21,6 +21,8 @@ type Props = {
   filePath: string
   width?: number
   dim?: boolean
+  /** Draw the line-number gutter; without it the code gets the gutter's columns. */
+  lineNumbers?: boolean
 }
 
 const DEFAULT_WIDTH = 80
@@ -30,6 +32,7 @@ export const HighlightedCode = memo(function HighlightedCode({
   filePath,
   width,
   dim = false,
+  lineNumbers = true,
 }: Props): React.ReactElement {
   const ref = useRef<DOMElement>(null)
   const [measuredWidth, setMeasuredWidth] = useState(width || DEFAULT_WIDTH)
@@ -58,12 +61,26 @@ export const HighlightedCode = memo(function HighlightedCode({
     }
   }, [width])
 
+  // ColorFile always draws the gutter: space + right-aligned line number
+  // (max_digits = lineCount.toString().length) + space.
+  const lineGutterWidth = useMemo(() => {
+    const lineCount = countCharInString(code, '\n') + (code.endsWith('\n') ? 0 : 1)
+    return lineCount.toString().length + 2
+  }, [code])
+
   const lines = useMemo(() => {
     if (colorFile === null) {
       return null
     }
-    return colorFile.render(theme, measuredWidth, dim)
-  }, [colorFile, theme, measuredWidth, dim])
+    const rendered = colorFile.render(
+      theme,
+      measuredWidth + (lineNumbers ? 0 : lineGutterWidth),
+      dim,
+    )
+    return lineNumbers
+      ? rendered
+      : rendered?.map(line => sliceAnsi(line, lineGutterWidth)) ?? null
+  }, [colorFile, theme, measuredWidth, dim, lineNumbers, lineGutterWidth])
 
   // Gutter width matches ColorFile's layout in lib.rs: space + right-aligned
   // line number (max_digits = lineCount.toString().length) + space. No marker
@@ -82,7 +99,7 @@ export const HighlightedCode = memo(function HighlightedCode({
       {lines ? (
         <Box flexDirection="column">
           {lines.map((line, i) =>
-            gutterWidth > 0 ? (
+            lineNumbers && gutterWidth > 0 ? (
               <CodeLine key={i} line={line} gutterWidth={gutterWidth} />
             ) : (
               <Text key={i}>

@@ -139,6 +139,8 @@ export interface UserMessage {
   isVisibleInTranscriptOnly?: boolean
   isVirtual?: boolean
   isCompactSummary?: boolean
+  /** Text in a compact summary that only the model sees (official modelOnlyText). */
+  modelOnlyText?: string
   summarizeMetadata?: {
     messagesSummarized: number
     userContext?: string

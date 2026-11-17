@@ -5,7 +5,10 @@ import React, { useRef } from 'react'
 import { useMinDisplayTime } from '../../hooks/useMinDisplayTime.js'
 import { Ansi, Box, Text, useTheme } from '../../ink.js'
 import { findToolByName, type Tools } from '../../Tool.js'
+import { isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
+import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
 import { getReplPrimitiveTools } from '../../tools/REPLTool/primitiveTools.js'
+import { ScriptSourceRow } from '../../tools/REPLTool/ScriptSourceRow.js'
 import type {
   CollapsedReadSearchGroup,
   NormalizedAssistantMessage,
@@ -130,6 +133,22 @@ function VerboseToolUse({
   const resultMsg = lookups.toolResultByToolUseID.get(content.id)
   const rawToolResult =
     resultMsg?.type === 'user' ? resultMsg.toolUseResult : undefined
+
+  // The calls a wrapper's script makes render as their own rows.
+  if (tool.isTransparentWrapper?.()) {
+    if (!isCodeModeEnabled() || content.name !== REPL_TOOL_NAME) return null
+    return (
+      <ScriptSourceRow
+        tool={tool}
+        input={content.input}
+        output={rawToolResult}
+        shouldAnimate={shouldAnimate && isInProgress}
+        isUnresolved={!isResolved}
+        isError={isError}
+        addMargin
+      />
+    )
+  }
   const parsedOutput = tool.outputSchema?.safeParse(rawToolResult)
   const toolResult = parsedOutput?.success ? parsedOutput.data : undefined
 

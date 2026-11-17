@@ -40,6 +40,7 @@ import {
   RemoteAgentTask,
   type RemoteAgentTaskState,
 } from 'src/tasks/RemoteAgentTask/RemoteAgentTask.js'
+import { type ScriptTaskState, stopScriptTask } from 'src/tasks/ScriptTask/ScriptTask.js'
 import {
   type BackgroundTaskState,
   isBackgroundTask,
@@ -217,6 +218,13 @@ type ListItem =
     }
   | {
       id: string
+      type: 'local_script'
+      label: string
+      status: string
+      task: DeepImmutable<ScriptTaskState>
+    }
+  | {
+      id: string
       type: 'leader'
       label: string
       status: 'running'
@@ -298,6 +306,7 @@ function LocalBackgroundTasksDialog({
     teammateTasks,
     mcpMonitors,
     dreamTasks,
+    scriptTasks,
     allSelectableItems,
   } = useMemo(() => {
     // Filter to only show running/pending background tasks, matching the status bar count.
@@ -335,6 +344,7 @@ function LocalBackgroundTasksDialog({
     )
     const monitorMcp = sorted.filter(item => item.type === 'monitor_mcp')
     const dreamTasks = sorted.filter(item => item.type === 'dream')
+    const scripts = sorted.filter(item => item.type === 'local_script')
     const teammates = sorted.filter(item => item.type === 'in_process_teammate')
     // Add leader entry when there are teammates, so users can foreground back to leader
     const leaderItem: ListItem[] =
@@ -356,9 +366,10 @@ function LocalBackgroundTasksDialog({
       completedAgentTasks: completedAgents,
       mcpMonitors: monitorMcp,
       dreamTasks,
+      scriptTasks: scripts,
       teammateTasks: [...leaderItem, ...teammates],
       // Order MUST match JSX render order (teammates \u2192 bash \u2192 interactive terminals \u2192 monitorMcp \u2192
-      // remote \u2192 agent \u2192 workflows \u2192 dream) so \u2193/\u2191 navigation moves the cursor
+      // remote \u2192 agent \u2192 workflows \u2192 dream \u2192 scripts) so \u2193/\u2191 navigation moves the cursor
       // visually downward.
       allSelectableItems: [
         ...leaderItem,
@@ -370,6 +381,7 @@ function LocalBackgroundTasksDialog({
         ...agent,
         ...completedAgents,
         ...dreamTasks,
+        ...scripts,
       ],
     }
   }, [typedTasks, foregroundedTaskId, scope])
@@ -391,7 +403,8 @@ function LocalBackgroundTasksDialog({
           if (current.type === 'leader') {
             exitTeammateView(setAppState)
             onDone('Viewing leader', { display: 'system' })
-          } else {
+          } else if (current.type !== 'local_script') {
+            // A script has no detail view; its row is all there is.
             setViewState({ mode: 'detail', itemId: current.id })
           }
         }
@@ -455,6 +468,11 @@ function LocalBackgroundTasksDialog({
         currentSelection.status === 'running'
       ) {
         void killDreamTask(currentSelection.id)
+      } else if (
+        currentSelection.type === 'local_script' &&
+        currentSelection.status === 'running'
+      ) {
+        stopScriptTask(currentSelection.id, setAppState)
       } else if (
         currentSelection.type === 'remote_agent' &&
         currentSelection.status === 'running'
@@ -746,7 +764,9 @@ function LocalBackgroundTasksDialog({
 
   const actions = [
     <KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />,
-    <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />,
+    ...(currentSelection?.type !== 'local_script'
+      ? [<KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />]
+      : []),
     ...(currentSelection?.type === 'in_process_teammate' && isViewableTeammate(currentSelection.task)
       ? [
           <KeyboardShortcutHint
@@ -763,6 +783,7 @@ function LocalBackgroundTasksDialog({
       currentSelection?.type === 'local_workflow' ||
       currentSelection?.type === 'monitor_mcp' ||
       currentSelection?.type === 'dream' ||
+      currentSelection?.type === 'local_script' ||
       currentSelection?.type === 'remote_agent') &&
     currentSelection.status === 'running'
       ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />]
@@ -1007,6 +1028,22 @@ function LocalBackgroundTasksDialog({
                 </Box>
               </Box>
             )}
+
+            {/* Official 2.1.325: Code Mode scripts, after the dream, with no heading. */}
+            {scriptTasks.length > 0 && (
+              <Box
+                flexDirection="column"
+                marginTop={allSelectableItems.length > scriptTasks.length ? 1 : 0}
+              >
+                {scriptTasks.map(item => (
+                  <Item
+                    key={item.id}
+                    item={item}
+                    isSelected={item.id === currentSelection?.id}
+                  />
+                ))}
+              </Box>
+            )}
           </Box>
         )}
       </Dialog>
@@ -1076,6 +1113,14 @@ function toListItem(task: BackgroundTaskState): ListItem {
       return {
         id: task.id,
         type: 'dream',
+        label: task.description,
+        status: task.status,
+        task,
+      }
+    case 'local_script':
+      return {
+        id: task.id,
+        type: 'local_script',
         label: task.description,
         status: task.status,
         task,

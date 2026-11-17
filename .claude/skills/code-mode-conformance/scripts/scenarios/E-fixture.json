@@ -1,0 +1,412 @@
+{
+ "name": "E-fixture",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"fbd16d1d-a04e-5d44-a78d-2607b5c93236\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-A start\"}}\n{\"type\":\"repl-mode\",\"replMode\":true,\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\"}\n{\"parentUuid\":\"fbd16d1d-a04e-5d44-a78d-2607b5c93236\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"653e2d7e-687a-55ff-b0af-f02ad9d12eb5\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxA1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxA1\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-A'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxA\"}\n{\"parentUuid\":\"653e2d7e-687a-55ff-b0af-f02ad9d12eb5\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"1cdfd637-52bf-551d-bc0e-7b519ddcf257\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxA1\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-A</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-A\"},\"sourceToolAssistantUUID\":\"653e2d7e-687a-55ff-b0af-f02ad9d12eb5\"}\n{\"parentUuid\":\"1cdfd637-52bf-551d-bc0e-7b519ddcf257\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9133ea17-2a1e-5e18-a2ab-9e9f2295fb8f\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxAv\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxAv\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"9133ea17-2a1e-5e18-a2ab-9e9f2295fb8f\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"5203aa9d-28da-508f-b88f-a460dfbccb65\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxAv\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"9133ea17-2a1e-5e18-a2ab-9e9f2295fb8f\"}\n{\"parentUuid\":\"5203aa9d-28da-508f-b88f-a460dfbccb65\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"3929cecb-42cb-5f78-8f9b-fdac58928106\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxA2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture A done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/5648372b-b5e9-5b48-8065-b26b67586e84.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"3e5766b4-c3bb-51bf-bf30-b34be90536b8\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-A2 start\"}}\n{\"type\":\"repl-mode\",\"replMode\":true,\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\"}\n{\"parentUuid\":\"3e5766b4-c3bb-51bf-bf30-b34be90536b8\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"ae7dcf68-b26f-594c-9fd0-83d965eecd91\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxA21\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxA21\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-A2'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxA2\"}\n{\"parentUuid\":\"ae7dcf68-b26f-594c-9fd0-83d965eecd91\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"ade23f25-4ff5-51c9-aaec-dac50f47c1a9\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxA21\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-A2</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-A2\"},\"sourceToolAssistantUUID\":\"ae7dcf68-b26f-594c-9fd0-83d965eecd91\"}\n{\"parentUuid\":\"ade23f25-4ff5-51c9-aaec-dac50f47c1a9\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"b0b5f778-7ae5-53e9-9a4b-ab81dab06bab\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxA2v\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxA2v\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"b0b5f778-7ae5-53e9-9a4b-ab81dab06bab\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"92e29906-68e9-5e44-8051-e20b041e4afd\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxA2v\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"b0b5f778-7ae5-53e9-9a4b-ab81dab06bab\"}\n{\"parentUuid\":\"92e29906-68e9-5e44-8051-e20b041e4afd\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"5648372b-b5e9-5b48-8065-b26b67586e84\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"16c509b7-dda4-5659-8a88-8ef8b308a311\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxA22\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture A2 done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/eca0824b-da17-5d55-b3c4-aa7e8cb4d62d.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"2900fbce-5199-5cfa-aaa6-3bbfb00cf3e8\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-B start\"}}\n{\"parentUuid\":\"2900fbce-5199-5cfa-aaa6-3bbfb00cf3e8\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"aa9bb642-e190-5b7b-b5c5-001000dd1979\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxB1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxB1\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-B'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxB\"}\n{\"parentUuid\":\"aa9bb642-e190-5b7b-b5c5-001000dd1979\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"76fa970d-b715-549d-885d-cfece0a146af\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxB1\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-B</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-B\"},\"sourceToolAssistantUUID\":\"aa9bb642-e190-5b7b-b5c5-001000dd1979\"}\n{\"parentUuid\":\"76fa970d-b715-549d-885d-cfece0a146af\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9666092d-bd90-55ef-a154-2c6d6a80a49b\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxBv\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxBv\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"9666092d-bd90-55ef-a154-2c6d6a80a49b\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"e966e165-1e5f-5fea-8bfd-e09f51206330\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxBv\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"9666092d-bd90-55ef-a154-2c6d6a80a49b\"}\n{\"parentUuid\":\"e966e165-1e5f-5fea-8bfd-e09f51206330\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"eca0824b-da17-5d55-b3c4-aa7e8cb4d62d\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"55a15af7-08a3-5d7e-b672-ad2101e6b275\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxB2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture B done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/9388ba48-18d0-574f-b1d4-e4d67fabf3cb.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9f86c059-092c-5eaa-959c-85fd6725f70f\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-B2 start\"}}\n{\"parentUuid\":\"9f86c059-092c-5eaa-959c-85fd6725f70f\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"68ea7ea1-1a76-5c5d-a31e-5faaaf4eddfe\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxB21\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxB21\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-B2'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxB2\"}\n{\"parentUuid\":\"68ea7ea1-1a76-5c5d-a31e-5faaaf4eddfe\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"97217682-c912-526c-8538-441220a169eb\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxB21\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-B2</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-B2\"},\"sourceToolAssistantUUID\":\"68ea7ea1-1a76-5c5d-a31e-5faaaf4eddfe\"}\n{\"parentUuid\":\"97217682-c912-526c-8538-441220a169eb\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"b50b925f-2b24-5115-bef5-34c9df2b0fb8\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxB2v\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxB2v\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"b50b925f-2b24-5115-bef5-34c9df2b0fb8\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"29a198b8-94fb-582b-bc9d-d494d687d1f2\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxB2v\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"b50b925f-2b24-5115-bef5-34c9df2b0fb8\"}\n{\"parentUuid\":\"29a198b8-94fb-582b-bc9d-d494d687d1f2\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"9388ba48-18d0-574f-b1d4-e4d67fabf3cb\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"4169f33f-0bb6-546d-8e3d-891036ab8893\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxB22\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture B2 done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/4999d6c6-bf3c-52f6-a358-e5fb2105d7bd.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"a9ad353a-140c-54a1-9936-f2eb70645553\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-C start\"}}\n{\"type\":\"repl-mode\",\"replMode\":true,\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\"}\n{\"parentUuid\":\"a9ad353a-140c-54a1-9936-f2eb70645553\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"57703960-510d-5581-8f7d-b6fc954b5041\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxC1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxC1\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-C'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxC\"}\n{\"parentUuid\":\"57703960-510d-5581-8f7d-b6fc954b5041\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9ba9f11e-22a7-5e3e-8151-53d16a7c7d0e\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxC1\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-C</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-C\"},\"sourceToolAssistantUUID\":\"57703960-510d-5581-8f7d-b6fc954b5041\"}\n{\"parentUuid\":\"9ba9f11e-22a7-5e3e-8151-53d16a7c7d0e\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"b7c5c1b2-68c2-5074-a817-bf70f0cd9403\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxCv\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxCv\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"b7c5c1b2-68c2-5074-a817-bf70f0cd9403\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9973c5b3-665a-5f83-918a-2a06c2f10eeb\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxCv\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"b7c5c1b2-68c2-5074-a817-bf70f0cd9403\"}\n{\"parentUuid\":\"9973c5b3-665a-5f83-918a-2a06c2f10eeb\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"a7d5459d-0965-5683-95ec-ca36c4e0fc95\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxC2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture C done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n{\"type\":\"repl-mode\",\"replMode\":false,\"sessionId\":\"4999d6c6-bf3c-52f6-a358-e5fb2105d7bd\"}\n",
+  "../home/.claude/projects/-private-tmp-cmx-conformance-run-{{label}}-work/50289c48-6451-53e5-9c97-18dfcf2c68d0.jsonl": "{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"303951fa-2eb8-5f61-bf3f-aab1a78fde5c\",\"timestamp\":\"2026-11-15T10:00:00.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"@@ f0 FIXTURE-D start\"}}\n{\"type\":\"repl-mode\",\"replMode\":false,\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\"}\n{\"parentUuid\":\"303951fa-2eb8-5f61-bf3f-aab1a78fde5c\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"e0dc14b0-f41e-5089-852d-e9fcd352b23d\",\"timestamp\":\"2026-11-15T10:00:01.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxD1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fxD1\",\"name\":\"REPL\",\"input\":{\"code\":\"const b = await Bash({command: 'echo FIXTURE-VIRTUAL'})\\n'FIXTURE-RESULT-D'\",\"description\":\"fixture\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"requestId\":\"req_fxD\"}\n{\"parentUuid\":\"e0dc14b0-f41e-5089-852d-e9fcd352b23d\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"812892ed-19ff-58cb-900b-d99c1cfc92d5\",\"timestamp\":\"2026-11-15T10:00:02.000Z\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_fxD1\",\"type\":\"tool_result\",\"content\":\"<repl-output>\\n<result>FIXTURE-RESULT-D</result>\\n</repl-output>\"}]},\"toolUseResult\":{\"result\":\"FIXTURE-RESULT-D\"},\"sourceToolAssistantUUID\":\"e0dc14b0-f41e-5089-852d-e9fcd352b23d\"}\n{\"parentUuid\":\"812892ed-19ff-58cb-900b-d99c1cfc92d5\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"5663d0bb-ebc1-5feb-acb7-314a926c59c5\",\"timestamp\":\"2026-11-15T10:00:03.000Z\",\"type\":\"assistant\",\"isVirtual\":true,\"message\":{\"id\":\"msg_fxDv\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"repl_fxDv\",\"name\":\"Bash\",\"input\":{\"command\":\"echo FIXTURE-VIRTUAL\"}}],\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n{\"parentUuid\":\"5663d0bb-ebc1-5feb-acb7-314a926c59c5\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"9ab4e7af-4b08-5320-bbaa-a91fb5a7198c\",\"timestamp\":\"2026-11-15T10:00:04.000Z\",\"type\":\"user\",\"isVirtual\":true,\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"repl_fxDv\",\"type\":\"tool_result\",\"content\":\"\",\"is_error\":false}]},\"toolUseResult\":{\"stdout\":\"FIXTURE-VIRTUAL\",\"stderr\":\"\",\"interrupted\":false},\"sourceToolAssistantUUID\":\"5663d0bb-ebc1-5feb-acb7-314a926c59c5\"}\n{\"parentUuid\":\"9ab4e7af-4b08-5320-bbaa-a91fb5a7198c\",\"isSidechain\":false,\"userType\":\"external\",\"cwd\":\"/private/tmp/cmx/conformance/run/{{label}}/work\",\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\",\"version\":\"2.1.325\",\"gitBranch\":\"main\",\"uuid\":\"5fbd9676-55d4-5186-92b2-3f0275d91c61\",\"timestamp\":\"2026-11-15T10:00:05.000Z\",\"type\":\"assistant\",\"message\":{\"id\":\"msg_fxD2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"fixture D done\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n{\"type\":\"repl-mode\",\"replMode\":true,\"sessionId\":\"50289c48-6451-53e5-9c97-18dfcf2c68d0\"}\n"
+ },
+ "commands": {
+  "AFTER_A": [
+   {
+    "text": "DONE {{nonce}} after_a"
+   }
+  ],
+  "AFTER_A2": [
+   {
+    "text": "DONE {{nonce}} after_a2"
+   }
+  ],
+  "AFTER_B": [
+   {
+    "text": "DONE {{nonce}} after_b"
+   }
+  ],
+  "AFTER_B2": [
+   {
+    "text": "DONE {{nonce}} after_b2"
+   }
+  ],
+  "AFTER_C": [
+   {
+    "text": "DONE {{nonce}} after_c"
+   }
+  ],
+  "AFTER_D": [
+   {
+    "text": "DONE {{nonce}} after_d"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume 7a37d3e2-d366-5913-aeb9-c9d9ce9f5d49",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+    }
+   }
+  },
+  {
+   "capture": "resume-A"
+  },
+  {
+   "turn": "AFTER_A"
+  },
+  {
+   "expect": {
+    "name": "fixture A (repl-mode True), switch on: history kept with the full <repl-output>",
+    "cmd": "AFTER_A",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-A start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-A</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A (repl-mode True), switch on: virtual inner pair not sent",
+    "cmd": "AFTER_A",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxAv",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A (repl-mode True), switch on: tools REPL only",
+    "cmd": "AFTER_A",
+    "step": 0,
+    "field": "tools",
+    "match": "^REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A (repl-mode True), switch on: no off reminder",
+    "cmd": "AFTER_A",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume 5648372b-b5e9-5b48-8065-b26b67586e84",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null
+    }
+   }
+  },
+  {
+   "capture": "resume-A2"
+  },
+  {
+   "turn": "AFTER_A2"
+  },
+  {
+   "expect": {
+    "name": "fixture A2 (repl-mode True), switch off: history kept with the full <repl-output>",
+    "cmd": "AFTER_A2",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-A2 start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-A2</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A2 (repl-mode True), switch off: virtual inner pair not sent",
+    "cmd": "AFTER_A2",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxA2v",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A2 (repl-mode True), switch off: ordinary tools",
+    "cmd": "AFTER_A2",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture A2 (repl-mode True), switch off: off reminder present (last-wins / inferred)",
+    "cmd": "AFTER_A2",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": false
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "fixture A2 (repl-mode True), switch off: taken-out notice shown",
+    "match": "This session was started in Code Mode",
+    "absent": false
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume eca0824b-da17-5d55-b3c4-aa7e8cb4d62d",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+    }
+   }
+  },
+  {
+   "capture": "resume-B"
+  },
+  {
+   "turn": "AFTER_B"
+  },
+  {
+   "expect": {
+    "name": "fixture B (no repl-mode entry), switch on: history kept with the full <repl-output>",
+    "cmd": "AFTER_B",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-B start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-B</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B (no repl-mode entry), switch on: virtual inner pair not sent",
+    "cmd": "AFTER_B",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxBv",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B (no repl-mode entry), switch on: tools REPL only",
+    "cmd": "AFTER_B",
+    "step": 0,
+    "field": "tools",
+    "match": "^REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B (no repl-mode entry), switch on: no off reminder",
+    "cmd": "AFTER_B",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume 9388ba48-18d0-574f-b1d4-e4d67fabf3cb",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null
+    }
+   }
+  },
+  {
+   "capture": "resume-B2"
+  },
+  {
+   "turn": "AFTER_B2"
+  },
+  {
+   "expect": {
+    "name": "fixture B2 (no repl-mode entry), switch off: history kept with the full <repl-output>",
+    "cmd": "AFTER_B2",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-B2 start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-B2</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B2 (no repl-mode entry), switch off: virtual inner pair not sent",
+    "cmd": "AFTER_B2",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxB2v",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B2 (no repl-mode entry), switch off: ordinary tools",
+    "cmd": "AFTER_B2",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture B2 (no repl-mode entry), switch off: off reminder present (last-wins / inferred)",
+    "cmd": "AFTER_B2",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": false
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "fixture B2 (no repl-mode entry), switch off: taken-out notice shown",
+    "match": "This session was started in Code Mode",
+    "absent": false
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume 4999d6c6-bf3c-52f6-a358-e5fb2105d7bd",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null
+    }
+   }
+  },
+  {
+   "capture": "resume-C"
+  },
+  {
+   "turn": "AFTER_C"
+  },
+  {
+   "expect": {
+    "name": "fixture C (repl-mode True/False), switch off: history kept with the full <repl-output>",
+    "cmd": "AFTER_C",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-C start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-C</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture C (repl-mode True/False), switch off: virtual inner pair not sent",
+    "cmd": "AFTER_C",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxCv",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture C (repl-mode True/False), switch off: ordinary tools",
+    "cmd": "AFTER_C",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture C (repl-mode True/False), switch off: off reminder absent (last-wins / inferred)",
+    "cmd": "AFTER_C",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": true
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "fixture C (repl-mode True/False), switch off: taken-out notice not shown",
+    "match": "This session was started in Code Mode",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--resume 50289c48-6451-53e5-9c97-18dfcf2c68d0",
+    "env": {
+     "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": null
+    }
+   }
+  },
+  {
+   "capture": "resume-D"
+  },
+  {
+   "turn": "AFTER_D"
+  },
+  {
+   "expect": {
+    "name": "fixture D (repl-mode False/True), switch off: history kept with the full <repl-output>",
+    "cmd": "AFTER_D",
+    "step": 0,
+    "field": "messages",
+    "match": "FIXTURE-D start[\\s\\S]*<repl-output>\\\\n<result>FIXTURE-RESULT-D</result>"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture D (repl-mode False/True), switch off: virtual inner pair not sent",
+    "cmd": "AFTER_D",
+    "step": 0,
+    "field": "messages",
+    "match": "repl_fxDv",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture D (repl-mode False/True), switch off: ordinary tools",
+    "cmd": "AFTER_D",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "fixture D (repl-mode False/True), switch off: off reminder present (last-wins / inferred)",
+    "cmd": "AFTER_D",
+    "step": 0,
+    "field": "messages",
+    "match": "Code Mode is off in this session",
+    "absent": false
+   }
+  },
+  {
+   "expect_pane": {
+    "name": "fixture D (repl-mode False/True), switch off: taken-out notice shown",
+    "match": "This session was started in Code Mode",
+    "absent": false
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

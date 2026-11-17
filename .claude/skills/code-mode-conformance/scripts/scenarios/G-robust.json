@@ -1,0 +1,289 @@
+{
+ "name": "G-robust",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+  "CLAUDE_CODE_MAX_RETRIES": "1"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Agent"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello\n",
+  "adir/x.txt": "x\n"
+ },
+ "agents": {
+  "ERRKEY": [
+   {
+    "status": 529
+   }
+  ]
+ },
+ "commands": {
+  "SETK": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "globalThis.keep = 'kept'; 'set'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} setk"
+   }
+  ],
+  "SUB529": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "let r\ntry { r = await Agent({description: 'e', subagent_type: 'general-purpose', prompt: 'ERRKEY probe', run_in_background: false}) } catch (e) { r = 'threw: ' + e.message }\nlog('after-agent')\nJSON.stringify(r).slice(0, 600)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} sub529"
+   }
+  ],
+  "MAIN429": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "'before-429 ' + keep",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "status": 429
+   }
+  ],
+  "AFTER429": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "typeof keep === 'string' ? keep : 'gone'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} after429"
+   }
+  ],
+  "THROWS": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const e = x => x?.error ?? ('no-error ' + JSON.stringify(x).slice(0, 80))\nconst out = {}\nout.dir = e(await Read({file_path: '{{work}}/adir'}))\ntry { out.bad = e(await Bash({})) } catch (err) { out.bad = 'threw: ' + err.message }\ntry { out.edit = e(await Edit({file_path: '{{work}}/missing.txt', old_string: 'a', new_string: 'b'})) } catch (err) { out.edit = 'threw: ' + err.message }\nout.end = 'reached'\nJSON.stringify(out)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} throws"
+   }
+  ],
+  "CRASH_TIMER": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "setTimeout(() => { throw new Error('late-boom') }, 10)\nawait sleep(800)\n'timer-survived'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} crash-timer"
+   }
+  ],
+  "CRASH_REJECT": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "Promise.reject(new Error('unhandled-boom'))\nawait sleep(800)\n'reject-survived'",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} crash-reject"
+   }
+  ],
+  "AFTER_CRASH": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "'alive ' + (typeof keep)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} after-crash"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions"
+   }
+  },
+  {
+   "turn": "SETK"
+  },
+  {
+   "turn": "SUB529",
+   "timeout": 120
+  },
+  {
+   "expect": {
+    "name": "529 in a subagent started mid-script: script continues past the Agent call (Agent launches async by default)",
+    "cmd": "SUB529",
+    "step": 1,
+    "match": "after-agent"
+   }
+  },
+  {
+   "expect": {
+    "name": "529 in a subagent started by the script: failure arrives in the same turn as an understandable task-notification event",
+    "cmd": "SUB529",
+    "step": 1,
+    "match": "<status>failed</status>[\\s\\S]*API Error: 529",
+    "field": "messages"
+   }
+  },
+  {
+   "send": "MAIN429"
+  },
+  {
+   "wait_pane": "(?i)API Error|429|rate limit",
+   "timeout": 90
+  },
+  {
+   "capture": "after-429"
+  },
+  {
+   "expect_pane": {
+    "name": "429 on the request after a REPL result: understandable error in the UI",
+    "match": "(?i)API Error|429|rate limit"
+   }
+  },
+  {
+   "turn": "AFTER429",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "after 429: session continues and VM state is kept",
+    "cmd": "AFTER429",
+    "step": 1,
+    "match": "<result>kept</result>"
+   }
+  },
+  {
+   "turn": "THROWS",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "Read on a directory gives {error}",
+    "cmd": "THROWS",
+    "step": 1,
+    "match": "dir\\\\?\":\\\\?\"[^\"]*(EISDIR|directory)"
+   }
+  },
+  {
+   "expect": {
+    "name": "Bash({}) invalid input gives an understandable error",
+    "cmd": "THROWS",
+    "step": 1,
+    "match": "bad\\\\?\":\\\\?\"[^\"]*(command|Required|invalid|InputValidation)"
+   }
+  },
+  {
+   "expect": {
+    "name": "Edit of a missing file gives {error}",
+    "cmd": "THROWS",
+    "step": 1,
+    "match": "edit\\\\?\":\\\\?\"[^\"]*(not exist|does not exist|ENOENT|not found)"
+   }
+  },
+  {
+   "expect": {
+    "name": "script reaches the end after tool errors",
+    "cmd": "THROWS",
+    "step": 1,
+    "match": "end\\\\?\":\\\\?\"reached"
+   }
+  },
+  {
+   "turn": "CRASH_TIMER",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "throw in a timer callback: understandable result (error named or script survived)",
+    "cmd": "CRASH_TIMER",
+    "step": 1,
+    "match": "late-boom|timer-survived"
+   }
+  },
+  {
+   "turn": "CRASH_REJECT",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "unhandled rejection: understandable result",
+    "cmd": "CRASH_REJECT",
+    "step": 1,
+    "match": "unhandled-boom|reject-survived"
+   }
+  },
+  {
+   "turn": "AFTER_CRASH",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "after the crash probes: REPL still runs",
+    "cmd": "AFTER_CRASH",
+    "step": 1,
+    "match": "<result>alive "
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

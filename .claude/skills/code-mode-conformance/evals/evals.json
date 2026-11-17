@@ -1,0 +1,58 @@
+{
+  "skill_name": "code-mode-conformance",
+  "evals": [
+    {
+      "id": 0,
+      "name": "full-conformance-run",
+      "prompt": "Code Mode 写完了，按计划跑一遍和官方 2.1.325 的一致性检查，出报告。",
+      "expected_output": "记录基准，先补 harness，按 A+E、B+G、C+D、F 并行，每条结论带证据等级和位置，汇总成报告表格。",
+      "files": [],
+      "assertions": [
+        "记录本地 commit、官方版本和二进制 sha256。",
+        "每条结论标明 L1/L2/L3a/L3b 之一和官方与本地位置。",
+        "D2、D3、D4 等已决定的差异记为有意不同，不记为缺陷。",
+        "不读取或打印 settings.ducc.json 的值，官方进程只用假凭证。",
+        "维度 agent 不改产品代码。"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "l3b-intercept",
+      "prompt": "官方遇到自定义 base URL 不开 Code Mode，本机又连不上 api.anthropic.com。用本地拦截让官方进入 Code Mode 再对比。",
+      "expected_output": "先静态确认 gate 来源和 GrowthBook 响应是否签名，再用 loopback 拦截器和一次性 CA，env -i 启动官方，不改二进制。",
+      "files": [],
+      "assertions": [
+        "在拦截前确认 tengu_rustling_blossom 的来源和响应是否签名，签名不可伪造时停止并记录。",
+        "拦截器只监听 127.0.0.1，不转发到外网。",
+        "CA 只经 NODE_EXTRA_CA_CERTS 注入，结束后删除私钥。",
+        "不设 ANTHROPIC_BASE_URL，不设 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC。",
+        "不 patch 官方二进制。"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "sandbox-escape-dimension",
+      "prompt": "检查 REPL 脚本能不能绕过权限直接读文件或执行命令。",
+      "expected_output": "按 F 维度的威胁模型逐项尝试逃逸，只在能拿到宿主能力时记缺陷，不建议没有攻击路径的防护。",
+      "files": [],
+      "assertions": [
+        "说明威胁模型是受提示注入影响的脚本绕过内层权限判定。",
+        "覆盖 constructor 链、import()、require、Bun、process、prepareStackTrace 等尝试。",
+        "每个尝试记录输入、结果和结论。",
+        "不为没有攻击路径的情况建议额外防护。"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "transcript-interop",
+      "prompt": "我们写的 Code Mode transcript 官方能不能正常 resume？",
+      "expected_output": "用官方普通模式连 mock resume 本地 transcript（L3a），比较请求体里的提醒和 REPL 外壳。",
+      "files": [],
+      "assertions": [
+        "说明官方连 mock 时走 gate-off 分支，结果属于 L3a。",
+        "检查 repl-mode 条目、REPL 外壳和 isVirtual 内层调用对。",
+        "比较两边注入的 Do not call REPL or Poll 提醒是否逐字一致。"
+      ]
+    }
+  ]
+}

@@ -65,6 +65,8 @@ export function getBackgroundTasksDialogInitialState({
   if (
     scopedTasks.length === 1 &&
     scopedTasks[0]!.type !== 'in_process_teammate' &&
+    // A script has no detail view to open.
+    scopedTasks[0]!.type !== 'local_script' &&
     !isCompletedBackgroundAgent(scopedTasks[0])
   ) {
     return {

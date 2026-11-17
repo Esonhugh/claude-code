@@ -152,6 +152,13 @@ export function BackgroundTask({
           />
         </Text>
       )
+    case 'local_script':
+      return (
+        <Text>
+          {truncate(task.description, activityLimit, true)}{' '}
+          <TaskStatusText status={task.status} />
+        </Text>
+      )
     case 'dream': {
       const n = task.filesTouched.length
       const detail =

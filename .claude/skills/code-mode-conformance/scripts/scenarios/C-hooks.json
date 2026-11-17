@@ -1,0 +1,119 @@
+{
+ "name": "C-hooks",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "hook.py": "import json, os, sys\nd = json.load(sys.stdin)\nev = sys.argv[1]\nroot = os.environ.get('CLAUDE_PROJECT_DIR', '.')\nwith open(os.path.join(root, 'hook-log.jsonl'), 'a') as f:\n    f.write(json.dumps({'ev': ev, 'hook_event_name': d.get('hook_event_name'), 'tool_name': d.get('tool_name'), 'tool_input': d.get('tool_input')}) + '\\n')\ncmd = str((d.get('tool_input') or {}).get('command', ''))\nout = None\nif ev == 'pre' and 'HOOK_REWRITE' in cmd:\n    out = {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'allow', 'updatedInput': {'command': 'echo rewritten-by-hook'}}}\nelif ev == 'pre' and 'HOOK_BLOCK' in cmd:\n    out = {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'blocked-by-hook'}}\nelif ev == 'post' and 'HOOK_POST' in cmd:\n    out = {'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'updatedToolOutput': {'stdout': 'post-rewritten', 'stderr': '', 'interrupted': False}}}\nif out:\n    print(json.dumps(out))\n"
+ },
+ "settings": {
+  "hooks": {
+   "PreToolUse": [
+    {
+     "matcher": "*",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 \"$CLAUDE_PROJECT_DIR\"/hook.py pre"
+      }
+     ]
+    }
+   ],
+   "PostToolUse": [
+    {
+     "matcher": "*",
+     "hooks": [
+      {
+       "type": "command",
+       "command": "python3 \"$CLAUDE_PROJECT_DIR\"/hook.py post"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "commands": {
+  "HOOKS": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const s = x => x?.error ?? x?.stdout?.trim()\nconst out = {}\nout.rewrite = s(await Bash({command: 'echo HOOK_REWRITE original'}))\nout.block = s(await Bash({command: 'touch blocked.txt; echo HOOK_BLOCK ran'}))\nout.post = s(await Bash({command: 'echo HOOK_POST original-post'}))\nJSON.stringify(out)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} hooks"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions"
+   }
+  },
+  {
+   "turn": "HOOKS",
+   "timeout": 90
+  },
+  {
+   "expect_file": {
+    "name": "PreToolUse sees the inner tool name Bash",
+    "path": "hook-log.jsonl",
+    "match": "\"ev\": \"pre\", \"hook_event_name\": \"PreToolUse\", \"tool_name\": \"Bash\", \"tool_input\": \\{\"command\": \"echo HOOK_REWRITE original\""
+   }
+  },
+  {
+   "expect_file": {
+    "name": "PostToolUse sees the inner tool name Bash",
+    "path": "hook-log.jsonl",
+    "match": "\"ev\": \"post\", \"hook_event_name\": \"PostToolUse\", \"tool_name\": \"Bash\""
+   }
+  },
+  {
+   "expect": {
+    "name": "PreToolUse updatedInput takes effect",
+    "cmd": "HOOKS",
+    "step": 1,
+    "match": "rewrite\\\\?\":\\\\?\"rewritten-by-hook"
+   }
+  },
+  {
+   "expect": {
+    "name": "PreToolUse deny: script gets {error} with the hook reason",
+    "cmd": "HOOKS",
+    "step": 1,
+    "match": "block\\\\?\":\\\\?\"[^\"]*blocked-by-hook"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "PreToolUse deny: command did not run",
+    "path": "blocked.txt",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "PostToolUse updatedToolOutput takes effect",
+    "cmd": "HOOKS",
+    "step": 1,
+    "match": "post\\\\?\":\\\\?\"post-rewritten"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "hooks also fire for the REPL call itself (official: REPL is an ordinary tool)",
+    "path": "hook-log.jsonl",
+    "match": "\"tool_name\": \"REPL\""
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}
