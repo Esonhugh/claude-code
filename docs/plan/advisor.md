@@ -213,6 +213,8 @@ fork 的实现：
 | `advisor_incompatible` | apiError 类型 `advisor_incompatible` | 文案照官方，错误类型用 `invalid_request` | fork 的 SDK 错误类型里没有这一项 |
 | CCR 受限会话、HIPAA | 关闭 advisor | 不判断 | fork 没有这两个状态 |
 | 只读客户端 | `/advisor` 拒绝修改 | 不判断 | fork 没有对应的 view-only 连接 |
+| Fable、Mythos 的 rank | `ra()` 只在组织能用 Fable（`j0e()`）、启用了 Mythos（`V2o()`）时才给这两个系列 advisor rank；否则它们不能当顾问，`/advisor` 也不列出 | 总是给 rank（`src/utils/advisor.ts:161-180`、`:209`），`/advisor` 总是列出 `fable` | fork 没有组织级的模型可用性状态。组织用不了时服务端怎么回应没有验证过 |
+| 没配 advisor 时的 beta | firstParty 的 advisor 默认关，不配就不带 advisor beta；`nE`、`PS` 由 `tengu_foamy_spring` 和模型目录决定，与 advisor 无关 | advisor 默认开，Claude 模式下没配 advisor 的请求也带 `advisor-tool-2026-03-01`；主模型在 `TOOL_CHANGE_MODELS` 里，或模型名不在本地模型表里时（`modelSupportsToolChanges` 对未知模型名返回 true，`src/utils/advisorToolChanges.ts:66-82`），主对话和子代理的请求还带 `nE`、`PS`。自定义 `ANTHROPIC_BASE_URL` 也一样 | 按用户决定默认开、网关拒绝不特殊处理。tmux 加假 API 实测：网关按 Anthropic 的措辞拒绝时，去掉后重发并按 host 记住（第一轮多发两次请求）；用其他措辞拒绝（如 `unsupported beta flag`）时每一轮都是 `API Error: 400`，要设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`。官方 `F_e` 对目录外模型的处理只见于该文件的注释，没有单独核对 |
 
 ## 8. 风险和未决项
 

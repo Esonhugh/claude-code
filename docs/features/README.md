@@ -44,6 +44,7 @@
 |  | [模型自动发现与 Gateway](model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](request-resilience.md) | API 过载或断线时自动重试；主模型一直过载就换备用模型；可以让无人值守任务一直等到额度恢复 |
 |  | [Effort 档位](effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；可全局设、按会话切，也可给子代理单独指定 |
+|  | [Advisor 顾问模型（实验性）](advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：用 `/advisor` 选顾问，Claude 模式下可用；走自定义网关前请先看文档里的注意事项 |
 |  | [Codex Apps](codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
 | Agent 与编排 | [Agent 与后台任务](agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
@@ -131,6 +132,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Model discovery and gateways](model-discovery.md) | When you use your own API gateway or an OpenAI-compatible service, the gateway's models appear in `/model` automatically, no typing model names |
 |  | [Request resilience: retries, fallback and default models](request-resilience.md) | Retries automatically on API overload or dropped connections; switches to a fallback model if the main one stays overloaded; unattended tasks can wait until quota comes back |
 |  | [Effort levels](effort.md) | How hard Claude thinks each time: low is fast and cheap, high is slow and careful; set it globally, per session, or per subagent |
+|  | [Advisor (experimental)](advisor.md) | The main model consults a stronger model at key moments (for example Sonnet doing the work and Opus advising): pick one with `/advisor`; Claude mode only; read the gateway note in the doc before using a custom gateway |
 |  | [Codex Apps](codex-apps.md) | With the OpenAI provider on a ChatGPT account, use the apps you connected in ChatGPT (GitHub, Gmail and more) directly: mention them with `@codex-app:` |
 | Agents and orchestration | [Agents and background tasks](agents.md) | Claude hands part of the work to subagents in the background while you keep talking; inspect, stop or resume them, or define your own |
 |  | [Agent Teams](agent-teams.md) | Claude forms a small team: a lead with several teammates working in parallel, messaging each other and sharing a task list |
@@ -219,6 +221,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [模型自動發現與 Gateway](model-discovery.md) | 走自己的 API 閘道或 OpenAI 相容服務時，自動把閘道提供的模型列進 `/model`，不用手打模型名 |
 |  | [請求韌性：重試、回退模型與預設模型](request-resilience.md) | API 過載或斷線時自動重試；主模型一直過載就換備用模型；可以讓無人值守任務一直等到額度恢復 |
 |  | [Effort 檔位](effort.md) | 控制 Claude 每次「想多深」：低檔快而省，高檔慢而仔細；可全域設、按會話切，也可給子代理單獨指定 |
+|  | [Advisor 顧問模型（實驗性）](advisor.md) | 讓主模型在關鍵節點向更強的模型請教（例如 Sonnet 做事、Opus 把關）：用 `/advisor` 選顧問，Claude 模式下可用；走自訂閘道前請先看文件裡的注意事項 |
 |  | [Codex Apps](codex-apps.md) | 用 ChatGPT 帳號登入 OpenAI provider 時，直接使用 ChatGPT 裡連好的 App（GitHub、Gmail 等）：輸入 `@codex-app:` 點名即可 |
 | Agent 與編排 | [Agent 與後台任務](agents.md) | Claude 把一部分工作交給「子代理」在後台做，你繼續聊；可以檢視、停止、續跑，也可以自己定義專用子代理 |
 |  | [Agent Teams](agent-teams.md) | 讓 Claude 組一個小團隊：一個負責人帶幾個隊友並行幹活，互相發訊息、共享任務清單 |
