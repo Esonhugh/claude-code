@@ -9,6 +9,7 @@ import type { LocalShellTaskState } from './LocalShellTask/guards.js'
 import type { LocalWorkflowTaskState } from './LocalWorkflowTask/LocalWorkflowTask.js'
 import type { MonitorMcpTaskState } from './MonitorMcpTask/MonitorMcpTask.js'
 import type { RemoteAgentTaskState } from './RemoteAgentTask/RemoteAgentTask.js'
+import type { ScriptTaskState } from './ScriptTask/ScriptTask.js'
 
 export type TaskState =
   | LocalShellTaskState
@@ -19,6 +20,7 @@ export type TaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
+  | ScriptTaskState
 
 // Task types that can appear in the background tasks indicator
 export type BackgroundTaskState =
@@ -30,6 +32,7 @@ export type BackgroundTaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
+  | ScriptTaskState
 
 /**
  * Check if a task should be shown in the background tasks indicator.

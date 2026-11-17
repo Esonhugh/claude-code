@@ -14,6 +14,7 @@ export type TaskType =
   | 'local_workflow'
   | 'monitor_mcp'
   | 'dream'
+  | 'local_script'
 
 export type TaskHandle = {
   taskId: string

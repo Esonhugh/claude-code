@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
+import { endScriptTask, registerScriptTask } from '../../tasks/ScriptTask/ScriptTask.js'
 import { buildTool, type Tool, type ToolDef, toolMatchesName, type ToolUseContext, type Tools } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getAgentContext } from '../../utils/agentContext.js'
@@ -429,6 +430,21 @@ export const REPLTool = buildTool({
         const finish = () => finishReplEval(session, evalId)
         void running.then(finish, finish)
         session.pending.set(evalId, { id: evalId, startedAt, abort: reason => controller.abort(reason) })
+        // Official 2.1.325 (chunk-x5qyz3j2.js `registerScriptTask`): in an
+        // interactive session the script is a background task until it ends,
+        // so the footer counts it and Shift+Down can stop it.
+        if (!context.options.isNonInteractiveSession) {
+          const setTaskState = context.setAppStateForTasks ?? context.setAppState
+          const taskId = registerScriptTask(setTaskState, {
+            description: input.description,
+            toolUseId: context.toolUseId,
+            abortController: controller,
+          })
+          const end = (status: 'completed' | 'killed') => () => void endScriptTask(taskId, setTaskState, status)
+          if (controller.signal.aborted) end('killed')()
+          else controller.signal.addEventListener('abort', end('killed'), { once: true })
+          void running.then(end('completed'), end('completed'))
+        }
         // Official: the main thread's eval the user stopped does not start a turn of its own.
         // INFERRED: an Esc interrupt cancelling a waiting eval is a user stop too.
         const startsTurn = () =>

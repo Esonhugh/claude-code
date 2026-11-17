@@ -2,6 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test
 import { z } from 'zod/v4'
 import { getIsInteractive, setIsInteractive } from '../../bootstrap/state.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import { getDefaultAppState, type AppState } from '../../state/AppStateStore.js'
+import type { ScriptTaskState } from '../../tasks/ScriptTask/ScriptTask.js'
 import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import {
@@ -640,3 +642,52 @@ describe('async-lane prompt', () => {
 function contextAfterAbort(context: ToolUseContext): ToolUseContext {
   return { ...context, abortController: new AbortController() }
 }
+
+describe('a dispatched script as a background task (official 2.1.325 registerScriptTask)', () => {
+  /** An interactive main-thread context whose tasks land in a real AppState. */
+  function interactiveContext() {
+    let state: AppState = { ...getDefaultAppState(), toolPermissionContext: { ...getEmptyToolPermissionContext(), mode: 'bypassPermissions' } }
+    const base = mainContext()
+    const context = {
+      ...base,
+      options: { ...base.options, isNonInteractiveSession: false },
+      getAppState: () => state,
+      setAppState: (f: (prev: AppState) => AppState) => void (state = f(state)),
+    } as unknown as ToolUseContext
+    const scripts = () => Object.values(state.tasks).filter((task): task is ScriptTaskState => task.type === 'local_script')
+    return { context, scripts }
+  }
+  const dispatch = (code: string, context: ToolUseContext) =>
+    REPLTool.call({ code, description: 'Run the slow build' }, context, allow, undefined as never, undefined as never)
+
+  test('it runs as a task labelled with the description and completes when the script ends', async () => {
+    const { context, scripts } = interactiveContext()
+    await dispatch(sleepCode(100, 'built'), context)
+    expect(scripts()).toMatchObject([{ status: 'running', description: 'Run the slow build', toolUseId: 'toolu_current' }])
+    await new Promise(r => setTimeout(r, 250))
+    expect(scripts()).toMatchObject([{ status: 'completed', notified: true }])
+  })
+
+  test('stopping the script kills the task, and stopping the task stops the script', async () => {
+    const { context, scripts } = interactiveContext()
+    await dispatch(sleepCode(5_000, 'never'), context)
+    await calling()
+    abortPendingReplEvals(getReplSession(MAIN_REPL_SESSION), 'user-cancel')
+    expect(scripts()).toMatchObject([{ status: 'killed' }])
+
+    await dispatch(sleepCode(5_000, 'never'), context)
+    await calling()
+    const running = scripts().find(task => task.status === 'running')!
+    const { ScriptTask } = await import('../../tasks/ScriptTask/ScriptTask.js')
+    await ScriptTask.kill(running.id, context.setAppState)
+    expect(scripts().find(task => task.id === running.id)!.status).toBe('killed')
+    await new Promise(r => setTimeout(r, 50))
+    expect(findReplSession(MAIN_REPL_SESSION)!.ledger.size).toBe(0)
+  })
+
+  test('a non-interactive session registers no task', async () => {
+    const { context, scripts } = interactiveContext()
+    await dispatch('1', { ...context, options: { ...context.options, isNonInteractiveSession: true } } as ToolUseContext)
+    expect(scripts()).toEqual([])
+  })
+})
