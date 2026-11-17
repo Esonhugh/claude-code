@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { URL } from 'node:url'
 import {
   mkdtempSync,
+  realpathSync,
   writeFileSync,
   readFileSync,
   mkdirSync,
@@ -62,7 +63,8 @@ const frame = (text, cursor = { x: 0, y: 1, visible: true }) => ({
   cells: [...text].flatMap((char, x) => [[x, 0, char, 1, '']]),
 })
 function fixture(groups, prefixText = 'prefix\r\n') {
-  const run = mkdtempSync(join(tmpdir(), 'pty-oracle-'))
+  // The recheck compares real paths; macOS tmpdir() goes through a symlink.
+  const run = realpathSync(mkdtempSync(join(tmpdir(), 'pty-oracle-')))
   roots.push(run)
   const prefix = Buffer.from(prefixText),
     chunks = [prefix],
@@ -542,7 +544,7 @@ test('sealed proof checks actual native files and independent replay defeats sel
   expect(sealedNames.map(name => readFileSync(join(run, name)).toString('hex'))).toEqual(before)
   // Synthetic archive classifier, with original launch bytes pinned by the
   // archive receipt. This does not claim complete terminal timing coverage.
-  const archiveParent = mkdtempSync(join(tmpdir(), 'sealed-archive-'))
+  const archiveParent = realpathSync(mkdtempSync(join(tmpdir(), 'sealed-archive-')))
   roots.push(archiveParent)
   const sourceCache = join(archiveParent, 'source'),
     sourceRun = join(sourceCache, 'runs/r-000000000001'),
