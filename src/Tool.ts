@@ -414,6 +414,10 @@ export type ToolUseContext = {
    * and bust the cache. See forkSubagent.ts.
    */
   renderedSystemPrompt?: SystemPrompt
+  /** Advisor the latest request from this context carried; forks keep it. */
+  requestAdvisorModel?: string
+  /** Set by runForkedAgent: every request of the fork carries exactly this advisor. */
+  advisorPin?: { model: string | undefined }
 }
 
 // Re-export ToolProgressData from centralized location

@@ -158,6 +158,12 @@ import {
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
+import {
+  type AdvisorCarrier,
+  getAdvisorQueryKind,
+  getMainAdvisorCarrier,
+  resolveAdvisorForQuery,
+} from './utils/advisorQuery.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -604,6 +610,13 @@ async function* queryLoop(
   let resolvedContext: PromptContext | undefined
   let cacheSafeParamsEmitted = false
   let stepIndex = 0
+  // Official 2.1.325: the main thread keeps one advisor per conversation; a
+  // subagent's loop and a teammate keep their own.
+  const advisorCarrier: AdvisorCarrier =
+    getAdvisorQueryKind(querySource) === 'subagent' ||
+    params.toolUseContext.agentId !== undefined
+      ? {}
+      : getMainAdvisorCarrier()
   const snapshot = params.toolUseContext.modsSnapshot
   async function refreshContext(messages: Message[]) {
     if (params.resolvedPromptContextBlocks !== undefined) return
@@ -985,6 +998,16 @@ async function* queryLoop(
           systemContext,
           toolUseContext,
           forkContextMessages: projectedMessagesForQuery,
+          // Automatic compaction keeps the conversation's advisor (official).
+          advisorModel: toolUseContext.advisorPin
+            ? toolUseContext.advisorPin.model
+            : resolveAdvisorForQuery(messagesForQuery, {
+                querySource: 'compact',
+                setting: toolUseContext.getAppState().advisorModel,
+                configuredModel: toolUseContext.options.mainLoopModel,
+                requestModel: toolUseContext.options.mainLoopModel,
+                carrier: advisorCarrier,
+              }).advisorModel,
         },
         querySource,
         tracking,
@@ -1081,10 +1104,36 @@ async function* queryLoop(
       }
     }
 
+    // Official 2.1.325: settle this request's advisor and announce a change.
+    // A fork carries its parent's advisor unchanged.
+    const advisorAppState = toolUseContext.getAppState()
+    const advisor = toolUseContext.advisorPin
+      ? { advisorModel: toolUseContext.advisorPin.model, announcement: undefined }
+      : resolveAdvisorForQuery(messagesForQuery, {
+          querySource,
+          setting: advisorAppState.advisorModel,
+          configuredModel: toolUseContext.options.mainLoopModel,
+          requestModel: getRuntimeMainLoopModel({
+            permissionMode: advisorAppState.toolPermissionContext.mode,
+            mainLoopModel: toolUseContext.options.mainLoopModel,
+            exceeds200kTokens:
+              advisorAppState.toolPermissionContext.mode === 'plan' &&
+              doesMostRecentAssistantMessageExceed200k(messagesForQuery),
+          }),
+          carrier: advisorCarrier,
+        })
+    if (advisor.announcement) {
+      const msg = createAttachmentMessage(advisor.announcement)
+      yield msg
+      messagesForQuery.push(msg)
+      projectedMessagesForQuery = await projectAttachments(messagesForQuery)
+    }
+
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
+      requestAdvisorModel: advisor.advisorModel,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1219,6 +1268,9 @@ async function* queryLoop(
     }
 
     let attemptWithFallback = true
+    // Set when the server could not process earlier advisor results and the
+    // retry removed them; the next streamed message records that.
+    let advisorBlocksStripped = false
 
     queryCheckpoint('query_api_loop_start')
     try {
@@ -1287,7 +1339,14 @@ async function* queryLoop(
               ),
               queryTracking,
               effortValue: appState.effortValue,
-              advisorModel: appState.advisorModel,
+              advisorModel: advisor.advisorModel,
+              ...(toolUseContext.advisorPin && { forkAdvisor: true }),
+              onAdvisorRefused: () => {
+                advisorCarrier.held = { model: undefined, refused: true }
+              },
+              onAdvisorBlocksStripped: () => {
+                advisorBlocksStripped = true
+              },
               skipCacheWrite,
               agentId: toolUseContext.agentId,
               openAITurnScope: toolUseContext.openAITurnScope,
@@ -1316,6 +1375,12 @@ async function* queryLoop(
               }), request.signal)
             : deps.callModel(request)
           for await (const message of modelStream) {
+            if (advisorBlocksStripped) {
+              advisorBlocksStripped = false
+              const stripped = createAttachmentMessage({ type: 'advisor_stripped' })
+              yield stripped
+              messagesForQuery.push(stripped)
+            }
             observeResponse?.(message)
             if (message.type === 'assistant') {
               const skill = toolUseContext.options.activeSkill ?? toolUseContext.options.spawnedBySkill

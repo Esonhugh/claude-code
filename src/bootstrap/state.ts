@@ -1959,6 +1959,15 @@ export function setThinkingClearLatched(v: boolean): void {
   STATE.thinkingClearLatched = v
 }
 
+const betaHeaderLatchesCleared = createSignal()
+
+/**
+ * Register a callback that fires with clearBetaHeaderLatches(), for other
+ * per-conversation request state (the main thread's advisor). bootstrap
+ * can't import those modules (DAG leaf), so they register themselves.
+ */
+export const onBetaHeaderLatchesCleared = betaHeaderLatchesCleared.subscribe
+
 /**
  * Reset beta header latches to null. Called on /clear and /compact so a
  * fresh conversation gets fresh header evaluation.
@@ -1968,6 +1977,7 @@ export function clearBetaHeaderLatches(): void {
   STATE.fastModeHeaderLatched = null
   STATE.cacheEditingHeaderLatched = null
   STATE.thinkingClearLatched = null
+  betaHeaderLatchesCleared.emit()
 }
 
 export function getPromptId(): string | null {
