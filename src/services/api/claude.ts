@@ -215,6 +215,10 @@ import {
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
+import {
+  codeModeHidesTools,
+  hideCodeModeOnlyTools,
+} from '../../tools/REPLTool/codeModeGate.js'
 import { count } from '../../utils/array.js'
 import { insertBlockAfterToolResults } from '../../utils/contentArray.js'
 import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
@@ -1329,9 +1333,15 @@ async function* queryModelRequest(
     signal,
   })
 
+  // Code Mode sends only REPL/Poll/StructuredOutput; the rest are called from
+  // REPL scripts, so they are neither declared nor deferred behind ToolSearch.
+  // `tools` stays the full pool: it is the prompt context REPL describes.
+  const codeModeHiding = codeModeHidesTools(tools)
+  const apiTools = hideCodeModeOnlyTools(tools)
+
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
-  let useToolSearch = !options.toolSearchRefused && await isToolSearchEnabled(
+  let useToolSearch = !codeModeHiding && !options.toolSearchRefused && await isToolSearchEnabled(
     options.model,
     tools,
     options.getToolPermissionContext,
@@ -1343,14 +1353,14 @@ async function* queryModelRequest(
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
   const deferredToolNames = new Set<string>()
   if (useToolSearch) {
-    for (const t of tools) {
+    for (const t of apiTools) {
       if (isDeferredTool(t, modDescriptions?.get(t)?.isDeferred))
         deferredToolNames.add(t.name)
     }
   }
 
   const departedTools = useToolSearch
-    ? getDepartedReferencedTools(messages, tools, deferredToolNames)
+    ? getDepartedReferencedTools(messages, apiTools, deferredToolNames)
     : []
   for (const tool of departedTools) deferredToolNames.add(tool.name)
 
@@ -1378,7 +1388,7 @@ async function* queryModelRequest(
     // to predeclare all deferred tools upfront and removes limits on tool quantity.
     const discoveredToolNames = extractDiscoveredToolNames(messages)
 
-    filteredTools = tools.filter(tool => {
+    filteredTools = apiTools.filter(tool => {
       // Always include non-deferred tools
       if (!deferredToolNames.has(tool.name)) return true
       // Always include ToolSearchTool (so it can discover more tools)
@@ -1393,7 +1403,7 @@ async function* queryModelRequest(
       )
     }
   } else {
-    filteredTools = tools.filter(
+    filteredTools = apiTools.filter(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
     )
   }
@@ -1641,7 +1651,7 @@ async function* queryModelRequest(
   // via persisted deferred_tools_delta attachments instead of this
   // ephemeral prepend (which busts cache whenever the pool changes).
   if (useToolSearch && !isDeferredToolsDeltaEnabled()) {
-    const deferredToolList = tools.filter(t => deferredToolNames.has(t.name))
+    const deferredToolList = apiTools.filter(t => deferredToolNames.has(t.name))
     const formattedDeferredToolList =
       formatDeferredToolLines(deferredToolList).join('\n')
     if (formattedDeferredToolList) {

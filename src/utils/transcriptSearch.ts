@@ -1,3 +1,4 @@
+import { withoutReplStateNote } from '../services/compact/replStateNote.js'
 import type { RenderableMessage } from '../types/message.js'
 import {
   INTERRUPT_MESSAGE,
@@ -34,14 +35,16 @@ function computeSearchText(msg: RenderableMessage): string {
   switch (msg.type) {
     case 'user': {
       const c = msg.message.content
+      // The REPL state note is model-only, so it is not searchable (official h0).
+      const modelOnly = msg.isCompactSummary ? msg.modelOnlyText : undefined
       if (typeof c === 'string') {
-        raw = RENDERED_AS_SENTINEL.has(c) ? '' : c
+        raw = RENDERED_AS_SENTINEL.has(c) ? '' : withoutReplStateNote(c, modelOnly)
       } else {
         const parts: string[] = []
         for (const b of c) {
           if (b.type === 'text') {
             // @ts-ignore - recovered code
-            if (!RENDERED_AS_SENTINEL.has(b.text)) parts.push(b.text)
+            if (!RENDERED_AS_SENTINEL.has(b.text)) parts.push(withoutReplStateNote(b.text, modelOnly))
           } else if (b.type === 'tool_result') {
             // b.content is the MODEL-facing serialization (from each tool's
             // mapToolResultToToolResultBlockParam) — adds system-reminders,

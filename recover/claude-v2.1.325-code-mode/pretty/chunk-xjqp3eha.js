@@ -1,0 +1,871 @@
+function wjs(e, n, r) {
+  if (RO({ model: e, leanPrompt: n })) {
+    if (L4({ model: e, leanRewrite: r })) return pga;
+    return `Content search built on ripgrep. Prefer this over \`grep\`/\`rg\` via ${Re} \u2014 results integrate with the permission UI and file links.
+
+- Full regex syntax (e.g. "log.*Error", "function\\s+\\w+"). Ripgrep, not grep \u2014 escape literal braces (\`interface\\{\\}\`).
+- Filter with \`glob\` (e.g. "**/*.tsx") or \`type\` (e.g. "js", "py", "rust").
+- \`output_mode\`: "content" (matching lines), "files_with_matches" (paths only, default), or "count".
+- \`multiline: true\` for patterns that span lines.`;
+  }
+  return `A powerful search tool built on ripgrep
+
+  Usage:
+  - ALWAYS use ${wr} for search tasks. NEVER invoke \`grep\` or \`rg\` as a ${Re} command. The ${wr} tool has been optimized for correct permissions and access.
+  - Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+  - Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")
+  - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+${
+  Lz() === "default"
+    ? `  - Use ${ft} tool (if available) for open-ended searches requiring multiple rounds
+`
+    : ""
+}  - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use \`interface\\{\\}\` to find \`interface{}\` in Go code)
+  - Multiline matching: By default patterns match within single lines only. For cross-line patterns like \`struct \\{[\\s\\S]*?field\`, use \`multiline: true\`
+`;
+}
+function EWt() {
+  return K() || Kf();
+}
+var Oe = 32,
+  Se = 1e5,
+  G = 80,
+  B = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]);
+function vWt(e) {
+  if (e.reason === "root_not_object") return "the API only accepts an object-rooted tool input schema, so every request would be rejected";
+  return e.scope === "whole"
+    ? "no output can satisfy this schema, so StructuredOutput validation would fail on every attempt"
+    : "one property or item sub-schema admits no value, so any output that fills it in fails validation";
+}
+function X(e) {
+  if (O(e, "type") !== "object")
+    return {
+      ok: !1,
+      finding: {
+        reason: "root_not_object",
+        scope: "whole",
+        message:
+          "the root schema must declare type: 'object' (the API rejects any other root type for a tool input schema); wrap arrays or primitives in an object property",
+      },
+    };
+  let n = N(e, "", !0, Oe, { remaining: Se });
+  return n === void 0 ? { ok: !0 } : { ok: !1, finding: n };
+}
+function N(e, n, r, i, s) {
+  if (i <= 0 || --s.remaining < 0) return;
+  if (!P(e) || Object.hasOwn(e, "$ref")) return;
+  let d = be(e),
+    h = ye(e, n, d);
+  if (h !== void 0) return { ...h, scope: r ? "whole" : "subschema" };
+  let E = O(e, "properties");
+  if (Y(d, "object") && P(E)) {
+    let b = O(e, "required"),
+      R = new Set(Array.isArray(b) ? b.filter(L) : []),
+      ge = w(d, "object");
+    for (let [D, Ee] of Object.entries(E)) {
+      if (D === "__proto__") continue;
+      let H = N(Ee, `${n}/properties/${ke(D)}`, r && ge && R.has(D), i - 1, s);
+      if (H !== void 0) return H;
+    }
+  }
+  let y = O(e, "items");
+  if (Y(d, "array") && P(y)) return N(y, `${n}/items`, !1, i - 1, s);
+  return;
+}
+function ye(e, n, r) {
+  let i = n === "" ? "the root object" : `the sub-schema at ${Te(n)}`,
+    s = O(e, "required");
+  if (w(r, "object") && Array.isArray(s) && O(e, "additionalProperties") === !1 && O(e, "patternProperties") === void 0) {
+    let y = O(e, "properties"),
+      b = P(y) ? y : {};
+    for (let R of s)
+      if (L(R) && !Object.hasOwn(b, R))
+        return {
+          reason: "required_property_forbidden",
+          message: `${i} lists "${z(R)}" in required but does not declare it in properties, and additionalProperties is false, so no object can satisfy it \u2014 declare the property or drop it from required`,
+        };
+  }
+  let d = O(e, "enum");
+  if (r !== void 0 && Array.isArray(d) && d.length > 0) {
+    if (!d.some((y) => q(r, y)))
+      return {
+        reason: "enum_type_mismatch",
+        message: `${i} declares type ${W(r)} but none of its enum values has that type, so no value can satisfy it \u2014 change type to match the enum values or vice versa`,
+      };
+  }
+  let h = O(e, "const");
+  if (h !== void 0) {
+    if (r !== void 0 && !q(r, h))
+      return {
+        reason: "const_mismatch",
+        message: `${i} declares type ${W(r)} but its const value does not have that type, so no value can satisfy it`,
+      };
+    if (Array.isArray(d) && d.length > 0 && Me(h) && !d.some((y) => y === h))
+      return { reason: "const_mismatch", message: `${i} has a const value that is not one of its enum values, so no value can satisfy it` };
+  }
+  let E = Ce(e, r);
+  if (E !== void 0) return { reason: "crossed_bounds", message: `${i} has ${E}, so no value can satisfy it` };
+  return;
+}
+function Ce(e, n) {
+  if (w(n, "number") || w(n, "integer") || we(n, "number", "integer")) {
+    let r = M(O(e, "minimum")),
+      i = M(O(e, "exclusiveMinimum")),
+      s = M(O(e, "maximum")),
+      d = M(O(e, "exclusiveMaximum")),
+      h =
+        i !== void 0 && (r === void 0 || i >= r)
+          ? { value: i, exclusive: !0, keyword: "exclusiveMinimum" }
+          : r !== void 0
+            ? { value: r, exclusive: !1, keyword: "minimum" }
+            : void 0,
+      E =
+        d !== void 0 && (s === void 0 || d <= s)
+          ? { value: d, exclusive: !0, keyword: "exclusiveMaximum" }
+          : s !== void 0
+            ? { value: s, exclusive: !1, keyword: "maximum" }
+            : void 0;
+    if (h !== void 0 && E !== void 0 && (h.value > E.value || (h.value === E.value && (h.exclusive || E.exclusive))))
+      return `${h.keyword} ${h.value} and ${E.keyword} ${E.value}, which admit no number`;
+  }
+  if (w(n, "string")) {
+    let r = A(e, "minLength", "maxLength");
+    if (r !== void 0) return r;
+  }
+  if (w(n, "array")) {
+    let r = A(e, "minItems", "maxItems");
+    if (r !== void 0) return r;
+  }
+  if (w(n, "object")) {
+    let r = A(e, "minProperties", "maxProperties");
+    if (r !== void 0) return r;
+    let i = M(O(e, "maxProperties")),
+      s = O(e, "required");
+    if (i !== void 0 && Array.isArray(s)) {
+      let d = U(s, L);
+      if (d > i) return `${d} required properties but maxProperties ${i}`;
+    }
+  }
+  return;
+}
+function A(e, n, r) {
+  let i = M(O(e, n)),
+    s = M(O(e, r));
+  return i !== void 0 && s !== void 0 && i > s ? `${n} ${i} greater than ${r} ${s}` : void 0;
+}
+function be(e) {
+  let n = O(e, "type"),
+    r;
+  if (typeof n === "string" && B.has(n)) r = [n];
+  else if (Array.isArray(n) && n.length > 0 && n.every((i) => typeof i === "string" && B.has(i))) r = n.slice();
+  else return;
+  if (O(e, "nullable") === !0 && !r.includes("null")) r.push("null");
+  return r;
+}
+function L(e) {
+  return typeof e === "string" && !(e in Object.prototype);
+}
+function Y(e, n) {
+  return e === void 0 || e.includes(n);
+}
+function w(e, n) {
+  return e !== void 0 && e.length === 1 && e[0] === n;
+}
+function we(e, n, r) {
+  return e !== void 0 && e.length === 2 && ((e[0] === n && e[1] === r) || (e[0] === r && e[1] === n));
+}
+function q(e, n) {
+  return e.some((r) => {
+    switch (r) {
+      case "null":
+        return n === null;
+      case "boolean":
+        return typeof n === "boolean";
+      case "string":
+        return typeof n === "string";
+      case "number":
+        return typeof n === "number" && Number.isFinite(n);
+      case "integer":
+        return typeof n === "number" && Number.isInteger(n);
+      case "array":
+        return Array.isArray(n);
+      case "object":
+        return P(n);
+      default:
+        return !0;
+    }
+  });
+}
+function Me(e) {
+  return e === null || typeof e === "string" || typeof e === "number" || typeof e === "boolean";
+}
+function M(e) {
+  return typeof e === "number" && Number.isFinite(e) ? e : void 0;
+}
+function O(e, n) {
+  return Object.hasOwn(e, n) ? e[n] : void 0;
+}
+function W(e) {
+  return e.length === 1 ? `'${e[0]}'` : `[${e.map((n) => `'${n}'`).join(", ")}]`;
+}
+function ke(e) {
+  return z(e).replaceAll("~", "~0").replaceAll("/", "~1");
+}
+var V = 300;
+function Te(e) {
+  return e.length > V ? `\u2026${pa(e, V)}` : e;
+}
+function z(e) {
+  let n = mx(e.replace(/\s+/g, " "));
+  return n.length > G ? `${Z(n, G)}\u2026` : n;
+}
+var xe = new Set([
+    "$schema",
+    "type",
+    "description",
+    "title",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "enum",
+    "const",
+    "anyOf",
+  ]),
+  De = new Set(["$schema", "description", "title"]),
+  J = new Set(["object", "array", "string", "integer", "number", "boolean", "null"]),
+  Ae = 32,
+  Pe = 1e5;
+function R0o(e) {
+  let n = T(e, Ae, { remaining: Pe });
+  if ("reason" in n) return { ok: !1, reason: n.reason };
+  if (n.node.type !== "object") return { ok: !1, reason: "root_not_object" };
+  return { ok: !0, schema: { ...n.node, type: "object" } };
+}
+function Q(e) {
+  return e === null || typeof e === "string" || (typeof e === "number" && Number.isFinite(e)) || typeof e === "boolean";
+}
+function T(e, n, r) {
+  if (n <= 0) return { reason: "max_depth" };
+  if (--r.remaining < 0) return { reason: "max_nodes" };
+  if (!P(e)) return { reason: "not_object" };
+  for (let d of Object.keys(e)) if (!xe.has(d)) return { reason: "unsupported_keyword" };
+  let i = {};
+  if (e.description !== void 0) {
+    if (typeof e.description !== "string") return { reason: "unsupported_keyword" };
+    i.description = e.description;
+  }
+  if (e.title !== void 0) {
+    if (typeof e.title !== "string") return { reason: "unsupported_keyword" };
+    i.title = e.title;
+  }
+  if (e.anyOf !== void 0) {
+    for (let h of Object.keys(e)) if (h !== "anyOf" && !De.has(h)) return { reason: "unsupported_keyword" };
+    if (!Array.isArray(e.anyOf) || e.anyOf.length === 0) return { reason: "unsupported_keyword" };
+    let d = [];
+    for (let h of e.anyOf) {
+      let E = T(h, n - 1, r);
+      if ("reason" in E) return E;
+      d.push(E.node);
+    }
+    return ((i.anyOf = d), { node: i });
+  }
+  if (e.const !== void 0) {
+    if (!Q(e.const)) return { reason: "unsupported_const" };
+    i.const = e.const;
+  }
+  if (e.enum !== void 0) {
+    if (!Array.isArray(e.enum) || e.enum.length === 0 || !e.enum.every(Q) || new Set(e.enum).size !== e.enum.length)
+      return { reason: "unsupported_enum" };
+    i.enum = e.enum.slice();
+  }
+  let s = e.type;
+  if (s !== void 0)
+    if (typeof s === "string") {
+      if (!J.has(s)) return { reason: "unsupported_type" };
+      i.type = s;
+    } else if (Array.isArray(s)) {
+      if (
+        s.length === 0 ||
+        !s.every((d) => typeof d === "string" && J.has(d) && d !== "object" && d !== "array") ||
+        new Set(s).size !== s.length
+      )
+        return { reason: "unsupported_type" };
+      i.type = s.slice();
+    } else return { reason: "unsupported_type" };
+  if (s !== "object" && (e.properties !== void 0 || e.required !== void 0 || e.additionalProperties !== void 0))
+    return { reason: "mismatched_keywords" };
+  if (s !== "array" && e.items !== void 0) return { reason: "mismatched_keywords" };
+  if (s === "object") {
+    let d = e.properties;
+    if (!P(d)) return { reason: "no_properties" };
+    if (e.additionalProperties !== void 0 && e.additionalProperties !== !1) return { reason: "additional_properties" };
+    if (e.required !== void 0) {
+      if (
+        !Array.isArray(e.required) ||
+        !e.required.every((E) => typeof E === "string" && Object.hasOwn(d, E)) ||
+        new Set(e.required).size !== e.required.length
+      )
+        return { reason: "invalid_required" };
+      i.required = e.required.slice();
+    }
+    let h = [];
+    for (let [E, y] of Object.entries(d)) {
+      let b = T(y, n - 1, r);
+      if ("reason" in b) return b;
+      h.push([E, b.node]);
+    }
+    ((i.properties = Object.fromEntries(h)), (i.additionalProperties = !1));
+  } else if (s === "array") {
+    let d = e.items;
+    if (d === void 0 || Array.isArray(d)) return { reason: "unsupported_items" };
+    let h = T(d, n - 1, r);
+    if ("reason" in h) return h;
+    i.items = h.node;
+  } else if (s === void 0 && i.enum === void 0 && !("const" in i)) return { reason: "missing_type" };
+  return { node: i };
+}
+var Ne = p(() => u({}).passthrough()),
+  Le = p(() => o().describe("Structured output tool result")),
+  Xa = "StructuredOutput";
+function Lfa(e) {
+  return e.isNonInteractiveSession || e.isBgSession === !0;
+}
+function TVn(e, n) {
+  if (e?.type !== "tool_use" || e.name !== Xa) return null;
+  if (e.id !== void 0 && n.has(e.id)) return null;
+  let r = e.input,
+    i = r !== null && typeof r === "object" && "text" in r ? r.text : void 0;
+  return typeof i === "string" && i.length > 0 ? i : null;
+}
+function oe(e = {}, n = () => {}) {
+  return mn({
+    registryToolId: "613fc4d5-e765-50d0-bc48-8defd5589270",
+    ...e,
+    isMcp: !1,
+    isEnabled() {
+      return !0;
+    },
+    isConcurrencySafe() {
+      return !0;
+    },
+    isReadOnly() {
+      return !0;
+    },
+    isOpenWorld() {
+      return !1;
+    },
+    name: Xa,
+    searchHint: "return the final response as structured JSON",
+    backgrounding: "never",
+    maxResultSizeChars: 1e5,
+    async description() {
+      return "Return structured output in the requested format";
+    },
+    async prompt() {
+      return "Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response to provide the structured output.";
+    },
+    get inputSchema() {
+      return Ne();
+    },
+    get outputSchema() {
+      return Le();
+    },
+    create() {
+      return {
+        async call(r) {
+          return (n(r), { data: "Structured output provided successfully", structured_output: r, endsTurn: !0 });
+        },
+      };
+    },
+    renderToolUseMessage(r) {
+      let i = Object.keys(r);
+      if (i.length === 0) return null;
+      if (i.length <= 3) return i.map((s) => `${s}: ${_(r[s])}`).join(", ");
+      return `${i.length} fields: ${i.slice(0, 3).join(", ")}\u2026`;
+    },
+    mapToolResultToToolResultBlockParam(r, i) {
+      return { tool_use_id: i, type: "tool_result", content: r };
+    },
+  });
+}
+var K1r = oe(),
+  ee = new WeakMap();
+function kWt(e) {
+  let n = ee.get(e);
+  if (n) return n;
+  let r = $e(e);
+  return (ee.set(e, r), r);
+}
+var Ejs = 1e5,
+  ve = 1e4;
+function ie(e, n, r) {
+  if (--n.n < 0 || r > ve) return !0;
+  if (typeof e !== "object" || e === null) return !1;
+  for (let i of Object.values(e)) if (ie(i, n, r + 1)) return !0;
+  return !1;
+}
+function Ie(e) {
+  try {
+    if (ie(e, { n: Ejs }, 0)) return { error: "schema too large" };
+    if (Boolean(e.$async)) return { error: "$async schemas are not supported" };
+    if (EWt()) return { error: "this session compiles no schemas" };
+    let { Ajv: n } = r$r(),
+      r = new n({ allErrors: !0, validateFormats: !1, multipleOfPrecision: 6 });
+    if (!r.validateSchema(e)) return { error: r.errorsText(r.errors) };
+    let s = r.compile(e);
+    return {
+      validate(d) {
+        if (s(d)) return;
+        let h = s.errors ?? [];
+        return { message: h.map((E) => je(E, d)).join(", "), keywords: h.map((E) => E.keyword).join(",") };
+      },
+    };
+  } catch (n) {
+    return { error: n instanceof Error ? n.message : String(n) };
+  }
+}
+function $e(e) {
+  try {
+    let n = Ie(e);
+    if ("error" in n) return n;
+    let r;
+    try {
+      let s = R0o(e);
+      if (s.ok) r = s.schema;
+      l("tengu_structured_output_strict_schema", { outcome: s.ok ? S("converted") : S("fallback"), reason: s.ok ? void 0 : f(s.reason) });
+    } catch (s) {
+      t(`Strict structured-output schema derivation failed, falling back to non-strict: ${s instanceof Error ? s.message : String(s)}`, {
+        level: "error",
+      });
+    }
+    let i;
+    try {
+      let s = X(e);
+      if (!s.ok) i = s.finding;
+      l("tengu_structured_output_schema_lint", {
+        outcome: s.ok ? S("ok") : S("unsatisfiable"),
+        reason: s.ok ? void 0 : f(s.finding.reason),
+        scope: s.ok ? void 0 : f(s.finding.scope),
+      });
+    } catch (s) {
+      a(s);
+    }
+    return {
+      ...(i && { unsatisfiable: i }),
+      tool: oe({ inputJSONSchema: e, ...(r && { strictInputJSONSchema: r }) }, (s) => {
+        let d = n.validate(s);
+        if (d) throw new C(`Output does not match required schema: ${d.message}`, `StructuredOutput schema mismatch: ${d.keywords}`);
+      }),
+    };
+  } catch (n) {
+    return { error: n instanceof Error ? n.message : String(n) };
+  }
+}
+var ne = 300,
+  te = 80;
+function je(e, n) {
+  let r = `${e.instancePath || "root"}: ${e.message}`;
+  switch (e.keyword) {
+    case "additionalProperties": {
+      let i = e.params.additionalProperty;
+      return typeof i === "string" ? `${r} ('${i.length > te ? Z(i, te) + "\u2026" : i}' is not allowed)` : r;
+    }
+    case "minLength":
+    case "maxLength": {
+      let i = v(n, e.instancePath);
+      return typeof i === "string" ? `${r} (got ${[...i].length})` : r;
+    }
+    case "minItems":
+    case "maxItems": {
+      let i = v(n, e.instancePath);
+      return Array.isArray(i) ? `${r} (got ${i.length})` : r;
+    }
+    case "minProperties":
+    case "maxProperties": {
+      let i = v(n, e.instancePath);
+      return P(i) ? `${r} (got ${Object.keys(i).length})` : r;
+    }
+    case "enum": {
+      let i = e.params.allowedValues,
+        s = Array.isArray(i) ? re(i) : void 0;
+      return s === void 0 ? r : `${r}: ${s}`;
+    }
+    case "const": {
+      let i = "allowedValue" in e.params ? re(e.params.allowedValue) : void 0;
+      return i === void 0 ? r : `${r}: ${i}`;
+    }
+    default:
+      return r;
+  }
+}
+function v(e, n) {
+  let r = e;
+  for (let i of n.split("/").slice(1)) {
+    let s = i.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (Array.isArray(r)) r = r[Number(s)];
+    else if (P(r) && Object.hasOwn(r, s)) r = r[s];
+    else return;
+  }
+  return r;
+}
+function re(e) {
+  let n;
+  try {
+    n = _(e);
+  } catch {
+    return;
+  }
+  if (typeof n !== "string") return;
+  return n.length > ne ? Z(n, ne) + "\u2026" : n;
+}
+var qx = "main";
+function CVn(e, n) {
+  if (le()) {
+    let { ReplSessions: r } = import.meta.require("/$bunfs/root/chunk-18z4c769.js");
+    return e
+      .get(r)
+      .get(n ?? qx)
+      ?.scriptGlobalNames();
+  }
+  return;
+}
+function vjs() {
+  if (le())
+    return "\u26A0 This REPL context is new: variables, functions and timers from earlier scripts in this conversation don't exist in it, even those a compaction summary lists as still defined.";
+  return "";
+}
+function Fe() {
+  return { newName: void 0, oldName: void 0 };
+}
+function ae(e) {}
+function Ue() {
+  return;
+}
+var k,
+  x,
+  I,
+  j = fe({ made: !1 }, (e) => {
+    e.made = !1;
+  });
+function ce() {
+  return aZ().state === "on";
+}
+function Y1r() {
+  return le() && !oV() && Rn();
+}
+function na() {
+  if (le()) {
+    if (!Dm() || !se()) return !1;
+    let { isEngineCheckDone: e } = import.meta.require("/$bunfs/root/chunk-f8sqhjr1.js"),
+      n = e();
+    if (!kjs()) return !1;
+    return n || se();
+  }
+  return !1;
+}
+function se() {
+  return le() && !Y1r() && (k ?? ce()) && !OVn();
+}
+var ue = fe({ logged: !1 }, (e) => {
+  e.logged = !1;
+});
+function pe(e, n, r) {
+  if (le()) {
+    if (ue.logged || (e === "passed" && !r)) return;
+    if (((ue.logged = !0), e === "passed")) {
+      g("repl_engine_check");
+      return;
+    }
+    let i = `REPL mode's engine check failed (${e}); REPL mode is ${n ? "kept off" : "still allowed"}`;
+    (t(i, { level: "error" }), c("repl_engine_check", e, { held: n }), a(new C(i, "REPL mode's engine check failed", e)));
+  }
+}
+function kjs() {
+  if (le()) {
+    let { doesEngineResultHold: e, engineCheckResult: n, isEngineCheckDone: r } = import.meta.require("/$bunfs/root/chunk-f8sqhjr1.js");
+    if (!r())
+      t("REPL mode: the engine check ran late, at the first read of the mode, because no start-up call (primeReplEngineCheck) had made it");
+    let i = n(),
+      s = e(i);
+    return (pe(i, s, !0), !s);
+  }
+  return !1;
+}
+function Tjs() {
+  if (le()) {
+    if (Dm() && Ue() !== !1) {
+      let { doesEngineResultHold: e, engineCheckResult: n } = import.meta.require("/$bunfs/root/chunk-f8sqhjr1.js"),
+        r = n();
+      pe(r, e(r), !1);
+    }
+  }
+}
+function lot() {
+  return qc() ? P4() : na();
+}
+function x4(e) {
+  if (le()) {
+    if (!lot()) return !1;
+    try {
+      let { willListHiddenToolNames: n } = import.meta.require("/$bunfs/root/chunk-8zhkjzrx.js");
+      return !n(e);
+    } catch (n) {
+      return (a(n), !0);
+    }
+  }
+  return !1;
+}
+function F() {
+  return qc() && !na();
+}
+function me() {
+  return `To use them, exit and start a new session with ${Mm} off: ${iZ(0)} (add --chrome, if you started with it). This conversation can only be continued in ${Mm}.`;
+}
+function AVn() {
+  return F()
+    ? `No Chrome or computer use: exit and ${iZ(0, "--resume", "step")} \xB7 ${BS} was on earlier in this run`
+    : `No Chrome or computer use: exit and ${iZ(0, void 0, "step")} for a new session without ${BS}`;
+}
+function Cjs() {
+  return F()
+    ? `Claude in Chrome and computer use stay off until you quit Claude Code: ${BS} was on earlier in this run, and a background agent may still be working in it. To use them, exit, ${iZ(0, "--resume", "step")} (add --chrome, if you started with it) and choose this conversation.`
+    : `Claude in Chrome and computer use are off, because this session is in ${BS}, which doesn't yet have the safety rules that they need. ${me()}`;
+}
+function Fde() {
+  return F()
+    ? `Claude in Chrome and computer use are not available until the user quits Claude Code: ${BS} was on earlier in this run, and a background agent may still be working in it. If the user asks for either, tell them why, and to exit, ${iZ(0, "--resume", "step")} (adding --chrome if they started with it) and choose this conversation.`
+    : `Claude in Chrome and computer use are not available while this session is in ${BS}, where the API does not yet add its safety rules for them. If the user asks for either, tell them why, and this: ${me()}`;
+}
+function RVn() {
+  return Fde();
+}
+function Ajs() {
+  return Fde();
+}
+function xVn() {
+  let e = Ai().systemPromptSection;
+  if (le() && e !== "")
+    try {
+      if (x4()) return Fde();
+    } catch (n) {
+      a(n);
+    }
+  return e;
+}
+function Rjs() {
+  if (le()) j.made = !0;
+}
+function xjs() {
+  return j.made;
+}
+function P4() {
+  return le() && (j.made || na());
+}
+function TEt(e) {
+  {
+    let n = aZ();
+    if (n.state === "not_asked")
+      return n.turnedOffIn === "shell" || n.turnedOffIn === "settings" ? { repl_mode_decision: de(`opt_in_off_${n.turnedOffIn}`) } : {};
+    return {
+      ...(e !== !1 && na() && { is_repl_mode: !0 }),
+      repl_mode_decision: de(n.state === "on" ? `opt_in_${n.source === "shell" ? "shell" : "settings"}` : `opt_in_refused_${n.why}`),
+    };
+  }
+  return {};
+}
+function PVn(e) {}
+function OVn() {
+  return le() && (gie() || !oV()) && gr().commandNetworkListsOffered === !0;
+}
+function Pjs() {
+  return le() && Dm() && !Y1r() && (k ?? ce()) && OVn() && kjs();
+}
+function Ojs(e) {
+  if (le()) {
+    if (e) return;
+    if (e && (OVn() || !kjs() || eza() === !1)) return;
+    if (k === void 0) ((x = Fe()), (I = na()));
+    ((k = e), ae({ newName: void 0, oldName: e }), LKo(!P4()));
+  }
+}
+function IVn() {
+  if (le()) {
+    if (k === void 0 || x === void 0) return;
+    ((k = void 0), ae(x), (x = void 0), (I = void 0), LKo(!P4()));
+  }
+}
+function Ijs() {
+  if (le()) return I ?? na();
+  return !1;
+}
+function eza() {
+  return;
+}
+function tYa() {
+  return "";
+}
+function nYa(e) {
+  return "";
+}
+function rYa() {
+  return !1;
+}
+function oYa() {
+  return !1;
+}
+function jy() {
+  return le() && na();
+}
+function j7() {
+  return le() && jy() && HR();
+}
+function x0o(e) {
+  return le() && oZ(e) && jy();
+}
+function P0o(e) {
+  mrr({
+    entrypoint: "print",
+    hasStreamingInput: e.hasStreamingInput,
+    sdkUrl: e.sdkUrl,
+    ownEventsRequested: x0o(e.permissionMode),
+    ownEventsOnly: !1,
+  });
+}
+function oZ(e) {
+  return le() && (e === "auto" || e === "bypassPermissions");
+}
+function i5() {
+  return le() && jy();
+}
+function sZ(e) {
+  if (le() && mg(e)) {
+    let n = e.filter((r) => !_e(r));
+    return n.length === e.length ? e : n;
+  }
+  return e;
+}
+function _e(e) {
+  if (e.isMcp === !0) return !0;
+  return !mt(e, Co) && !mt(e, xi) && !mt(e, Xa);
+}
+function CEt(e, n) {
+  return le() && _e(e) && mg(n);
+}
+function mg(e) {
+  return le() && i5() && oge(e);
+}
+function oge(e) {
+  return le() && e.some((n) => n.isMcp !== !0 && mt(n, Co));
+}
+function Mjs(e) {
+  return qc() && oge(e);
+}
+function O0o(e, n) {
+  if (le() && e !== null && mg(n)) return e.replaceAll("with the Write tool", "with `write(path, content)` in a REPL script");
+  return e;
+}
+var JOe = new Set([Be, no, wr, Re, gt, Ns]),
+  Djs = new Set([...JOe, Bt, dt]),
+  X1r = "repl-tool-code.js",
+  Aun = 600000,
+  He = 30000;
+function MVn() {
+  return He;
+}
+var Ge = 1000;
+function Ljs() {
+  return Ge;
+}
+var J1r = 1000,
+  Q1r = 5000,
+  he = 30000,
+  Ye = he;
+function TWt() {
+  return Ye;
+}
+function Z1r() {
+  return he;
+}
+var dot = 7200000,
+  CWt = 30000;
+function AEt() {
+  if (le() && jy()) return DVn;
+  return;
+}
+var DVn = 30000,
+  qe = 50000;
+function Hjs() {
+  return qe;
+}
+var I0o = 20;
+export {
+  wjs,
+  EWt,
+  vWt,
+  R0o,
+  Xa,
+  Lfa,
+  TVn,
+  K1r,
+  kWt,
+  Ejs,
+  qx,
+  CVn,
+  vjs,
+  Y1r,
+  na,
+  kjs,
+  Tjs,
+  lot,
+  x4,
+  AVn,
+  Cjs,
+  Fde,
+  RVn,
+  Ajs,
+  xVn,
+  Rjs,
+  xjs,
+  P4,
+  TEt,
+  PVn,
+  OVn,
+  Pjs,
+  Ojs,
+  IVn,
+  Ijs,
+  eza,
+  tYa,
+  nYa,
+  rYa,
+  oYa,
+  jy,
+  j7,
+  x0o,
+  P0o,
+  oZ,
+  i5,
+  sZ,
+  CEt,
+  mg,
+  oge,
+  Mjs,
+  O0o,
+  JOe,
+  Djs,
+  X1r,
+  Aun,
+  MVn,
+  Ljs,
+  J1r,
+  Q1r,
+  TWt,
+  Z1r,
+  dot,
+  CWt,
+  AEt,
+  DVn,
+  Hjs,
+  I0o,
+};

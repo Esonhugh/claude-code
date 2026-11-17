@@ -1,0 +1,101 @@
+{
+ "name": "D-team",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1",
+  "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+ },
+ "globalConfig": {
+  "teammateMode": "in-process"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Agent",
+    "TeamCreate",
+    "SendMessage"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello\n"
+ },
+ "agents": {
+  "MATEKEY": [
+   {
+    "text": "mate-final"
+   }
+  ]
+ },
+ "commands": {
+  "TEAM": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const names = tools.list()\nlet t, r\ntry { t = await tools.TeamCreate({team_name: 'cdteam', description: 'conformance'}) } catch (e) { t = 'threw: ' + e.message }\ntry { r = await Agent({description: 'mate', name: 'mate', team_name: 'cdteam', prompt: 'MATEKEY probe'}) } catch (e) { r = 'threw: ' + e.message }\nJSON.stringify({names, t, r}).slice(0, 1500)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} team"
+   }
+  ],
+  "TEAM:notif": [
+   {
+    "text": "NOTIF {{nonce}} team"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "turn": "TEAM",
+   "timeout": 90
+  },
+  {
+   "wait_req": {
+    "role": "^agent:MATEKEY$",
+    "timeout": 60
+   }
+  },
+  {
+   "expect": {
+    "name": "D3: in-process teammate gets ordinary tools",
+    "role": "^agent:MATEKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)Bash(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "D3: teammate has no REPL/Poll",
+    "role": "^agent:MATEKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(REPL|Poll)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "D3: teammate system prompt has no Code Mode text",
+    "role": "^agent:MATEKEY$",
+    "step": 0,
+    "field": "system",
+    "match": "repl_working|Few, full scripts|Your one tool is|Code Mode",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

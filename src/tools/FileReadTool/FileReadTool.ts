@@ -579,7 +579,8 @@ export const FileReadTool = buildTool({
       'tengu_read_dedup_killswitch',
       false,
     )
-    const existingState = dedupKillswitch
+    // A REPL script never saw the earlier result, so it always gets the content.
+    const existingState = dedupKillswitch || context.replScriptCall
       ? undefined
       : readFileState.get(fullFilePath)
     // Only dedup entries that came from a prior Read (offset is always set

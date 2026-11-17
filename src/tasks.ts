@@ -6,6 +6,7 @@ import { TerminalTask } from './tasks/TerminalTask.js'
 import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
 import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
+import { ScriptTask } from './tasks/ScriptTask/ScriptTask.js'
 
 function getLocalWorkflowTask(): Task {
   // Lazy require avoids evaluating LocalWorkflowTask while tasks.ts itself is
@@ -33,6 +34,7 @@ export function getAllTasks(): Task[] {
     RemoteAgentTask,
     InProcessTeammateTask,
     DreamTask,
+    ScriptTask,
   ]
   tasks.push(getLocalWorkflowTask())
   const monitorMcpTask = getMonitorMcpTask()

@@ -23,6 +23,8 @@ import {
 import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../tools/ApplyPatchTool/prompt.js'
 import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
+import { codeModeHidesTools } from '../tools/REPLTool/codeModeGate.js'
+import type { Tools } from '../Tool.js'
 import { logForDebugging } from '../utils/debug.js'
 import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
@@ -129,6 +131,15 @@ export const dirExistsGuidance = () =>
   `This directory already exists — write to it directly with the ${writeToolName()} tool (do not run mkdir or check for its existence).`
 export const dirsExistGuidance = () =>
   `Both directories already exist — write to them directly with the ${writeToolName()} tool (do not run mkdir or check for their existence).`
+
+/**
+ * While Code Mode hides Write from the API, memory files are written from a
+ * REPL script (official O0o).
+ */
+export function memoryPromptForTools(prompt: string | null, tools: Tools): string | null {
+  if (prompt === null || !codeModeHidesTools(tools)) return prompt
+  return prompt.replaceAll('with the Write tool', 'with `write(path, content)` in a REPL script')
+}
 
 /**
  * Ensure a memory directory exists. Idempotent — called from loadMemoryPrompt

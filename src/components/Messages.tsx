@@ -17,6 +17,8 @@ import type { Screen } from '../screens/REPL.js'
 import type { Tools } from '../Tool.js'
 import { findToolByName } from '../Tool.js'
 import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js'
+import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
+import { ScriptSourceContext } from '../tools/REPLTool/ScriptSourceRow.js'
 import type {
   Message as MessageType,
   NormalizedMessage,
@@ -558,6 +560,13 @@ const MessagesImpl = ({
   const virtualScrollRuntimeGate = scrollRef != null && !disableVirtualScroll
   const shouldTruncate =
     isTranscriptMode && !showAllInTranscript && !virtualScrollRuntimeGate
+  const scriptSource = useMemo(
+    () =>
+      isTranscriptMode && isCodeModeEnabled()
+        ? { all: showAllInTranscript }
+        : null,
+    [isTranscriptMode, showAllInTranscript],
+  )
 
   // Anchor for the first rendered message in the non-virtualized cap slice.
   // Monotonic advance only — mutation during render is idempotent (safe
@@ -914,7 +923,7 @@ const MessagesImpl = ({
   )
 
   return (
-    <>
+    <ScriptSourceContext.Provider value={scriptSource}>
       {/* Logo */}
       {!hideLogo && !(renderRange && renderRange[0] > 0) && (
         <LogoHeader agentDefinitions={agentDefinitions} />
@@ -1008,7 +1017,7 @@ const MessagesImpl = ({
           />
         </Box>
       )}
-    </>
+    </ScriptSourceContext.Provider>
   )
 }
 

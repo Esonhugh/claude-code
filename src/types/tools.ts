@@ -39,6 +39,14 @@ export type REPLToolProgress = {
   message?: string
 }
 
+/** One tool call made from inside a Code Mode REPL script. */
+export type REPLToolCallProgress = {
+  type: 'repl_tool_call'
+  phase: 'start' | 'executing' | 'complete' | 'error'
+  toolName: string
+  toolUseId: string
+}
+
 export type SkillToolProgress = {
   type: 'skill_progress'
   message: Message
@@ -78,6 +86,7 @@ export type ToolProgressData =
   | BashProgress
   | MCPProgress
   | REPLToolProgress
+  | REPLToolCallProgress
   | SkillToolProgress
   | TaskOutputProgress
   | WebSearchProgress

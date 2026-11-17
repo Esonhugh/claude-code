@@ -73,6 +73,8 @@ export function watchCustomThemes(): () => void {
     depth: 0,
     awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
     ignorePermissionErrors: true,
+    usePolling: typeof Bun !== 'undefined',
+    interval: 500,
   })
   const reload = () => void reloadCustomThemes()
   watcher.on('add', reload)

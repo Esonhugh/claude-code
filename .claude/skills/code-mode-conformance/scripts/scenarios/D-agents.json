@@ -1,0 +1,189 @@
+{
+ "name": "D-agents",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Agent"
+   ]
+  }
+ },
+ "files": {
+  "hello.txt": "hello\n",
+  ".claude/agents/reader.md": "---\nname: reader\ndescription: Reads files for the conformance run\ntools: Read, Bash\n---\nYou are the reader agent.\n",
+  ".claude/agents/norepl.md": "---\nname: norepl\ndescription: Agent with REPL disallowed\ntools: Read, Bash\ndisallowedTools: REPL\n---\nYou are the norepl agent.\n"
+ },
+ "agents": {
+  "RDKEY": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const names = tools.list()\nlet w\ntry { w = await Write({file_path: '{{work}}/sub-write.txt', content: 'x'}) } catch (e) { w = 'threw: ' + e.message }\nconst r = await Read({file_path: '{{work}}/hello.txt'})\nJSON.stringify({names, write: typeof w === 'string' ? w : (w?.error ?? 'wrote'), read: r?.file?.content?.trim() ?? r?.error})",
+       "description": "sub probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "reader-final {{last}}"
+   }
+  ],
+  "NRKEY": [
+   {
+    "text": "norepl-final"
+   }
+  ]
+ },
+ "commands": {
+  "READER": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Agent({description: 'd', subagent_type: 'reader', prompt: 'RDKEY probe'})\nJSON.stringify(r).slice(0, 400)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} reader"
+   }
+  ],
+  "READER:notif": [
+   {
+    "text": "NOTIF {{nonce}} reader"
+   }
+  ],
+  "NOREPL": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = await Agent({description: 'd', subagent_type: 'norepl', prompt: 'NRKEY probe'})\nJSON.stringify(r).slice(0, 400)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} norepl"
+   }
+  ],
+  "NOREPL:notif": [
+   {
+    "text": "NOTIF {{nonce}} norepl"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "turn": "READER",
+   "timeout": 90
+  },
+  {
+   "wait_req": {
+    "role": "^agent:RDKEY$",
+    "step": 1,
+    "timeout": 60
+   }
+  },
+  {
+   "expect": {
+    "name": "agent tools Read,Bash: subagent request has REPL",
+    "role": "^agent:RDKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)REPL(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "agent tools Read,Bash: Read/Bash not sent directly",
+    "role": "^agent:RDKEY$",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(Read|Bash|Write)(,|$)",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "agent script: tools.list() has the granted primitives",
+    "role": "^agent:RDKEY$",
+    "step": 1,
+    "match": "names[^\\]]*Bash[^\\]]*Read|names[^\\]]*Read[^\\]]*Bash"
+   }
+  },
+  {
+   "expect": {
+    "name": "agent script: tools.list() lacks Write",
+    "role": "^agent:RDKEY$",
+    "step": 1,
+    "match": "names[^\\]]*Write",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "agent script: Write is refused (throws)",
+    "role": "^agent:RDKEY$",
+    "step": 1,
+    "match": "write[^,]*threw: "
+   }
+  },
+  {
+   "expect_file": {
+    "name": "agent script: Write did not write",
+    "path": "sub-write.txt",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "agent script: granted Read works",
+    "role": "^agent:RDKEY$",
+    "step": 1,
+    "match": "read[^,]*hello"
+   }
+  },
+  {
+   "turn": "NOREPL",
+   "timeout": 90
+  },
+  {
+   "sleep": 4
+  },
+  {
+   "expect": {
+    "name": "official: the refused zero-tool agent sends no request",
+    "role": "^side$",
+    "field": "system",
+    "match": "You are the norepl agent",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "official: zero-tool agent spawn is refused ('would be spawned with zero tools')",
+    "cmd": "NOREPL",
+    "step": 1,
+    "match": "would be spawned with zero tools"
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

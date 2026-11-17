@@ -1,0 +1,163 @@
+{
+ "name": "C-rules",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "secret.txt": "top-secret\n",
+  "plain.txt": "plain\n"
+ },
+ "settings": {
+  "permissions": {
+   "allow": [
+    "Bash(touch allowed.txt)"
+   ],
+   "deny": [
+    "Bash(touch denied.txt)",
+    "Read(./secret.txt)"
+   ],
+   "ask": [
+    "Bash(echo ask-me:*)"
+   ]
+  }
+ },
+ "commands": {
+  "RULES": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const r = x => x?.error ?? 'ok'\nconst out = {}\nout.allowed = r(await Bash({command: 'touch allowed.txt'}))\nout.denied = r(await Bash({command: 'touch denied.txt'}))\nout.secret = r(await Read({file_path: '{{work}}/secret.txt'}))\nout.plain = r(await Read({file_path: '{{work}}/plain.txt'}))\nJSON.stringify(out)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} rules"
+   }
+  ],
+  "ASK": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const a = await Bash({command: 'echo ask-me hi'})\na.stdout?.trim() ?? JSON.stringify(a)",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} ask"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default"
+   }
+  },
+  {
+   "turn": "RULES",
+   "timeout": 60
+  },
+  {
+   "expect": {
+    "name": "allow rule Bash(touch allowed.txt): runs without a dialog",
+    "cmd": "RULES",
+    "step": 1,
+    "match": "\\\\?\"allowed\\\\?\":\\\\?\"ok"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "allow rule: file created",
+    "path": "allowed.txt",
+    "match": "^$"
+   }
+  },
+  {
+   "expect": {
+    "name": "deny rule Bash(touch denied.txt): script gets {error} naming the rule",
+    "cmd": "RULES",
+    "step": 1,
+    "match": "denied\\\\?\":\\\\?\"Permission denied for Bash: [^\"\\\\]*(denied|deny|rule)"
+   }
+  },
+  {
+   "expect_file": {
+    "name": "deny rule: file not created",
+    "path": "denied.txt",
+    "absent": true
+   }
+  },
+  {
+   "expect": {
+    "name": "deny rule Read(./secret.txt): script gets {error} (Read checks the rule in validateInput)",
+    "cmd": "RULES",
+    "step": 1,
+    "match": "secret\\\\?\":\\\\?\"(Permission denied for Read|File is in a directory that is denied by your permission settings)"
+   }
+  },
+  {
+   "expect": {
+    "name": "Read of another file is not denied",
+    "cmd": "RULES",
+    "step": 1,
+    "match": "plain\\\\?\":\\\\?\"ok"
+   }
+  },
+  {
+   "expect": {
+    "name": "secret content not leaked",
+    "cmd": "RULES",
+    "step": 1,
+    "match": "top-secret",
+    "absent": true
+   }
+  },
+  {
+   "send": "ASK"
+  },
+  {
+   "wait_pane": "Do you want to proceed",
+   "timeout": 30
+  },
+  {
+   "capture": "ask-dialog"
+  },
+  {
+   "expect_pane": {
+    "name": "ask rule Bash(echo ask-me:*): dialog shown for the inner command",
+    "match": "echo ask-me hi"
+   }
+  },
+  {
+   "keys": [
+    "Enter"
+   ]
+  },
+  {
+   "wait_req": {
+    "cmd": "ASK",
+    "step": 1,
+    "timeout": 30
+   }
+  },
+  {
+   "expect": {
+    "name": "ask accepted: command ran",
+    "cmd": "ASK",
+    "step": 1,
+    "match": "<result>ask-me hi</result>"
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

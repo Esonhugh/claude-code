@@ -443,6 +443,8 @@ export function createCronScheduler(
     watcher = chokidar.watch(path, {
       persistent: false,
       ignoreInitial: true,
+      usePolling: typeof Bun !== 'undefined',
+      interval: 500,
       awaitWriteFinish: { stabilityThreshold: FILE_STABILITY_MS },
       ignorePermissionErrors: true,
     })

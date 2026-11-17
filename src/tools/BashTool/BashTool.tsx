@@ -565,6 +565,22 @@ export function detectBlockedSleepPattern(command: string): string | null {
 }
 
 /**
+ * The leading-sleep refusal. Official 325 skips it under shellWallCapMs (an
+ * async REPL script call): there the sleep runs and, not being
+ * auto-backgroundable, stops at its timeout.
+ */
+export function sleepBlockMessage(
+  input: Pick<BashToolInput, 'command' | 'run_in_background'>,
+  context: Pick<ToolUseContext, 'shellWallCapMs'>,
+): string | null {
+  if (isBackgroundTasksDisabled || input.run_in_background || context.shellWallCapMs !== undefined) return null
+  const sleepPattern = detectBlockedSleepPattern(input.command)
+  return sleepPattern === null
+    ? null
+    : `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`
+}
+
+/**
  * Checks if a command contains tools that shouldn't run in sandbox
  * This includes:
  * - Dynamic config-based disabled commands and substrings (tengu_sandbox_disabled_commands)
@@ -788,20 +804,10 @@ export const BashTool = buildTool({
       input.description ?? truncate(input.command, TOOL_SUMMARY_MAX_LENGTH)
     return `Running ${desc}`
   },
-  async validateInput(input: BashToolInput): Promise<ValidationResult> {
-    if (
-      feature('MONITOR_TOOL') &&
-      !isBackgroundTasksDisabled &&
-      !input.run_in_background
-    ) {
-      const sleepPattern = detectBlockedSleepPattern(input.command)
-      if (sleepPattern !== null) {
-        return {
-          result: false,
-          message: `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`,
-          errorCode: 10,
-        }
-      }
+  async validateInput(input: BashToolInput, context): Promise<ValidationResult> {
+    const sleepBlock = feature('MONITOR_TOOL') ? sleepBlockMessage(input, context) : null
+    if (sleepBlock !== null) {
+      return { result: false, message: sleepBlock, errorCode: 10 }
     }
     return (
       validateAllowedDomains(input, shouldUseSandbox(input)) ?? { result: true }
