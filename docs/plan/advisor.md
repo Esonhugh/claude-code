@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - **类型**：实施计划
-- **状态**：实施中（M1 的 tool-change beta 待确认，见 5.13）
+- **状态**：已实现（含 5.13 的对话中途开关），未对真实账号验证
 - **日期**：2026-11-17
 - **对照版本**：官方 2.1.325（`~/.local/share/claude/versions/2.1.325`），参考 2.1.322。官方实现的抽取和偏移见 `/tmp/advisor-design/official.md`，核心常量和提示原文见 `/tmp/advisor-design/official/m0502-advisor-core.js`
 - **其他依据**：用户文档 https://code.claude.com/docs/zh-CN/advisor ；fork 现状调研 `/tmp/advisor-design/fork-current.md`；25b0a9 的调研 `/tmp/ccs-coord/advisor-research-25b0a9.md`（下文记为 R25，以文件开头的更正记录为准）
@@ -144,11 +144,12 @@ provider：fork 的 `APIProvider`（`src/utils/model/providers.ts:6`）只有 fi
 - 计费沿用 `cost-tracker.ts:362-377`，补测试。
 - resume 依赖 5.4 的 transcript 恢复；`advisor_pick` 不做（第 7 节）。
 
-### 5.13 对话中途开关（mid-conversation tool-change beta，待确认）
+### 5.13 对话中途开关（mid-conversation tool-change beta）
 
-状态：方案已定，代码未写，等用户确认范围（原因见本节末尾）。确认前 fork 一直走官方的回退路径：中途 `/advisor` 开、关、换模型都等 `/clear` 或 `/compact`，`/advisor` 的输出用官方 `y()` 的回退原文说明这一点（已实现并有测试）。
+状态：已实现（用户确认“补上 tool-change beta”）。beta 生效时中途 `/advisor` 开、关立刻生效，换模型仍等 `/clear` 或 `/compact`；beta 不可用或被拒时回到原来的回退路径，开、关、换模型都等 `/clear` 或 `/compact`。
 
 官方机制（2.1.325 静态阅读）：
+
 
 - beta `mid-conversation-tool-changes-2026-07-01`（m0175 `nE`）。getMergedBetas 在 `UVr() && F_e(model)` 时加入（m0207）；`UVr()` 是 GrowthBook `tengu_foamy_spring`，默认 true。
 - 生效条件 `TQ(sticky, model)`（m0506）：`(本对话已发且未被拒 || UVr() && 本对话未拒) && !z(sticky) && F_e(model)`。`z` 为真的情况：本对话拒过 mid-conversation-system beta、host 级 `toolChangeHeaderRefused` 已记下、`nUe()` 为假（在没抽取的模块里）。sticky betas 是每个对话的 `{sent, rejected}`，`/clear`、`/compact` 清空。
@@ -159,16 +160,17 @@ provider：fork 的 `APIProvider`（`src/utils/model/providers.ts:6`）只有 fi
 - 被拒（`TDe`）：400 带 Q7s 码为 model_unsupported，按模型记；400/422 的 Input tag `tool_(addition|removal)` 为 block_type_unknown，beta header 被拒为 header_rejected，这两种记 host 级 latch。日志 `[late-tool-additions] tool_addition rejected (…) — falling back … sticky-rejecting the beta until /clear or /compact`，去掉 `nE` 重发，之后 `MLt` 回退；fallback 模型下置 `inFallback`。
 - held 带 `viaToolChange`。`y()` 在 beta 生效时的原文：`…keeps X as its advisor model until /clear or /compact, so the tool it has already declared stays unchanged; turning the advisor on or off applies right away.`
 
-fork 的实施方案（确认后做）：
+fork 的实现：
 
-1. betas 加 `nE` 和 `PS`。只在 `isAdvisorEnabled()`、firstParty 官方 base URL、`F_e(model)` 时推送，限 main 和 subagent 请求。fork 不读 GrowthBook，`UVr` 固定为真。
-2. 消息转换：带 `toolChange` 的 advisor_tool attachment 产出 role:"system" 消息，只承载 advisor 的 `tool_addition`/`tool_removal`；其他 attachment 仍用 system-reminder。
-3. 请求条目按上面的 `Nc` 规则；standby 用严格配对（`xXi`，新增函数）。
-4. advisorQuery 移植 ggr 的 viaToolChange、standby、inFallback 分支和 advisorActive/advisorDeferred；describeHeldAdvisor 补 viaToolChange 原文。
-5. 拒绝：`TDe` 三类和 `PS` 被拒都去掉两个 beta 重发一次，记到对话的 sticky rejected 或 host 级 latch，然后回到现在的回退路径。advisor 本身被拒仍按 process/host/conversation 三档记录，两套互不覆盖。sticky 状态挂在 `clearBetaHeaderLatches()` 上随对话清空。
-6. 测试：中途开（带 beta、tools 前缀不变）、中途关、beta 被拒后回退、standby 条目形状。
+1. betas（`src/utils/advisorToolChanges.ts`、`src/utils/betas.ts`）：getMergedBetas 在 `isAdvisorToolAllowed()`、未被 host latch 挡住、`F_e(model)` 时同时加 `nE` 和 `PS`。`tengu_foamy_spring` 不读，按默认 true。`applyToolChangeBetas`（官方 `xna`）按对话的 sticky `{sent, rejected, systemRejected}` 保留或去掉两个 beta；没有对话状态的请求（side query 等）一律不带。
+2. `TQ` 照官方算（`toolChangesRide`），sticky 挂在 advisor carrier 上，随 `clearBetaHeaderLatches()` 清空。
+3. 消息转换（`src/utils/messages.ts`、`src/utils/advisorToolChangeWire.ts`）：带 `toolChange` 的 advisor_tool attachment 在 normalizeMessagesForAPI 里变成占位块，合并消息时保持位置；addCacheBreakpoints 之后 `splitAdvisorToolChanges` 在占位处切开 user 消息，插入 `{role:"system", content:[{type:"text"}, {type:"tool_addition"|"tool_removal", tool:{type:"tool_reference", name:"advisor"}}]}`。system 消息总跟在 user 内容之后，对话不以 system 开头。其他 attachment 仍用 system-reminder。
+4. 请求条目（`src/services/api/claude.ts`）按 `Nc` 规则挂 `defer_loading`；deferred 且未激活又不能 defer 时不挂。standby 用严格配对 `isAdvisorPairingAllowedStrict`（官方 `xXi`）。
+5. 每轮解析（`src/utils/advisorQuery.ts`）移植 ggr 的 viaToolChange、standby、inFallback 分支和 advisorActive/advisorDeferred；describeHeldAdvisor 补 viaToolChange 原文。
+6. 拒绝：`TDe` 各类和 system turn 被拒（`YO`）都抛 `ToolChangesRejectedError`，记到 sticky 或 host/模型 latch，去掉两个 beta 重发一次，之后走回退路径（inline 条目加 system-reminder）。advisor 本身的拒绝仍按 process/host/conversation 记录，两套互不覆盖。
+7. 测试：`src/services/api/claude-advisor-contract.test.ts`（中途开、关且 tools 前缀不变，beta 被拒和 system turn 被拒后回退，standby 条目形状，无对话状态不带 beta）、`src/utils/advisorToolChanges.test.ts`、`src/utils/advisorQuery.test.ts`、`src/services/api/advisorRefusal.test.ts`、`src/utils/advisor.test.ts`。
 
-需要确认的原因：M1 的决定按“补一个 beta”估计。官方这条路径还依赖第二个 beta `mid-conversation-system-2026-04-07` 和一种新的线上消息 role:"system"。fork 目前不发这种消息（`src/constants/leanPrompt.ts:23`：mid-conversation system turns are not sent），也没有 `PS` 的拒绝处理，改动面会从 advisor 扩到消息转换层和 beta 管理。服务端接不接受只能用真实账号验证，本地假 API 只能测形状。
+与官方的差异见第 7 节“中途开关”几行。
 
 ## 6. 测试计划
 
@@ -184,7 +186,7 @@ fork 的实施方案（确认后做）：
 | 命令 | `/advisor` 各分支文案、picker 选项和文本、非交互输出、回退路径下的三条 held 说明；完全关闭时两个 `/advisor` 命令不可用；`--advisor` 三种情况和 bg 降级，完全关闭时不校验（tmux 验收） |
 | 显示 | 四种状态和 verbose；error_code 白名单 |
 | 其他 | 计费；fork 的 advisorModel 和 `Never consult the advisor tool.`；手动压缩不带 advisor；`clearBetaHeaderLatches()` 后 carrier 重置 |
-| 中途开关（5.13 确认后） | 中途开（带 beta、tools 前缀不变）、中途关、beta 被拒后回退、standby 条目形状 |
+| 中途开关（5.13） | 中途开（带 beta、tools 前缀不变）、中途关、beta 被拒后回退、standby 条目形状 |
 
 验证命令：直接相关和相邻的测试文件、`bunx tsc --noEmit --pretty false`、`bun run lint`。机器负载高，不并行跑全量单测。
 
@@ -196,7 +198,11 @@ fork 的实施方案（确认后做）：
 | --- | --- | --- | --- |
 | provider | firstParty、anthropicAws、anthropicGoogleCloud | 只有 firstParty（含自定义 `ANTHROPIC_BASE_URL`） | fork 没有后两个 provider，按用户决定只放行 firstParty |
 | 开关默认值 | firstParty 靠 GrowthBook `tengu_sage_compass2` 下发，默认关 | 不读 GrowthBook，本地固定为开；远程下发 false 也不关 | 按用户决定不依赖远程开关；fork 的 GrowthBook 只在开了遥测时生效 |
-| 中途开关 | tool-change beta 生效时 `/advisor` 开、关立刻生效 | 待确认（5.13）；确认前一直走官方回退路径，开、关、换模型都等 `/clear` 或 `/compact` | 官方路径还需要 `mid-conversation-system` beta 和 role:"system" 消息，超出原定范围 |
+| 中途开关：beta 范围 | `PS` 单独按模型发，`nE` 也服务 ToolSearch | `nE`、`PS` 只为 advisor 发且总是一起发；PS 被拒时连 nE 一起去掉，反之亦然；无对话状态的请求不带 | fork 不发其他 role:"system" 消息（`src/constants/leanPrompt.ts`），ToolSearch 不走这条路径 |
+| 中途开关：latch 和能力 | host latch `toolChangeHeaderRefused`；`F_e` 读模型目录；`nUe` 含 HIPAA 等判断；`UVr` 读 GrowthBook | host latch 按 base URL 的 host 记；`F_e` 用本地模型表；不判断 HIPAA；`UVr` 固定为真 | fork 没有模型目录能力字段和 HIPAA 状态，不读远程开关 |
+| 中途开关：standby 计费 | `modelAccessCache` | 用 served model catalog 代替 | fork 没有 modelAccessCache |
+| 中途开关：线上消息 | 一等的 `api_system` 消息类型，cache_control 可落在 system turn 上 | 占位块加请求前切分；cache breakpoint 留在前一个 user 块上 | 改动面限在 advisor；缓存前缀仍保持不变（有测试） |
+| 中途开关：其他 | `Nc` 只看主工具表；inFallback 对所有 held 更新 | `Nc` 也计 extraToolSchemas；inFallback 只在 viaToolChange 时更新；forked agent 遇到未激活的 deferred 条目时不发 `Never consult the advisor tool.` | fork 的调用方式不同；未激活条目模型本来就调不到 |
 | `fable` 别名 | 解析到 claude-fable-5-2 | 解析到 claude-fable-5-1（`src/utils/model/model.ts:133-140`），模型表里没有 5-2 | fork 模型表的现状。`/advisor fable` 得到 Fable 5.1；主模型用完整 id 指定 Fable 5.2 时，`fable` 会被判为能力不足 |
 | fork 标签 | 排除 `compact`、`reactive-compact`、`resume_cache_warm` | 照写，但 fork 只有 `compact` 这个标签 | fork 没有另外两种 fork |
 | Fable 同意 | 需要 usage credits 的 Fable 先在 `/model` 同意 | 不做，Fable 与其他模型同样对待 | fork 没有 claude.ai 订阅状态和同意流程 |
@@ -211,7 +217,7 @@ fork 的实施方案（确认后做）：
 ## 8. 风险和未决项
 
 - OpenAI 模式不挂 advisor，请求与改动前一致。OpenAI 模式的客户端模拟 advisor 另行设计，本次不做。
-- 5.13 待确认，见该节末尾。
+- 5.13 的 system turn 放在 user 之后、text 块不包 system-reminder，这两点和 cache breakpoint 的位置只按官方静态阅读实现，服务端接不接受只能用真实账号验证；假 API 只检查形状。被拒时有回退。
 
 - 默认开启后，firstParty 上没配 advisor 的请求也带 `advisor-tool-2026-03-01`，与官方一致。自定义网关不认识这个 beta 时，第一次 400 会走官方的“beta 被拒，按 host 记住并重发一次”路径；用户也可以设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 关闭。
 - 说明文字从 system prompt 移到 attachment 后，已有会话恢复时历史里没有 attachment，第一轮会补发完整版，多一次 meta 消息。
