@@ -21,6 +21,7 @@
 ### 关联提交
 
 - PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口。
+- 随本条目一起合入 `dev` 的提交：`c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363）；`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605` 发布门禁；其余是文档提交。
 - 对应 issue：#1357；#1358（#1360、#1361 只修了能复现的部分，issue 保持打开）。
 
 ### 变更内容
@@ -39,7 +40,7 @@
 
 - macOS 上启动后马上输入（如 `/help`）不再卡几秒：Bun 注册 FSEvents 原生 watcher 时会阻塞读取输入的主线程，实测 `help` 显示出来由 7,184 ms 降到 78 ms。Node 运行时仍用原生事件（#1358、#1361）。
 - 恢复很长的会话后 `/clear` 或 `/new`，欢迎画面和输入框重新出现在视口里；此前虚拟滚动沿用旧的范围和滚动偏移，画面停在几千行之外（#1358、#1360）。
-- 工具解析后为空的 agent 按官方拒绝启动，不再以零工具运行；一轮开始时已被中断的请求按官方记为中断（#1363）。
+- 工具解析后为空的 agent 按官方拒绝启动，不再以零工具运行；一轮开始时已被中断的请求按官方记为中断，刷新提示上下文期间才中断（如 Mods 的 `prompt.context` hook）仍以中断原因拒绝（#1363、`c78cf77d`）。
 
 #### 发布门禁
 
@@ -47,12 +48,16 @@
 - `terminal-interaction`、`terminal-canonical-diff` 改为以 `bounded_terminal_verify` 判定：对封存的字节只读重跑 `terminal-capture-driver.mjs verify --bounded`，核对采集身份、输入和独立 PTY 逐帧重放。完整原生证明（子进程读入与 parser/consumer 归属、termios 全过程、无观测时的产品时序）仍然执行，结果记为 `full_terminal_coverage`，目前是 `not covered`，不计入结论。
 - `builtin-mods` 的 `terminalEvidence` 只要求 7 个 side 的帧都经过独立校验，产品时序等价只记录不判定；最终复验仍拒绝会改变渲染时序的 v1 ACK 采集器。
 - `builtin-mods` 的 macOS sandbox 不再拒绝读取 `/Library/Application Support/ClaudeCode`：拒绝时产品扫描 `managed-settings.d` 得到 EPERM，弹出阻塞的 Settings Error，测试超时。现在开跑前把这个目录下每个文件的名称、大小和 sha256 记到 `host-managed-settings.json`；只允许 `managed-settings.json` 和 `managed-settings.d/` 下内容为空或 `{}` 的文件，其他情况报环境不满足。`/Library/Managed Preferences` 仍然拒绝读取；Linux 照旧用空 tmpfs 盖住 `/etc/claude-code`。
-- 这几个 target 原有的其他检查都没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测和虚拟滚动，这些路径的改动不会触发任何 binary target。
+- `builtin-mods` 的 telemetry 场景按 #206（`579bb424`）的结果改为期望没有内置 telemetry Mod：开启 `telemetry@builtin` 且隐私开关打开时不发任何 host 调用。最终复验按归档回执（archive receipt）重新评估已归档的各 side；此前复验不带归档位置，所有原生 side 的关闭身份检查都失败。
+- macOS 上 PTY 输出队列满时，内核对 ONLCR 换行会输出 `\r\r\n`；原生帧重放现在每个换行最多接受一个重复的 CR，且只在原始字节里确实有时接受。此前重放把它当成来源不明的字节，产生不了 Ink 帧。
+- 终端 target 的覆盖检查也改用 bounded 校验；此前覆盖检查仍跑完整校验，已通过的终端 target 被列为 invalid。
+- 门禁 target 分为 7 组（terminal、mods、agents、workflow、openai、models、ssh），可以用 `--group` 或 `--only-target` 单独跑。只跑一部分时结果写 `scope: partial`、`overall_verdict: partial_passed`；`--merge-manifests` 合并 HEAD、binary、baseline、driver 的 sha256 和 required targets 都相同的几次结果，同一 target 以较新的一次为准。
+- 除上面列出的改动，这几个 target 原有的检查没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测和虚拟滚动，这些路径的改动不会触发任何 binary target。
 
 ### 测试覆盖
 
 - 每个 PR 合并前并入最新 `dev`，PR CI 全绿：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、macOS/Windows e2e 与 web e2e。#1361 并入 `dev` 后单测第 3 片的设置 watcher 用例在负载下失败（轮询器在 chokidar ready 之后才取首个样本），测试改为等首个样本后再写，8 路并行下由 3/24 次失败降为 0/24。
-- #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过，转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
+- #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（在 `26510e95` 上测得，早于 `c78cf77d`），转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
