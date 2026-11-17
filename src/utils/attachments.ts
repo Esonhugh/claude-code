@@ -21,6 +21,7 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { extractPathMentions } from './pathMentionEncoding.js'
 import { countCharInString } from './stringUtils.js'
+import type { AdvisorToolAttachment } from './advisor.js'
 import { count, uniq } from './array.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
@@ -764,6 +765,11 @@ export type Attachment =
   | {
       type: 'ultrathink_effort'
       level: 'high'
+    }
+  | AdvisorToolAttachment
+  | {
+      /** The server could not process earlier advisor results; requests leave them out from here. */
+      type: 'advisor_stripped'
     }
   | {
       type: 'deferred_tools_delta'

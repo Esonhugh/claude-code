@@ -71,7 +71,7 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../types/message.js'
-import { isAdvisorBlock } from './advisor.js'
+import { getAdvisorAnnouncementText, isAdvisorBlock } from './advisor.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
 import {
@@ -4651,6 +4651,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'advisor_tool': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: getAdvisorAnnouncementText(attachment),
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'advisor_stripped':
+      return []
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {
@@ -5999,12 +6009,19 @@ export function ensureToolResultPairing(
  * Strip advisor blocks from messages. The API rejects server_tool_use blocks
  * with name "advisor" unless the advisor beta header is present.
  */
+/**
+ * Removes advisor blocks from assistant messages, from all of them or only
+ * those whose API message id is in `ids`.
+ */
 export function stripAdvisorBlocks(
   messages: (UserMessage | AssistantMessage)[],
+  ids?: ReadonlySet<string>,
 ): (UserMessage | AssistantMessage)[] {
+  if (ids?.size === 0) return messages
   let changed = false
   const result = messages.map(msg => {
     if (msg.type !== 'assistant') return msg
+    if (ids !== undefined && !ids.has(msg.message.id)) return msg
     const content = msg.message.content
     const filtered = content.filter(b => !isAdvisorBlock(b))
     if (filtered.length === content.length) return msg
@@ -6028,6 +6045,29 @@ export function stripAdvisorBlocks(
     return { ...msg, message: { ...msg.message, content: filtered } }
   })
   return changed ? result : messages
+}
+
+const NO_STRIPPED_ADVISOR_IDS: ReadonlySet<string> = new Set()
+
+/**
+ * Official `pq`: the assistant messages before the last advisor_stripped
+ * attachment, whose advisor blocks the server once could not process and
+ * later requests leave out.
+ */
+export function getAdvisorStrippedMessageIds(
+  messages: readonly Message[],
+): ReadonlySet<string> {
+  const last = messages.findLastIndex(
+    m => m.type === 'attachment' && m.attachment.type === 'advisor_stripped',
+  )
+  if (last === -1) return NO_STRIPPED_ADVISOR_IDS
+  const ids = new Set<string>()
+  for (const m of messages.slice(0, last)) {
+    if (m.type === 'assistant' && typeof m.message.id === 'string') {
+      ids.add(m.message.id)
+    }
+  }
+  return ids
 }
 
 export function wrapCommandText(
