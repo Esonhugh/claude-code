@@ -74,9 +74,13 @@ const files = await Glob({pattern: 'src/**/*.ts'})
 hits.content + `\n(${files.numFiles} files scanned)`
 ```
 
-按 `Ctrl+O` 展开详细记录，`REPL` 显示为 `Code`，下面是脚本的返回值，再往下是脚本里每次调用各自的结果：
+按 `Ctrl+O` 展开详细记录，`REPL` 显示为一行 `Code(脚本的说明) · 3 lines`，下面是脚本里每次调用各自的结果。脚本的返回值只交给 Claude，界面上不显示：
 
 ![展开后的 Code 和脚本里的调用](images/code-mode-expanded.png)
+
+在详细记录里再按 `Ctrl+E`，`Code` 下面显示脚本源码，再按一次收起：
+
+![按 Ctrl+E 显示脚本源码](images/code-mode-source.png)
 
 **2. 变量在调用之间保留。** 脚本里用 `var` 或 `globalThis` 存下的值，下一次 `REPL` 还在，Claude 不用重新读一遍：
 
@@ -107,7 +111,7 @@ hits.content + `\n(${files.numFiles} files scanned)`
 ⏺ 测试通过：3 passed。
 ```
 
-**4. 后台执行。** 会话以 `auto` 或 `bypassPermissions` 模式启动时，每个脚本都立即给 Claude 返回回执 `(dispatched #1)`，界面上不显示这个回执。这一轮的工具调用结束后，Claude Code 等脚本跑完，再把结果附在一个 `Poll` 结果里，在同一轮交给 Claude。下面以 `--permission-mode bypassPermissions` 启动，让 Claude 跑一个约 12 秒的构建。脚本在后台跑的时候，界面上只有 spinner：
+**4. 后台执行。** 会话以 `auto` 或 `bypassPermissions` 模式启动时，每个脚本都立即给 Claude 返回回执 `(dispatched #1)`，界面上不显示这个回执。这一轮的工具调用结束后，Claude Code 等脚本跑完，再把结果附在一个 `Poll` 结果里，在同一轮交给 Claude。下面以 `--permission-mode bypassPermissions` 启动，让 Claude 跑一个约 12 秒的构建。脚本在后台跑的时候，spinner 里显示脚本的说明，输入框下方显示 `1 background task`，按 `↓` 打开后台任务列表，可以在里面停掉脚本：
 
 ![后台脚本运行时的等待](images/code-mode-wait.png)
 
@@ -185,7 +189,6 @@ MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 
 还没做的部分（计划中的 Phase 5）：
 
 - `auto` 模式下开启前的确认对话框，说明分类器只审一次整段脚本；
-- 后台脚本的进度视图和任务栏条目，目前只能等结果事件；
 - 使用非 Anthropic provider 时的启动提示。
 
 ## 说明

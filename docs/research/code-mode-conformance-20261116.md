@@ -26,7 +26,7 @@
 | F | 内层调用的权限、hook 与隔离 | 10 | 9 | 0 | 0 | 1 |
 | C / D / E / G | 权限对话框、规则、hook、子代理、transcript 形状、稳定性（L2 补充） | 27 | 19 | 2 | 4 | 2 |
 
-缺陷合计 38 项，按根因归成 22 组：19 组已修复，2 组部分修复（第 11 组 E02、第 21 组），1 组未修复（第 13 组）。第 13 组的 A13、E09 按设计保留，记在功能说明的「与官方的差异」里；第 20–22 组（A61、计时器迟到宽限、A32）是 L3 之后新发现或仍有差异的部分。
+缺陷合计 40 项，按根因归成 24 组：21 组已修复，2 组部分修复（第 11 组 E02、第 21 组），1 组未修复（第 13 组）。第 13 组的 A13、E09 按设计保留，记在功能说明的「与官方的差异」里；第 20–22 组（A61、计时器迟到宽限、A32）是 L3 之后新发现或仍有差异的部分；第 23、24 组是用同一场景给官方和本地截图时发现的界面差异（见「L3：官方二进制对照」的界面对照），不在上表的项数里。
 
 ## 缺陷与处理
 
@@ -55,6 +55,8 @@
 | 20 | A61 | 脚本超时或抛错时，官方在错误后加一句 `The script was stopped partway through: …` / `The script threw partway through: …` 和已完成调用的计数，本地没有 | 已修复 `b1bd9e7f`：按官方 `nOi` 移植 `partwayNote`（`stopReport.ts:72`），执行器在脚本抛错、超时或被停后接在错误后面；语法错误和停止报告不接。`vfy6-L3x` 第 1 次 eval 的错误和官方逐字相同 |
 | 21 | B「预算计时迟到宽限」 | 官方 `sleep(33000)` 正常返回结果，本地在 30 秒超时 | 部分修复 `15265d59`：按官方 `ic` 移植 `scriptDeadline`（`host.ts:294`），计时器迟到超过 1000 ms 时一次性改为 5000 ms，单元测试覆盖。但 L3 的 LATE 探针仍不同（`vfy6-L3x` 第 3 次 eval 30003 ms 超时，官方 33007 ms 返回 `late-inline`）：官方计时器准时触发时 `ic` 不给宽限，所以这个结果不是 `ic` 带来的，原因没有找到（候选是官方经宿主桥接的 `sleep` 和 `sc` 的 pauseForOthers/charge，都未确认） |
 | 22 | A32 | Poll 输出 schema 少 `media`、`toolsUsed`、`provenance`、`declared` 4 个字段；`<tools-used-before-summary>` 行（官方 `Itn`）没有内容 | 已修复 `3e332cb7`：schema 补齐 4 个字段（官方 `Iso`）；按官方 `Itn`/`yNt` 移植 `toolsUsedForDelivery`（`toolsUsed.ts:95`）：`runToolUse` 找到工具后记进会话的 tools-used 记录（官方 `oca`），poll 事件入队时带上，delivery 只列消息里还看不到的名字；`poll_events` 附件和 Poll 结果都带 `provenance`。`media`、`declared` 只有 schema：本路径上没有事件带这两项。`vfy6-L3x`、`vfy6-B-asyncx`、`vfy6-WAKE` 每次 delivery 的 tools-used 行和官方相同（L3x 只有第 1 次 `REPL`；B-asyncx 第 1 次 `REPL`、第 2 次 `Bash`；WAKE `Bash, REPL`） |
+| 23 | 界面「Ctrl+O 里的 REPL 行」 | 官方在详细记录里显示 `⏺ Code(Count TODOs under src) · 3 lines (ctrl+e to show)`，按 Ctrl+E 后在 `⎿` 下显示高亮的脚本源码，不显示脚本的返回值；本地显示没有括号的 `⏺ Code`，下面是不缩进的返回值，Ctrl+E 不改变它 | 已修复 `90c2bcbb`：按官方 `ScriptSourceRow`（chunk-eh1rf8gd.js）移植 `src/tools/REPLTool/ScriptSourceRow.tsx`，包括行数统计和官方 `U` 的控制字符转义；REPL 去掉结果渲染（官方结果渲染对 transparent wrapper 返回 null）。没有移植：按行展开（官方 `eAn(toolUseId)` 键、全屏下的点击和 `[`）和 `uN` 的可见性冻结，只有全局 Ctrl+E |
+| 24 | 界面「后台脚本运行时的等待」 | 官方 spinner 为 `Gesticulating… (Run the slow build · 4s · ↓ 38 tokens)`，页脚为 `bypass permissions on · 1 background task · esc to interrupt · ↓ to manage`；本地 spinner 没有脚本说明，页脚没有后台任务 | 已修复 `ea342f7b`：按官方 `ros`/`kpe`（chunk-h2wk9qp9.js、chunk-aay5maza.js）在 spinner 里显示最先运行的脚本说明（截到 48 列，多个时加 ` +N more`）；`7c74f63c`：按官方 `registerScriptTask`/`endScriptTask`（chunk-x5qyz3j2.js）把运行中的脚本登记为 `local_script` 后台任务，页脚计数、`↓ to manage` 和任务对话框沿用已有的后台任务界面，退出提醒和 stop hook 里标为 `code`（官方 `AUe`）。没有移植：`kpe` 的密钥脱敏（文字只出现在用户自己的终端）、late/settling 阶段、按原因区分的停止类型；任务对话框里脚本行的样子按代码推断，没有在官方上操作对照 |
 
 修复后全量复跑 20 个场景两次：`vfy4-*` 用 `e1cbf885` 的 `built-claude`，328 项检查过 327 项；`vfy5-*` 用最终构建 `2842064a`，328 项全部通过。
 
@@ -278,6 +280,24 @@ L3x 场景（`/tmp/cmx/conformance/l3/L3x.json`）逐项对照（本地是移植
 G-resume-lost 在官方上：开关 on 时第一次启动会先重启自己（`Restarting Claude Code in Code Mode…`），开关 off 时拒绝 resume（`This session was started in Code Mode (experimental), which is off, so it can't be resumed.`），所以 off 分支的检查不适用，本地继续会话是有意不同（G 表）。开关 on 的两项（交互下 lost 事件不开始新一轮、bypass 下下一请求带 lost 事件）官方通过，本地复跑也通过。「lost row is shown」官方失败，本地也不显示这一行，两边一致，没有列成缺陷。
 
 G-robust 在官方上跑的是 18:27 的旧版：失败的是旧检查「529 … failure arrives as an understandable task-notification」（等下一轮的通知）。改名后的「failure arrives in the same turn as an understandable task-notification event」本地通过，没有在官方上重跑；其余共有的检查两边结论相同。
+
+### 界面对照（截图场景）
+
+功能说明里的截图场景（`/tmp/cmx/shots/scenarios/shots.json`，Ctrl+E 另用 `/tmp/official-cm/ctrle-our.json` / `ctrle-off.json`）在官方二进制和本地上各跑一遍，110×36 tmux pane。官方运行 `official-shots-4901dc`（9/9）、`official-ctrle-4901dc`；本地修复后 `final-shots`（9/9）、`final-ctrle`（3/3），构建为 `7c74f63c`。
+
+| 画面 | 官方 | 本地（修复前） | 本地（修复后） |
+| --- | --- | --- | --- |
+| Ctrl+O | `⏺ Code(Count TODOs under src) · 3 lines (ctrl+e to show)` | `⏺ Code`，下面是不缩进的脚本返回值 | 与官方相同（第 23 组） |
+| Ctrl+O 后 Ctrl+E | `⏺ Code(Count TODOs under src)`，`⎿` 下三行高亮源码 | 与 Ctrl+O 相同 | 与官方相同，header 和源码行的 ANSI 只差官方 `⏺` 前一个 `\e[49m` |
+| 后台脚本等待中 | spinner `(Run the slow build · 4s · ↓ 38 tokens)`；页脚 `bypass permissions on · 1 background task · esc to interrupt · ↓ to manage` | spinner `(4s · ↓ 38 tokens)`；页脚 `bypass permissions on (shift+tab to cycle) · esc to interrupt` | 文字与官方相同（第 24 组） |
+| 结果送回、Esc | 后台任务消失，页脚恢复 `(shift+tab to cycle)` | 同 | 同 |
+| 脚本运行中 `/exit` | `Background work is running` 对话框，列出 `shell · sleep 60 && echo never` 和 `code · probe` | 直接退出 | 同一个对话框，只列 `code · probe`（第 24 组） |
+
+`/exit` 那一行用 G-resume-lost 的前几步单独探测（官方 `exitprobe-off`，本地 `exitprobe`）。第 24 组之后 G-resume-lost 的两次退出要在对话框里选 `Exit and stop tasks`，场景已相应修改，并加了一项检查；选了之后 resume 仍按官方报告 lost 事件（`fin4-G-resume-lost` 18/18）。修复后全量复跑 20 个场景（`fin-*`、`fin4-G-resume-lost`，构建 `7c74f63c`）：333 项检查全部通过。
+
+还没改的 Code Mode 差异：官方在退出对话框里把脚本里正在跑的 `Bash` 列成一个 `shell` 后台工作，本地不列。
+
+剩下的界面差异都不属于 Code Mode，没有改：本地 spinner 的状态括号右对齐（`buildSpinnerAnimationLine`，`395f12ae` 的设计），官方紧跟在动词后面；本地页脚右侧有 `◐ medium · /effort`；官方详细记录页脚右侧有 `verbose`；官方启动时先显示 `Restarting Claude Code in Code Mode…`；Grep 结果里两个文件的顺序不同，来自文件系统顺序。
 
 ## 未覆盖与限制
 
