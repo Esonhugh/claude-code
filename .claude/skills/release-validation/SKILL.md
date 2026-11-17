@@ -86,6 +86,11 @@ Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net �
    - 比较 fixture、配置、Git 状态和进程清单的前后状态；清理本轮可精确归属的进程、socket 和临时状态，不得覆盖基线已有或来源不明的变化。
    - 报告分别标明 `spec exists`、`unit covered`、`fault injection covered`、`frame/physical covered`、`binary interaction covered`。任一必需层缺失、失败、仍在运行、跨 run 拼接或使用修复前产物，目标和整体 release gate 均不得判定为通过。
 
+8. **bounded 验收与完整原生证明**
+   - `terminal-interaction`、`terminal-canonical-diff` 的终端证据以 `bounded_terminal_verify` 判定：`scripts/terminal-capture-driver.mjs verify <capture-launch.json> --bounded` 对封存的字节只读复验采集身份、输入和独立 PTY 逐帧重放，exit 0 才通过，输出在 `capture-verify-bounded-*.txt`。
+   - 完整原生证明包括子进程 OS read 与 parser/唯一 consumer 归属、termios 全过程、无观测时的产品时序等价，目前在 macOS 和 Linux 上都没有采集协议。driver 仍然运行完整 verify，结果写在 run 的 `full_terminal_coverage` 字段里（`not covered` 或 `passed`），不计入 verdict。报告必须把它列为未覆盖的风险，不能写成已验证。`builtin-mods` 的 `terminalEvidence` 同样只要求逐帧校验，`timingEquivalent` 只作记录。
+   - 失去完整证明后，被采集干扰掩盖的时序类问题（如合帧竞态）可能漏检；必要时在 CPU 负载下再跑一轮矩阵。
+
 ## 四个 Agent 的固定任务
 
 ### Agent 1 — Feature tests

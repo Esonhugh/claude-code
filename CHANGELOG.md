@@ -41,6 +41,14 @@
 - 恢复很长的会话后 `/clear` 或 `/new`，欢迎画面和输入框重新出现在视口里；此前虚拟滚动沿用旧的范围和滚动偏移，画面停在几千行之外（#1358、#1360）。
 - 工具解析后为空的 agent 按官方拒绝启动，不再以零工具运行；一轮开始时已被中断的请求按官方记为中断（#1363）。
 
+#### 发布门禁
+
+- binary 门禁的 driver 跟上 10-27 之后的产品变化：session title 提示词、补全指针 `❯`、Terminal 工具改名 Tmux、隐式团队取代 TeamCreate、agent 面板取代 @pill 和 ctrl+t、TaskStop 取代 TaskOutput 等。
+- `terminal-interaction`、`terminal-canonical-diff` 改为以 `bounded_terminal_verify` 判定：对封存的字节只读重跑 `terminal-capture-driver.mjs verify --bounded`，核对采集身份、输入和独立 PTY 逐帧重放。完整原生证明（子进程读入与 parser/consumer 归属、termios 全过程、无观测时的产品时序）仍然执行，结果记为 `full_terminal_coverage`，目前是 `not covered`，不计入结论。
+- `builtin-mods` 的 `terminalEvidence` 只要求 7 个 side 的帧都经过独立校验，产品时序等价只记录不判定；最终复验仍拒绝会改变渲染时序的 v1 ACK 采集器。
+- `builtin-mods` 的 macOS sandbox 不再拒绝读取 `/Library/Application Support/ClaudeCode`：拒绝时产品扫描 `managed-settings.d` 得到 EPERM，弹出阻塞的 Settings Error，测试超时。现在开跑前把这个目录下每个文件的名称、大小和 sha256 记到 `host-managed-settings.json`；只允许 `managed-settings.json` 和 `managed-settings.d/` 下内容为空或 `{}` 的文件，其他情况报环境不满足。`/Library/Managed Preferences` 仍然拒绝读取；Linux 照旧用空 tmpfs 盖住 `/etc/claude-code`。
+- 这几个 target 原有的其他检查都没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测和虚拟滚动，这些路径的改动不会触发任何 binary target。
+
 ### 测试覆盖
 
 - 每个 PR 合并前并入最新 `dev`，PR CI 全绿：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、macOS/Windows e2e 与 web e2e。#1361 并入 `dev` 后单测第 3 片的设置 watcher 用例在负载下失败（轮询器在 chokidar ready 之后才取首个样本），测试改为等首个样本后再写，8 路并行下由 3/24 次失败降为 0/24。
