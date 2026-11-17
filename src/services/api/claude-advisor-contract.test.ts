@@ -74,11 +74,16 @@ const envKeys = [
 for (const key of envKeys) delete process.env[key]
 
 const ADVISOR_BETA = 'advisor-tool-2026-03-01'
+const TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01'
+const SYSTEM_BETA = 'mid-conversation-system-2026-04-07'
 const requests: MessageCreateParams[] = []
 const requestBetaHeaders: string[] = []
 // Refuse requests that carry the advisor tool (or, for 'beta', the header).
 // 'blocks' refuses requests whose history still carries ADVICE_TEXT.
-let refusal: { status: number; message: string; on: 'tool' | 'beta' | 'blocks' } | undefined
+// 'toolChanges' refuses requests with the tool-change beta, 'system' ones with a system turn.
+let refusal:
+  | { status: number; message: string; on: 'tool' | 'beta' | 'blocks' | 'toolChanges' | 'system' }
+  | undefined
 const hasAdvisorTool = (request: MessageCreateParams) =>
   (request.tools ?? []).some(t => (t as { type?: string }).type === 'advisor_20260301')
 const client = new Anthropic({
@@ -96,7 +101,11 @@ const client = new Anthropic({
         ? hasAdvisorTool(request)
         : refusal.on === 'beta'
           ? beta.includes(ADVISOR_BETA)
-          : JSON.stringify(request.messages).includes('ADVICE_TEXT'))
+          : refusal.on === 'toolChanges'
+            ? beta.includes(TOOL_CHANGES_BETA)
+            : refusal.on === 'system'
+              ? request.messages.some(m => (m.role as string) === 'system')
+              : JSON.stringify(request.messages).includes('ADVICE_TEXT'))
     ) {
       return Response.json(
         { type: 'error', error: { type: 'invalid_request_error', message: refusal.message } },
@@ -198,6 +207,7 @@ const { asSystemPrompt } = await import('../../utils/systemPromptType.js')
 const { getEmptyToolPermissionContext } = await import('../../Tool.js')
 const { resetAdvisorRefusalsForTesting, resolveAdvisorModelId } = await import('../../utils/advisor.js')
 const { createAttachmentMessage } = await import('../../utils/attachments.js')
+const { resetToolChangeLatchesForTesting } = await import('../../utils/advisorToolChanges.js')
 const analytics = await import('../analytics/index.js')
 const loggedEvents: [string, Record<string, unknown>][] = []
 spyOn(analytics, 'logEvent').mockImplementation((name, metadata) => {
@@ -241,7 +251,7 @@ function ask(
   })
 }
 
-const advisorTools = (i: number) =>
+const advisorTools = (i: number): unknown[] =>
   (requests[i]?.tools ?? []).filter(t => (t as { type?: string }).type === 'advisor_20260301')
 const sentBeta = (i: number) =>
   requestBetaHeaders[i]!.includes(ADVISOR_BETA) || JSON.stringify(requests[i]).includes(ADVISOR_BETA)
@@ -259,6 +269,7 @@ afterEach(() => {
   refusal = undefined
   for (const key of envKeys) delete process.env[key]
   resetAdvisorRefusalsForTesting()
+  resetToolChangeLatchesForTesting()
 })
 
 test('the advisor tool, beta and history go out with the configured advisor', async () => {
@@ -436,5 +447,133 @@ test('an advisor_stripped attachment keeps earlier advisor blocks out of later r
   expect(sentAdvisorBlocks(0)).toBe(false)
   expect(JSON.stringify(requests[0]!.messages)).toContain('LATER_ADVICE')
   expect(JSON.stringify(requests[0]!.messages)).not.toContain('advisor_stripped')
+})
+
+// Mid-conversation tool changes (beta mid-conversation-tool-changes-2026-07-01).
+const TOOL_CHANGE_MODEL = 'claude-sonnet-5-5'
+const OTHER_TOOL = { name: 'other_tool', description: 'x', input_schema: { type: 'object' } }
+const opus = () => resolveAdvisorModelId('opus')
+const toolChangeOptions = (
+  toolChanges: Record<string, unknown>,
+  advisorActive: boolean,
+  extra: Partial<QueryOptions> = {},
+): Partial<QueryOptions> => ({
+  model: TOOL_CHANGE_MODEL,
+  advisorModel: 'opus',
+  advisorDeferred: true,
+  advisorActive,
+  toolChanges,
+  extraToolSchemas: [OTHER_TOOL as never],
+  ...extra,
+})
+const toolChange = (op: 'add' | 'remove') =>
+  createAttachmentMessage(
+    op === 'add'
+      ? { type: 'advisor_tool', available: true, model: opus(), toolChange: 'add' }
+      : { type: 'advisor_tool', available: false, model: opus(), toolChange: 'remove' },
+  )
+const systemTurns = (i: number) =>
+  requests[i]!.messages.filter(m => (m.role as string) === 'system') as unknown as {
+    content: { type: string; text?: string; tool?: unknown }[]
+  }[]
+const sentToolChangeBetas = (i: number) => [
+  requestBetaHeaders[i]!.includes(TOOL_CHANGES_BETA),
+  requestBetaHeaders[i]!.includes(SYSTEM_BETA),
+]
+
+test('a standby advisor is declared deferred, with no system turn or instructions', async () => {
+  await ask(toolChangeOptions({}, false))
+  expect(advisorTools(0)).toEqual([
+    { type: 'advisor_20260301', name: 'advisor', model: opus(), defer_loading: true },
+  ])
+  expect(sentToolChangeBetas(0)).toEqual([true, true])
+  expect(systemTurns(0)).toEqual([])
+  expect(JSON.stringify(requests[0]!.messages)).not.toContain('Advisor Tool')
+  // Without another non-deferred tool there is nothing to defer against.
+  await ask(toolChangeOptions({}, false, { extraToolSchemas: [] }))
+  expect(advisorTools(1)).toEqual([])
+})
+
+test('turning the advisor on and off mid-conversation keeps the tools prefix', async () => {
+  const sticky = {}
+  await ask(toolChangeOptions(sticky, false))
+  const on = [...history(), toolChange('add')]
+  await ask(toolChangeOptions(sticky, true), on)
+  await ask(toolChangeOptions(sticky, false), [
+    ...on,
+    createAssistantMessage({ content: [{ type: 'text', text: 'reply' }] as never }),
+    createUserMessage({ content: 'more' }),
+    toolChange('remove'),
+  ])
+  expect(requests).toHaveLength(3)
+  for (const i of [1, 2]) {
+    expect(requests[i]!.tools).toEqual(requests[0]!.tools)
+    expect(sentToolChangeBetas(i)).toEqual([true, true])
+  }
+  // On: one system turn right after the user turn it was attached to.
+  expect(systemTurns(1)).toHaveLength(1)
+  expect(requests[1]!.messages.at(-1)!.role as string).toBe('system')
+  expect(requests[1]!.messages.at(-2)!.role).toBe('user')
+  const [text, addition] = systemTurns(1)[0]!.content
+  expect(text!.type).toBe('text')
+  expect(text!.text).toStartWith('# Advisor Tool')
+  expect(addition).toMatchObject({ type: 'tool_addition', tool: { type: 'tool_reference', name: 'advisor' } })
+  expect(JSON.stringify(requests[1]!.messages.filter(m => m.role === 'user'))).not.toContain('Advisor Tool')
+  // Off: the addition stays where it was, so request 2 is a prefix of request 3.
+  const uncached = (i: number) =>
+    JSON.parse(JSON.stringify(requests[i]!.messages).replaceAll(',"cache_control":{"type":"ephemeral"}', ''))
+  expect(uncached(2).slice(0, requests[1]!.messages.length)).toEqual(uncached(1))
+  expect(requests[2]!.messages.map(m => m.role as string)).toEqual([
+    'user', 'assistant', 'user', 'system', 'assistant', 'user', 'system',
+  ])
+  expect(systemTurns(2).map(t => t.content[1]!.type)).toEqual(['tool_addition', 'tool_removal'])
+  expect(systemTurns(2)[1]!.content[0]!.text).toContain('no longer available')
+})
+
+test('a rejected tool-change beta falls back to the inline entry and reminders, sticky', async () => {
+  refusal = {
+    status: 400,
+    message: `Unexpected value(s) \`${TOOL_CHANGES_BETA}\` for the \`anthropic-beta\` header.`,
+    on: 'toolChanges',
+  }
+  const sticky: Record<string, unknown> = {}
+  let fellBack = 0
+  const result = await ask(
+    toolChangeOptions(sticky, true, { onToolChangeFallback: () => fellBack++ }),
+    [...history(), toolChange('add')],
+  )
+  expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+  expect(requests).toHaveLength(2)
+  expect(sentToolChangeBetas(1)).toEqual([false, false])
+  expect(advisorTools(1)).toEqual([{ type: 'advisor_20260301', name: 'advisor', model: opus() }])
+  expect(systemTurns(1)).toEqual([])
+  expect(JSON.stringify(requests[1]!.messages)).toContain('<system-reminder>\\n# Advisor Tool')
+  expect(sentBeta(1)).toBe(true)
+  expect(fellBack).toBe(1)
+  expect(sticky.rejected).toBe(true)
+  // Later requests of the conversation stay without it; an inactive entry is left out.
+  refusal = undefined
+  await ask(toolChangeOptions(sticky, false))
+  expect(sentToolChangeBetas(2)).toEqual([false, false])
+  expect(advisorTools(2)).toEqual([])
+})
+
+test('a rejected system turn retries without system turns and keeps them off', async () => {
+  refusal = { status: 400, message: "messages.3.role: Input should be 'user' or 'assistant'", on: 'system' }
+  const sticky: Record<string, unknown> = {}
+  await ask(toolChangeOptions(sticky, true), [...history(), toolChange('add')])
+  expect(requests).toHaveLength(2)
+  expect(systemTurns(0)).toHaveLength(1)
+  expect(systemTurns(1)).toEqual([])
+  expect(sentToolChangeBetas(1)).toEqual([false, false])
+  expect(sticky.systemRejected).toBe(true)
+  expect(loggedEvents.some(([name]) => name === 'tengu_mid_conv_system_fallback_retry')).toBe(true)
+})
+
+test('requests without conversation state or a capable model do not send the betas', async () => {
+  await ask({ model: TOOL_CHANGE_MODEL, advisorModel: 'opus' })
+  await ask({ advisorModel: 'opus', toolChanges: {} })
+  expect(sentToolChangeBetas(0)).toEqual([false, false])
+  expect(sentToolChangeBetas(1)).toEqual([false, false])
 })
 }

@@ -212,12 +212,26 @@ import {
   type ToolSearchRefusal,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
-import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
+import {
+  ADVISOR_BETA_HEADER,
+  MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
+} from '../../constants/betas.js'
 import {
   type AdvisorRefusal,
   classifyAdvisorRefusal,
+  classifyToolChangeRejection,
   isAdvisorResultUnprocessableError,
+  isSystemTurnRejection,
+  type ToolChangeRejection,
 } from './advisorRefusal.js'
+import {
+  applyToolChangeBetas,
+  modelSupportsToolChanges,
+  recordSystemTurnRejection,
+  recordToolChangeRejection,
+  type ToolChangeSticky,
+} from '../../utils/advisorToolChanges.js'
+import { splitAdvisorToolChanges } from '../../utils/advisorToolChangeWire.js'
 import {
   formatDeferredToolLines,
   isDeferredTool,
@@ -859,6 +873,19 @@ export type Options = {
   onAdvisorBlocksStripped?: () => void
   /** Internal: this request retries one without any advisor blocks. */
   advisorBlocksStripped?: true
+  /**
+   * The advisor entry is declared with defer_loading under the
+   * mid-conversation tool-change beta; /advisor adds and removes it with
+   * tool_addition and tool_removal. `advisorActive` says whether it is added.
+   */
+  advisorDeferred?: boolean
+  advisorActive?: boolean
+  /** The conversation's tool-change beta state; absent, the beta is not sent. */
+  toolChanges?: ToolChangeSticky
+  /** Called once when the tool-change beta failed, before the retry without it. */
+  onToolChangeFallback?: () => void
+  /** Internal: this request retries one whose tool-change beta or system turn was rejected. */
+  toolChangesStripped?: true
 }
 
 export async function queryModelWithoutStreaming({
@@ -1187,6 +1214,16 @@ class AdvisorRefusedError extends Error {
   }
 }
 
+/** The server rejected the tool-change beta (`kind`) or a role:"system" turn. */
+class ToolChangesRejectedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: ToolChangeRejection | 'system_turn',
+  ) {
+    super('tool changes rejected', { cause: refusal })
+  }
+}
+
 class AdvisorResultUnprocessableError extends Error {
   constructor(readonly refusal: APIError) {
     super('advisor result unprocessable', { cause: refusal })
@@ -1290,6 +1327,21 @@ async function* queryModelAdvisorRetry(
         requestOptions,
       )
     } catch (error) {
+      if (error instanceof ToolChangesRejectedError) {
+        if (error.kind === 'system_turn') {
+          recordSystemTurnRejection(requestOptions.toolChanges)
+          logEvent('tengu_mid_conv_system_fallback_retry', {})
+        } else {
+          recordToolChangeRejection(
+            requestOptions.toolChanges,
+            error.kind,
+            requestOptions.model,
+          )
+        }
+        options.onToolChangeFallback?.()
+        requestOptions = { ...requestOptions, toolChangesStripped: true }
+        continue
+      }
       if (error instanceof AdvisorResultUnprocessableError) {
         requestOptions = {
           ...requestOptions,
@@ -1403,10 +1455,15 @@ async function* queryModelRequest(
     options.querySource === 'hook_agent' ||
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
+  if (options.toolChangesStripped) {
+    applyToolChangeBetas(undefined, betas, options.model)
+  } else {
+    applyToolChangeBetas(options.toolChanges, betas, options.model)
+  }
 
   // Official 2.1.325: the query loop already picked this request's advisor;
   // only main-loop, agent and fork requests carry it.
-  const advisorModel =
+  let advisorModel =
     (isAgenticQuery || options.forkAdvisor) &&
     options.advisorModel !== undefined &&
     isAdvisorToolAllowed() &&
@@ -1567,6 +1624,29 @@ async function* queryModelRequest(
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
 
+  // Official 2.1.325: with the tool-change beta the advisor entry is declared
+  // deferred, so /advisor turns it on and off without touching the tools
+  // prefix. Without the beta an entry not yet added is left out.
+  const advisorDeferLoading =
+    advisorModel !== undefined &&
+    options.advisorDeferred === true &&
+    betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER) &&
+    [...toolSchemas, ...(options.extraToolSchemas ?? [])].some(
+      t => !('defer_loading' in t && t.defer_loading),
+    )
+  if (
+    options.advisorDeferred === true &&
+    options.advisorActive === false &&
+    !advisorDeferLoading
+  ) {
+    advisorModel = undefined
+  }
+  const advisorToolChanges =
+    advisorModel !== undefined &&
+    options.advisorDeferred === true &&
+    betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER) &&
+    modelSupportsToolChanges(options.model)
+
   // MCP tools are per-user → dynamic tool section → the system prompt behind
   // them can't be globally cached, so it falls back to org-scoped markers.
   // Tools never carry cache_control themselves: the system prompt markers
@@ -1686,6 +1766,7 @@ async function* queryModelRequest(
         )
       : schemaMessages,
     filteredTools,
+    { advisorToolChanges },
   )
   queryCheckpoint('query_message_normalization_end')
 
@@ -1799,6 +1880,7 @@ async function* queryModelRequest(
       type: 'advisor_20260301',
       name: 'advisor',
       model: advisorModel,
+      ...(advisorDeferLoading && { defer_loading: true }),
     } as unknown as BetaToolUnion)
   }
   const allTools = [
@@ -1809,7 +1891,8 @@ async function* queryModelRequest(
   // Consume once because request params are assembled repeatedly for logging and retries.
   const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
   const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
-  const messagesWithCacheBreakpoints = addCacheBreakpoints(
+  // Advisor tool changes ride as role:"system" turns (no-op without them).
+  const messagesWithCacheBreakpoints = splitAdvisorToolChanges(addCacheBreakpoints(
     messagesForAPI,
     enablePromptCaching,
     options.querySource,
@@ -1819,7 +1902,7 @@ async function* queryModelRequest(
     consumedCacheEdits,
     consumedPinnedEdits,
     options.skipCacheWrite,
-  )
+  )) as MessageParam[]
   if (
     enablePromptCaching &&
     getExtendedCacheTtlEnabled(options.querySource) &&
@@ -3343,6 +3426,18 @@ async function* queryModelRequest(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      if (
+        !options.toolChangesStripped &&
+        betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER)
+      ) {
+        const kind = isSystemTurnRejection(error)
+          ? 'system_turn'
+          : classifyToolChangeRejection(error)
+        if (kind !== undefined) {
+          throw new ToolChangesRejectedError(error as APIError, kind)
+        }
       }
 
       if (

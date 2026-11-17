@@ -71,7 +71,15 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../types/message.js'
-import { getAdvisorAnnouncementText, isAdvisorBlock } from './advisor.js'
+import {
+  type AdvisorToolAttachment,
+  getAdvisorAnnouncementText,
+  isAdvisorBlock,
+} from './advisor.js'
+import {
+  createAdvisorToolChangeMarker,
+  isAdvisorToolChangeMarker,
+} from './advisorToolChangeWire.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
 import {
@@ -2208,6 +2216,16 @@ function splicePollDelivery(
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
+  {
+    advisorToolChanges = false,
+  }: {
+    /**
+     * The request declares the advisor deferred under the mid-conversation
+     * tool-change beta: an advisor_tool attachment with a toolChange becomes
+     * an AdvisorToolChangeMarker instead of a reminder.
+     */
+    advisorToolChanges?: boolean
+  } = {},
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
@@ -2526,15 +2544,30 @@ export function normalizeMessagesForAPI(
           ) {
             return
           }
-          const rawAttachmentMessage =
-            attachmentMessagesForAPI.get(message) ??
+          const advisorToolChange =
+            advisorToolChanges &&
+            message.attachment.type === 'advisor_tool' &&
+            message.attachment.toolChange !== undefined
+              ? createUserMessage({
+                  content: [
+                    createAdvisorToolChangeMarker(
+                      message.attachment as AdvisorToolAttachment & {
+                        toolChange: 'add' | 'remove'
+                      },
+                    ) as unknown as ContentBlockParam,
+                  ],
+                  isMeta: true,
+                })
+              : undefined
+          const rawAttachmentMessage = advisorToolChange
+            ? [advisorToolChange]
+            : attachmentMessagesForAPI.get(message) ??
             normalizeAttachmentForAPI(
               // @ts-ignore - recovered code
               message.attachment,
             )
-          const attachmentMessage = checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-            'tengu_chair_sermon',
-          )
+          const attachmentMessage = !advisorToolChange &&
+            checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_chair_sermon')
             ? rawAttachmentMessage.map(ensureSystemReminderWrap)
             : rawAttachmentMessage
 
@@ -2901,8 +2934,13 @@ export function mergeUserContentBlocks(
   // Universal smoosh (gated): fold all non-tool_result block types (text,
   // image, document, search_result) into tool_result.content. tool_result
   // blocks stay as siblings (hoisted later by hoistToolResults).
-  const toSmoosh = b.filter(x => x.type !== 'tool_result')
-  const toolResults = b.filter(x => x.type === 'tool_result')
+  // Advisor tool-change markers become system turns, so they stay siblings.
+  const toSmoosh = b.filter(
+    x => x.type !== 'tool_result' && !isAdvisorToolChangeMarker(x),
+  )
+  const toolResults = b.filter(
+    x => x.type === 'tool_result' || isAdvisorToolChangeMarker(x),
+  )
   if (toSmoosh.length === 0) {
     return [...a, ...b]
   }
