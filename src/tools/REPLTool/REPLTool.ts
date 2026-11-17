@@ -35,7 +35,7 @@ import {
 } from './sessions.js'
 import { isUserStop, partwayNote, replStopOf, replStopReport, type ReplStop } from './stopReport.js'
 import { createReplToolHost, getReplCallableTools, type ReplToolDescriptor } from './toolWrappers.js'
-import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { renderToolUseMessage } from './UI.js'
 import { collectResultBlocks, resultBlockContent } from './resultBlocks.js'
 
 export const REPL_ALIAS = 'Eval'
@@ -342,7 +342,6 @@ export const REPLTool = buildTool({
     return summary ? `Running ${summary}` : 'Running code'
   },
   renderToolUseMessage,
-  renderToolResultMessage,
   async call(input, context, canUseTool, _parentMessage, onProgress) {
     if (isCodeModeEnabled()) saveCodeMode(true)
     const session = getReplSession(context.agentId ?? MAIN_REPL_SESSION)
