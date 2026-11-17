@@ -41,7 +41,7 @@ mock.module('../bridge/bridgeAuthRevive.js', () => ({
 }))
 
 const { render } = await import('../ink.js')
-const { AppStateProvider, useAppStateStore } = await import('../state/AppState.js')
+const { AppStateProvider, useAppState, useAppStateStore } = await import('../state/AppState.js')
 const { getDefaultAppState } = await import('../state/AppStateStore.js')
 const { useReplBridge } = await import('./useReplBridge.js')
 
@@ -58,18 +58,23 @@ type Mounted = {
   state: () => AppState
   set: (patch: Partial<AppState>) => void
   messages: () => Message[]
+  /** replBridgeEnabled as of the last commit, which is what the hook's effect sees. */
+  committedEnabled: () => boolean
   unmount: () => void
 }
 
 async function mount(patch: Partial<AppState> = {}): Promise<Mounted> {
   let store: ReturnType<typeof useAppStateStore> | undefined
   let rows: Message[] = []
+  let committedEnabled = false
   function Harness(): React.ReactNode {
     const [messages, setMessages] = useState<Message[]>([])
     rows = messages
     const abortRef = useRef<AbortController | null>(null)
     const s = useAppStateStore()
     useLayoutEffect(() => { store = s }, [s])
+    const enabled = useAppState(state => state.replBridgeEnabled)
+    useLayoutEffect(() => { committedEnabled = enabled }, [enabled])
     useReplBridge(messages, setMessages, abortRef, [], 'test-model')
     return null
   }
@@ -89,6 +94,7 @@ async function mount(patch: Partial<AppState> = {}): Promise<Mounted> {
     state: () => store!.getState(),
     set: p => store!.setState(prev => ({ ...prev, ...p })),
     messages: () => rows,
+    committedEnabled: () => committedEnabled,
     unmount: () => { instance.unmount(); instance.cleanup() },
   }
 }
@@ -258,7 +264,8 @@ test('three failed inits trip the fuse, which writes its own line', async () => 
   const m = await mount()
   try {
     for (let i = 1; i <= 3; i++) {
-      await until(() => !m.state().replBridgeEnabled && m.state().replBridgeError === 'boom', `failure ${i}`)
+      // Re-enable only after the disable is committed; flipping it back first leaves the effect unrun.
+      await until(() => initCalls === i && !m.committedEnabled() && m.state().replBridgeError === 'boom', `failure ${i}`)
       m.set({ replBridgeEnabled: true })
     }
     await until(() => m.state().replBridgeError === 'disabled after repeated failures · restart to retry', 'fuse')
