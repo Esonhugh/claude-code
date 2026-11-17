@@ -17,6 +17,28 @@ const scenarios: Record<
   string,
   (h: Awaited<ReturnType<typeof harness>>) => Promise<void>
 > = {
+  async 'Bun settings watcher polls and observes atomic replacement'(h) {
+    await h.detector.initialize()
+    await h.ready()
+    expect(h.watcher().options.usePolling).toBe(true)
+    expect(h.watcher().options.interval).toBe(500)
+    const changed = h.nextChange()
+    const writer = Bun.spawn([process.execPath, '--eval', `
+      const fs = require('node:fs');
+      const path = process.env.CLAUDE_TEST_SETTINGS_PATH;
+      fs.writeFileSync(path + '.replacement', JSON.stringify({ disableAllHooks: false }));
+      fs.renameSync(path + '.replacement', path);
+    `], {
+      env: { PATH: process.env.PATH, CLAUDE_TEST_SETTINGS_PATH: h.path },
+      stdout: 'pipe', stderr: 'pipe',
+    })
+    expect(await writer.exited).toBe(0)
+    await changed
+    expect(h.settings.getInitialSettings().disableAllHooks).toBe(false)
+    const watcher = h.watcher()
+    await h.detector.dispose()
+    expect(watcher.closed).toBe(true)
+  },
   async 'hooks snapshot reads only accepted settings before block allow and retry'(
     h,
   ) {
@@ -654,7 +676,14 @@ async function harness() {
     default: {
       watch: (...args: Parameters<typeof watch>) => {
         watcher = watch(...args)
-        ready = new Promise((resolve) => watcher.once('ready', resolve))
+        ready = new Promise((resolve) =>
+          watcher.once('ready', () => {
+            // Bun's stat poller takes its first sample after chokidar's ready
+            // event, and a write that lands before it is never reported.
+            if (watcher.options.usePolling) setTimeout(resolve, 200)
+            else resolve()
+          }),
+        )
         return watcher
       },
     },
@@ -738,7 +767,7 @@ async function harness() {
       new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           unsubscribe()
-          reject(new Error('No settings change after native watcher ready'))
+          reject(new Error('No settings change after watcher ready'))
         }, 2500)
         const unsubscribe = detector.subscribe(() => {
           clearTimeout(timer)
