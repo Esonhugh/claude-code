@@ -548,11 +548,7 @@ exit 1
       securityTeam: { binarySha256, cleanup, registration: 'denied: Managed allowedMcpServers policy does not permit user plugin tool registration' },
       securityEnterprise: { binarySha256, cleanup, registration: 'denied: Managed allowedMcpServers policy does not permit user plugin tool registration' },
       privacyOff: { binarySha256, cleanup, ledger: [] },
-      privacyOn: { binarySha256, cleanup, ledger: [
-        { sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true },
-        { sequence: 2, operation: 'authorize', credentialKind: 'bearer', granted: true },
-        { sequence: 3, operation: 'http', method: 'POST', host: 'api.anthropic.com', path: '/api/event_logging/v2/batch', authorized: true },
-      ] },
+      privacyOn: { binarySha256, cleanup, ledger: [] },
     }
     const result = assessBuiltinAcceptance(pair)
     expect(result.completeness.verdict).toBe('passed')
@@ -576,8 +572,9 @@ exit 1
         if (name === 'privacyOff' || name === 'privacyOn') expect(failed.telemetry.verdict).toBe('failed')
       }
     }
-    expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ledger: pair.privacyOn.ledger } }).telemetry.verdict).toBe('failed')
-    expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ledger: pair.privacyOn.ledger.slice(1) } }).telemetry.verdict).toBe('failed')
+    const hostCall = [{ sequence: 1, operation: 'authorize', credentialKind: 'bearer', granted: true }]
+    expect(assessBuiltinAcceptance({ ...pair, privacyOff: { ...pair.privacyOff, ledger: hostCall } }).telemetry.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, privacyOn: { ...pair.privacyOn, ledger: hostCall } }).telemetry.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, error: 'Timed out during exit' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { status: 1 } } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, cleanup: { ...cleanup, providerClose: { status: 1 }, verdict: 'failed' } } }).cleanup.verdict).toBe('failed')

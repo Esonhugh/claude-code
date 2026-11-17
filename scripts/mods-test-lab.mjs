@@ -509,12 +509,10 @@ export function assessBuiltinAcceptance(pair) {
     !pair.securityOrdinary?.suggestionRollback?.includes('MODS_SUGGESTION:base:rollbackcheck')
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
+  // The builtin archive no longer registers a telemetry Mod (CHANGELOG, 579bb424): enabling
+  // telemetry@builtin must not reach any host operation.
   const telemetry = [pair.privacyOff, pair.privacyOn].every(side => side && !side.error && !side.ledgerError) &&
-    privacyOff.length === 0 && privacyOn.length === 3 &&
-    privacyOn[0]?.sequence === 1 && privacyOn[0]?.operation === 'authorize' && privacyOn[0]?.granted === true &&
-    privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
-    privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
-    privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
+    privacyOff.length === 0 && privacyOn.length === 0
   // Native captures carry closed shared-slot evidence; only PTY-recorder captures use the legacy files.
   const frameEvidence = sides.every(side => side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1'
     ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side))
@@ -530,7 +528,7 @@ export function assessBuiltinAcceptance(pair) {
     ui: { verdict: ui ? 'passed' : 'failed', reason: 'ModsPane must open, own local input, survive resize, close with Escape, and reopen in the current binary' },
     dynamicTools: { verdict: dynamicTools ? 'passed' : 'failed', reason: 'ToolSearch must discover a tool registered by its outer Mod hook, invoke it once, and return the matching result in one compiled-binary turn' },
     suggestionReload: { verdict: suggestionReload ? 'passed' : 'failed', reason: 'successful replacement must publish only the new suggestion generation and failed replacement must restore that retained generation exactly once' },
-    telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'privacy off must make zero host calls; privacy on must append exactly authorize then sanitized first-party HTTP evidence' },
+    telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'no telemetry Mod is registered, so privacy off and privacy on with telemetry@builtin enabled must both make zero host calls' },
   }
 }
 
