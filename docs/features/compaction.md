@@ -150,7 +150,7 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 打开后，手动 `/compact` 和自动压缩都按这种方式进行：
 
 - **用 OpenAI provider 时**：交给 OpenAI 服务端压缩（请求里带 `compaction_trigger`），服务端返回一段加密的压缩内容，之后的请求带着它继续，多次压缩会接上之前的压缩历史。服务端不支持时（返回 404 / 405 / 426 或 `not supported`），改走下面的方式。
-- **其他情况**：照常写摘要，并和 Codex 一样**只原样保留最近的用户消息**，从新到旧累计大约 `retainedUserMessageTokens` 个 token（默认 20000）。模型的回复、工具调用（包括 `Write` 写入的文件内容）和工具结果都不保留，交给摘要概括；放不下的那条用户消息只保留开头一段，图片等非文本内容不保留。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
+- **其他情况**：照常写摘要，并和 Codex 一样**只原样保留最近的用户消息**，从新到旧累计大约 `retainedUserMessageTokens` 个 token（默认 20000）。模型的回复、工具调用（包括 `Write` 写入的文件内容）和工具结果都不保留，交给摘要概括；放不下的那条用户消息只保留开头一段，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
 - 两种情况都不走 session memory 压缩。
 
 | 配置项 | 写法 | 默认 | 说明 |

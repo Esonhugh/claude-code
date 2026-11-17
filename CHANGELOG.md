@@ -28,11 +28,11 @@
 #### 需要用户处理的行为变化
 
 - Codex 式压缩（`compact.mode: "codex"`）写摘要时与 Codex 一样只原样保留最近的用户消息：模型回复、工具调用（包括 `Write` 写入的文件内容）和工具结果交给摘要，不再保留；放不下的那条只留开头，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。此前多次大 `Write` 后 `/compact` 几乎不减少上下文，实测压缩后的下一次请求由 1,253,245 字节降到 34,344 字节。OpenAI 服务端压缩与默认的 `claude` 方式不变（#1362）。
-- 用 Bun 构建的 binary 中，设置文件、自定义主题和 cron 文件改为每 500 ms 轮询一次，外部改动最多晚一个轮询间隔生效（#1361）。
+- 在 Bun 下运行时（包括 Bun 构建的 binary），设置文件、自定义主题和 cron 文件改为每 500 ms 轮询一次，外部改动最多晚一个轮询间隔生效（#1361）。
 
 #### 新功能
 
-- Code Mode（实验性，移植自官方 2.1.325）：以 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 启动后，模型只用一个 `REPL` 工具，写一段 JavaScript 一次调用 `Read`、`Grep`、`Bash` 等工具，每次调用照常做参数校验、hook 和权限确认；以 `auto` 或 `bypassPermissions` 启动时另有 `Poll` 工具，超过 30 秒的脚本转到后台，完成后叫醒模型。没有设置项或 `/config` 开关；`-p`、SDK、IDE 插件、后台会话、teammate 窗格、Remote Control 与 `--remote` 不开启。用 Code Mode 开的会话只能在 Code Mode 下恢复（#1363）。
+- Code Mode（实验性，移植自官方 2.1.325）：以 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 启动后，模型只用一个 `REPL` 工具，写一段 JavaScript 一次调用 `Read`、`Grep`、`Bash` 等工具，每次调用照常做参数校验、hook 和权限确认；以 `auto` 或 `bypassPermissions` 启动时另有 `Poll` 工具，脚本在后台跑、结果在同一轮送回；等待时用户输入会结束等待，之后完成的脚本在空闲时开启新一轮。没有设置项或 `/config` 开关；`-p`、SDK、IDE 插件、后台会话、teammate 窗格、Remote Control 与 `--remote` 不开启。Code Mode 会话要在打开开关时恢复才继续用 Code Mode；不设开关恢复时改用普通工具继续，之后不再进入 Code Mode（#1363）。
 - ChatGPT 登录时 `/usage` 新增 Credits 一节，显示 credits 余额和按 25 credits = 1 美元换算的参考金额（如 `Credits: 12,500, USD: $500.00`），不是会话费用；无限额度显示 `Credits: Unlimited, USD: N/A`，没有余额数据时显示 0（#1357、#1359）。
 
 #### 修复
