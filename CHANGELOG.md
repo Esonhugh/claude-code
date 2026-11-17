@@ -52,13 +52,14 @@
 - macOS 上 PTY 输出队列满时，内核对 ONLCR 换行会输出 `\r\r\n`；原生帧重放现在每个换行最多接受一个重复的 CR，且只在原始字节里确实有时接受。此前重放把它当成来源不明的字节，产生不了 Ink 帧。
 - 终端 target 的覆盖检查也改用 bounded 校验；此前覆盖检查仍跑完整校验，已通过的终端 target 被列为 invalid。
 - 门禁 target 分为 7 组（terminal、mods、agents、workflow、openai、models、ssh），可以用 `--group` 或 `--only-target` 单独跑。只跑一部分时结果写 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`；`--merge-manifests` 合并 HEAD、binary、baseline、driver 的 sha256 和 required targets 都相同的几次结果，同一 target 以较新的一次为准。
-- 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；代码修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖和构建配置的改动仍作废全部四路。
+- 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；代码修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖、构建配置和构建打包脚本的改动仍作废全部四路。
 - 除上面列出的改动，这几个 target 原有的检查没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测和虚拟滚动，这些路径的改动不会触发任何 binary target。
 
 ### 测试覆盖
 
 - 每个 PR 合并前并入最新 `dev`，PR CI 全绿：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、macOS/Windows e2e 与 web e2e。#1361 并入 `dev` 后单测第 3 片的设置 watcher 用例在负载下失败（轮询器在 chokidar ready 之后才取首个样本），测试改为等首个样本后再写，8 路并行下由 3/24 次失败降为 0/24。
-- #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（在 `26510e95` 上测得，早于 `c78cf77d`），转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
+- #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（在 `26510e95` 上测得，早于 `c78cf77d`）；发布验收在 `45d27605` 上加入 `c78cf77d` 的等待中按 Esc 场景后重跑，21/21 个、351/351 项通过；转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
+- 发布验收（四路：单测与交互、`make release-check`、binary 门禁、文档审计）按增量作废进行。`45d27605` 上：全量单测 9171 项通过、67 项失败，失败项在 `v2.1.297` 上同样失败，或是环境相关、偶发；binary 门禁 16 个 required target 加 readiness smoke 全部通过（binary sha256 `7339cf09…`）。之后的 `fcb3aa8a` 只改了 `scripts/mods-test-lab.mjs`：`make release-check` 整体重跑通过，`mods-test-lab` 测试 35 项通过、1 项跳过，`builtin-mods` 和 readiness smoke 在新 binary（`d22712a2…`，与前者只差内嵌的 `CHANGELOG.md`）上重跑通过，其余 15 个 target 保留 `45d27605` 上的结果；其余提交是纯文档，只重跑文档审计。已知旧失败：`scripts/verify-pty-terminal-evidence.test.mjs` 的 sealed proof 用例在 macOS 默认 `TMPDIR`（`/var` 是 `/private/var` 的符号链接）下失败，`v2.1.297` 上相同，不在 `make release-check` 内。门禁没有覆盖的路径见上面发布门禁一节的最后一条。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
