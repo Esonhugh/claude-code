@@ -21,12 +21,20 @@ test('native captures are judged by the native validator, others by the legacy o
   const native = assessBuiltinAcceptance(pair('native-shared-slot-v1')).terminalEvidence
   expect(validated.every(([kind]) => kind === 'native')).toBe(true)
   expect(native.frameEvidence).toBe(true)
-  // Product timing is still not preserved, so the gate stays closed.
+  // Product timing equivalence is reported, not gated: verified frames pass.
   expect(native.timingEquivalent).toBe(false)
-  expect(native.verdict).toBe('failed')
+  expect(native.verdict).toBe('passed')
 
   validated.length = 0
   const legacy = assessBuiltinAcceptance(pair(undefined)).terminalEvidence
   expect(validated.every(([kind]) => kind === 'legacy')).toBe(true)
   expect(legacy.frameEvidence).toBe(false)
+  expect(legacy.verdict).toBe('failed')
+
+  // One side without verified frames fails the assertion even with timing claimed.
+  const mixed = pair('native-shared-slot-v1')
+  mixed.enabled.cleanup.terminalCapture = { productTimingEquivalent: true }
+  const partial = assessBuiltinAcceptance(mixed).terminalEvidence
+  expect(partial.frameEvidence).toBe(false)
+  expect(partial.verdict).toBe('failed')
 })

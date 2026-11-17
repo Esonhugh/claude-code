@@ -7,7 +7,7 @@ import { createServer } from 'node:net'
 import { join, dirname } from 'node:path'
 import { URL } from 'node:url'
 import { zipSync } from 'fflate'
-import { COMMIT, OFFICIAL, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, linuxSandboxPolicy, parseArgs, prepareFixture, sandboxCommand, sandboxProfile, startAcceptanceProvider, startBuiltinRun } from './mods-test-lab.mjs'
+import { COMMIT, HOST_MANAGED_ROOT, OFFICIAL, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, hostManagedSettings, inventory, isIdlePrompt, linuxSandboxPolicy, parseArgs, prepareFixture, sandboxCommand, sandboxProfile, startAcceptanceProvider, startBuiltinRun } from './mods-test-lab.mjs'
 import {createBuiltinCapture} from './builtin-terminal-evidence.mjs'
 
 const REPO = dirname(dirname(import.meta.path))
@@ -188,6 +188,40 @@ describe('private fixtures without a compiled TTY', () => {
     expect(profile).not.toContain('(deny file-read* (require-all')
     expect(profile).toContain('/Library/Keychains')
     expect(profile).toContain('com.apple.securityd')
+    expect(profile).toContain('(deny file-read* (subpath "/Library/Managed Preferences"))')
+    // Readable so the product's managed-settings.d scan does not fail with EPERM;
+    // hostManagedSettings() requires it to hold no settings instead.
+    expect(profile).not.toContain(HOST_MANAGED_ROOT)
+  })
+  test('host managed settings pass only when they cannot change the product', () => {
+    const root = temp()
+    const at = name => join(root, 'managed', name)
+    const assess = () => hostManagedSettings(join(root, 'managed'), 'darwin')
+    expect(assess()).toMatchObject({ verdict: 'passed', files: [] })
+    mkdirSync(at('managed-settings.d'), { recursive: true })
+    writeFileSync(at('managed-settings.d/90-audit.json'), '')
+    writeFileSync(at('managed-settings.json'), ' {} \n')
+    const empty = assess()
+    expect(empty.verdict).toBe('passed')
+    expect(empty.files.map(file => [file.name, file.size])).toEqual([['managed-settings.d/90-audit.json', 0], ['managed-settings.json', 5]])
+    expect(empty.files[0].sha256).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+    for (const [name, content, problem] of [
+      ['managed-settings.d/50-policy.json', '{"disableAllHooks":true}', 'managed-settings.d/50-policy.json: not empty settings'],
+      ['managed-settings.json', '{', 'managed-settings.json: not empty settings'],
+      ['managed-settings.json', '[]', 'managed-settings.json: not empty settings'],
+      ['CLAUDE.md', '', 'CLAUDE.md: not a settings file'],
+      ['.claude/rules/r.md', 'x', '.claude/rules/r.md: not a settings file'],
+    ]) {
+      const before = existsSync(at(name)) ? readFileSync(at(name)) : null
+      mkdirSync(dirname(at(name)), { recursive: true })
+      writeFileSync(at(name), content)
+      const result = assess()
+      expect(result.verdict).toBe('failed')
+      expect(result.reason).toContain(problem)
+      if (before === null) rmSync(at(name)); else writeFileSync(at(name), before)
+    }
+    expect(assess().verdict).toBe('passed')
+    expect(hostManagedSettings(join(root, 'managed'), 'linux')).toMatchObject({ hiddenBySandbox: true, verdict: 'passed' })
   })
   test('runs actual discovery/prepare/loader in an isolated non-TTY subprocess', () => {
     const root = temp()
