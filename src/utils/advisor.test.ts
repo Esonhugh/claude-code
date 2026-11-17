@@ -15,7 +15,9 @@ const {
   getLastAdvisorAttachment,
   hasFullAdvisorAnnouncement,
   isAdvisorEnabled,
+  getAdvisorRankKey,
   isAdvisorPairingAllowed,
+  isAdvisorPairingAllowedStrict,
   isAdvisorRefusal,
   isAdvisorToolAllowed,
   isValidAdvisorModel,
@@ -170,6 +172,14 @@ describe('advisor ranks', () => {
     expect(isAdvisorPairingAllowed('claude-opus-4-6', 'claude-opus-4-6')).toBe(true)
     expect(isAdvisorPairingAllowed('claude-fable-5-1', 'claude-opus-5')).toBe(false)
     expect(isAdvisorPairingAllowed('claude-opus-4-5', 'claude-sonnet-4-6')).toBe(true)
+  })
+
+  test('the standby pairing also needs both ranks known', () => {
+    expect(isAdvisorPairingAllowedStrict('claude-sonnet-5-5', 'claude-opus-5')).toBe(true)
+    expect(isAdvisorPairingAllowedStrict('claude-fable-5-1', 'claude-opus-5')).toBe(false)
+    expect(isAdvisorPairingAllowedStrict('claude-opus-4-5', 'claude-sonnet-4-6')).toBe(false)
+    expect(getAdvisorRankKey('claude-sonnet-5-5[1m]')).toBe('sonnet-5-5')
+    expect(getAdvisorRankKey('claude-opus-4-5')).toBeUndefined()
   })
 
   test('the experimental env skips every rank check', () => {

@@ -1,5 +1,9 @@
 import { APIError } from '@anthropic-ai/sdk'
-import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
+import {
+  ADVISOR_BETA_HEADER,
+  MID_CONVERSATION_SYSTEM_BETA_HEADER,
+  MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
+} from '../../constants/betas.js'
 
 /**
  * How far an advisor refusal reaches, like official 2.1.325: the whole
@@ -20,10 +24,14 @@ const ADVISOR_INPUT_TAG = new RegExp(
   `^${'advisor_20260301'.replace(/\d+$/, '')}\\d+$`,
 )
 
-function hasAdvisorInputTag(message: string): boolean {
-  return [...message.matchAll(/Input tag '([\w.-]+)'/g)].some(([, tag]) =>
-    ADVISOR_INPUT_TAG.test(tag!),
+function hasInputTag(message: string, tag: RegExp): boolean {
+  return [...message.matchAll(/Input tag '([\w.-]+)'/g)].some(([, name]) =>
+    tag.test(name!),
   )
+}
+
+function hasAdvisorInputTag(message: string): boolean {
+  return hasInputTag(message, ADVISOR_INPUT_TAG)
 }
 
 function hasCapabilityRejection(message: string, capability: string): boolean {
@@ -35,13 +43,16 @@ function hasCapabilityRejection(message: string, capability: string): boolean {
   return false
 }
 
-function rejectsAdvisorBeta(error: APIError): boolean {
-  const message = error.message
+/** Official `FE`: the message rejects this beta header. */
+function rejectsBetaHeader(message: string, header: string): boolean {
   return (
-    error.status === 400 &&
-    ((message.includes(ADVISOR_BETA_HEADER) && /anthropic[-_]beta/.test(message)) ||
-      hasCapabilityRejection(message, `beta_header:${ADVISOR_BETA_HEADER}`))
+    (message.includes(header) && /anthropic[-_]beta/.test(message)) ||
+    hasCapabilityRejection(message, `beta_header:${header}`)
   )
+}
+
+function rejectsAdvisorBeta(error: APIError): boolean {
+  return error.status === 400 && rejectsBetaHeader(error.message, ADVISOR_BETA_HEADER)
 }
 
 function isAdvisorRefusalError(error: APIError): boolean {
@@ -98,4 +109,117 @@ export function classifyAdvisorRefusal(
       ? 'host'
       : 'conversation'
   return { scope, betaHeader }
+}
+
+function getErrorCode(error: APIError): unknown {
+  const body = error.error as
+    | { error?: { details?: { error_code?: unknown } } }
+    | undefined
+  return body?.error?.details?.error_code
+}
+
+const TOOL_CHANGES_UNSUPPORTED_CODE = 'mid_conversation_tool_changes_not_supported'
+const SYSTEM_TURN_UNSUPPORTED_CODE = 'mid_conversation_system_not_supported'
+
+/** Official `rTo`: a cache_control shape error, not a tool-change one. */
+function isCacheControlShapeError(message: string): boolean {
+  if (!message.includes('cache_control')) return false
+  if (/system messages?\b|role .{0,2}system/i.test(message)) return false
+  if (message.includes('empty text block')) return false
+  if (/\bsystem\.\d+\./.test(message) || message.includes('tool_result')) return false
+  if (/\bttl\b/i.test(message)) return false
+  const lower = message.toLowerCase()
+  return [
+    'not permitted',
+    'cannot be set',
+    'unknown name',
+    'unknown field',
+    'unrecognized',
+    'additional propert',
+  ].some(text => lower.includes(text))
+}
+
+export type ToolChangeRejection =
+  | 'model_unsupported'
+  | 'block_type_unknown'
+  | 'header_rejected'
+  | 'after_paused_turn'
+  | 'too_many_definitions'
+  | 'pfc_only'
+  | 'unknown_tool_reference'
+  | 'other'
+
+/** Official `TDe`: why the server rejected a mid-conversation tool change. */
+export function classifyToolChangeRejection(
+  error: unknown,
+): ToolChangeRejection | undefined {
+  if (!(error instanceof APIError)) return undefined
+  if (error.status === 400 && getErrorCode(error) === TOOL_CHANGES_UNSUPPORTED_CODE) {
+    return 'model_unsupported'
+  }
+  const message = error.message
+  if (
+    (error.status === 400 || error.status === 422) &&
+    hasInputTag(message, /^tool_(addition|removal)$/)
+  ) {
+    return 'block_type_unknown'
+  }
+  if (error.status !== 400) return undefined
+  if (rejectsBetaHeader(message, MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER)) {
+    return 'header_rejected'
+  }
+  if (!/\btool_addition\b/.test(message) || isCacheControlShapeError(message)) {
+    return undefined
+  }
+  if (message.includes('paused assistant turn')) return 'after_paused_turn'
+  if (
+    message.includes('not supported on this model') ||
+    message.includes('requires a model that supports')
+  ) {
+    return 'model_unsupported'
+  }
+  if (message.includes('exceed')) return 'too_many_definitions'
+  if (message.includes('PFC-only')) return 'pfc_only'
+  if (message.includes('references') || message.includes('names a declared')) {
+    return 'unknown_tool_reference'
+  }
+  return 'other'
+}
+
+const SYSTEM_ROLE_MISPLACED =
+  /(?:messages\.(\d{1,6}): )?(?:role .{0,2}system.{0,2} must (?:precede an|follow a)|use the top-level .{0,2}system.{0,2} parameter for the initial system prompt)/i
+const SYSTEM_ROLE_TEXT_ONLY = /text-only role .{0,2}system.{0,2} messages require/i
+const SYSTEM_ROLE_UNKNOWN =
+  /(?:unknown variant .{0,2}system\b.{0,2}, expected|Input should be) [\\'"`]{1,2}(?:user|assistant)\b.{0,2} or [\\'"`]{1,2}(?:user|assistant)\b/i
+const SYSTEM_ROLE_MENTION = /system messages?\b|role .{0,2}system/i
+
+/**
+ * Official `YO`: the server rejected the role:"system" turn or its beta
+ * (`mid-conversation-system-2026-04-07`).
+ */
+export function isSystemTurnRejection(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false
+  const message = error.message
+  if (
+    error.status !== 400 &&
+    error.status !== 422 &&
+    (message.includes('cache_control') ||
+      (message.includes(MID_CONVERSATION_SYSTEM_BETA_HEADER) &&
+        /anthropic[-_]beta/.test(message)))
+  ) {
+    return false
+  }
+  const code = getErrorCode(error)
+  if (error.status === 400 && code === TOOL_CHANGES_UNSUPPORTED_CODE) return false
+  return (
+    code === SYSTEM_TURN_UNSUPPORTED_CODE ||
+    rejectsBetaHeader(message, MID_CONVERSATION_SYSTEM_BETA_HEADER) ||
+    SYSTEM_ROLE_MISPLACED.test(message) ||
+    SYSTEM_ROLE_TEXT_ONLY.test(message) ||
+    (message.includes('Unexpected role') && message.includes('input message role')) ||
+    SYSTEM_ROLE_UNKNOWN.test(message) ||
+    (message.includes('cache_control') && SYSTEM_ROLE_MENTION.test(message)) ||
+    (message.includes('not supported') && /role .{0,2}system/i.test(message)) ||
+    hasCapabilityRejection(message, 'mid_conv_system')
+  )
 }

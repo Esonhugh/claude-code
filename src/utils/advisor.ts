@@ -105,7 +105,7 @@ export function getAdvisorRefusalText(block: object): string | undefined {
 let refusedForProcess = false
 const refusedHosts = new Set<string>()
 
-function getAdvisorHostKey(): string {
+export function getAdvisorHostKey(): string {
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   if (!baseUrl) return 'default'
   try {
@@ -193,16 +193,26 @@ export function resolveAdvisorModelId(model: string): string {
 // minor version has no rank.
 const RANK_KEY_TAIL = /^(?:$|\[|-\d{8}(?:$|\[))/
 
-export function getAdvisorRank(model: string): number | undefined {
+function findRankEntry(model: string): readonly [string, number] | undefined {
   const id = resolveAdvisorModelId(model).toLowerCase()
-  for (const [key, rank] of ADVISOR_RANKS) {
+  for (const entry of ADVISOR_RANKS) {
+    const key = entry[0]
     for (let at = id.indexOf(key); at !== -1; at = id.indexOf(key, at + 1)) {
       const before = id[at - 1]
       if (before !== undefined && /[a-z0-9]/.test(before)) continue
-      if (RANK_KEY_TAIL.test(id.slice(at + key.length))) return rank
+      if (RANK_KEY_TAIL.test(id.slice(at + key.length))) return entry
     }
   }
   return undefined
+}
+
+export function getAdvisorRank(model: string): number | undefined {
+  return findRankEntry(model)?.[1]
+}
+
+/** The model catalog key (`opus-5`, `fable-5-1`, ...) the model resolves to. */
+export function getAdvisorRankKey(model: string): string | undefined {
+  return findRankEntry(model)?.[0]
 }
 
 /** Whether the main loop model can call the advisor. */
@@ -245,6 +255,21 @@ export function isAdvisorPairingAllowedByRank(
   advisor: string,
 ): boolean {
   return compareAdvisorRanks(mainModel, advisor)
+}
+
+/**
+ * Official `xXi`, for the standby entry: both models must have a rank and
+ * the advisor's must be at least the main model's.
+ */
+export function isAdvisorPairingAllowedStrict(
+  mainModel: string,
+  advisor: string,
+): boolean {
+  const mainRank = getAdvisorRank(mainModel)
+  const advisorRank = getAdvisorRank(advisor)
+  return (
+    mainRank !== undefined && advisorRank !== undefined && mainRank <= advisorRank
+  )
 }
 
 export function isSameAdvisorModel(a: string, b: string): boolean {
@@ -331,11 +356,15 @@ export type AdvisorToolAttachment =
       available: true
       model: string
       abbreviated?: true
+      /** Sent as a tool_addition (mid-conversation tool-change beta). */
+      toolChange?: 'add'
     }
   | {
       type: 'advisor_tool'
       available: false
       model?: string
+      /** Sent as a tool_removal (mid-conversation tool-change beta). */
+      toolChange?: 'remove'
       byBase?: true
     }
 
@@ -398,4 +427,17 @@ export function hasFullAdvisorAnnouncement(
       message.attachment.available &&
       !message.attachment.abbreviated,
   )
+}
+
+/** Official `GOr`: the latest tool change an advisor_tool attachment made. */
+export function getLastAdvisorToolChange(
+  messages: readonly Message[],
+): 'add' | 'remove' | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (isAdvisorToolAttachment(message) && message.attachment.toolChange) {
+      return message.attachment.toolChange
+    }
+  }
+  return undefined
 }
