@@ -5945,7 +5945,7 @@ def assert_terminal_matrix_execution(module):
             if failure is None:
                 incomplete = {'normal_native_exit', 'independent_pty_capture_identity',
                               'independent_pty_resize_sequence', 'bounded_terminal_evidence',
-                              'full_terminal_coverage'}
+                              'bounded_terminal_verify'}
                 assert all(value for key, value in checks.items()
                            if not key.startswith('frame_') and key not in incomplete), checks
                 assert all(checks[key] is False for key in incomplete), checks
@@ -8153,7 +8153,50 @@ def test_retained_capture_roster_missing_or_ambiguous_intent_fails_closed():
                       for value in (None, '', 1))):
         assert module.terminal_capture_required_files(invalid) is None, invalid
     for target in module.TERMINAL_ACCEPTANCE:
-        assert {'bounded_terminal_evidence', 'full_terminal_coverage'} <= module.TERMINAL_REQUIRED_CHECKS[target]
+        assert {'bounded_terminal_evidence', 'bounded_terminal_verify'} <= module.TERMINAL_REQUIRED_CHECKS[target]
+        assert 'full_terminal_coverage' not in module.TERMINAL_REQUIRED_CHECKS[target]
+
+
+def test_retained_bounded_terminal_verify_gates_and_full_coverage_is_reported_only():
+    module = load_driver()
+    with tempfile.TemporaryDirectory() as directory:
+        run_dir = Path(directory)
+        gate = object.__new__(module.BinaryGate)
+        calls = []
+        def verify(codes):
+            def command(action, descriptor, *options):
+                calls.append((action, descriptor, options))
+                outcome = codes[options]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return subprocess.CompletedProcess([], outcome, '', '')
+            return command
+        cases = (
+            # bounded, full -> bounded_terminal_verify, full_terminal_coverage
+            ((0, 1), True, 'not covered'),
+            ((0, 0), True, 'passed'),
+            ((1, 1), False, 'not covered'),
+            ((1, 0), False, 'passed'),
+            ((subprocess.TimeoutExpired('bun', 90), 1), False, 'not covered'),
+        )
+        (run_dir / 'capture-launch.json').write_text('{}')
+        for (bounded, full), gated, reported in cases:
+            calls.clear()
+            gate.terminal_capture_command = verify({('--bounded',): bounded, (): full})
+            checks, result = {}, {}
+            gate.verify_terminal_capture(run_dir, checks, result)
+            assert checks == {'bounded_terminal_verify': gated}, (bounded, full, checks)
+            assert result['full_terminal_coverage'] == reported
+            assert 'full_terminal_coverage' not in checks
+            assert [options for _, _, options in calls] == [('--bounded',), ()]
+            assert ('bounded_verify_error' in result) == isinstance(bounded, Exception)
+        # No sealed descriptor: nothing runs and the target cannot pass.
+        (run_dir / 'capture-launch.json').unlink()
+        calls.clear()
+        checks, result = {}, {}
+        gate.verify_terminal_capture(run_dir, checks, result)
+        assert calls == [] and checks == {'bounded_terminal_verify': False}
+        assert result['full_terminal_coverage'] == 'not covered'
 
 
 if __name__ == '__main__':

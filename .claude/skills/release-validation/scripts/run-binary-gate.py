@@ -1285,7 +1285,7 @@ TERMINAL_REQUIRED_CHECKS = {
         'paste_recovery_submit', 'diff_alpha_ready', 'diff_partial_loading',
         'diff_same_chunk_navigation', 'resize_intent', 'resize_keyboard_ownership',
         'diff_closed', 'diff_reopened', 'frame_physical', 'frame_resize_sequence',
-        'frame_semantics', 'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity',
+        'frame_semantics', 'cleanup', 'bounded_terminal_evidence', 'bounded_terminal_verify', 'independent_pty_capture_identity',
         'independent_pty_resize_sequence', 'normal_native_exit',
         'same_chunk_utf8_submit_prompt_restored', 'same_chunk_utf8_submit_exact_request',
         'csi_u_submit_prompt_restored', 'csi_u_submit_exact_request',
@@ -1310,7 +1310,7 @@ TERMINAL_REQUIRED_CHECKS = {
         'canonical_reopened', 'canonical_reopen_scroll_reset', 'canonical_command_closed',
         'canonical_narrow_refused', 'canonical_no_native_fallback', 'canonical_keyboard_owner',
         'canonical_release_watcher_stopped', 'scenario_completed', 'normal_native_exit',
-        'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
+        'cleanup', 'bounded_terminal_evidence', 'bounded_terminal_verify', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
         'independent_pty_resize_sequence', 'canonical_wire_complete', 'canonical_wire_identity',
         'canonical_wire_tool_receipts', 'canonical_git_release_causal', 'canonical_git_success',
         'canonical_pane_frame_association', 'canonical_pane_lifecycle', 'canonical_keyboard_landing',
@@ -4343,15 +4343,38 @@ class BinaryGate:
         })
         return action
 
-    def terminal_capture_command(self, action, descriptor):
+    def terminal_capture_command(self, action, descriptor, *options):
         result = command([
             'bun', str(self.repo / 'scripts/terminal-capture-driver.mjs'),
-            action, str(descriptor),
+            action, str(descriptor), *options,
         ], timeout=90)
         run = descriptor.parent
-        (run / f'capture-{action}-stdout.txt').write_text(result.stdout)
-        (run / f'capture-{action}-stderr.txt').write_text(result.stderr)
+        name = '-'.join((action, *(option.lstrip('-') for option in options)))
+        (run / f'capture-{name}-stdout.txt').write_text(result.stdout)
+        (run / f'capture-{name}-stderr.txt').write_text(result.stderr)
         return result
+
+    def verify_terminal_capture(self, run_dir, checks, result):
+        # The bounded verify (identity, inputs and independent physical replay
+        # over the sealed bytes) gates the target. Full native coverage (child
+        # read/parser ownership, termios lifetime, unobserved product timing)
+        # has no capture protocol yet; it still runs and is reported, but
+        # cannot decide the verdict.
+        checks['bounded_terminal_verify'] = False
+        result['full_terminal_coverage'] = 'not covered'
+        descriptor = run_dir / 'capture-launch.json'
+        if not descriptor.is_file():
+            return
+        try:
+            bounded = self.terminal_capture_command('verify', descriptor, '--bounded')
+            checks['bounded_terminal_verify'] = bounded.returncode == 0
+        except (OSError, subprocess.SubprocessError) as error:
+            result['bounded_verify_error'] = str(error)
+        try:
+            if self.terminal_capture_command('verify', descriptor).returncode == 0:
+                result['full_terminal_coverage'] = 'passed'
+        except (OSError, subprocess.SubprocessError) as error:
+            result['full_coverage_error'] = str(error)
 
     def capture(self, target, path, *, history=True):
         args = ['capture-pane', '-p', '-e', '-J']
@@ -5568,13 +5591,7 @@ else:
         checks['cleanup'] = self.cleanup_passed(cleanup)
         (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
         checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
-        checks['full_terminal_coverage'] = False
-        if (run_dir / 'capture-launch.json').is_file():
-            try:
-                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
-                checks['full_terminal_coverage'] = full_verify.returncode == 0
-            except (OSError, subprocess.SubprocessError) as error:
-                result['full_coverage_error'] = str(error)
+        self.verify_terminal_capture(run_dir, checks, result)
         frame_report = run_dir / 'frame-physical-report.json'
         frames = run_dir / 'frames.jsonl'
         if frames.exists() and frames.stat().st_size:
@@ -5598,6 +5615,7 @@ else:
             *sorted(terminal_capture_required_files(held_launch) or ()),
             'terminal-capture.json', 'bin/claude', 'independent-pty-checks.json',
             'capture-launch.json', 'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
+            'capture-verify-bounded-stdout.txt', 'capture-verify-bounded-stderr.txt',
         )]
         proofs = [*evidence, run_dir / 'omega-body-blocked.json',
                   run_dir / 'input-chunks.json', frames, frame_report, checks_path,
@@ -5851,13 +5869,7 @@ else:
                 run_dir, exit_identity['capture'], exit_identity['binarySha256'])
         checks['cleanup'] = self.cleanup_passed(cleanup)
         checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
-        checks['full_terminal_coverage'] = False
-        if (run_dir / 'capture-launch.json').is_file():
-            try:
-                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
-                checks['full_terminal_coverage'] = full_verify.returncode == 0
-            except (OSError, subprocess.SubprocessError) as error:
-                result['full_coverage_error'] = str(error)
+        self.verify_terminal_capture(run_dir, checks, result)
         try:
             fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
             physical = fresh['recheck'].get('replay', {})
@@ -5897,6 +5909,7 @@ else:
             'capture-launch.json', 'bin/claude',
             'terminal-capture.json', 'frame-physical-report.json', 'independent-pty-checks.json',
             'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
+            'capture-verify-bounded-stdout.txt', 'capture-verify-bounded-stderr.txt',
         )]
         held_launch = json.loads(getattr(self, 'registered_runs', {}).get(str(run_dir.resolve()), '{}')).get('terminal_capture', {})
         proofs.extend(run_dir / name for name in sorted(terminal_capture_required_files(held_launch) or ()))
