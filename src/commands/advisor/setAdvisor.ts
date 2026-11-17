@@ -68,7 +68,7 @@ export function setAdvisor({
     if (persist) {
       updateSettingsForSource('userSettings', { advisorModel: undefined })
     }
-    return `Advisor disabled${suffix}${describeHeldAdvisor(messages, undefined)}`
+    return `Advisor disabled${suffix}${describeHeldAdvisor(messages, undefined, mainLoopModel)}`
   }
   if (!valid) return getInvalidAdvisorText(model)
 
@@ -84,5 +84,5 @@ export function setAdvisor({
   } else if (!isAdvisorPairingAllowed(mainLoopModel, model)) {
     text += `\nNote: ${advisorName} is less capable than the current main model (${mainName}), so the advisor will not activate. Choose a more capable advisor, or switch to a smaller main model.`
   }
-  return text + describeHeldAdvisor(messages, model)
+  return text + describeHeldAdvisor(messages, model, mainLoopModel)
 }

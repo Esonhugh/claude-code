@@ -160,10 +160,15 @@ import {
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import {
   type AdvisorCarrier,
+  type AdvisorRequest,
   getAdvisorQueryKind,
   getMainAdvisorCarrier,
+  getToolChangeSticky,
+  markAdvisorToolChangeFallback,
   resolveAdvisorForQuery,
+  toAdvisorRequest,
 } from './utils/advisorQuery.js'
+import { toolChangesRide } from './utils/advisorToolChanges.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -617,6 +622,8 @@ async function* queryLoop(
     params.toolUseContext.agentId !== undefined
       ? {}
       : getMainAdvisorCarrier()
+  const rideToolChanges = (model: string) =>
+    toolChangesRide(getToolChangeSticky(advisorCarrier), model)
   const snapshot = params.toolUseContext.modsSnapshot
   async function refreshContext(messages: Message[]) {
     if (params.resolvedPromptContextBlocks !== undefined) return
@@ -999,15 +1006,19 @@ async function* queryLoop(
           toolUseContext,
           forkContextMessages: projectedMessagesForQuery,
           // Automatic compaction keeps the conversation's advisor (official).
-          advisorModel: toolUseContext.advisorPin
-            ? toolUseContext.advisorPin.model
-            : resolveAdvisorForQuery(messagesForQuery, {
+          advisor:
+            toolUseContext.advisorPin ??
+            toAdvisorRequest(
+              resolveAdvisorForQuery(messagesForQuery, {
                 querySource: 'compact',
                 setting: toolUseContext.getAppState().advisorModel,
                 configuredModel: toolUseContext.options.mainLoopModel,
                 requestModel: toolUseContext.options.mainLoopModel,
                 carrier: advisorCarrier,
-              }).advisorModel,
+                toolChangesRide: rideToolChanges,
+              }),
+              advisorCarrier,
+            ),
         },
         querySource,
         tracking,
@@ -1108,7 +1119,7 @@ async function* queryLoop(
     // A fork carries its parent's advisor unchanged.
     const advisorAppState = toolUseContext.getAppState()
     const advisor = toolUseContext.advisorPin
-      ? { advisorModel: toolUseContext.advisorPin.model, announcement: undefined }
+      ? { ...toolUseContext.advisorPin, announcement: undefined }
       : resolveAdvisorForQuery(messagesForQuery, {
           querySource,
           setting: advisorAppState.advisorModel,
@@ -1121,7 +1132,10 @@ async function* queryLoop(
               doesMostRecentAssistantMessageExceed200k(messagesForQuery),
           }),
           carrier: advisorCarrier,
+          toolChangesRide: rideToolChanges,
         })
+    const advisorRequest: AdvisorRequest =
+      toolUseContext.advisorPin ?? toAdvisorRequest(advisor, advisorCarrier)
     if (advisor.announcement) {
       const msg = createAttachmentMessage(advisor.announcement)
       yield msg
@@ -1133,7 +1147,7 @@ async function* queryLoop(
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
-      requestAdvisorModel: advisor.advisorModel,
+      requestAdvisor: advisorRequest,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1339,8 +1353,16 @@ async function* queryLoop(
               ),
               queryTracking,
               effortValue: appState.effortValue,
-              advisorModel: advisor.advisorModel,
-              ...(toolUseContext.advisorPin && { forkAdvisor: true }),
+              advisorModel: advisorRequest.advisorModel,
+              advisorDeferred: advisorRequest.advisorDeferred,
+              advisorActive: advisorRequest.advisorActive,
+              toolChanges: advisorRequest.toolChanges,
+              ...(toolUseContext.advisorPin
+                ? { forkAdvisor: true }
+                : {
+                    onToolChangeFallback: () =>
+                      markAdvisorToolChangeFallback(advisorCarrier),
+                  }),
               onAdvisorRefused: () => {
                 advisorCarrier.held = { model: undefined, refused: true }
               },

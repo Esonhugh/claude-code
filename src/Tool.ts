@@ -92,6 +92,7 @@ import type { DeepImmutable } from './types/utils.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import type { FileHistoryState } from './utils/fileHistory.js'
 import type { Theme, ResolvedTheme } from './utils/theme.js'
+import type { AdvisorRequest } from './utils/advisorQuery.js'
 
 export type QueryChainTracking = {
   chainId: string
@@ -415,9 +416,9 @@ export type ToolUseContext = {
    */
   renderedSystemPrompt?: SystemPrompt
   /** Advisor the latest request from this context carried; forks keep it. */
-  requestAdvisorModel?: string
+  requestAdvisor?: AdvisorRequest
   /** Set by runForkedAgent: every request of the fork carries exactly this advisor. */
-  advisorPin?: { model: string | undefined }
+  advisorPin?: AdvisorRequest
 }
 
 // Re-export ToolProgressData from centralized location

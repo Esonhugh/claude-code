@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { clearBetaHeaderLatches } from '../bootstrap/state.js'
 import type { Message } from '../types/message.js'
 import type { AdvisorToolAttachment } from './advisor.js'
 import { resetAdvisorRefusalsForTesting } from './advisor.js'
+import * as auth from './auth.js'
+import * as servedModelCatalog from './model/servedModelCatalog.js'
 import {
   type AdvisorCarrier,
   describeHeldAdvisor,
@@ -32,6 +34,13 @@ afterEach(() => {
     else process.env[key] = saved[key]
   }
 })
+
+const NO_ENTRY = {
+  announcement: undefined,
+  advisorModel: undefined,
+  advisorDeferred: false,
+  advisorActive: false,
+}
 
 const attach = (attachment: AdvisorToolAttachment): Message =>
   ({ type: 'attachment', uuid: 'u', timestamp: 't', attachment }) as unknown as Message
@@ -69,10 +78,14 @@ describe('resolveAdvisorForQuery', () => {
     expect(run(messages, carrier)).toEqual({
       announcement: { type: 'advisor_tool', available: true, model: 'claude-opus-5' },
       advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
     })
     expect(run(messages, carrier)).toEqual({
       announcement: undefined,
       advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
     })
   })
 
@@ -80,7 +93,7 @@ describe('resolveAdvisorForQuery', () => {
     const messages: Message[] = []
     const carrier: AdvisorCarrier = {}
     run(messages, carrier, { setting: undefined })
-    expect(carrier.held).toEqual({ model: undefined })
+    expect(carrier.held).toEqual({ model: undefined, viaToolChange: false })
     expect(run(messages, carrier).advisorModel).toBeUndefined()
 
     const other: AdvisorCarrier = {}
@@ -95,10 +108,14 @@ describe('resolveAdvisorForQuery', () => {
     expect(run(messages, carrier, { configuredModel: 'claude-opus-4-5', requestModel: 'claude-opus-4-5' })).toEqual({
       announcement: { type: 'advisor_tool', available: false, model: 'claude-opus-5', byBase: true },
       advisorModel: undefined,
+      advisorDeferred: false,
+      advisorActive: false,
     })
     expect(run(messages, carrier)).toEqual({
       announcement: { type: 'advisor_tool', available: true, model: 'claude-opus-5', abbreviated: true },
       advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
     })
   })
 
@@ -110,10 +127,12 @@ describe('resolveAdvisorForQuery', () => {
     expect(run(messages, carrier)).toEqual({
       announcement: { type: 'advisor_tool', available: false },
       advisorModel: undefined,
+      advisorDeferred: false,
+      advisorActive: false,
     })
-    expect(run(messages, carrier)).toEqual({ announcement: undefined, advisorModel: undefined })
+    expect(run(messages, carrier)).toEqual(NO_ENTRY)
     // Resumed later: the transcript keeps it off.
-    expect(run(messages, {})).toEqual({ announcement: undefined, advisorModel: undefined })
+    expect(run(messages, {})).toEqual(NO_ENTRY)
   })
 
   test('restores the held advisor from the transcript', () => {
@@ -121,6 +140,8 @@ describe('resolveAdvisorForQuery', () => {
     expect(run(messages, {}, { setting: 'sonnet' })).toEqual({
       announcement: undefined,
       advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
     })
   })
 
@@ -139,6 +160,8 @@ describe('resolveAdvisorForQuery', () => {
     expect(run([], carrier, { querySource: 'compact' })).toEqual({
       announcement: undefined,
       advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
     })
     expect(carrier.held).toBeUndefined()
   })
@@ -151,26 +174,137 @@ describe('resolveAdvisorForQuery', () => {
 
   test('the disable env removes it', () => {
     process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL = '1'
-    expect(run([], {})).toEqual({ announcement: undefined, advisorModel: undefined })
+    expect(run([], {})).toEqual(NO_ENTRY)
   })
 })
 
 describe('describeHeldAdvisor', () => {
   test('explains what the current conversation keeps', () => {
-    expect(describeHeldAdvisor([], 'claude-sonnet-5')).toBe('')
+    expect(describeHeldAdvisor([], 'claude-sonnet-5', 'claude-sonnet-5')).toBe('')
     getMainAdvisorCarrier().held = { model: 'claude-opus-5' }
-    expect(describeHeldAdvisor([], 'claude-opus-5')).toBe('')
-    expect(describeHeldAdvisor([], 'claude-sonnet-5')).toBe(
+    expect(describeHeldAdvisor([], 'claude-opus-5', 'claude-sonnet-5')).toBe('')
+    expect(describeHeldAdvisor([], 'claude-sonnet-5', 'claude-sonnet-5')).toBe(
       '\nThe current conversation keeps Opus 5 as its advisor until /clear or /compact, so the prompt it has already sent stays unchanged; the new setting applies from there and in new conversations.',
     )
     getMainAdvisorCarrier().held = { model: undefined }
-    expect(describeHeldAdvisor([], 'claude-sonnet-5')).toBe(
+    expect(describeHeldAdvisor([], 'claude-sonnet-5', 'claude-sonnet-5')).toBe(
       '\nThe current conversation runs without the advisor until /clear or /compact, so the prompt it has already sent stays unchanged; the new setting applies from there and in new conversations.',
     )
     getMainAdvisorCarrier().held = { model: undefined, refused: true }
-    expect(describeHeldAdvisor([], undefined)).toBe('')
-    expect(describeHeldAdvisor([], 'claude-sonnet-5')).toBe(
+    expect(describeHeldAdvisor([], undefined, 'claude-sonnet-5')).toBe('')
+    expect(describeHeldAdvisor([], 'claude-sonnet-5', 'claude-sonnet-5')).toBe(
       '\nThe API refused the advisor for the current conversation, so it runs without one until /clear or /compact; the setting applies from there and in new conversations.',
+    )
+  })
+})
+
+describe('resolveAdvisorForQuery with the tool-change beta', () => {
+  const MAIN = 'claude-sonnet-5-5'
+  const ride = (overrides: Partial<Parameters<typeof resolveAdvisorForQuery>[1]> = {}) => ({
+    configuredModel: MAIN,
+    requestModel: MAIN,
+    toolChangesRide: true,
+    ...overrides,
+  })
+  const spies: { mockRestore(): void }[] = []
+  beforeEach(() => {
+    process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = '1'
+    spies.push(
+      spyOn(auth, 'isClaudeAISubscriber').mockReturnValue(false),
+      spyOn(auth, 'getAnthropicApiKeyWithSource').mockReturnValue({
+        key: 'k',
+        source: 'ANTHROPIC_API_KEY',
+      }),
+      spyOn(servedModelCatalog, 'getServedModelCatalog').mockReturnValue(undefined),
+    )
+  })
+  afterEach(() => {
+    delete process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL
+    for (const spy of spies.splice(0)) spy.mockRestore()
+  })
+
+  test('/advisor on and off become tool_addition and tool_removal on one deferred entry', () => {
+    const messages: Message[] = []
+    const carrier: AdvisorCarrier = {}
+    expect(run(messages, carrier, ride())).toEqual({
+      announcement: { type: 'advisor_tool', available: true, model: 'claude-opus-5', toolChange: 'add' },
+      advisorModel: 'claude-opus-5',
+      advisorDeferred: true,
+      advisorActive: true,
+    })
+    expect(run(messages, carrier, ride()).announcement).toBeUndefined()
+    expect(run(messages, carrier, ride({ setting: undefined }))).toEqual({
+      announcement: { type: 'advisor_tool', available: false, model: 'claude-opus-5', toolChange: 'remove' },
+      advisorModel: 'claude-opus-5',
+      advisorDeferred: true,
+      advisorActive: false,
+    })
+    expect(run(messages, carrier, ride())).toEqual({
+      announcement: {
+        type: 'advisor_tool', available: true, model: 'claude-opus-5', abbreviated: true, toolChange: 'add',
+      },
+      advisorModel: 'claude-opus-5',
+      advisorDeferred: true,
+      advisorActive: true,
+    })
+    // Another advisor model only applies after /clear or /compact.
+    expect(run(messages, carrier, ride({ setting: 'fable' })).advisorModel).toBe('claude-opus-5')
+  })
+
+  test('a conversation without an advisor declares a standby entry', () => {
+    const messages: Message[] = []
+    const carrier: AdvisorCarrier = {}
+    const standby = run(messages, carrier, ride({ setting: undefined }))
+    expect(standby.announcement).toBeUndefined()
+    expect(standby.advisorDeferred).toBe(true)
+    expect(standby.advisorActive).toBe(false)
+    expect(standby.advisorModel).toBeDefined()
+    expect(carrier.held).toMatchObject({ viaToolChange: true, standby: true })
+    const on = run(messages, carrier, ride())
+    expect(on.announcement).toMatchObject({ available: true, toolChange: 'add' })
+    expect(on.advisorActive).toBe(true)
+    expect(on.advisorModel).toBe(standby.advisorModel)
+  })
+
+  test('without a billable standby the advisor is picked when /advisor turns it on', () => {
+    spies.push(
+      spyOn(auth, 'getAnthropicApiKeyWithSource').mockReturnValue({ key: null, source: 'none' }),
+    )
+    const messages: Message[] = []
+    const carrier: AdvisorCarrier = {}
+    expect(run(messages, carrier, ride({ setting: undefined }))).toEqual(NO_ENTRY)
+    expect(carrier.held).toEqual({ model: undefined, viaToolChange: true })
+    expect(run(messages, carrier, ride())).toMatchObject({
+      announcement: { available: true, model: 'claude-opus-5', toolChange: 'add' },
+      advisorDeferred: true,
+      advisorActive: true,
+    })
+  })
+
+  test('when the beta stops riding the entry is declared inline from then on', () => {
+    const messages: Message[] = []
+    const carrier: AdvisorCarrier = {}
+    run(messages, carrier, ride())
+    expect(run(messages, carrier, ride({ toolChangesRide: false }))).toEqual({
+      announcement: undefined,
+      advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+      advisorActive: true,
+    })
+    expect(carrier.held).toMatchObject({ viaToolChange: true, inFallback: true })
+    // Back on the existing path: the inline entry stays until /clear or /compact.
+    expect(run(messages, carrier, ride({ toolChangesRide: false, setting: undefined }))).toMatchObject({
+      advisorModel: 'claude-opus-5',
+      advisorDeferred: false,
+    })
+  })
+
+  test('describeHeldAdvisor says on/off applies right away', () => {
+    getMainAdvisorCarrier().held = { model: 'claude-opus-5', viaToolChange: true }
+    expect(describeHeldAdvisor([], 'claude-opus-5', MAIN)).toBe('')
+    expect(describeHeldAdvisor([], undefined, MAIN)).toBe('')
+    expect(describeHeldAdvisor([], 'fable', MAIN)).toBe(
+      '\nThe current conversation keeps Opus 5 as its advisor model until /clear or /compact, so the tool it has already declared stays unchanged; turning the advisor on or off applies right away.',
     )
   })
 })

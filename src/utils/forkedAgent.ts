@@ -28,6 +28,7 @@ import type { AgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import { createChildAbortController } from './abortController.js'
 import { isAdvisorEnabled } from './advisor.js'
+import { type AdvisorRequest, NO_ADVISOR_REQUEST } from './advisorQuery.js'
 import { logForDebugging } from './debug.js'
 import { cloneFileStateCache } from './fileStateCache.js'
 import type { REPLHookContext } from './hooks/postSamplingHooks.js'
@@ -73,9 +74,9 @@ export type CacheSafeParams = {
   forkContextMessages: Message[]
   /**
    * Advisor the fork's requests carry. Omitted: the advisor of the parent's
-   * latest request (`toolUseContext.requestAdvisorModel`).
+   * latest request (`toolUseContext.requestAdvisor`).
    */
-  advisorModel?: string
+  advisor?: AdvisorRequest
 }
 
 const NEVER_CONSULT_ADVISOR = 'Never consult the advisor tool.'
@@ -618,10 +619,12 @@ export async function runForkedAgent({
     toolUseContext,
     forkContextMessages,
   } = cacheSafeParams
-  const advisorModel =
-    'advisorModel' in cacheSafeParams
-      ? cacheSafeParams.advisorModel
-      : toolUseContext.requestAdvisorModel
+  const advisor =
+    ('advisor' in cacheSafeParams
+      ? cacheSafeParams.advisor
+      : toolUseContext.requestAdvisor) ?? NO_ADVISOR_REQUEST
+  // An inactive (deferred, not yet added) entry cannot be called.
+  const advisorModel = advisor.advisorActive ? advisor.advisorModel : undefined
 
   // Create isolated context to prevent mutation of parent state.
   const isolatedToolUseContext = createSubagentContext(toolUseContext, {
@@ -629,7 +632,7 @@ export async function runForkedAgent({
     agentId:
       overrides?.agentId ?? createAgentId(skipTranscript ? undefined : forkLabel),
   })
-  isolatedToolUseContext.advisorPin = { model: advisorModel }
+  isolatedToolUseContext.advisorPin = advisor
   const neverConsult = getNeverConsultAdvisorMessage(
     forkLabel,
     forkContextMessages,
