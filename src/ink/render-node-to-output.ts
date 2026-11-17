@@ -852,8 +852,10 @@ function renderNodeToOutput(
         // the right range. Not scheduling scrollDrainNode here keeps the
         // clamp passive — React's commit → resetAfterCommit → onRender will
         // paint again with fresh bounds.
+        // Coverage bounds are committed after this paint and can still refer
+        // to the old history when /clear or compaction shrinks the content.
         const clamped = haveClamp
-          ? Math.max(cMin, Math.min(scrollTop, cMax))
+          ? Math.min(maxScroll, Math.max(cMin, Math.min(scrollTop, cMax)))
           : scrollTop
         node.scrollTop = scrollTop
         // Clamp hitting top/bottom consumes any remainder. Set drainPending
