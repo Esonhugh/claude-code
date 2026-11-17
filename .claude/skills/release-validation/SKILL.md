@@ -22,13 +22,18 @@ version: 0.1.0
 6. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
 7. 任一路不是明确 `passed`，整体 release gate 即不通过。
 8. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
-9. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
-10. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
+9. **修复按增量模式作废结果：按修复 diff 的范围，只作废受影响流程上的测试，其余结果保留。** 无法确定影响范围时，按全部作废处理。
+   - 纯文档（`CHANGELOG.md`、`README*`、`docs/**`、skill 文字说明）：只重跑 Release/docs audit；改了 `CHANGELOG.md` 或 README 时，另跑 `make release-check` 中对应的文档阶段（`check:changelog`、`test:changelog`、`check-readme-test-paths.mjs`）。binary 内嵌 `CHANGELOG.md`，因此 sha256 会变，但不算代码变化。
+   - 代码（`src/`、`scripts/`、`assets/`、测试）：Feature tests 重跑改动文件的直接与相邻测试，以及受影响流程的 tmux 场景；`make release-check` 整体重跑（tsc、lint、build 是全仓检查）；Binary interaction 重新 `make build`、重新采集 baseline，按 `TARGET_PATH_RULES` 对修复 diff 算出受影响的 target，加 readiness smoke 一起重跑，其余 target 保留上次 `passed`；Release/docs audit 每次都重跑，核对新提交在 CHANGELOG 中的归属。
+   - driver、fixture 或 gate 脚本：重跑用到改动部分的 target；改动是共用路径（readiness、证据封存、清理、merge）时重跑全部 target。
+   - 依赖与构建配置（`package.json`、`bun.lock`、`Makefile`、`scripts/build.mjs`、`tsconfig*`）：四路全部作废。
+   - 报告逐项写明每个保留结果通过时的 HEAD 和 binary sha256，以及为什么这次修复不影响它。
+10. 重复上述循环，直到每一路当前有效的结果都是 `passed`，且工作区状态符合预期。
 11. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
 12. 不打印凭据，也不把 token、API key 或 OAuth credential 保存到 evidence/repo；交互测试使用 dummy credential，或仅复制到 evidence/repo 外、权限受限且门禁结束后清理的私有临时 HOME。
 13. Binary driver 必须按 committed release range + staged/unstaged/untracked 合并路径计算 required targets。release range 优先使用 baseline 中可用 upstream/merge-base；若无法安全推导，必须 fail closed 或要求显式 `--base-ref`。`--targets` 只能在默认完整矩阵之后追加额外 target，不得缩减默认矩阵，且必须拒绝空值与重复。修改 team registry、workflow retry/failure、coordinator selection 或 transcript retention 时，分别强制 `team-concurrency`、`workflow-retry-partial-failure`、`workflow-failure-detail`、`coordinator-selector`、`transcript-retention`；required target 未执行、无 assertions、缺稳定 ID/marker/evidence path、跨 run 拼接或仅有 pane 文本时必须 fail closed。
 14. Skill prose、eval assertions 和 executable target 是三层独立覆盖。报告必须区分 `spec exists`、`unit covered`、`fault injection covered`、`binary tmux covered`；任何一层存在不自动代表其他层通过。
-15. 可以按组分批跑：`--group <name>`、`--only-target <name>` 均可重复，组定义见 `TARGET_GROUPS`（terminal、mods、agents、workflow、openai、models、ssh）。每批都先跑 readiness smoke；manifest 标 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`，不是 release 通过。分批结果用 `--merge-manifests <evidence-root...> --evidence-root <out>` 合并：所有 manifest 的 HEAD、binary sha256、baseline sha256、driver sha256 和 required targets 必须一致，且覆盖全部 required target；同一 target 取最新一次，较早结果记在 `superseded`。任何不一致或缺失都判 failed 并写明原因。失败的组可以在同一 HEAD 和 binary 上单独重跑后再合并；代码一改（包括 driver），所有组的结果都作废，必须重新 `make build`、重新采集 baseline 后全部重跑。不传这两个参数时仍跑完整 required 矩阵，`--targets` 仍只能追加。
+15. 可以按组分批跑：`--group <name>`、`--only-target <name>` 均可重复，组定义见 `TARGET_GROUPS`（terminal、mods、agents、workflow、openai、models、ssh）。每批都先跑 readiness smoke；manifest 标 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`，不是 release 通过。分批结果用 `--merge-manifests <evidence-root...> --evidence-root <out>` 合并：所有 manifest 的 HEAD、binary sha256、baseline sha256、driver sha256 和 required targets 必须一致，且覆盖全部 required target；同一 target 取最新一次，较早结果记在 `superseded`。任何不一致或缺失都判 failed 并写明原因。失败的组可以在同一 HEAD 和 binary 上单独重跑后再合并。代码修复后按第 9 条只重跑受影响的 target；`--merge-manifests` 只合并 HEAD、binary 和 driver 都相同的结果，跨 HEAD 保留的 target 不经合并，在报告中逐项列出来源 manifest。不传这两个参数时仍跑完整 required 矩阵，`--targets` 仍只能追加。
 
 ## Linux 运行条件
 
@@ -80,7 +85,7 @@ Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net �
    - bug 修复前必须保存首次真实错误序列，并把它收敛为稳定的最小失败测试；测试应断言跨层 identity/ownership/physical 不变量，而不只是最终状态。
    - 按 input parse/ownership → controller state → async fencing → React commit → layout/logical frame → ANSI/damage → physical terminal 的顺序寻找首个分歧，只修有证据的根因。
    - 不得用增加 sleep、全局 force redraw、每键 `flushSync`、关闭增量渲染、吞输入、扩大预算或放宽断言掩盖问题。
-   - 修复后运行新增回归、所有直接与相邻组件测试、`git diff --check` 和 `make build`，再对新 binary 重跑完全相同的错误序列及完整状态矩阵。任何修复都使旧 binary 和旧门禁结果失效。
+   - 修复后运行新增回归、所有直接与相邻组件测试、`git diff --check` 和 `make build`，再对新 binary 重跑完全相同的错误序列及完整状态矩阵。旧 binary 上受这次修复影响的门禁结果失效，范围按强制规则第 9 条判断。
 
 7. **证据、清理与 verdict**
    - evidence 必须包含 exact command/env（脱敏）、binary identity、session/window/pane/PTY ID、terminal dimensions、每个 input chunk 的 hex、状态/revision/frame/write 映射、逐步 pane/cursor、原始 ANSI 或无损 replay artifact、首次失败或全部断言结果。
