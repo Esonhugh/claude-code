@@ -7,6 +7,7 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import type { ToolUseContext } from '../../Tool.js'
+import { TERMINAL_OUTPUT_TAGS } from '../../constants/xml.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { isHumanTurn } from '../../utils/messagePredicates.js'
 import { createCompactBoundaryMessage } from '../../utils/messages.js'
@@ -61,12 +62,25 @@ function isRetainableUserMessage(message: Message): message is UserMessage {
   )
 }
 
+// `!cmd` and local slash commands are stored as user rows wrapped in these
+// tags; their output is no more the user's words than a tool result is.
+function isTerminalOutput(text: string): boolean {
+  const head = text.trimStart()
+  return TERMINAL_OUTPUT_TAGS.some(tag => head.startsWith(`<${tag}>`))
+}
+
 function userMessageText(message: UserMessage): string {
   const content = message.message.content
   if (typeof content === 'string') return content
   return content
     .flatMap(block => (block.type === 'text' ? [block.text] : []))
     .join('\n')
+}
+
+// Cut at a code point boundary so an emoji is never left as a lone surrogate.
+function truncateText(text: string, maxChars: number): string {
+  const code = text.charCodeAt(maxChars - 1)
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? maxChars - 1 : maxChars)
 }
 
 // Like Codex, only the user's own messages survive verbatim. Assistant turns,
@@ -84,7 +98,7 @@ export function selectRetainedMessagesForCodexCompact(
     const message = messages[i]
     if (!message || !isRetainableUserMessage(message)) continue
     const text = userMessageText(message)
-    if (!text) continue
+    if (!text || isTerminalOutput(text)) continue
     const tokens = roughTokenCountEstimation(text)
     const content = message.message.content
     const textOnly =
@@ -96,7 +110,7 @@ export function selectRetainedMessagesForCodexCompact(
             ...message,
             message: {
               ...message.message,
-              content: tokens <= remaining ? text : text.slice(0, remaining * 4),
+              content: tokens <= remaining ? text : truncateText(text, remaining * 4),
             },
           },
     )

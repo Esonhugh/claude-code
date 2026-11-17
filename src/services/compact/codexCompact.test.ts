@@ -193,6 +193,35 @@ describe('selectRetainedMessagesForCodexCompact', () => {
     if (message?.type !== 'user') throw new Error('expected user message')
     expect(message.message.content).toBe('look at this')
   })
+
+  test('skips local command rows and their output', () => {
+    const result = selectRetainedMessagesForCodexCompact(
+      [
+        userTextMessage('00000000-0000-4000-8000-000000000001', 'real prompt'),
+        userTextMessage('00000000-0000-4000-8000-000000000002', '<bash-input>cat big.log</bash-input>'),
+        userTextMessage('00000000-0000-4000-8000-000000000003', `<bash-stdout>${'x'.repeat(40_000)}</bash-stdout><bash-stderr></bash-stderr>`),
+        userTextMessage('00000000-0000-4000-8000-000000000004', '<local-command-caveat>Caveat: ...</local-command-caveat>'),
+        userTextMessage('00000000-0000-4000-8000-000000000005', '<local-command-stdout>Set model to opus</local-command-stdout>'),
+      ],
+      20_000,
+    )
+
+    expect(result.messages.map(m => m.uuid)).toEqual([
+      '00000000-0000-4000-8000-000000000001',
+    ])
+  })
+
+  test('does not split an emoji when truncating', () => {
+    // 'abc' + U+1F600: the 4-char cut lands between the surrogate halves.
+    const result = selectRetainedMessagesForCodexCompact(
+      [userTextMessage('00000000-0000-4000-8000-000000000001', `abc\u{1F600}${'d'.repeat(100)}`)],
+      1,
+    )
+
+    const [message] = result.messages
+    if (message?.type !== 'user') throw new Error('expected user message')
+    expect(message.message.content).toBe('abc')
+  })
 })
 
 describe('buildCodexStyleCompactionResult', () => {
