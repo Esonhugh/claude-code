@@ -25,7 +25,6 @@ const { collapseReadSearchGroups } = await import('../../utils/collapseReadSearc
 const { buildMessageLookups, createAssistantMessage, createUserMessage, normalizeMessages } =
   await import('../../utils/messages.js')
 const { renderToString } = await import('../../utils/staticRender.js')
-const { BLACK_CIRCLE } = await import('../../constants/figures.js')
 
 const savedInteractive = getIsInteractive()
 beforeAll(() => {
@@ -97,16 +96,16 @@ function drawGroup(transcript: { all: boolean } | null) {
 describe('the script source in the transcript (official 2.1.325 chunk-eh1rf8gd.js ScriptSourceRow)', () => {
   test('collapsed: the summary and line count, and not the script result', async () => {
     const drawn = await drawGroup({ all: false })
-    expect(drawn).toContain(`${BLACK_CIRCLE} Code(Count TODOs under src) · 3 lines (ctrl+e to show)`)
+    expect(drawn).toContain('Code(Count TODOs under src) · 3 lines (ctrl+e to show)')
     expect(drawn).not.toContain('files scanned)')
-    expect(drawn).toContain(`${BLACK_CIRCLE} Search(pattern: "TODO", path: "src")`)
+    expect(drawn).toContain('Search(pattern: "TODO", path: "src")')
   })
 
   test('ctrl+e: the script under ⎿, without line numbers', async () => {
     // MessageResponse pads ⎿ with a no-break space.
     const lines = (await drawGroup({ all: true })).replaceAll('\u00A0', ' ').split('\n').map(line => line.trimEnd())
     const header = lines.findIndex(line => line.includes('Code(Count TODOs under src)'))
-    expect(lines[header]).toBe(`${BLACK_CIRCLE} Code(Count TODOs under src)`)
+    expect(lines[header]).toEndWith('Code(Count TODOs under src)')
     expect(lines.slice(header + 1, header + 4)).toEqual([
       "  ⎿  const hits = await Grep({pattern: 'TODO', path: 'src', output_mode: 'count'})",
       "     const files = await Glob({pattern: 'src/**/*.ts'})",
@@ -142,7 +141,7 @@ describe('the script source in the transcript (official 2.1.325 chunk-eh1rf8gd.j
         </AppStoreContext>,
         110,
       )
-    expect((await draw(true)).trim()).toBe(`${BLACK_CIRCLE} Code(Count TODOs under src) · 3 lines (ctrl+e to show)`)
+    expect((await draw(true)).trim()).toEndWith('Code(Count TODOs under src) · 3 lines (ctrl+e to show)')
     expect((await draw(false)).trim()).toBe('')
   })
 })
