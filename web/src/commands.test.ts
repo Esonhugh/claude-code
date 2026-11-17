@@ -136,7 +136,8 @@ describe('withPageCommands', () => {
     const palette = withPageCommands(session, ['doctor', 'color', 'reload-plugins'], describe_)
     expect(palette.hidden).toEqual(['doctor', 'color'])
     expect(filterCommands(palette.commands, 'rel', palette.hidden).map(c => c.name)).toEqual(['reload-plugins'])
-    expect(filterCommands(palette.commands, 'co', palette.hidden).map(c => c.name)).toEqual(['compact'])
+    // The page row `resume` matches through its alias `continue`; the hidden `color` stays out.
+    expect(filterCommands(palette.commands, 'co', palette.hidden).map(c => c.name)).toEqual(['compact', 'resume'])
   })
 
   it('adds the page panels the session list lacks, once', () => {
