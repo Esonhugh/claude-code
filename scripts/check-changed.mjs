@@ -37,7 +37,14 @@ const sandboxOnly = new Set([
 ]);
 const isUnitTest = file =>
   /^(src\/.*\.test\.tsx?|web\/src\/.*\.test\.ts|bench\/.*\.test\.ts)$/.test(file) && !sandboxOnly.has(file);
-const allTests = git(['ls-files', 'src/**/*.test.ts', 'src/**/*.test.tsx', 'web/src/**/*.test.ts', 'bench/**/*.test.ts']);
+// :(glob) lets **/ match no directory, so tests directly in src/ and web/src/ are listed too.
+const allTests = git([
+  'ls-files',
+  ':(glob)src/**/*.test.ts',
+  ':(glob)src/**/*.test.tsx',
+  ':(glob)web/src/**/*.test.ts',
+  ':(glob)bench/**/*.test.ts',
+]);
 
 // A changed foo.ts runs foo.test.ts and foo.*.test.ts beside it.
 const tests = new Set(changed.filter(isUnitTest));
