@@ -28,6 +28,7 @@ version: 0.1.0
 12. 不打印凭据，也不把 token、API key 或 OAuth credential 保存到 evidence/repo；交互测试使用 dummy credential，或仅复制到 evidence/repo 外、权限受限且门禁结束后清理的私有临时 HOME。
 13. Binary driver 必须按 committed release range + staged/unstaged/untracked 合并路径计算 required targets。release range 优先使用 baseline 中可用 upstream/merge-base；若无法安全推导，必须 fail closed 或要求显式 `--base-ref`。`--targets` 只能在默认完整矩阵之后追加额外 target，不得缩减默认矩阵，且必须拒绝空值与重复。修改 team registry、workflow retry/failure、coordinator selection 或 transcript retention 时，分别强制 `team-concurrency`、`workflow-retry-partial-failure`、`workflow-failure-detail`、`coordinator-selector`、`transcript-retention`；required target 未执行、无 assertions、缺稳定 ID/marker/evidence path、跨 run 拼接或仅有 pane 文本时必须 fail closed。
 14. Skill prose、eval assertions 和 executable target 是三层独立覆盖。报告必须区分 `spec exists`、`unit covered`、`fault injection covered`、`binary tmux covered`；任何一层存在不自动代表其他层通过。
+15. 可以按组分批跑：`--group <name>`、`--only-target <name>` 均可重复，组定义见 `TARGET_GROUPS`（terminal、mods、agents、workflow、openai、models、ssh）。每批都先跑 readiness smoke；manifest 标 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`，不是 release 通过。分批结果用 `--merge-manifests <evidence-root...> --evidence-root <out>` 合并：所有 manifest 的 HEAD、binary sha256、baseline sha256、driver sha256 和 required targets 必须一致，且覆盖全部 required target；同一 target 取最新一次，较早结果记在 `superseded`。任何不一致或缺失都判 failed 并写明原因。失败的组可以在同一 HEAD 和 binary 上单独重跑后再合并；代码一改（包括 driver），所有组的结果都作废，必须重新 `make build`、重新采集 baseline 后全部重跑。不传这两个参数时仍跑完整 required 矩阵，`--targets` 仍只能追加。
 
 ## Linux 运行条件
 

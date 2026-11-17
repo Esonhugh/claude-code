@@ -383,6 +383,20 @@ SSH_LIFECYCLE_IDS = {
     'permission_request_id': 'release-ssh-permission-0001',
 }
 DEFAULT_TARGETS = ()
+# Every target belongs to exactly one group; test-release-driver.py enforces the partition.
+TARGET_GROUPS = {
+    'terminal': ('terminal-interaction', 'terminal-canonical-diff'),
+    'mods': ('builtin-mods', 'mods-process-spawn', 'plugins-reload'),
+    'agents': ('agent-fg-bg', 'nested-agent', 'subagent-stop-failure-lifecycle', 'team-concurrency',
+               'transcript-retention', 'coordinator-selector', 'goal-lifecycle'),
+    'workflow': ('workflow', 'workflow-failure-detail', 'workflow-retry-partial-failure', 'code-review'),
+    'openai': ('effort-openai-responses-wire', 'fast-openai-responses-wire', 'openai-image-input-wire',
+               'openai-remote-compaction', 'openai-responses-usage-error', 'openai-stats',
+               'prompt-modes-cache-prefix'),
+    'models': ('first-party-bootstrap-picker', 'model-discovery-picker', 'model-discovery-empty-picker',
+               'model-internal-update-config-skill', 'deferred-tool-discovery'),
+    'ssh': ('ssh-remote-session-lifecycle',),
+}
 ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
 
 
@@ -802,6 +816,92 @@ def plan_targets(extra_targets, required_targets, *, retain_artifacts=False):
             planned.append(target)
             seen.add(target)
     return planned
+
+
+def select_partial_targets(groups, only_targets, allowed):
+    selected = []
+    for group in groups:
+        if group not in TARGET_GROUPS:
+            raise ValueError(f'unknown group: {group}')
+        if groups.count(group) > 1:
+            raise ValueError(f'--group contains a duplicate group: {group}')
+        selected.extend(TARGET_GROUPS[group])
+    for target in only_targets:
+        if target not in allowed:
+            raise ValueError(f'unknown target: {target}')
+        if target in selected:
+            raise ValueError(f'target selected more than once: {target}')
+        selected.append(target)
+    return selected
+
+
+MERGE_IDENTITY_KEYS = ('head', 'binary_sha256', 'baseline_sha256', 'driver_sha256', 'required_targets')
+
+
+def merge_gate_manifests(paths):
+    # Fail closed: any identity mismatch, unusable source or missing/failed target fails the merge.
+    reasons = []
+    sources = []
+    for path in paths:
+        manifest_path = Path(path) / 'driver-final-manifest.json'
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, ValueError) as error:
+            reasons.append(f'{manifest_path}: unreadable manifest: {error}')
+            continue
+        if not isinstance(manifest, dict) or manifest.get('scope') not in ('partial', 'full'):
+            scope = manifest.get('scope') if isinstance(manifest, dict) else None
+            reasons.append(f'{manifest_path}: scope is {scope!r}, expected partial or full')
+            continue
+        if manifest.get('run_integrity') is not True:
+            reasons.append(f'{manifest_path}: run did not exit cleanly with unchanged repository state')
+        sources.append((manifest_path, manifest))
+    identity = {}
+    for key in MERGE_IDENTITY_KEYS:
+        values = {json.dumps(manifest.get(key), sort_keys=True) for _, manifest in sources}
+        if len(values) != 1 or None in (manifest.get(key) for _, manifest in sources):
+            reasons.append(f'{key} differs or is missing across manifests')
+        identity[key] = sources[0][1].get(key) if sources else None
+    history = {}
+    for manifest_path, manifest in sorted(sources, key=lambda item: item[1].get('started') or 0):
+        coverage = manifest.get('planned_target_coverage') or {}
+        rejected = set(coverage.get('missing_targets', [])) | set(coverage.get('invalid_targets', []))
+        for run in manifest.get('runs', []):
+            label = run.get('label')
+            if label == 'readiness-smoke':
+                continue
+            history.setdefault(label, []).append({
+                'manifest': str(manifest_path), 'started': manifest.get('started'),
+                'validation_verdict': run.get('validation_verdict'),
+                'accepted': run.get('validation_verdict') == 'passed' and label not in rejected,
+                'evidence_dir': run.get('evidence_dir'), 'run': run,
+            })
+    targets = {}
+    for label, entries in sorted(history.items()):
+        latest, *earlier = reversed(entries)
+        targets[label] = {'selected': {k: v for k, v in latest.items() if k != 'run'},
+                          'superseded': [{k: v for k, v in entry.items() if k != 'run'} for entry in earlier]}
+        if not latest['accepted']:
+            reasons.append(f'{label}: latest result is not an accepted pass ({latest["manifest"]})')
+    missing = sorted(set(identity['required_targets'] or ()) - set(targets))
+    if missing:
+        reasons.append(f'required targets not covered: {missing}')
+    return {
+        'scope': 'merged',
+        **identity,
+        'baseline': sorted({manifest.get('baseline') for _, manifest in sources if manifest.get('baseline')}),
+        'sources': [{'manifest': str(manifest_path), 'started': manifest.get('started'),
+                     'scope': manifest.get('scope'), 'selected_groups': manifest.get('selected_groups'),
+                     'selected_targets': manifest.get('selected_targets'),
+                     'overall_verdict': manifest.get('overall_verdict')} for manifest_path, manifest in sources],
+        'targets': targets,
+        'runs': [history[label][-1]['run'] for label in sorted(history)],
+        'required_target_coverage': {'passed': not missing and all(
+            targets[label]['selected']['accepted'] for label in identity['required_targets'] or ()
+            if label in targets), 'missing_targets': missing},
+        'merge_failures': reasons,
+        'overall_verdict': 'passed' if sources and not reasons else 'failed',
+    }
 
 
 
@@ -4028,6 +4128,7 @@ class BinaryGate:
             'git_status_start': current_state['status_porcelain'],
             'repository_state_start': current_state,
             'baseline': str(self.baseline_path),
+            'baseline_sha256': sha256(self.baseline_path),
             'baseline_captured_at': self.baseline.get('captured_at'),
             'binary': str(self.binary),
             'binary_sha256': current_state['binary']['sha256'],
@@ -11266,7 +11367,7 @@ else:
             json.dumps(self.manifest, indent=2) + '\n'
         )
 
-    def run(self, targets):
+    def run(self, targets, partial=None):
         self.target_error_cleanup = []
         self.acquire_lease()
         try:
@@ -11276,6 +11377,8 @@ else:
             raise
         planned_targets = ['readiness-smoke', *targets]
         self.manifest.update({
+            'scope': 'partial' if partial else 'full',
+            **({'selected_groups': partial['groups'], 'selected_targets': list(targets)} if partial else {}),
             'completion_state': 'running',
             'normal_exit': False,
             'expected_run_count': len(planned_targets),
@@ -11389,36 +11492,42 @@ else:
                 set(targets), self.manifest['runs'], self.registered_runs,
             )
             self.manifest['planned_target_coverage'] = planned_coverage
-            self.manifest['overall_verdict'] = (
-                'passed'
-                if (
-                    self.manifest['normal_exit']
-                    and self.manifest['matrix_complete']
-                    and 'driver_error' not in self.manifest
-                    and not self.manifest.get('target_errors')
-                    and len(self.manifest['runs']) == expected_runs
-                    and required_coverage['passed']
-                    and planned_coverage['passed']
-                    and all(
-                        run['validation_verdict'] == 'passed'
-                        for run in self.manifest['runs']
-                    )
-                    and self.manifest['repository_state_unchanged']
-                    and self.manifest['workflow_runs_cleanup']['passed']
-                    and not self.manifest['auth_cleanup']['errors']
-                    and all(
-                        self.cleanup_passed(cleanup)
-                        for cleanup in self.manifest['emergency_cleanup']
-                    )
+            self.manifest['run_integrity'] = (
+                self.manifest['normal_exit']
+                and self.manifest['matrix_complete']
+                and 'driver_error' not in self.manifest
+                and self.manifest['readiness_smoke']['status'] == 'passed'
+                and self.manifest['repository_state_unchanged']
+                and self.manifest['workflow_runs_cleanup']['passed']
+                and not self.manifest['auth_cleanup']['errors']
+                and all(
+                    self.cleanup_passed(cleanup)
+                    for cleanup in self.manifest['emergency_cleanup']
                 )
-                else 'failed'
             )
+            targets_passed = (
+                self.manifest['run_integrity']
+                and not self.manifest.get('target_errors')
+                and len(self.manifest['runs']) == expected_runs
+                and planned_coverage['passed']
+                and all(
+                    run['validation_verdict'] == 'passed'
+                    for run in self.manifest['runs']
+                )
+            )
+            # A partial run never yields a release verdict; merge partial manifests for that.
+            if partial:
+                self.manifest['overall_verdict'] = 'partial_passed' if targets_passed else 'failed'
+            else:
+                self.manifest['overall_verdict'] = (
+                    'passed' if targets_passed and required_coverage['passed'] else 'failed'
+                )
             self.manifest['ownership_lease_release'] = self.release_lease()
             (self.evidence_root / 'driver-final-manifest.json').write_text(
                 json.dumps(self.manifest, indent=2) + '\n'
             )
         print(json.dumps(self.manifest, indent=2))
-        return self.manifest['overall_verdict'] == 'passed'
+        return self.manifest['overall_verdict'] in ('passed', 'partial_passed')
 
 
 def retained_target_policy(targets):
@@ -12661,8 +12770,7 @@ def main():
     parser.add_argument(
         '--baseline',
         type=Path,
-        required=True,
-        help='baseline JSON captured after the current make build',
+        help='baseline JSON captured after the current make build (required unless merging)',
     )
     parser.add_argument(
         '--base-ref',
@@ -12681,7 +12789,28 @@ def main():
     parser.add_argument('--retain-artifacts', action='store_true')
     parser.add_argument('--g5-scenario', choices=['turn-end-load', 'same-session-resume', 'fork-session'],
                         help='retained diagnostic subset; required targets and blocked verdict remain unchanged')
+    parser.add_argument('--group', action='append', default=[], choices=sorted(TARGET_GROUPS),
+                        help='partial run: run only this target group (repeatable); never a release verdict')
+    parser.add_argument('--only-target', action='append', default=[],
+                        help='partial run: run only this target (repeatable); never a release verdict')
+    parser.add_argument('--merge-manifests', nargs='+', type=Path, metavar='EVIDENCE_ROOT',
+                        help='merge partial/full runs on one HEAD, binary and baseline into '
+                             '<evidence-root>/driver-final-manifest.json')
     args = parser.parse_args()
+    if args.merge_manifests:
+        if args.group or args.only_target or args.targets or args.retain_artifacts:
+            parser.error('--merge-manifests cannot be combined with target selection or retained mode')
+        merged = merge_gate_manifests(args.merge_manifests)
+        args.evidence_root.mkdir(parents=True, exist_ok=False)
+        (args.evidence_root / 'driver-final-manifest.json').write_text(json.dumps(merged, indent=2) + '\n')
+        print(json.dumps({key: merged[key] for key in ('overall_verdict', 'merge_failures', 'required_targets')},
+                         indent=2))
+        return 0 if merged['overall_verdict'] == 'passed' else 1
+    if args.baseline is None:
+        parser.error('--baseline is required')
+    partial = args.group or args.only_target
+    if partial and (args.targets or args.retain_artifacts):
+        parser.error('--group/--only-target cannot be combined with --targets or retained mode')
     if args.g5_scenario and not args.retain_artifacts:
         parser.error('--g5-scenario requires retained mode')
     try:
@@ -12710,10 +12839,11 @@ def main():
             args.baseline,
             base_ref=args.base_ref,
         )
-        targets = plan_targets(extra_targets, set(gate.manifest['required_targets']))
+        targets = (select_partial_targets(args.group, args.only_target, allowed) if partial
+                   else plan_targets(extra_targets, set(gate.manifest['required_targets'])))
     except (RuntimeError, ValueError) as error:
         parser.error(str(error))
-    return 0 if gate.run(targets) else 1
+    return 0 if gate.run(targets, {'groups': args.group} if partial else None) else 1
 
 
 if __name__ == '__main__':

@@ -8157,6 +8157,114 @@ def test_retained_capture_roster_missing_or_ambiguous_intent_fails_closed():
         assert 'full_terminal_coverage' not in module.TERMINAL_REQUIRED_CHECKS[target]
 
 
+def test_retained_target_groups_partition_every_defined_target():
+    module = load_driver()
+    defined = {*module.DEFAULT_TARGETS, *(target for target, _ in module.TARGET_PATH_RULES)}
+    grouped = [target for members in module.TARGET_GROUPS.values() for target in members]
+    assert len(grouped) == len(set(grouped)), 'a target is in more than one group'
+    assert set(grouped) == defined, (sorted(defined - set(grouped)), sorted(set(grouped) - defined))
+    assert module.select_partial_targets(['terminal'], ['builtin-mods'], defined) == [
+        'terminal-interaction', 'terminal-canonical-diff', 'builtin-mods']
+    for groups, only in ((['nope'], []), ([], ['nope']), (['terminal', 'terminal'], []),
+                         (['terminal'], ['terminal-interaction'])):
+        try:
+            module.select_partial_targets(groups, only, defined)
+        except ValueError:
+            continue
+        raise AssertionError((groups, only))
+
+
+def _fake_gate_run(module, root, targets, *, partial=None, required=(), failing=(), started=1.0, **identity):
+    import collections, contextlib, io
+    gate = object.__new__(module.BinaryGate)
+    gate.evidence_root = root
+    gate.baseline = {}
+    gate.registered_runs = {}
+    gate.cleanup_started = False
+    gate.manifest = {'started': started, 'head': 'h1', 'binary_sha256': 'b1', 'baseline': '/tmp/baseline.json',
+                     'baseline_sha256': 's1', 'driver_sha256': 'd1', 'required_targets': sorted(required),
+                     'runs': [], **identity}
+    gate.acquire_lease = lambda: None
+    gate.release_lease = lambda: {'released': True}
+    gate.close_active_runs = lambda: []
+    gate.remove_auth_homes = lambda: {'errors': []}
+    gate.archive_and_remove_workflow_runs = lambda: {'passed': True}
+    gate.repository_state = lambda: collections.defaultdict(lambda: None)
+    gate.run_target = lambda label, action: gate.manifest['runs'].append({
+        'label': label, 'evidence_dir': str(root / label), 'assertions': [{'assertion_id': label}],
+        'validation_verdict': 'failed' if label in failing else 'passed'})
+
+    def coverage(required_targets, runs, registered_runs=None):
+        labels = {run['label'] for run in runs}
+        invalid = sorted(run['label'] for run in runs
+                         if run['label'] in required_targets and run['validation_verdict'] != 'passed')
+        missing = sorted(set(required_targets) - labels)
+        return {'passed': not missing and not invalid, 'missing_targets': missing, 'invalid_targets': invalid}
+    with patch.object(module, 'validate_required_target_results', side_effect=coverage), \
+            contextlib.redirect_stdout(io.StringIO()):
+        returned = gate.run(targets, partial)
+    return returned, json.loads((root / 'driver-final-manifest.json').read_text())
+
+
+def test_retained_partial_runs_never_pass_release_and_merge_fails_closed():
+    module = load_driver()
+    required = {'terminal-interaction', 'terminal-canonical-diff', 'builtin-mods'}
+    terminal = list(module.TARGET_GROUPS['terminal'])
+    with tempfile.TemporaryDirectory(prefix='gate-groups-unit-') as tmp:
+        root = Path(tmp)
+        ok, first = _fake_gate_run(module, root / 'a', terminal, partial={'groups': ['terminal']},
+                                   required=required, failing={'terminal-canonical-diff'}, started=1.0)
+        assert not ok and first['overall_verdict'] == 'failed' and first['run_integrity'] is True
+        ok, rerun = _fake_gate_run(module, root / 'b', terminal, partial={'groups': ['terminal']},
+                                   required=required, started=2.0)
+        assert ok and rerun['overall_verdict'] == 'partial_passed'
+        assert rerun['scope'] == 'partial' and rerun['selected_groups'] == ['terminal']
+        assert rerun['selected_targets'] == terminal and rerun['head'] == 'h1'
+        assert rerun['binary_sha256'] == 'b1' and rerun['baseline_sha256'] == 's1'
+        ok, mods = _fake_gate_run(module, root / 'c', ['builtin-mods'], partial={'groups': []},
+                                  required=required, started=3.0)
+        assert ok and mods['overall_verdict'] == 'partial_passed'
+        # The same targets without the partial flag are a full run that misses required targets.
+        ok, full = _fake_gate_run(module, root / 'full-short', terminal, required=required)
+        assert not ok and full['scope'] == 'full' and full['overall_verdict'] == 'failed'
+        ok, full = _fake_gate_run(module, root / 'full', sorted(required), required=required)
+        assert ok and full['overall_verdict'] == 'passed'
+
+        merged = module.merge_gate_manifests([root / 'a', root / 'b', root / 'c'])
+        assert merged['overall_verdict'] == 'passed', merged['merge_failures']
+        assert merged['scope'] == 'merged' and merged['required_target_coverage']['passed']
+        canonical = merged['targets']['terminal-canonical-diff']
+        assert canonical['selected']['manifest'].startswith(str(root / 'b'))
+        assert [entry['validation_verdict'] for entry in canonical['superseded']] == ['failed']
+        assert {run['label'] for run in merged['runs']} == required
+
+        def failures(paths):
+            result = module.merge_gate_manifests(paths)
+            assert result['overall_verdict'] == 'failed'
+            return ' | '.join(result['merge_failures'])
+        assert 'terminal-canonical-diff: latest result' in failures([root / 'a', root / 'c'])
+        assert 'required targets not covered' in failures([root / 'a', root / 'b'])
+        for key, value in (('binary_sha256', 'b2'), ('head', 'h2'), ('baseline_sha256', 's2')):
+            _fake_gate_run(module, root / key, ['builtin-mods'], partial={'groups': []},
+                           required=required, started=4.0, **{key: value})
+            assert f'{key} differs' in failures([root / 'a', root / 'b', root / key])
+        broken = json.loads((root / 'c' / 'driver-final-manifest.json').read_text())
+        broken['run_integrity'] = False
+        (root / 'broken').mkdir()
+        (root / 'broken' / 'driver-final-manifest.json').write_text(json.dumps(broken))
+        assert 'did not exit cleanly' in failures([root / 'b', root / 'broken'])
+        assert 'unreadable manifest' in failures([root / 'b', root / 'c', root / 'missing'])
+
+        argv = ['run-binary-gate.py', '--evidence-root', str(root / 'merged'), '--merge-manifests',
+                str(root / 'a'), str(root / 'b'), str(root / 'c')]
+        import contextlib, io
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+            assert module.main() == 0
+        written = json.loads((root / 'merged' / 'driver-final-manifest.json').read_text())
+        assert written['overall_verdict'] == 'passed'
+        assert 'scope is' in failures([root / 'merged', root / 'c'])
+
+
 def test_retained_bounded_terminal_verify_gates_and_full_coverage_is_reported_only():
     module = load_driver()
     with tempfile.TemporaryDirectory() as directory:
