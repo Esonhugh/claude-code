@@ -969,11 +969,13 @@ test('approved interactive input is scoped to its target and no longer reviewed 
   assert.equal(await interactive.send({ key: 'UP' }), 'allow')
   assert.equal(await interactive.send({ key: 'ENTER' }), 'allow')
   assert.equal(await interactive.send({ text: 'touch x', enter: true }), 'allow')
-  const input = { action: 'send-keys', target: interactive.target, text: 'touch x', enter: true }
+  const input = { action: 'send-keys', target: interactive.target, text: 'touch x', enter: true } as const
   assert.match(await TerminalTool.description(input, {} as never), /interactive input/i)
   assert.doesNotMatch(await TerminalTool.description(input, {} as never), /Runs:|Replayed text/)
-  assert.match(TerminalTool.toAutoClassifierInput(input), /interactive-input=true/)
-  assert.doesNotMatch(TerminalTool.toAutoClassifierInput(input), /command=/)
+  const classifierInput = TerminalTool.toAutoClassifierInput(input)
+  assert.ok(typeof classifierInput === 'string')
+  assert.match(classifierInput, /interactive-input=true/)
+  assert.doesNotMatch(classifierInput, /command=/)
 
   const shell = await openPermissionSession(permission)
   assert.equal(await shell.send({ text: 'touch x', enter: true }), 'deny')
@@ -1007,7 +1009,7 @@ test('interactive approval is removed on close, exit, signal and manager reset',
       else driver.kill(session.target, 'SIGTERM')
       await refreshTerminalTaskPreview(session.target, session.context.setAppState)
     }
-    const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true }
+    const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true } as const
     assert.equal((await checkTerminal(input, permission)).behavior, 'deny', end)
     assert.doesNotMatch(await TerminalTool.description(input, {} as never), /interactive input/i, end)
   }
@@ -1029,7 +1031,7 @@ test('inputMode on send-keys cannot bypass command checks through a schema error
   const driver = new FakePtyDriver()
   resetTerminalManagerForTesting(new PtySessionManager({ driver }))
   const session = await openPermissionSession({ mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] } })
-  const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true, inputMode: 'interactive' }
+  const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true, inputMode: 'interactive' } as const
   const decision = await checkTerminal(input, { mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] } })
   if (decision.behavior === 'allow') {
     const result = await TerminalTool.call(input, session.context, allowPermission, TEST_ASSISTANT_MESSAGE)
