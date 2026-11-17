@@ -12,22 +12,30 @@ version: 0.1.0
 
 1. 开始前读取 `CLAUDE.md`、`Makefile`、相关 diff，并运行 `scripts/capture-release-baseline.py` 动态记录当前 `HEAD`、分支、Git 状态、版本和 binary 信息。Agent brief 只能引用本轮 baseline 文件，禁止手写或沿用上一轮 commit/hash。
 2. Binary interaction 必须使用 `scripts/run-binary-gate.py`。该脚本先执行独立 readiness smoke，只有 smoke 通过才串行启动完整交互矩阵；readiness 失败时停止，不得继续 fan-out 或把 driver/fixture 错误归因于产品 runtime。
-3. 使用一条消息并行启动四个独立 Agent；每个 Agent 必须明确写明 **只读验证，不得修改源码、测试、文档、配置、版本或提交**。允许验证命令生成必要的 binary、日志、tmux evidence 和临时 config root，但必须报告路径与 Git side effects。
+3. 首轮使用一条消息并行启动四个独立 Agent，修复后按第 9 条只重新启动受影响的 Agent；每个 Agent 必须明确写明 **只读验证，不得修改源码、测试、文档、配置、版本或提交**。允许验证命令生成必要的 binary、日志、tmux evidence 和临时 config root，但必须报告路径与 Git side effects。
 4. 四路职责不得互相替代：
    - Feature tests：确认 feature 契约和相关 `bun test` 通过，检查测试是否覆盖关键状态矩阵。
    - Release checks：运行并核对 `make release-check` 的全部阶段。
-   - Binary interaction：本轮 `make build` 后，用脚本驱动 tmux 验证 `built-claude`；交互场景必须覆盖本次改动、直接受影响的 runtime 入口和相邻组件，通用启动 smoke test 不算 feature 交互验收。
+   - Binary interaction：在被测 HEAD 上 `make build` 后，用脚本驱动 tmux 验证 `built-claude`；交互场景必须覆盖本次改动、直接受影响的 runtime 入口和相邻组件，通用启动 smoke test 不算 feature 交互验收。
    - Release/docs audit：检查版本、release 范围、README、CHANGELOG、Makefile 与实际代码和验证证据一致。
-5. **Feature 验收是不可拆分的组合门禁：无论改动是否直接用户可见，相关 `bun test` 和本轮 `built-claude` 中所有受影响交互流程的 scripted tmux 验收必须同时 `passed`。内部改动必须通过其真实调用入口触发，并检查相邻组件和副作用；任一失败、仍在运行或证据不足，feature 均不得判定为通过。单测与交互证据不能互相替代。**
+5. **Feature 验收是不可拆分的组合门禁：无论改动是否直接用户可见，相关 `bun test` 和被测 HEAD 构建的 `built-claude` 中所有受影响交互流程的 scripted tmux 验收必须同时 `passed`；修复影响到某个 feature 时，它的单测和交互验收一起重跑。内部改动必须通过其真实调用入口触发，并检查相邻组件和副作用；任一失败、仍在运行或证据不足，feature 均不得判定为通过。单测与交互证据不能互相替代。**
 6. Agent 发现 bug、异常、文档不符、测试缺口或证据不足时，不得自行编辑。它只报告证据、复现命令、文件与行号。
 7. 任一路不是明确 `passed`，整体 release gate 即不通过。
 8. 需要修复时，由主会话阅读相关实现、先补最小失败测试、完成最小修复并运行相关验证。
-9. **任何修复都会使此前四路结果失效。修复完成后必须从头重新并行运行全部四个 Agent，不能只重跑失败项。**
-10. 重复上述循环，直到同一轮四个 Agent 全部通过且工作区状态符合预期。
+9. **修复按增量模式作废结果：按修复 diff 的范围，只作废受影响流程上的测试，其余结果保留。** 无法确定影响范围时，按全部作废处理。
+   - 纯文档（`CHANGELOG.md`、`README*`、`docs/**`、skill 文字说明）：只重跑 Release/docs audit；改了 `CHANGELOG.md` 或 README 时，另跑 `make release-check` 中对应的文档阶段（`check:changelog`、`test:changelog`、`check-readme-test-paths.mjs`）。binary 内嵌 `CHANGELOG.md`，因此 sha256 会变，但不算代码变化。
+   - 代码（`src/`、`assets/`、`types/`、`vendor/`、`web/`、`tests/type-contracts/`，以及仓库根 `scripts/` 下不属于下面两档的产品脚本和它们的测试）：Feature tests 重跑改动文件的直接与相邻测试，以及受影响流程的 tmux 场景；`make release-check` 整体重跑（tsc、lint、build 是全仓检查）；Binary interaction 重新 `make build`、重新采集 baseline，按 `TARGET_PATH_RULES` 对修复 diff 算出受影响的 target，加 readiness smoke 一起重跑，其余 target 保留上次 `passed`；Release/docs audit 每次都重跑，核对新提交在 CHANGELOG 中的归属。
+   - gate 脚本和 fixture（`.claude/skills/release-validation/scripts/`，以及仓库根 `scripts/` 下只供门禁使用的 mods-test-lab、terminal/native evidence 等，含它们自己的测试；`examples/mods/mods-test-lab/`、`tests/fixtures/` 这类门禁 fixture 也在这一档，`TARGET_PATH_RULES` 没有映射到的 fixture 按用到它的 target 判断；fixture 同时被 `src/` 单测读取时（如 `examples/mods/mods-test-lab/` 之于 `src/services/mods/testLab.test.ts`），这些单测一起重跑）：重跑用到改动部分的 target 和这些脚本自己的测试；改动是共用路径（readiness、证据封存、清理、merge）时重跑全部 target。改动在仓库根 `scripts/` 下时 `make release-check` 整体重跑（lint 覆盖 `scripts/**/*.mjs`，不含 `.claude/**`）；Release/docs audit 同样重跑。
+   - 依赖、构建配置和构建打包脚本（`package.json`、`bun.lock`、`Makefile`、仓库根 `tsconfig.json`、`scripts/build.mjs`、`scripts/package-binary.mjs`、`scripts/build-web.mjs`、`scripts/build-search-tools.mjs`、`scripts/search-tools.mjs`、`scripts/shims/**`）：四路全部作废。
+   - `bench/`、`eslint.config.mjs`：不进 binary，只影响 tsc、lint 和 bench 自己的测试；改动时重跑 `make release-check`、`bench/**/*.test.ts` 和 Release/docs audit。
+   - 一处改动同时落在几档时，按作废范围最大的一档处理。
+   - 报告逐项写明每个保留结果通过时的 HEAD 和 binary sha256，以及为什么这次修复不影响它。
+10. 重复上述循环，直到每一路当前有效的结果都是 `passed`，且工作区状态符合预期。
 11. 不自动 commit、push、tag、创建 PR 或发布，除非用户明确授权。
 12. 不打印凭据，也不把 token、API key 或 OAuth credential 保存到 evidence/repo；交互测试使用 dummy credential，或仅复制到 evidence/repo 外、权限受限且门禁结束后清理的私有临时 HOME。
 13. Binary driver 必须按 committed release range + staged/unstaged/untracked 合并路径计算 required targets。release range 优先使用 baseline 中可用 upstream/merge-base；若无法安全推导，必须 fail closed 或要求显式 `--base-ref`。`--targets` 只能在默认完整矩阵之后追加额外 target，不得缩减默认矩阵，且必须拒绝空值与重复。修改 team registry、workflow retry/failure、coordinator selection 或 transcript retention 时，分别强制 `team-concurrency`、`workflow-retry-partial-failure`、`workflow-failure-detail`、`coordinator-selector`、`transcript-retention`；required target 未执行、无 assertions、缺稳定 ID/marker/evidence path、跨 run 拼接或仅有 pane 文本时必须 fail closed。
 14. Skill prose、eval assertions 和 executable target 是三层独立覆盖。报告必须区分 `spec exists`、`unit covered`、`fault injection covered`、`binary tmux covered`；任何一层存在不自动代表其他层通过。
+15. 可以按组分批跑：`--group <name>`、`--only-target <name>` 均可重复，组定义见 `TARGET_GROUPS`（terminal、mods、agents、workflow、openai、models、ssh）。每批都先跑 readiness smoke；manifest 标 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`，不是 release 通过。分批结果用 `--merge-manifests <evidence-root...> --evidence-root <out>` 合并：所有 manifest 的 HEAD、binary sha256、baseline sha256、driver sha256 和 required targets 必须一致，且覆盖全部 required target；同一 target 取最新一次，较早结果记在 `superseded`。任何不一致或缺失都判 failed 并写明原因。失败的组可以在同一 HEAD 和 binary 上单独重跑后再合并。代码修复后按第 9 条只重跑受影响的 target；`--merge-manifests` 只合并 HEAD、binary 和 driver 都相同的结果，跨 HEAD 保留的 target 不经合并，在报告中逐项列出来源 manifest。不传这两个参数时仍跑完整 required 矩阵，`--targets` 仍只能追加。
 
 ## Linux 运行条件
 
@@ -56,7 +64,7 @@ Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net �
    - 场景至少覆盖正常路径、边界、错误/取消、重复操作、并发或异步 publish，以及受影响的 presentation/mode；具体按键、尺寸、filter 和 fixture 由目标功能决定。例如 `/diff` 可覆盖连续文件切换、filter、body identity 和 sidebar ownership，但这些只是该目标的实例。
 
 2. **真实产物、真实入口和隔离**
-   - 必须先运行本轮 `make build`，再使用该轮新生成的 `./built-claude`；记录 binary 路径、SHA-256、mtime、版本和对应 baseline，并在启动后再次核对。
+   - 必须先在被测 HEAD 上运行 `make build`，再使用新生成的 `./built-claude`；记录 binary 路径、SHA-256、mtime、版本和对应 baseline，并在启动后再次核对。
    - 在全新隔离的临时 fixture、`HOME`、`CLAUDE_CONFIG_DIR`、PTY/tmux session 和 socket 中启动；使用 dummy credential 或受控私有副本，不得读取或改写共享凭据和配置。
    - 必须从用户实际可达的 CLI 入口触发目标代码，并记录决定入口归属的 plugin、feature flag、terminal mode 和 settings。组件 mount、mock host、旧 binary、parent-side 同名工具或普通启动 smoke 不能替代。
 
@@ -79,12 +87,17 @@ Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net �
    - bug 修复前必须保存首次真实错误序列，并把它收敛为稳定的最小失败测试；测试应断言跨层 identity/ownership/physical 不变量，而不只是最终状态。
    - 按 input parse/ownership → controller state → async fencing → React commit → layout/logical frame → ANSI/damage → physical terminal 的顺序寻找首个分歧，只修有证据的根因。
    - 不得用增加 sleep、全局 force redraw、每键 `flushSync`、关闭增量渲染、吞输入、扩大预算或放宽断言掩盖问题。
-   - 修复后运行新增回归、所有直接与相邻组件测试、`git diff --check` 和 `make build`，再对新 binary 重跑完全相同的错误序列及完整状态矩阵。任何修复都使旧 binary 和旧门禁结果失效。
+   - 修复后运行新增回归、所有直接与相邻组件测试、`git diff --check` 和 `make build`，再对新 binary 重跑完全相同的错误序列及完整状态矩阵。旧 binary 上受这次修复影响的门禁结果失效，范围按强制规则第 9 条判断。
 
 7. **证据、清理与 verdict**
    - evidence 必须包含 exact command/env（脱敏）、binary identity、session/window/pane/PTY ID、terminal dimensions、每个 input chunk 的 hex、状态/revision/frame/write 映射、逐步 pane/cursor、原始 ANSI 或无损 replay artifact、首次失败或全部断言结果。
    - 比较 fixture、配置、Git 状态和进程清单的前后状态；清理本轮可精确归属的进程、socket 和临时状态，不得覆盖基线已有或来源不明的变化。
-   - 报告分别标明 `spec exists`、`unit covered`、`fault injection covered`、`frame/physical covered`、`binary interaction covered`。任一必需层缺失、失败、仍在运行、跨 run 拼接或使用修复前产物，目标和整体 release gate 均不得判定为通过。
+   - 报告分别标明 `spec exists`、`unit covered`、`fault injection covered`、`frame/physical covered`、`binary interaction covered`。任一必需层缺失、失败、仍在运行、跨 run 拼接或使用受修复影响的修复前产物，目标和整体 release gate 均不得判定为通过。
+
+8. **bounded 验收与完整原生证明**
+   - `terminal-interaction`、`terminal-canonical-diff` 的终端证据以 `bounded_terminal_verify` 判定：`scripts/terminal-capture-driver.mjs verify <capture-launch.json> --bounded` 对封存的字节只读复验采集身份、输入和独立 PTY 逐帧重放，exit 0 才通过，输出在 `capture-verify-bounded-*.txt`。
+   - 完整原生证明包括子进程 OS read 与 parser/唯一 consumer 归属、termios 全过程、无观测时的产品时序等价，目前在 macOS 和 Linux 上都没有采集协议。driver 仍然运行完整 verify，结果写在 run 的 `full_terminal_coverage` 字段里（`not covered` 或 `passed`），不计入 verdict。报告必须把它列为未覆盖的风险，不能写成已验证。`builtin-mods` 的 `terminalEvidence` 同样只要求逐帧校验，`timingEquivalent` 只作记录。
+   - 失去完整证明后，被采集干扰掩盖的时序类问题（如合帧竞态）可能漏检；必要时在 CPU 负载下再跑一轮矩阵。
 
 ## 四个 Agent 的固定任务
 
@@ -159,15 +172,15 @@ Git side effects:
 
 ## 主会话循环
 
-1. 收集同一轮四个报告。
-2. 交叉检查报告是否来自当前 commit/worktree 和本轮新 binary。
+1. 收集四路报告。
+2. 交叉检查每份报告来自哪个 commit/worktree 和 binary，以及它是否仍然有效（第 9 条）。
 3. 如有 finding：
    - 汇总根因，不把症状当修复；
    - 主会话完成最小修复；
    - 运行相关 focused test；
-   - 标记本轮全部结果过期；
-   - 启动下一轮四 Agent 全量门禁。
-4. 只有同一轮四个 verdict 都为 `passed`，才可报告 release validation passed。
+   - 按强制规则第 9 条作废受影响的结果，只重跑这些流程；
+   - 未受影响的结果保留，记下它通过时的 HEAD 和 binary sha256。
+4. 只有每一路当前有效的结果都为 `passed`，才可报告 release validation passed；报告写明保留结果的来源 HEAD 和 binary sha256。
 
 ## 最终报告
 

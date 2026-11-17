@@ -39,6 +39,13 @@ Behaviour and wording follow the official 2.1.325 Code Mode; the differences are
 
 </details>
 
+## 什么时候用
+
+- 任务要做很多小步骤：一次读十几个文件、先 `Grep` 再按结果读、批量改名或批量检查，一段脚本做完，比一步一轮少很多来回。
+- 要把大量输出先在脚本里过滤、汇总，只把结论带回对话，省上下文。
+- 有要跑很久的命令（构建、测试）又想让 Claude 同时做别的：以 `auto` 或 `bypassPermissions` 启动，脚本在后台跑，结果回来时 Claude 接着处理。
+- 只问一两个问题、做一两步的对话用不上它。它是实验功能，行为可能随官方变化，不想要时不设变量重启即可。
+
 ## 打开和关闭
 
 Code Mode 只有一个开关：启动 `claude` 时设环境变量 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`。
@@ -56,6 +63,7 @@ CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude
 | `=1`，可以开启 | `⚠ Code Mode (experimental) is on · this session can be resumed only with Code Mode on` | Code Mode 开启 |
 | 设成 `1` 以外的值（如 `=2`） | `⚠ Code Mode (experimental) isn't available: CLAUDE_CODE_EXPERIMENTAL_CODE_MODE must be 1 to turn it on. Starting with the ordinary tools.` | 普通工具 |
 | 后台会话、teammate 窗格、Remote Control | `⚠ Code Mode (experimental) isn't available: for now it doesn't work in background jobs, in teammates' panes or with Remote Control. Starting with the ordinary tools.` | 普通工具 |
+| `--remote`、`CLAUDE_CODE_REMOTE` | `⚠ Code Mode (experimental) isn't available: for now it only works in the interactive terminal. Starting with the ordinary tools.` | 普通工具 |
 | `-p`、SDK、IDE 插件等非交互入口 | 不显示提示，只写 debug 日志 | 普通工具 |
 
 ## 快速上手
@@ -150,6 +158,7 @@ MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 
 ## 时间限制、Esc 和后台执行
 
 - **脚本时间**：一次 `REPL` 默认最多跑 30 秒脚本自身的时间，Claude 可以用 `timeout` 放宽到 600 秒。等待工具调用（例如一条慢命令、一个权限确认框）的时间不算在内。超时后脚本停下，Claude 收到超时说明。
+- **脚本总时长**：除 `auto`（包括用自动模式分类器的 plan 模式）和 `bypassPermissions` 外，脚本从开始起满 600 秒就停下，等权限确认框的时间也算在内；这时还在跑的命令一起停掉，输出丢失。系统提示里写明了这一点，并让 Claude 给长命令设一个更早结束的 `timeout`。
 - **Esc**：回合中按 `Esc` 会停掉正在跑的脚本，Claude 收到一份「用户中断」的报告，里面写明停下时还在跑哪些调用。
 - **后台执行**只在会话以 `auto` 或 `bypassPermissions` 模式**启动**时提供。这时 Claude 多一个 `Poll` 工具，系统提示开头写成 `Your two tools are REPL and Poll`：
   - 每个脚本都立即返回 `(dispatched #N)`，脚本在后台跑；同一轮的多个脚本按顺序跑，前一个跑满 30 秒还没结束，后一个就开始和它并行；
@@ -169,7 +178,7 @@ MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 
 
 ## 子代理、压缩和恢复会话
 
-- **子代理**：定义里写了 `Read`、`Bash` 等工具的子代理同样拿到 `REPL`，脚本里只能调用定义允许的那些工具。子代理没有 `Poll`，调用时会被告知用现有工具完成任务后把结果交回。
+- **子代理**：定义里写了 `Read`、`Bash` 等工具的子代理同样拿到 `REPL`，脚本里只能调用定义允许的那些工具。主线程直接启动的子代理在 `auto` / `bypassPermissions` 下同样有 `Poll`，脚本在后台跑；子代理再启动的子代理没有后台执行，调用 `Poll` 时会被告知用现有工具完成任务后把结果交回。
 - **Agent Teams 的 teammate** 使用普通工具，不进入 Code Mode。
 - **`/compact`**：压缩后脚本里的变量还在，摘要会告诉 Claude 哪些变量仍可直接使用。
 - **恢复会话**：Code Mode 会话要在打开开关时 `--resume` 才继续用 Code Mode。新进程里上一次的脚本变量已经不在，Claude 会收到提示。上一个进程退出时还在后台跑的脚本，会以 `<event kind="repl-eval" … status="lost">eval #N never settled: …</event>` 事件告诉 Claude 结果已丢失；这个事件不会自己开始一轮，等你下次说话时一起送给 Claude（不设开关恢复时，同样的文字放在提醒里）。

@@ -8,6 +8,13 @@ import { buildTool, type ToolUseContext } from './Tool.js'
 import { formatPollDelivery } from './tools/PollTool/delivery.js'
 import { resetToolsUsedForTesting } from './tools/PollTool/toolsUsed.js'
 import { noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './tools/REPLTool/codeModeGate.js'
+import {
+  dispatchReplEval,
+  getReplSession,
+  MAIN_REPL_SESSION,
+  releaseAllReplSessions,
+  startReplEval,
+} from './tools/REPLTool/sessions.js'
 import type { AgentId } from './types/ids.js'
 import type { Message } from './types/message.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
@@ -52,6 +59,7 @@ afterAll(() => {
   if (originalSettings) setSessionSettingsCache(originalSettings)
 })
 afterEach(() => {
+  releaseAllReplSessions()
   resetCommandQueue()
   resetToolsUsedForTesting()
 })
@@ -177,13 +185,16 @@ describe('poll events fold into the turn (official 2.1.325)', () => {
 describe('an iteration that starts aborted (official 2.1.325)', () => {
   test('Esc that ends the wait for the scripts ends the turn as an interrupted request', async () => {
     const toolUseContext = createToolUseContext()
-    let contextChecks = 0
-    // A prompt.context mod: the second iteration's context refresh sees the Esc first.
+    // A prompt.context mod, and a running script the reply waits for. Esc lands
+    // during that wait, so the second iteration starts aborted.
+    const session = getReplSession(MAIN_REPL_SESSION)
+    dispatchReplEval(session, 1, 'await sleep(40000)')
+    startReplEval(session, 1)
+    let escTimer: ReturnType<typeof setTimeout> | undefined
     toolUseContext.modsSnapshot = {
       hasHooks: (hook: string) => {
-        if (hook !== 'prompt.context') return false
-        if (++contextChecks === 2) toolUseContext.abortController.abort('user-cancel')
-        return contextChecks >= 2
+        if (hook === 'session.append') escTimer ??= setTimeout(() => toolUseContext.abortController.abort('user-cancel'), 50)
+        return hook === 'prompt.context' && toolUseContext.abortController.signal.aborted
       },
     } as unknown as ToolUseContext['modsSnapshot']
     let requests = 0

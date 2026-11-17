@@ -98,6 +98,9 @@ int main(int argc,char **argv){
   if(write(1,"mode\n",5)!=5)return 92;
   errno=EALREADY;if(tcsetattr(1,TCSANOW,&original)||errno!=EALREADY)return 93;
   if(write(1,"restored\n",9)!=9)return 94;
+ }else if(!strcmp(mode,"onlcr-boundary")){
+  char bytes[3088];memset(bytes,'A',3071);bytes[3071]='\n';memset(bytes+3072,'B',16);
+  if(write(1,bytes,sizeof(bytes))!=sizeof(bytes))return 95;
  }else if(!strcmp(mode,"termios-failed")){
   struct termios original;if(tcgetattr(1,&original))return 95;
   errno=EALREADY;if(tcsetattr(1,12345,&original)!=-1||errno!=EINVAL)return 96;
@@ -549,6 +552,26 @@ class NativeJournalTest(unittest.TestCase):
         records = journal.decode_records(header, packets, registration, pid)
         self.assertEqual(len([row for row in records if row['kind'] == 2]), 2)
         self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+
+    def test_kernel_repeated_onlcr_cr_at_a_full_output_queue_is_owned(self):
+        plain = self.capture('onlcr-boundary', observed=False)
+        header, packets, registration, pid, raw = self.capture('onlcr-boundary')
+        self.assertEqual(raw, plain[-1])
+        if sys.platform == 'darwin':
+            self.assertEqual(raw, b'A' * 3071 + b'\r\r\n' + b'B' * 16)
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+        write = next(row for row in records if row['kind'] == 1)
+        self.assertEqual(journal.native_write_outputs(records, termios.OPOST | termios.ONLCR, raw)[write['sequence']], raw)
+
+    def test_only_one_repeated_cr_before_an_onlcr_newline_is_owned(self):
+        self.assertEqual(journal.onlcr_output(b'a\nb', b'a\r\r\nb'), b'a\r\r\nb')
+        self.assertEqual(journal.onlcr_output(b'a\nb', b'a\r\nb'), b'a\r\nb')
+        self.assertEqual(journal.onlcr_output(b'a\r\nb', b'a\r\r\nb'), b'a\r\r\nb')
+        self.assertEqual(journal.onlcr_output(b'a\n', b'a\r\r'), b'a\r\r\n', 'Live prefix may end between CR and NL')
+        for raw in (b'a\r\r\r\nb', b'\ra\r\nb', b'a\r\n\rb', b'a\r\rXnb'):
+            with self.subTest(raw=raw):
+                self.assertNotEqual(journal.onlcr_output(b'a\nb', raw), raw)
 
     def test_failed_termios_preserves_actual_errno_and_kernel_state(self):
         plain = self.capture('termios-failed', observed=False)

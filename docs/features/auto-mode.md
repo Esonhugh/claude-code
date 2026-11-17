@@ -132,6 +132,7 @@ Behaviour matches the official 2.1.303.
 - **本地规则优先。** deny / ask 规则和受保护路径照常生效，剩下的才交给分类器。
 - **分类器出错会重试。** 每个模型最多重试 4 次；分类器在 Sonnet 5 或 Opus 4.8 上用官方的两阶段 `<severity>` 格式，其他模型用 `<block>` 格式。
 - **子代理** 在自动模式下用 `SubagentHandback` 交回结果，见 [agents.md](agents.md)。
+- **[Code Mode](code-mode.md)** 下，分类器在调用 `REPL` 时审一次整段脚本，脚本里的每次调用仍然逐次走权限判定。
 
 ## 已知差异
 
