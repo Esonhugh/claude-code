@@ -24,7 +24,7 @@
 - 随本条目一起合入 `dev` 的提交：`c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363）；`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；其余是文档提交。
 - 对应 issue：#1357；#1358（#1360、#1361 只修了能复现的部分，issue 保持打开）。
 - Advisor 顾问模型（实验性）：PR #1375（`feat/advisor` 分支），对应 issue #1372。
-- 本地 advisor（实验性）：分支 `feat/local-advisor`，尚未提交 PR；相关 issue #1388。
+- 本地 advisor（实验性）：PR #1391（`feat/local-advisor` 分支），对应 issue #1388。
 
 ### 变更内容
 
@@ -39,7 +39,7 @@
 - Code Mode（实验性，移植自官方 2.1.325）：以 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 启动后，模型只用一个 `REPL` 工具，写一段 JavaScript 一次调用 `Read`、`Grep`、`Bash` 等工具，每次调用照常做参数校验、hook 和权限确认；以 `auto` 或 `bypassPermissions` 启动时另有 `Poll` 工具，脚本在后台跑、结果在同一轮送回；等待时用户输入会结束等待，之后完成的脚本在空闲时开启新一轮。没有设置项或 `/config` 开关；`-p`、SDK、IDE 插件、后台会话、teammate 窗格、Remote Control 与 `--remote` 不开启。Code Mode 会话要在打开开关时恢复才继续用 Code Mode；不设开关恢复时改用普通工具继续，之后不再进入 Code Mode（#1363）。
 - ChatGPT 登录时 `/usage` 新增 Credits 一节，显示 credits 余额和按 25 credits = 1 美元换算的参考金额（如 `Credits: 12,500, USD: $500.00`），不是会话费用；无限额度显示 `Credits: Unlimited, USD: N/A`，没有余额数据时显示 0（#1357、#1359）。
 - Advisor 顾问模型（实验性，移植自官方 2.1.325）：用 `/advisor` 选一个不弱于主模型的模型当顾问（`fable`、`opus`、`sonnet` 或完整模型 id，`off` 关闭），主模型在动手前、卡住时和收尾前调用服务端的 `advisor` 工具向它请教。选择写入用户设置 `advisorModel`；`--advisor <模型>` 只对本次启动生效。对话里显示 `Advising using <模型>` 以及已审阅、拒绝、不可用三种结果，顾问用量按顾问模型的价格计入会话费用。主模型支持时，`/advisor` 的开和关在当前对话里立刻生效，否则从 `/clear`、`/compact` 或新对话开始。只在 Claude 模式下可用；默认开启，不读官方的远程开关，`CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` 关闭。没有对真实账号验证。说明见 `docs/features/advisor.md`（#1372）。
-- 本地 advisor（实验性，默认关闭，官方没有）：以 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` 启动后，`advisor` 改为客户端执行的普通工具，主模型调用时，客户端把对话的文字记录单独发给顾问模型，回复作为工具结果交回。用于不运行服务端 advisor 的网关（#1388）。开启后请求不带 advisor 相关 beta 标识；没有等级限制，`availableModels` 允许的任何模型都可以当顾问，也不限接入方式；`/advisor <模型名>` 保留输入的大小写，开、关、换模型从下一次请求起生效；顾问用量记在顾问模型名下。不设该变量时行为不变。说明见 `docs/features/advisor.md`。
+- 本地 advisor（实验性，默认关闭，官方没有）：以 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` 启动后，`advisor` 改为客户端执行的普通工具，主模型调用时，客户端把对话的文字记录单独发给顾问模型，回复作为工具结果交回。用于不运行服务端 advisor 的网关（#1388）。开启后请求不带 advisor 相关 beta 标识；没有等级限制，`availableModels` 允许的任何模型都可以当顾问，也不限接入方式；`/advisor <模型名>` 保留输入的大小写，开、关、换模型从下一次请求起生效；顾问用量记在顾问模型名下。不设该变量时行为不变。说明见 `docs/features/advisor.md`（#1388、#1391）。
 
 #### 修复
 
@@ -66,7 +66,7 @@
 - #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（在 `26510e95` 上测得，早于 `c78cf77d`）；发布验收在 `45d27605` 上加入 `c78cf77d` 的等待中按 Esc 场景后重跑，21/21 个、351/351 项通过；转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
 - 发布验收（四路：单测与交互、`make release-check`、binary 门禁、文档审计）按增量作废进行。`45d27605` 上：`src/` 下全量单测 9171 项通过、67 项失败，失败项在 `v2.1.297` 上同样失败，或是环境相关、偶发；binary 门禁 16 个 required target 加 readiness smoke 全部通过（binary sha256 `7339cf09…`）。之后的 `fcb3aa8a` 只改了 `scripts/mods-test-lab.mjs`：`make release-check` 整体重跑通过，`mods-test-lab` 测试 35 项通过、1 项跳过，`builtin-mods` 和 readiness smoke 在新 binary（`d22712a2…`，与前者只差内嵌的 `CHANGELOG.md`）上重跑通过，其余 15 个 target 保留 `45d27605` 上的结果；其余提交是纯文档，只重跑文档审计。已知旧失败：`scripts/verify-pty-terminal-evidence.test.mjs` 的 sealed proof 用例在 macOS 默认 `TMPDIR`（`/var` 是 `/private/var` 的符号链接）下失败，`v2.1.297` 上相同，不在 `make release-check` 内。门禁没有覆盖的路径见上面发布门禁一节的最后一条。
 - Advisor（#1372，PR #1375，在 `b4d555e6` 上，之后只有文档改动）：9 个 advisor 相关测试文件 67 项通过，`claude-advisor-contract.test.ts` 在子进程里另跑的 24 项通过；`tsc` 通过，改动的 35 个 `src` 文件 eslint 通过，`make build` 通过。PR 的 CI 跑了全部单测分片和 lint，均通过，其中包括 #1374 起 CI 才运行的 `src/`、`web/src/` 顶层 34 个测试文件；此前的 CI 运行里出现过的失败记录在 #1370、#1383、#1384，原因都不在本次改动的代码里，另有一次 Windows 清理临时目录时的 `EBUSY`，重跑通过，原因没有查明。binary 在 tmux 里对假 API 跑了 6 个场景：没有选顾问时请求带的 beta 标识、网关两种拒绝措辞、`/advisor` 对话中途开关、`--advisor` 校验与启动提示和选择框、system turn 被拒后的回退；这 6 个场景是 rebase 到 `dev` `3eeb314e` 之前跑的，rebase 没有改动 advisor 的代码。
-- 本地 advisor（`feat/local-advisor`）：新增和扩展的 6 个测试文件 56 项通过，其中 `claude-advisor-contract.test.ts` 在子进程里另跑 28 项，新增的 4 项走真实的请求管线和假客户端；`bun run check:changed`（eslint、`tsc`、改动文件的单测）通过，`make build` 通过。在一个 Anthropic 格式的自定义网关上实测：主模型 Sonnet 5.5、顾问 Opus 5.5，`-p` 两次、交互界面一次。录下的请求显示：主请求只带普通的 `advisor` 工具，不带 advisor 相关 beta 标识；顾问请求不带工具；`/advisor off` 之后的请求不再带 `advisor` 工具。其他接入方式、子代理里的调用没有实测，顾问请求失败只有假 API 的测试。
+- 本地 advisor（#1388，PR #1391）：新增和扩展的 6 个测试文件 56 项通过，其中 `claude-advisor-contract.test.ts` 在子进程里另跑 28 项，新增的 4 项走真实的请求管线和假客户端；`bun run check:changed`（eslint、`tsc`、改动文件的单测）通过，`make build` 通过。在一个 Anthropic 格式的自定义网关上实测：主模型 Sonnet 5.5、顾问 Opus 5.5，`-p` 两次、交互界面一次。录下的请求显示：主请求只带普通的 `advisor` 工具，不带 advisor 相关 beta 标识；顾问请求不带工具；`/advisor off` 之后的请求不再带 `advisor` 工具。其他接入方式、子代理里的调用没有实测，顾问请求失败只有假 API 的测试。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
