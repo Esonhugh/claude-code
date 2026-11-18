@@ -129,10 +129,27 @@ function isAdvisorRefusedHere(): boolean {
   return refusedForProcess || refusedHosts.has(getAdvisorHostKey())
 }
 
-/** Whether requests may carry the advisor at all (provider, env, refusals). */
+export const ADVISOR_TOOL_NAME = 'advisor'
+
+/**
+ * The local advisor (not in the official client): `advisor` is an ordinary
+ * client-executed tool that sends its own request to the advisor model, for
+ * endpoints that do not run the server-side tool. Off unless
+ * CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL is set; it then replaces the
+ * server-side advisor and drops the rank rules, so any model can advise.
+ */
+export function isLocalAdvisorEnabled(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL) &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL)
+  )
+}
+
+/** Whether requests may carry the server-side advisor at all (provider, env, refusals). */
 export function isAdvisorToolAllowed(): boolean {
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL) ||
+    isLocalAdvisorEnabled() ||
     isAdvisorRefusedHere()
   ) {
     return false
@@ -149,11 +166,14 @@ export function isAdvisorToolAllowed(): boolean {
  * CLAUDE_CODE_DISABLE_ADVISOR_TOOL (or a refusal) turns it off.
  */
 export function isAdvisorEnabled(): boolean {
-  return isAdvisorToolAllowed()
+  return isLocalAdvisorEnabled() || isAdvisorToolAllowed()
 }
 
 export function isAdvisorRankCheckBypassed(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)
+  return (
+    isLocalAdvisorEnabled() ||
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)
+  )
 }
 
 // @[MODEL LAUNCH]: Add the new model's advisor rank (official model catalog
@@ -289,12 +309,35 @@ export function getAdvisorAliasOptions(): string[] {
 
 let warnedUnrankedBase = false
 
-/** The advisor a request for `mainModel` should carry, if any. */
+/** The model the local advisor tool asks, if the setting names a usable one. */
+export function getLocalAdvisorModel(
+  setting: string | undefined,
+): string | undefined {
+  if (!isLocalAdvisorEnabled() || !setting) return undefined
+  const advisor = resolveAdvisorModelId(setting)
+  return isValidAdvisorModel(advisor) ? advisor : undefined
+}
+
+/**
+ * The tools a request offers: the local advisor tool goes out only while an
+ * advisor model is set. Returns `tools` itself when nothing is left out.
+ */
+export function omitUnsetLocalAdvisorTool<T extends { readonly name: string }>(
+  tools: readonly T[],
+  setting: string | undefined,
+): readonly T[] {
+  if (!isLocalAdvisorEnabled() || getLocalAdvisorModel(setting) !== undefined) {
+    return tools
+  }
+  return tools.filter(tool => tool.name !== ADVISOR_TOOL_NAME)
+}
+
+/** The server-side advisor a request for `mainModel` should carry, if any. */
 export function resolveAdvisorModel(
   setting: string | undefined,
   mainModel: string,
 ): string | undefined {
-  if (!isAdvisorEnabled() || !setting) return undefined
+  if (!isAdvisorToolAllowed() || !setting) return undefined
   const advisor = resolveAdvisorModelId(setting)
   if (!modelSupportsAdvisor(mainModel)) {
     logForDebugging(
@@ -368,11 +411,9 @@ export type AdvisorToolAttachment =
       byBase?: true
     }
 
-export const ADVISOR_TOOL_INSTRUCTIONS = `# Advisor Tool
-
-You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters -- when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.
-
-Call advisor BEFORE substantive work -- before writing, before committing to an interpretation, before building on an assumption. If the task requires orientation first (finding files, fetching a source, seeing what's there), do that, then call advisor. Orientation is not substantive work. Writing, editing, and declaring an answer are.
+// When and how to consult the advisor (official 2.1.325 text), shared by the
+// server-side instructions and the local tool's prompt.
+const ADVISOR_GUIDANCE = `Call advisor BEFORE substantive work -- before writing, before committing to an interpretation, before building on an assumption. If the task requires orientation first (finding files, fetching a source, seeing what's there), do that, then call advisor. Orientation is not substantive work. Writing, editing, and declaring an answer are.
 
 Also call advisor:
 - When you believe the task is complete. BEFORE this call, make your deliverable durable: write the file, save the result, commit the change. The advisor call takes time; if the session ends during it, a durable result persists and an unwritten one doesn't.
@@ -384,6 +425,17 @@ On tasks longer than a few steps, call advisor at least once before committing t
 Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence the advice is wrong -- it's evidence your test doesn't check what the advice is checking.
 
 If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call -- "I found X, you suggest Y, which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconcile call is cheaper than committing to the wrong branch.`
+
+export const ADVISOR_TOOL_INSTRUCTIONS = `# Advisor Tool
+
+You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters -- when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.
+
+${ADVISOR_GUIDANCE}`
+
+/** Prompt of the local advisor tool: no claim about which model is stronger. */
+export const LOCAL_ADVISOR_TOOL_PROMPT = `Consult the advisor: a second model the user chose to review your work. It takes NO parameters -- when you call advisor(), your conversation so far is forwarded to it: the task, every tool call you've made, every result you've seen. Its advice comes back as the tool result. Say what you want advice on in your message before the call; the advisor reads that as your question.
+
+${ADVISOR_GUIDANCE}`
 
 const ADVISOR_AVAILABLE_ABBREVIATED =
   'The advisor tool is available; the advisor instructions announced earlier apply.'

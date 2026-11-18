@@ -8,11 +8,13 @@ import {
   formatAdvisorModelName,
   getAdvisorAliasOptions,
   isAdvisorPairingAllowed,
+  isLocalAdvisorEnabled,
   isValidAdvisorModel,
   modelSupportsAdvisor,
   resolveAdvisorModelId,
 } from '../../utils/advisor.js'
 import { describeHeldAdvisor } from '../../utils/advisorQuery.js'
+import { isModelAlias } from '../../utils/model/aliases.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 export const ADVISOR_OFF = 'off'
@@ -27,6 +29,16 @@ export function getAdvisorUsageText(): string {
 
 export function getInvalidAdvisorText(choice: string): string {
   return `${choice} cannot be used as an advisor. Valid options: ${getAdvisorChoices().join(', ')}`
+}
+
+/**
+ * The model choice a typed /advisor argument stands for. Lower-cased like the
+ * official command; the local advisor keeps a model name as typed, since the
+ * names a gateway serves can be case-sensitive.
+ */
+export function toAdvisorChoice(typed: string): string {
+  const lower = typed.toLowerCase()
+  return isLocalAdvisorEnabled() && !isModelAlias(lower) ? typed : lower
 }
 
 /**

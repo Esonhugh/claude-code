@@ -68,6 +68,7 @@ const envKeys = [
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
+  'CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   'ANTHROPIC_BETAS',
 ] as const
@@ -80,9 +81,10 @@ const requests: MessageCreateParams[] = []
 const requestBetaHeaders: string[] = []
 // Refuse requests that carry the advisor tool (or, for 'beta', the header).
 // 'blocks' refuses requests whose history still carries ADVICE_TEXT.
-// 'toolChanges' refuses requests with the tool-change beta, 'system' ones with a system turn.
+// 'toolChanges' refuses requests with the tool-change beta, 'system' ones with a system turn,
+// 'always' every request.
 let refusal:
-  | { status: number; message: string; on: 'tool' | 'beta' | 'blocks' | 'toolChanges' | 'system' }
+  | { status: number; message: string; on: 'tool' | 'beta' | 'blocks' | 'toolChanges' | 'system' | 'always' }
   | undefined
 const hasAdvisorTool = (request: MessageCreateParams) =>
   (request.tools ?? []).some(t => (t as { type?: string }).type === 'advisor_20260301')
@@ -97,6 +99,7 @@ const client = new Anthropic({
     requestBetaHeaders.push(beta)
     if (
       refusal &&
+      (refusal.on === 'always' ||
       (refusal.on === 'tool'
         ? hasAdvisorTool(request)
         : refusal.on === 'beta'
@@ -105,7 +108,7 @@ const client = new Anthropic({
             ? beta.includes(TOOL_CHANGES_BETA)
             : refusal.on === 'system'
               ? request.messages.some(m => (m.role as string) === 'system')
-              : JSON.stringify(request.messages).includes('ADVICE_TEXT'))
+              : JSON.stringify(request.messages).includes('ADVICE_TEXT')))
     ) {
       return Response.json(
         { type: 'error', error: { type: 'invalid_request_error', message: refusal.message } },
@@ -575,5 +578,88 @@ test('requests without conversation state or a capable model do not send the bet
   await ask({ advisorModel: 'opus', toolChanges: {} })
   expect(sentToolChangeBetas(0)).toEqual([false, false])
   expect(sentToolChangeBetas(1)).toEqual([false, false])
+})
+
+// The local advisor: `advisor` is a client-executed tool that sends its own request.
+const LOCAL_ADVISOR = 'Opus 5.5'
+const { AdvisorTool } = await import('../../tools/AdvisorTool/AdvisorTool.js')
+function consult(overrides: Record<string, unknown> = {}) {
+  const context = {
+    options: {
+      tools: [], thinkingConfig: { type: 'disabled' }, isNonInteractiveSession: true,
+      mainLoopModel: 'claude-sonnet-4-6',
+    },
+    abortController: new AbortController(),
+    getAppState: () => ({ advisorModel: LOCAL_ADVISOR }),
+    messages: [
+      createUserMessage({ content: 'fix the login bug' }),
+      createAssistantMessage({
+        content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/src/login.ts' } }] as never,
+      }),
+      createUserMessage({
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_read', content: 'export function login() {}' }],
+      }),
+    ],
+    // The reply being streamed: it is not in `messages` yet.
+    getResponseMessages: () => [
+      createAssistantMessage({ content: 'Should I use A or B?' }),
+      createAssistantMessage({
+        content: [{ type: 'tool_use', id: 'toolu_advisor', name: 'advisor', input: {} }] as never,
+      }),
+    ],
+    ...overrides,
+  }
+  return AdvisorTool.call({}, context as never)
+}
+
+test('local advisor: the main request carries no server-side advisor tool or beta', async () => {
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  await ask({ advisorModel: 'opus' })
+  expect(advisorTools(0)).toEqual([])
+  expect(sentBeta(0)).toBe(false)
+  expect(sentAdvisorBlocks(0)).toBe(false)
+})
+
+test('local advisor: the tool sends the conversation to the advisor model and returns its advice', async () => {
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  const result = await consult()
+  expect(result.data).toEqual({ advice: 'OK', model: LOCAL_ADVISOR })
+  expect(AdvisorTool.mapToolResultToToolResultBlockParam(result.data, 'toolu_advisor')).toEqual({
+    type: 'tool_result', tool_use_id: 'toolu_advisor', content: 'OK',
+  })
+  expect(requests).toHaveLength(1)
+  const request = requests[0]!
+  expect(request.model).toBe(LOCAL_ADVISOR)
+  expect(request.tools ?? []).toEqual([])
+  expect(sentBeta(0)).toBe(false)
+  expect(JSON.stringify(request.system)).toContain('You are the advisor')
+  expect(request.messages).toHaveLength(1)
+  expect(request.messages[0]!.role).toBe('user')
+  const sent = JSON.stringify(request.messages)
+  for (const part of [
+    'fix the login bug',
+    '<tool_call name=\\"Read\\">',
+    'export function login() {}',
+    'Should I use A or B?',
+  ]) {
+    expect(sent).toContain(part)
+  }
+  // The call being answered is not part of what the advisor reviews.
+  expect(sent).not.toContain('<tool_call name=\\"advisor\\">')
+})
+
+test('local advisor: a failed advisor request becomes a tool error that names the model', async () => {
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  refusal = { status: 400, message: 'unknown model', on: 'always' }
+  await expect(consult()).rejects.toThrow(/The advisor model Opus 5\.5 could not answer: .*unknown model/s)
+  expect(requests).toHaveLength(1)
+})
+
+test('local advisor: no request goes out without an advisor model, in a fork, or with the switch off', async () => {
+  await expect(consult()).rejects.toThrow('No advisor model is set')
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  await expect(consult({ getAppState: () => ({}) })).rejects.toThrow('No advisor model is set')
+  await expect(consult({ advisorPin: {} })).rejects.toThrow('not available to forked agents')
+  expect(requests).toHaveLength(0)
 })
 }

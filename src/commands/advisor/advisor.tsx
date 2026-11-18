@@ -20,7 +20,12 @@ import {
 } from '../../utils/advisor.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { validateModel } from '../../utils/model/validateModel.js'
-import { ADVISOR_OFF, getInvalidAdvisorText, setAdvisor } from './setAdvisor.js'
+import {
+  ADVISOR_OFF,
+  getInvalidAdvisorText,
+  setAdvisor,
+  toAdvisorChoice,
+} from './setAdvisor.js'
 
 const ADVISOR_STRATEGY_URL = 'https://claude.com/blog/the-advisor-strategy'
 
@@ -105,7 +110,8 @@ function AdvisorPicker({
 }
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
-  const arg = args.trim().toLowerCase()
+  const typed = args.trim()
+  const arg = typed.toLowerCase()
   const apply = (choice: string) => {
     onDone(
       setAdvisor({
@@ -124,7 +130,8 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   }
   if (arg === ADVISOR_OFF || arg === 'unset') return apply(ADVISOR_OFF)
 
-  const model = resolveAdvisorModelId(arg)
+  const choice = toAdvisorChoice(typed)
+  const model = resolveAdvisorModelId(choice)
   if (!(ADVISOR_MODEL_ALIASES as readonly string[]).includes(arg)) {
     const { valid, error } = await validateModel(model)
     if (!valid) {
@@ -133,8 +140,8 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     }
   }
   if (!isValidAdvisorModel(model)) {
-    onDone(getInvalidAdvisorText(arg))
+    onDone(getInvalidAdvisorText(choice))
     return null
   }
-  return apply(arg)
+  return apply(choice)
 }

@@ -70,7 +70,7 @@ provider：fork 的 `APIProvider`（`src/utils/model/providers.ts:6`）只有 fi
 ### 5.1 开关（`src/utils/advisor.ts`）
 
 - `isAdvisorToolAllowed()`（官方 `Pin`）：未设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`；没有进程级或当前 host 的拒绝记录；`getAPIProvider() === 'firstParty'`；未设 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`。
-- `isAdvisorEnabled()`（官方 `Lx`）：等于 `isAdvisorToolAllowed()`。不读 GrowthBook：开了遥测、GrowthBook 生效、远程下发 `tengu_sage_compass2: {enabled:false}` 或没下发时，advisor 仍然开。关闭只靠 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 或拒绝记录。`CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 只用于跳过 rank 检查。
+- `isAdvisorEnabled()`（官方 `Lx`）：等于 `isAdvisorToolAllowed()`，开了本地 advisor（第 9 节）时也为真。不读 GrowthBook：开了遥测、GrowthBook 生效、远程下发 `tengu_sage_compass2: {enabled:false}` 或没下发时，advisor 仍然开。关闭只靠 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 或拒绝记录。`CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 只用于跳过 rank 检查。
 - 删掉旧的 `tengu_sage_compass`、`canUserConfigureAdvisor()` 和 `getExperimentAdvisorModels()`（官方已没有按 baseModel 下发 advisor 的实验）。
 - 拒绝记录：模块级 `processRefused` 和 `refusedHosts`。host 键取 `ANTHROPIC_BASE_URL` 的 host，没设时为 `"default"`。
 
@@ -218,10 +218,25 @@ fork 的实现：
 
 ## 8. 风险和未决项
 
-- OpenAI 模式不挂 advisor，请求与改动前一致。OpenAI 模式的客户端模拟 advisor 另行设计，本次不做。
+- OpenAI 模式不挂服务端 advisor，请求与改动前一致。客户端执行的做法见第 9 节的本地 advisor，默认关闭。
 - 5.13 的 system turn 放在 user 之后、text 块不包 system-reminder，这两点和 cache breakpoint 的位置只按官方静态阅读实现，服务端接不接受只能用真实账号验证；假 API 只检查形状。被拒时有回退。
 
 - 默认开启后，firstParty 上没配 advisor 的请求也带 `advisor-tool-2026-03-01`，与官方一致。自定义网关不认识这个 beta 时，第一次 400 会走官方的“beta 被拒，按 host 记住并重发一次”路径；用户也可以设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 关闭。
 - 说明文字从 system prompt 移到 attachment 后，已有会话恢复时历史里没有 attachment，第一轮会补发完整版，多一次 meta 消息。
 - 官方 `ra` 按目录取 rank，目录外的模型没有 rank。fork 按 id 匹配，限定了 key 前后的字符（5.2），自定义 id 里含完整官方名字（如 `my-claude-opus-5`）时仍会被当成该模型。
 - 官方行为来自静态阅读，没有真实账号对照；假 API 验收只覆盖渲染和请求形状。
+
+## 9. 本地 advisor（官方没有）
+
+背景：[#1388](https://github.com/Esonhugh/claude-code/issues/1388)。有的网关不运行服务端 advisor 工具，带 `advisor_20260301` 的请求被拒绝、被丢掉，或者模型发回一个普通的 `tool_use(name=advisor)`，没有人执行。本地 advisor 把 `advisor` 做成客户端执行的普通工具，默认关闭。
+
+- **开关**（`src/utils/advisor.ts`）：`isLocalAdvisorEnabled()` 读 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL`，`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 优先。不识别网关，不自动开启。
+- **与服务端 advisor 互斥**：本地模式下 `isAdvisorToolAllowed()` 为假，所以请求不带服务端工具和三个 beta 标识；`resolveAdvisorForQuery` 直接返回空，不声明、不公告、不固定；`describeHeldAdvisor` 返回空串。`isAdvisorEnabled()` 仍为真，`/advisor`、`--advisor` 和启动提示照常。
+- **不做等级检查**：本地模式下 `isAdvisorRankCheckBypassed()` 为真，`availableModels` 仍然生效。`getLocalAdvisorModel(setting)` 给出实际请求的模型。
+- **工具**（`src/tools/AdvisorTool/`）：名字 `advisor`，无参数，只读，可并发。只在开关打开时注册（`src/tools.ts`）。每次请求由 `omitUnsetLocalAdvisorTool`（`src/query.ts`）决定带不带：没选顾问就不带。工具说明用官方的使用指引（`ADVISOR_GUIDANCE`，与服务端说明共用），开头一段另写，不说顾问更强。
+- **顾问收到的内容**（`transcript.ts`）：一条 user 消息里的文字记录。来源是 `normalizeMessagesForAPI(prependUserContext(context.messages, userContext))` 加上当前这次回复已经流出的 assistant 消息。后者通过 `ToolUseContext.getResponseMessages` 取得，这是为此新增的字段，因为 `context.messages` 不含正在进行的回复。不发真实的 tool_use 和 thinking 块：别的模型的 thinking 签名和没有工具定义的 tool_use 在网关上容易被拒。正在被回答的那次 advisor 调用不写进记录。超过 `(顾问上下文窗口 − 40,000) × 3` 个字符时去掉中间。
+- **请求**（`AdvisorTool.ts`）：`queryModelWithoutStreaming`，无工具，单独的系统提示词，沿用会话的 thinking 设置，`querySource: 'advisor'`，不开 prompt cache。用量由通用管线记在顾问模型名下。API 报错或回复为空时抛出带模型名的错误，成为工具错误。
+- **fork**：`runForkedAgent` 的 fork（上下文里有 `advisorPin`）调用时直接报不可用，不发请求。工具仍留在 fork 的工具列表里，与父对话的缓存前缀一致。
+- **`/advisor`**（`src/commands/advisor/`）：`toAdvisorChoice` 在本地模式下保留非别名模型名的大小写，别名、`off`、`unset` 仍不分大小写。开关关闭时与原来一样全部转小写。
+- **未做**：`'advisor'` 不在 529 重试的前台来源里；不给顾问发主模型的系统提示词；后台子代理的工具白名单里没有 `advisor`。
+- **验证**：单测见 `src/utils/advisor.test.ts`、`src/utils/advisorQuery.test.ts`、`src/commands/advisor/setAdvisor.test.ts`、`src/tools/AdvisorTool/transcript.test.ts`、`src/query.localAdvisor.test.ts`、`src/services/api/claude-advisor-contract.test.ts`。真实网关上的运行见 `docs/features/advisor.md` 的说明一节。

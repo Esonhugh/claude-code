@@ -17,6 +17,7 @@ import {
 const ENV_KEYS = [
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
+  'CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
 ] as const
 const saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]))
@@ -306,5 +307,24 @@ describe('resolveAdvisorForQuery with the tool-change beta', () => {
     expect(describeHeldAdvisor([], 'fable', MAIN)).toBe(
       '\nThe current conversation keeps Opus 5 as its advisor model until /clear or /compact, so the tool it has already declared stays unchanged; turning the advisor on or off applies right away.',
     )
+  })
+})
+
+describe('local advisor', () => {
+  test('a request settles no server-side entry, announcement or pin', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    const carrier: AdvisorCarrier = {}
+    // A resumed conversation that used the server-side advisor is not told the
+    // advisor went away: the local tool takes its place.
+    const messages = [attach({ type: 'advisor_tool', available: true, model: 'claude-opus-5' })]
+    expect(run(messages, carrier)).toEqual(NO_ENTRY)
+    expect(carrier.held).toBeUndefined()
+    expect(messages).toHaveLength(1)
+  })
+
+  test('/advisor has nothing to explain: the next call uses the new setting', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    getMainAdvisorCarrier().held = { model: undefined }
+    expect(describeHeldAdvisor([], 'Opus 5.5', 'claude-sonnet-5')).toBe('')
   })
 })

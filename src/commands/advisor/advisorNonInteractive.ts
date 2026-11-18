@@ -5,13 +5,19 @@ import {
   isAdvisorEnabled,
 } from '../../utils/advisor.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
-import { ADVISOR_OFF, getAdvisorUsageText, setAdvisor } from './setAdvisor.js'
+import {
+  ADVISOR_OFF,
+  getAdvisorUsageText,
+  setAdvisor,
+  toAdvisorChoice,
+} from './setAdvisor.js'
 
 export const call: LocalCommandCall = async (args, context) => {
   if (!isAdvisorEnabled()) {
     return { type: 'text', value: 'The advisor is not available' }
   }
-  const arg = args.trim().toLowerCase()
+  const typed = args.trim()
+  const arg = typed.toLowerCase()
   if (!arg || COMMON_INFO_ARGS.includes(arg) || COMMON_HELP_ARGS.includes(arg)) {
     const current = context.getAppState().advisorModel
     return {
@@ -22,7 +28,10 @@ export const call: LocalCommandCall = async (args, context) => {
   return {
     type: 'text',
     value: setAdvisor({
-      choice: arg === 'unset' ? ADVISOR_OFF : arg,
+      choice:
+        arg === 'unset' || arg === ADVISOR_OFF
+          ? ADVISOR_OFF
+          : toAdvisorChoice(typed),
       mainLoopModel: getMainLoopModel(),
       setAppState: context.setAppState,
       messages: context.messages,

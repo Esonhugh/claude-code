@@ -4,7 +4,8 @@ import type { AppState } from '../../state/AppState.js'
 import type { Message } from '../../types/message.js'
 import { resetMainAdvisorCarrier, getMainAdvisorCarrier } from '../../utils/advisorQuery.js'
 import advisorCommand, { advisorNonInteractive } from './index.js'
-import { getAdvisorUsageText, getInvalidAdvisorText, setAdvisor } from './setAdvisor.js'
+import { call as advisorCall } from './advisorNonInteractive.js'
+import { getAdvisorUsageText, getInvalidAdvisorText, setAdvisor, toAdvisorChoice } from './setAdvisor.js'
 
 let state: { advisorModel?: string }
 let writes: unknown[]
@@ -14,6 +15,7 @@ const setAppState = (f: (prev: AppState) => AppState) => {
 const ENV_KEYS = [
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
+  'CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -96,4 +98,28 @@ test('CLAUDE_CODE_DISABLE_ADVISOR_TOOL takes the command away', () => {
   expect(advisorCommand.isEnabled()).toBe(false)
   expect(advisorCommand.isHidden).toBe(true)
   expect(advisorNonInteractive.isEnabled()).toBe(false)
+})
+
+const command = (args: string) =>
+  advisorCall(args, { getAppState: () => state, setAppState, messages: [] } as never)
+
+test('the command lower-cases its argument', async () => {
+  expect(toAdvisorChoice('Claude-Sonnet-4-6')).toBe('claude-sonnet-4-6')
+  expect(await command(' Claude-Sonnet-4-6 ')).toMatchObject({ type: 'text' })
+  expect(state.advisorModel).toBe('claude-sonnet-4-6')
+  expect(await command('Opus 5.5')).toEqual({ type: 'text', value: getInvalidAdvisorText('opus 5.5') })
+})
+
+test('the local advisor takes any model, keeps its name as typed, and pins nothing', async () => {
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  getMainAdvisorCarrier().held = { model: 'opus' }
+  expect(await command(' Opus 5.5 ')).toEqual({ type: 'text', value: 'Advisor set to Opus 5.5' })
+  expect(state.advisorModel).toBe('Opus 5.5')
+  expect(writes.at(-1)).toEqual(['userSettings', { advisorModel: 'Opus 5.5' }])
+  // Aliases and the off keyword stay case-insensitive.
+  await command('OPUS')
+  expect(state.advisorModel).toBe('opus')
+  expect(await command('OFF')).toEqual({ type: 'text', value: 'Advisor disabled' })
+  expect(state.advisorModel).toBeUndefined()
+  expect(run('Opus 5.5', 'Grok-4.7')).toBe('Advisor set to Opus 5.5')
 })
