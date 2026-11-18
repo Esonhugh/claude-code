@@ -23,7 +23,7 @@
 - PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口。
 - 随本条目一起合入 `dev` 的提交：`c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363）；`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；其余是文档提交。
 - 对应 issue：#1357；#1358（#1360、#1361 只修了能复现的部分，issue 保持打开）。
-- Advisor 顾问模型（实验性）：`feat/advisor` 分支，对应 issue #1372。
+- Advisor 顾问模型（实验性）：PR #1375（`feat/advisor` 分支），对应 issue #1372。
 
 ### 变更内容
 
