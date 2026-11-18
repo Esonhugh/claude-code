@@ -103,6 +103,21 @@ test('files added, changed or removed by hand reload the themes', async () => {
   try {
     expect(watch.mock.calls[0]![1]).toMatchObject({ usePolling: true, interval: 500 })
     await new Promise<void>(resolve => watcher.once('ready', resolve))
+    // chokidar reports `ready` before the poller has taken its first reading of
+    // the directory, and a file created before that reading is never reported.
+    // Create a file that is not a theme until the watcher reports it, so that
+    // the steps below start with the poller running.
+    const probe = join(getCustomThemesDir(), 'probe.txt')
+    let polling = false
+    watcher.on('add', path => {
+      if (path.endsWith('probe.txt')) polling = true
+    })
+    for (let attempt = 0; attempt < 10 && !polling; attempt++) {
+      rmSync(probe, { force: true })
+      writeFileSync(probe, 'probe')
+      for (let i = 0; i < 20 && !polling; i++) await Bun.sleep(100)
+    }
+    expect(polling).toBe(true)
     writeFileSync(file, JSON.stringify({ name: 'By hand', base: 'light', overrides: {} }))
     await waitFor(() => getCustomThemes().some(theme => theme.name === 'By hand'))
     writeFileSync(file, JSON.stringify({ name: 'Edited', base: 'light', overrides: {} }))
