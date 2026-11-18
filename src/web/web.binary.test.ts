@@ -2672,6 +2672,15 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await agentInput.getAttribute('placeholder')).toBe('Sign in to send messages')
       expect(await agentInput.isDisabled()).toBe(true)
       await page.unroute('**/api/account')
+      // The list of running sessions answers late, so the page is still opening the session (the
+      // transcript is read, the socket not attached yet) when the messages below are sent. They
+      // wait for that open; the first one used to come back to the box, with the chat marked as
+      // open in another tab (#1383).
+      const runningList = /\/api\/sessions(\?.*)?$/
+      await page.route(runningList, async (route: any) => {
+        if (route.request().method() === 'GET') await new Promise(r => setTimeout(r, 1_000))
+        await route.continue()
+      })
       await page.reload()
       await page.locator('.wl-hi, .main').first().waitFor()
       await page.locator('.session-row', { hasText: 'please SPAWNBG an agent' }).first().click()
@@ -2691,6 +2700,9 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       const mainSent = await page.locator('.main .msg.user').filter({ hasText: /MAIN_FIRST|MAIN_SECOND/ }).allInnerTexts()
       expect(mainSent.map(x => (x.includes('MAIN_SECOND') ? 'second' : 'first'))).toEqual(['first', 'second'])
       expect(promptsSeen.some(p => p.includes('slow-main (1).txt'))).toBe(false)
+      expect(await page.getByText('This chat is open in another tab').count()).toBe(0)
+      expect(await input.inputValue()).toBe('')
+      await page.unroute(runningList)
 
 
       // A project: the coordinator's box and a dispatched task's box.
