@@ -35,6 +35,8 @@ const NULL_RENDERING_TYPES = [
   'todo_reminder',
   'context_efficiency',
   'deferred_tools_delta',
+  'advisor_tool',
+  'advisor_stripped',
   'mcp_instructions_delta',
   'companion_intro',
   'token_usage',

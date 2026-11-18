@@ -25,3 +25,27 @@ test.each([
   expect(message.message.content).toEqual([expect.objectContaining({ text: 'Prompt is too long' })])
   expect(message.errorDetails).toBe(text)
 })
+
+test.each([
+  [false, 'run /advisor to change or disable the advisor'],
+  [true, 'change or unset the advisorModel setting (or the --advisor flag)'],
+])('an incompatible advisor pairing explains the fix (non-interactive: %p)', async (nonInteractive, hint) => {
+  const { APIError } = await import('@anthropic-ai/sdk')
+  const { getIsNonInteractiveSession, setIsInteractive } = await import('../../bootstrap/state.js')
+  const previous = getIsNonInteractiveSession()
+  setIsInteractive(!nonInteractive)
+  try {
+    const raw = 'claude-sonnet-4-6 cannot be used as an advisor when the request model is claude-opus-5'
+    const error = APIError.generate(400, { type: 'error', error: { type: 'invalid_request_error', message: raw } }, undefined, new Headers())
+    const message = getAssistantMessageFromError(error, 'claude-opus-5')
+    expect(message.error).toBe('invalid_request')
+    expect(error.message).toContain(raw)
+    expect(message.message.content).toEqual([
+      expect.objectContaining({
+        text: `API Error: ${error.message.replace(/^400\s+/, '')} · The configured advisor model is not compatible with this request model — ${hint}`,
+      }),
+    ])
+  } finally {
+    setIsInteractive(!previous)
+  }
+})

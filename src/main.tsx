@@ -93,11 +93,12 @@ import {
 import { getAllBaseTools, getTools } from './tools.js'
 import { settleCodeModeGate } from './tools/REPLTool/codeModeGate.js'
 import {
-  canUserConfigureAdvisor,
   getInitialAdvisorSetting,
   isAdvisorEnabled,
+  isAdvisorPairingAllowed,
   isValidAdvisorModel,
   modelSupportsAdvisor,
+  resolveAdvisorModelId,
 } from './utils/advisor.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { count, uniq } from './utils/array.js'
@@ -3490,34 +3491,37 @@ async function run(): Promise<CommanderCommand> {
 
       let advisorModel: string | undefined
       if (isAdvisorEnabled()) {
-        const advisorOption = canUserConfigureAdvisor()
-          ? (options as { advisor?: string }).advisor
-          : undefined
+        const advisorOption = (options as { advisor?: string }).advisor
         if (advisorOption) {
           logForDebugging(`[AdvisorTool] --advisor ${advisorOption}`)
-          if (!modelSupportsAdvisor(resolvedInitialModel)) {
-            process.stderr.write(
-              chalk.red(
-                `Error: The model "${resolvedInitialModel}" does not support the advisor tool.\n`,
-              ),
-            )
-            process.exit(1)
+          // A background session only warns: it has no one to read the error.
+          const exitOnError = process.env.CLAUDE_CODE_SESSION_KIND !== 'bg'
+          const fail = (message: string): void => {
+            if (exitOnError) {
+              process.stderr.write(chalk.red(`${message}\n`))
+              process.exit(1)
+            }
+            logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
           }
-          const normalizedAdvisorModel = normalizeModelStringForAPI(
-            parseUserSpecifiedModel(advisorOption),
-          )
-          if (!isValidAdvisorModel(normalizedAdvisorModel)) {
-            process.stderr.write(
-              chalk.red(
-                `Error: The model "${advisorOption}" cannot be used as an advisor.\n`,
-              ),
+          if (!modelSupportsAdvisor(resolvedInitialModel)) {
+            fail(
+              `Error: The model "${resolvedInitialModel}" does not support the advisor tool.`,
             )
-            process.exit(1)
+          }
+          const advisorId = resolveAdvisorModelId(advisorOption)
+          if (!isValidAdvisorModel(advisorId)) {
+            fail(`Error: The model "${advisorOption}" cannot be used as an advisor.`)
+          }
+          if (!isAdvisorPairingAllowed(resolvedInitialModel, advisorId)) {
+            const message = `"${advisorOption}" cannot advise "${resolvedInitialModel}" (the advisor must be at least as capable as the main model). The advisor will not be used for the main model.`
+            if (!isNonInteractiveSession || exitOnError) {
+              process.stderr.write(chalk.yellow(`${message}\n`))
+            } else {
+              logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
+            }
           }
         }
-        advisorModel = canUserConfigureAdvisor()
-          ? (advisorOption ?? getInitialAdvisorSetting())
-          : advisorOption
+        advisorModel = advisorOption ?? getInitialAdvisorSetting()
         if (advisorModel) {
           logForDebugging(`[AdvisorTool] Advisor model: ${advisorModel}`)
         }
@@ -5736,14 +5740,12 @@ async function run(): Promise<CommanderCommand> {
     'Create a tmux session for the worktree (requires --worktree). Uses iTerm2 native panes when available; use --tmux=classic for traditional tmux.',
   )
 
-  if (canUserConfigureAdvisor()) {
-    program.addOption(
-      new Option(
-        '--advisor <model>',
-        'Enable the server-side advisor tool with the specified model (alias or full ID).',
-      ).hideHelp(),
-    )
-  }
+  program.addOption(
+    new Option(
+      '--advisor <model>',
+      'Enable the server-side advisor tool with the specified model (alias or full ID).',
+    ).hideHelp(),
+  )
 
   if (isAnt()) {
     program.addOption(

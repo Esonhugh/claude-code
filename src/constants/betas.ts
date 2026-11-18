@@ -35,6 +35,12 @@ export const AFK_MODE_BETA_HEADER = feature('TRANSCRIPT_CLASSIFIER')
 export const CLI_INTERNAL_BETA_HEADER =
   isAnt() ? 'cli-internal-2026-02-09' : ''
 export const ADVISOR_BETA_HEADER = 'advisor-tool-2026-03-01'
+// Mid-conversation tool changes: a role:"system" turn adds or removes a
+// deferred tool (2.1.325 sends them for the advisor).
+export const MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER =
+  'mid-conversation-tool-changes-2026-07-01'
+export const MID_CONVERSATION_SYSTEM_BETA_HEADER =
+  'mid-conversation-system-2026-04-07'
 
 /**
  * Bedrock only supports a limited number of beta headers and only through

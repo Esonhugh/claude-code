@@ -651,6 +651,7 @@ import { SandboxPermissionRequest } from 'src/components/permissions/SandboxPerm
 import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExpandedView.js'
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js'
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js'
+import { useAdvisorNotification } from 'src/hooks/notifs/useAdvisorNotification.js'
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js'
 import {
   AUTO_MODE_DESCRIPTION,
@@ -1363,6 +1364,7 @@ export function REPL({
   useSettingsErrors()
   useRateLimitWarningNotification(mainLoopModel)
   useFastModeNotification()
+  useAdvisorNotification(mainLoopModel)
   useDeprecationWarningNotification(mainLoopModel)
   useNpmDeprecationNotification()
   useMemoryIndexNotification()

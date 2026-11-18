@@ -167,7 +167,7 @@ import sandboxToggle from './commands/sandbox-toggle/index.js'
 import yolo from './commands/yolo/index.js'
 import chrome from './commands/chrome/index.js'
 import stickers from './commands/stickers/index.js'
-import advisor from './commands/advisor.js'
+import advisor, { advisorNonInteractive } from './commands/advisor/index.js'
 import { logError } from './utils/log.js'
 import { toError } from './utils/errors.js'
 import { logForDebugging } from './utils/debug.js'
@@ -288,6 +288,7 @@ export const INTERNAL_ONLY_COMMANDS = [
 // since underlying functions read from config, which can't be read at module initialization time
 const COMMANDS = memoize((): Command[] => [
   addDir,
+  advisorNonInteractive,
   advisor,
   agents,
   branch,

@@ -12,7 +12,7 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-11-17 - Code Mode（实验性）、Codex 式压缩只保留用户消息、ChatGPT Credits、启动输入卡顿与长历史 /clear 修复
+## 2026-11-17 - Code Mode（实验性）、Advisor 顾问模型（实验性）、Codex 式压缩只保留用户消息、ChatGPT Credits、启动输入卡顿与长历史 /clear 修复
 
 ### 版本状态
 
@@ -23,6 +23,7 @@
 - PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口。
 - 随本条目一起合入 `dev` 的提交：`c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363）；`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；其余是文档提交。
 - 对应 issue：#1357；#1358（#1360、#1361 只修了能复现的部分，issue 保持打开）。
+- Advisor 顾问模型（实验性）：PR #1375（`feat/advisor` 分支），对应 issue #1372。
 
 ### 变更内容
 
@@ -30,11 +31,13 @@
 
 - Codex 式压缩（`compact.mode: "codex"`）写摘要时与 Codex 一样只原样保留最近的用户消息：模型回复、工具调用（包括 `Write` 写入的文件内容）和工具结果交给摘要，不再保留；放不下的那条只留开头，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。此前多次大 `Write` 后 `/compact` 几乎不减少上下文，实测压缩后的下一次请求由 1,253,245 字节降到 34,344 字节。OpenAI 服务端压缩与默认的 `claude` 方式不变（#1362）。
 - 在 Bun 下运行时（包括 Bun 构建的 binary），设置文件、自定义主题和 cron 文件改为每 500 ms 轮询一次，外部改动最多晚一个轮询间隔生效（#1361）。
+- Claude 模式（Anthropic API，包括自定义 `ANTHROPIC_BASE_URL`）下，发给模型的请求现在都带 `advisor-tool-2026-03-01` beta 标识，没有选顾问时也带。主模型是 Haiku 5.5、Sonnet 5.5、Opus 4.8、Opus 5、Opus 5.5、Fable 5 系列、Mythos 5 系列，或者模型名不在本构建的模型表里（例如网关自己的模型名）时，主对话和子代理的请求还带 `mid-conversation-tool-changes-2026-07-01` 和 `mid-conversation-system-2026-04-07`。网关按 Anthropic 的报错格式拒绝这些标识时，客户端去掉它们重发，本次启动内不再对该地址发送；网关用其他措辞拒绝时每一轮都报 `API Error: 400`，需要设置 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`。使用官方地址、没有选顾问、主模型支持对话中途开关、且账号能用该顾问模型时，主对话请求还会声明一个延迟加载的备用 `advisor` 工具条目。Bedrock、Vertex、Foundry 和 OpenAI 模式的请求不变（#1372）。
 
 #### 新功能
 
 - Code Mode（实验性，移植自官方 2.1.325）：以 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 启动后，模型只用一个 `REPL` 工具，写一段 JavaScript 一次调用 `Read`、`Grep`、`Bash` 等工具，每次调用照常做参数校验、hook 和权限确认；以 `auto` 或 `bypassPermissions` 启动时另有 `Poll` 工具，脚本在后台跑、结果在同一轮送回；等待时用户输入会结束等待，之后完成的脚本在空闲时开启新一轮。没有设置项或 `/config` 开关；`-p`、SDK、IDE 插件、后台会话、teammate 窗格、Remote Control 与 `--remote` 不开启。Code Mode 会话要在打开开关时恢复才继续用 Code Mode；不设开关恢复时改用普通工具继续，之后不再进入 Code Mode（#1363）。
 - ChatGPT 登录时 `/usage` 新增 Credits 一节，显示 credits 余额和按 25 credits = 1 美元换算的参考金额（如 `Credits: 12,500, USD: $500.00`），不是会话费用；无限额度显示 `Credits: Unlimited, USD: N/A`，没有余额数据时显示 0（#1357、#1359）。
+- Advisor 顾问模型（实验性，移植自官方 2.1.325）：用 `/advisor` 选一个不弱于主模型的模型当顾问（`fable`、`opus`、`sonnet` 或完整模型 id，`off` 关闭），主模型在动手前、卡住时和收尾前调用服务端的 `advisor` 工具向它请教。选择写入用户设置 `advisorModel`；`--advisor <模型>` 只对本次启动生效。对话里显示 `Advising using <模型>` 以及已审阅、拒绝、不可用三种结果，顾问用量按顾问模型的价格计入会话费用。主模型支持时，`/advisor` 的开和关在当前对话里立刻生效，否则从 `/clear`、`/compact` 或新对话开始。只在 Claude 模式下可用；默认开启，不读官方的远程开关，`CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` 关闭。没有对真实账号验证。说明见 `docs/features/advisor.md`（#1372）。
 
 #### 修复
 
@@ -60,6 +63,7 @@
 - 每个 PR 合并前并入最新 `dev`，PR CI 全绿：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、macOS/Windows e2e 与 web e2e。#1361 并入 `dev` 后单测第 3 片的设置 watcher 用例在负载下失败（轮询器在 chokidar ready 之后才取首个样本），测试改为等首个样本后再写，8 路并行下由 3/24 次失败降为 0/24。
 - #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（在 `26510e95` 上测得，早于 `c78cf77d`）；发布验收在 `45d27605` 上加入 `c78cf77d` 的等待中按 Esc 场景后重跑，21/21 个、351/351 项通过；转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
 - 发布验收（四路：单测与交互、`make release-check`、binary 门禁、文档审计）按增量作废进行。`45d27605` 上：`src/` 下全量单测 9171 项通过、67 项失败，失败项在 `v2.1.297` 上同样失败，或是环境相关、偶发；binary 门禁 16 个 required target 加 readiness smoke 全部通过（binary sha256 `7339cf09…`）。之后的 `fcb3aa8a` 只改了 `scripts/mods-test-lab.mjs`：`make release-check` 整体重跑通过，`mods-test-lab` 测试 35 项通过、1 项跳过，`builtin-mods` 和 readiness smoke 在新 binary（`d22712a2…`，与前者只差内嵌的 `CHANGELOG.md`）上重跑通过，其余 15 个 target 保留 `45d27605` 上的结果；其余提交是纯文档，只重跑文档审计。已知旧失败：`scripts/verify-pty-terminal-evidence.test.mjs` 的 sealed proof 用例在 macOS 默认 `TMPDIR`（`/var` 是 `/private/var` 的符号链接）下失败，`v2.1.297` 上相同，不在 `make release-check` 内。门禁没有覆盖的路径见上面发布门禁一节的最后一条。
+- Advisor（#1372，PR #1375，在 `b4d555e6` 上，之后只有文档改动）：9 个 advisor 相关测试文件 67 项通过，`claude-advisor-contract.test.ts` 在子进程里另跑的 24 项通过；`tsc` 通过，改动的 35 个 `src` 文件 eslint 通过，`make build` 通过。PR 的 CI 跑了全部单测分片和 lint，均通过，其中包括 #1374 起 CI 才运行的 `src/`、`web/src/` 顶层 34 个测试文件；此前的 CI 运行里出现过的失败记录在 #1370、#1383、#1384，原因都不在本次改动的代码里，另有一次 Windows 清理临时目录时的 `EBUSY`，重跑通过，原因没有查明。binary 在 tmux 里对假 API 跑了 6 个场景：没有选顾问时请求带的 beta 标识、网关两种拒绝措辞、`/advisor` 对话中途开关、`--advisor` 校验与启动提示和选择框、system turn 被拒后的回退；这 6 个场景是 rebase 到 `dev` `3eeb314e` 之前跑的，rebase 没有改动 advisor 的代码。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 

@@ -36,6 +36,7 @@ import {
   API_PDF_MAX_PAGES,
   PDF_TARGET_RAW_SIZE,
 } from '../../constants/apiLimits.js'
+import { isAdvisorIncompatibleError } from './advisorRefusal.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize, formatResetTime } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
@@ -678,6 +679,19 @@ function formatAssistantMessageFromError(
       content: getIsNonInteractiveSession()
         ? 'An image in the conversation exceeds the dimension limit for many-image requests (2000px). Start a new session with fewer images.'
         : 'An image in the conversation exceeds the dimension limit for many-image requests (2000px). Run /compact to remove old images from context, or start a new session.',
+      error: 'invalid_request',
+      errorDetails: error.message,
+    })
+  }
+
+  // Official 2.1.325: the advisor cannot pair with this request model, which
+  // a retry without the advisor would only hide.
+  if (isAdvisorIncompatibleError(error)) {
+    const hint = getIsNonInteractiveSession()
+      ? 'change or unset the advisorModel setting (or the --advisor flag)'
+      : 'run /advisor to change or disable the advisor'
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: ${error.message.replace(/^400\s+/, '')} · The configured advisor model is not compatible with this request model — ${hint}`,
       error: 'invalid_request',
       errorDetails: error.message,
     })

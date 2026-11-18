@@ -27,6 +27,8 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import { createChildAbortController } from './abortController.js'
+import { isAdvisorEnabled } from './advisor.js'
+import { type AdvisorRequest, NO_ADVISOR_REQUEST } from './advisorQuery.js'
 import { logForDebugging } from './debug.js'
 import { cloneFileStateCache } from './fileStateCache.js'
 import type { REPLHookContext } from './hooks/postSamplingHooks.js'
@@ -70,6 +72,36 @@ export type CacheSafeParams = {
   toolUseContext: ToolUseContext
   /** Parent context messages for prompt cache sharing */
   forkContextMessages: Message[]
+  /**
+   * Advisor the fork's requests carry. Omitted: the advisor of the parent's
+   * latest request (`toolUseContext.requestAdvisor`).
+   */
+  advisor?: AdvisorRequest
+}
+
+const NEVER_CONSULT_ADVISOR = 'Never consult the advisor tool.'
+
+/**
+ * Official 2.1.325: a fork that continues its parent's prompt keeps the
+ * advisor tool so the cached prefix holds, and is told not to call it.
+ */
+function getNeverConsultAdvisorMessage(
+  forkLabel: string,
+  forkContextMessages: readonly Message[],
+  advisorModel: string | undefined,
+): Message | undefined {
+  return forkLabel !== 'compact' &&
+    forkLabel !== 'reactive-compact' &&
+    forkLabel !== 'resume_cache_warm' &&
+    forkContextMessages.length > 0 &&
+    isAdvisorEnabled() &&
+    advisorModel !== undefined
+    ? createUserMessage({ content: NEVER_CONSULT_ADVISOR, isMeta: true })
+    : undefined
+}
+
+function isNeverConsultAdvisorMessage(message: Message): boolean {
+  return message.type === 'user' && message.message.content === NEVER_CONSULT_ADVISOR
 }
 
 // Slot written by handleStopHooks after each turn so post-turn forks
@@ -587,6 +619,12 @@ export async function runForkedAgent({
     toolUseContext,
     forkContextMessages,
   } = cacheSafeParams
+  const advisor =
+    ('advisor' in cacheSafeParams
+      ? cacheSafeParams.advisor
+      : toolUseContext.requestAdvisor) ?? NO_ADVISOR_REQUEST
+  // An inactive (deferred, not yet added) entry cannot be called.
+  const advisorModel = advisor.advisorActive ? advisor.advisorModel : undefined
 
   // Create isolated context to prevent mutation of parent state.
   const isolatedToolUseContext = createSubagentContext(toolUseContext, {
@@ -594,6 +632,19 @@ export async function runForkedAgent({
     agentId:
       overrides?.agentId ?? createAgentId(skipTranscript ? undefined : forkLabel),
   })
+  isolatedToolUseContext.advisorPin = advisor
+  const neverConsult = getNeverConsultAdvisorMessage(
+    forkLabel,
+    forkContextMessages,
+    advisorModel,
+  )
+  if (
+    neverConsult &&
+    promptMessages.length > 0 &&
+    !promptMessages.some(isNeverConsultAdvisorMessage)
+  ) {
+    promptMessages = [...promptMessages, neverConsult]
+  }
 
   // Do NOT filterIncompleteToolCalls here — it drops the whole assistant on
   // partial tool batches, orphaning the paired results (API 400). Dangling

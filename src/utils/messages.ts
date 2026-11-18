@@ -71,7 +71,15 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../types/message.js'
-import { isAdvisorBlock } from './advisor.js'
+import {
+  type AdvisorToolAttachment,
+  getAdvisorAnnouncementText,
+  isAdvisorBlock,
+} from './advisor.js'
+import {
+  createAdvisorToolChangeMarker,
+  isAdvisorToolChangeMarker,
+} from './advisorToolChangeWire.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
 import {
@@ -2208,6 +2216,16 @@ function splicePollDelivery(
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
+  {
+    advisorToolChanges = false,
+  }: {
+    /**
+     * The request declares the advisor deferred under the mid-conversation
+     * tool-change beta: an advisor_tool attachment with a toolChange becomes
+     * an AdvisorToolChangeMarker instead of a reminder.
+     */
+    advisorToolChanges?: boolean
+  } = {},
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
@@ -2526,15 +2544,30 @@ export function normalizeMessagesForAPI(
           ) {
             return
           }
-          const rawAttachmentMessage =
-            attachmentMessagesForAPI.get(message) ??
+          const advisorToolChange =
+            advisorToolChanges &&
+            message.attachment.type === 'advisor_tool' &&
+            message.attachment.toolChange !== undefined
+              ? createUserMessage({
+                  content: [
+                    createAdvisorToolChangeMarker(
+                      message.attachment as AdvisorToolAttachment & {
+                        toolChange: 'add' | 'remove'
+                      },
+                    ) as unknown as ContentBlockParam,
+                  ],
+                  isMeta: true,
+                })
+              : undefined
+          const rawAttachmentMessage = advisorToolChange
+            ? [advisorToolChange]
+            : attachmentMessagesForAPI.get(message) ??
             normalizeAttachmentForAPI(
               // @ts-ignore - recovered code
               message.attachment,
             )
-          const attachmentMessage = checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-            'tengu_chair_sermon',
-          )
+          const attachmentMessage = !advisorToolChange &&
+            checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_chair_sermon')
             ? rawAttachmentMessage.map(ensureSystemReminderWrap)
             : rawAttachmentMessage
 
@@ -2901,8 +2934,13 @@ export function mergeUserContentBlocks(
   // Universal smoosh (gated): fold all non-tool_result block types (text,
   // image, document, search_result) into tool_result.content. tool_result
   // blocks stay as siblings (hoisted later by hoistToolResults).
-  const toSmoosh = b.filter(x => x.type !== 'tool_result')
-  const toolResults = b.filter(x => x.type === 'tool_result')
+  // Advisor tool-change markers become system turns, so they stay siblings.
+  const toSmoosh = b.filter(
+    x => x.type !== 'tool_result' && !isAdvisorToolChangeMarker(x),
+  )
+  const toolResults = b.filter(
+    x => x.type === 'tool_result' || isAdvisorToolChangeMarker(x),
+  )
   if (toSmoosh.length === 0) {
     return [...a, ...b]
   }
@@ -4651,6 +4689,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'advisor_tool': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: getAdvisorAnnouncementText(attachment),
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'advisor_stripped':
+      return []
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {
@@ -5999,12 +6047,19 @@ export function ensureToolResultPairing(
  * Strip advisor blocks from messages. The API rejects server_tool_use blocks
  * with name "advisor" unless the advisor beta header is present.
  */
+/**
+ * Removes advisor blocks from assistant messages, from all of them or only
+ * those whose API message id is in `ids`.
+ */
 export function stripAdvisorBlocks(
   messages: (UserMessage | AssistantMessage)[],
+  ids?: ReadonlySet<string>,
 ): (UserMessage | AssistantMessage)[] {
+  if (ids?.size === 0) return messages
   let changed = false
   const result = messages.map(msg => {
     if (msg.type !== 'assistant') return msg
+    if (ids !== undefined && !ids.has(msg.message.id)) return msg
     const content = msg.message.content
     const filtered = content.filter(b => !isAdvisorBlock(b))
     if (filtered.length === content.length) return msg
@@ -6028,6 +6083,29 @@ export function stripAdvisorBlocks(
     return { ...msg, message: { ...msg.message, content: filtered } }
   })
   return changed ? result : messages
+}
+
+const NO_STRIPPED_ADVISOR_IDS: ReadonlySet<string> = new Set()
+
+/**
+ * Official `pq`: the assistant messages before the last advisor_stripped
+ * attachment, whose advisor blocks the server once could not process and
+ * later requests leave out.
+ */
+export function getAdvisorStrippedMessageIds(
+  messages: readonly Message[],
+): ReadonlySet<string> {
+  const last = messages.findLastIndex(
+    m => m.type === 'attachment' && m.attachment.type === 'advisor_stripped',
+  )
+  if (last === -1) return NO_STRIPPED_ADVISOR_IDS
+  const ids = new Set<string>()
+  for (const m of messages.slice(0, last)) {
+    if (m.type === 'assistant' && typeof m.message.id === 'string') {
+      ids.add(m.message.id)
+    }
+  }
+  return ids
 }
 
 export function wrapCommandText(

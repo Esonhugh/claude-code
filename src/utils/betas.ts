@@ -12,6 +12,8 @@ import {
   CONTEXT_1M_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
   INTERLEAVED_THINKING_BETA_HEADER,
+  MID_CONVERSATION_SYSTEM_BETA_HEADER,
+  MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
   PROMPT_CACHING_SCOPE_BETA_HEADER,
   REDACT_THINKING_BETA_HEADER,
   THINKING_TOKEN_COUNT_BETA_HEADER,
@@ -23,6 +25,7 @@ import {
   WEB_SEARCH_BETA_HEADER,
 } from '../constants/betas.js'
 import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
+import { shouldOfferToolChangeBetas } from './advisorToolChanges.js'
 import { isClaudeAISubscriber } from './auth.js'
 import { isApproveForMeAvailable } from './permissions/approveForMe.js'
 import { has1mContext } from './context.js'
@@ -465,6 +468,19 @@ export function getMergedBetas(
       !baseBetas.includes(CLI_INTERNAL_BETA_HEADER)
     ) {
       baseBetas.push(CLI_INTERNAL_BETA_HEADER)
+    }
+  }
+
+  // Official 2.1.325 offers the mid-conversation tool-change beta whenever
+  // the model takes it; the request then keeps it per conversation
+  // (applyToolChangeBetas). The role:"system" turns it rides on need the
+  // second beta.
+  if (shouldOfferToolChangeBetas(model)) {
+    for (const header of [
+      MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
+      MID_CONVERSATION_SYSTEM_BETA_HEADER,
+    ]) {
+      if (!baseBetas.includes(header)) baseBetas.push(header)
     }
   }
 
