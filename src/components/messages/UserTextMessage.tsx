@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import * as React from 'react'
 import { NO_CONTENT_MESSAGE } from '../../constants/messages.js'
+import type { MessageOrigin } from '../../types/message.js'
 import {
   COMMAND_MESSAGE_TAG,
   LOCAL_COMMAND_CAVEAT_TAG,
@@ -18,6 +19,7 @@ import {
 } from '../../utils/messages.js'
 import { InterruptedByUser } from '../InterruptedByUser.js'
 import { MessageResponse } from '../MessageResponse.js'
+import { parseAgentMessage, UserAgentMessage } from './UserAgentMessage.js'
 import { UserAgentNotificationMessage } from './UserAgentNotificationMessage.js'
 import { UserBashInputMessage } from './UserBashInputMessage.js'
 import { UserBashOutputMessage } from './UserBashOutputMessage.js'
@@ -37,6 +39,7 @@ type Props = {
   planContent?: string
   isTranscriptMode?: boolean
   timestamp?: string
+  origin?: MessageOrigin
 }
 
 export function UserTextMessage({
@@ -46,9 +49,21 @@ export function UserTextMessage({
   planContent,
   isTranscriptMode,
   timestamp,
+  origin,
 }: Props): React.ReactNode {
   if (param.text.trim() === NO_CONTENT_MESSAGE) {
     return null
+  }
+
+  const agentMessage = parseAgentMessage(param.text, origin)
+  if (agentMessage) return <UserAgentMessage addMargin={addMargin} message={agentMessage} />
+
+  const agentStart = param.text.indexOf('<agent-message')
+  const peerStart = param.text.indexOf('<cross-session-message')
+  // Invalid or quoted agent frames remain literal, including tags in their body.
+  if ((origin?.kind === 'peer' && origin.senderTaskId) ||
+      (agentStart >= 0 && (peerStart < 0 || agentStart < peerStart))) {
+    return <UserPromptMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} timestamp={timestamp} />
   }
 
   // Plan to implement message (cleared context flow)

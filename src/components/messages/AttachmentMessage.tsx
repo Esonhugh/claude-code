@@ -322,6 +322,7 @@ export function AttachmentMessage({
             param={{ text, type: 'text' }}
             verbose={verbose}
             isTranscriptMode={isTranscriptMode}
+            origin={attachment.origin}
           />
           {hasImages &&
             attachment.imagePasteIds?.map(id => (
