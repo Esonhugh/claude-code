@@ -15,7 +15,7 @@ import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
-import { isLocalAdvisorEnabled } from './utils/advisor.js'
+import { isAdvisorEnabled } from './utils/advisor.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const SuggestBackgroundPRTool =
@@ -271,8 +271,8 @@ export function getAllBaseTools(
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),
-    // Opt-in (CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL): absent otherwise.
-    ...(isLocalAdvisorEnabled() ? [AdvisorTool] : []),
+    // The local advisor: absent unless the advisor is on (isAdvisorEnabled).
+    ...(isAdvisorEnabled() ? [AdvisorTool] : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(getREPLTool() ? [getREPLTool()!] : []),
     ...(getPollTool() ? [getPollTool()!] : []),

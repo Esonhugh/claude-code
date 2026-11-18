@@ -4,47 +4,35 @@ import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { useAppState } from '../../state/AppState.js'
 import {
   isAdvisorEnabled,
-  isAdvisorPairingAllowed,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
   resolveAdvisorModelId,
 } from '../../utils/advisor.js'
 
-export type AdvisorNotice = 'on' | 'pairing'
+export const ADVISOR_NOTICE_TEXT =
+  'Advisor Tool (experimental) is on and may use more tokens · /advisor'
 
-export const ADVISOR_NOTICE_TEXT: Record<AdvisorNotice, string> = {
-  on: 'Advisor Tool (experimental) is on and may use more tokens · /advisor',
-  pairing:
-    'Advisor will not activate on the main model (advisor is less capable); subagents may still use it and may use more tokens · /advisor',
+/** Whether the advisor notice applies (official startup notice `advisor-tool`). */
+export function hasAdvisorNotice(advisorModel: string | undefined): boolean {
+  if (getIsRemoteMode() || !isAdvisorEnabled() || !advisorModel) return false
+  return isValidAdvisorModel(resolveAdvisorModelId(advisorModel))
 }
 
-/** Which advisor notice applies (official startup notice `advisor-tool`). */
-export function getAdvisorNotice(
-  advisorModel: string | undefined,
-  mainLoopModel: string,
-): AdvisorNotice | undefined {
-  if (getIsRemoteMode() || !isAdvisorEnabled()) return undefined
-  if (!advisorModel || !modelSupportsAdvisor(mainLoopModel)) return undefined
-  if (!isValidAdvisorModel(resolveAdvisorModelId(advisorModel))) return undefined
-  return isAdvisorPairingAllowed(mainLoopModel, advisorModel) ? 'on' : 'pairing'
-}
-
-/** Announces the advisor at startup and whenever the pairing changes. */
-export function useAdvisorNotification(mainLoopModel: string): void {
+/** Announces the advisor at startup and whenever it is turned on. */
+export function useAdvisorNotification(): void {
   const { addNotification } = useNotifications()
   const advisorModel = useAppState(s => s.advisorModel)
-  const shown = useRef<AdvisorNotice | undefined>(undefined)
+  const shown = useRef(false)
 
   useEffect(() => {
-    const notice = getAdvisorNotice(advisorModel, mainLoopModel)
+    const notice = hasAdvisorNotice(advisorModel)
     if (notice === shown.current) return
     shown.current = notice
-    if (notice === undefined) return
+    if (!notice) return
     addNotification({
       key: 'advisor-experimental',
-      text: ADVISOR_NOTICE_TEXT[notice],
+      text: ADVISOR_NOTICE_TEXT,
       priority: 'medium',
       fold: (_, incoming) => incoming,
     })
-  }, [advisorModel, mainLoopModel, addNotification])
+  }, [advisorModel, addNotification])
 }

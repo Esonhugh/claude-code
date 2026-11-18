@@ -6,25 +6,31 @@ import type { AppState } from '../../state/AppState.js'
 import type { Message } from '../../types/message.js'
 import {
   formatAdvisorModelName,
-  getAdvisorAliasOptions,
-  isAdvisorPairingAllowed,
-  isLocalAdvisorEnabled,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
   resolveAdvisorModelId,
 } from '../../utils/advisor.js'
 import { describeHeldAdvisor } from '../../utils/advisorQuery.js'
 import { isModelAlias } from '../../utils/model/aliases.js'
+import { getModelOptions, type ModelOption } from '../../utils/model/modelOptions.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 export const ADVISOR_OFF = 'off'
 
+export type AdvisorModelOption = ModelOption & { value: string }
+
+/** The models /advisor offers: the ones /model lists, without its "Default" row. */
+export function getAdvisorModelOptions(): AdvisorModelOption[] {
+  return getModelOptions().filter(
+    (option): option is AdvisorModelOption => option.value !== null,
+  )
+}
+
 export function getAdvisorChoices(): string[] {
-  return [...getAdvisorAliasOptions(), ADVISOR_OFF]
+  return [...getAdvisorModelOptions().map(option => option.value), ADVISOR_OFF]
 }
 
 export function getAdvisorUsageText(): string {
-  return `Usage: /advisor <${getAdvisorChoices().join('|')}>`
+  return `Usage: /advisor <model|off>. Available: ${getAdvisorChoices().join(', ')}, or any other model name.`
 }
 
 export function getInvalidAdvisorText(choice: string): string {
@@ -32,13 +38,17 @@ export function getInvalidAdvisorText(choice: string): string {
 }
 
 /**
- * The model choice a typed /advisor argument stands for. Lower-cased like the
- * official command; the local advisor keeps a model name as typed, since the
- * names a gateway serves can be case-sensitive.
+ * The model choice a typed /advisor argument stands for: the spelling /model
+ * lists whatever the case typed, else a lower-cased alias, else the name as
+ * typed, since the names a gateway serves can be case-sensitive.
  */
 export function toAdvisorChoice(typed: string): string {
   const lower = typed.toLowerCase()
-  return isLocalAdvisorEnabled() && !isModelAlias(lower) ? typed : lower
+  const listed = getAdvisorModelOptions().find(
+    option => option.value.toLowerCase() === lower,
+  )
+  if (listed) return listed.value
+  return isModelAlias(lower) ? lower : typed
 }
 
 /**
@@ -88,13 +98,5 @@ export function setAdvisor({
   if (persist) {
     updateSettingsForSource('userSettings', { advisorModel: model })
   }
-  const advisorName = formatAdvisorModelName(model)
-  const mainName = formatAdvisorModelName(mainLoopModel)
-  let text = `Advisor set to ${advisorName}${suffix}`
-  if (!modelSupportsAdvisor(mainLoopModel)) {
-    text += `\nNote: the current main model (${mainName}) does not support the advisor. It will activate when you switch to a supported main model.`
-  } else if (!isAdvisorPairingAllowed(mainLoopModel, model)) {
-    text += `\nNote: ${advisorName} is less capable than the current main model (${mainName}), so the advisor will not activate. Choose a more capable advisor, or switch to a smaller main model.`
-  }
-  return text + describeHeldAdvisor(messages, model, mainLoopModel)
+  return `Advisor set to ${formatAdvisorModelName(model)}${suffix}${describeHeldAdvisor(messages, model, mainLoopModel)}`
 }

@@ -132,164 +132,45 @@ function isAdvisorRefusedHere(): boolean {
 export const ADVISOR_TOOL_NAME = 'advisor'
 
 /**
- * The local advisor (not in the official client): `advisor` is an ordinary
- * client-executed tool that sends its own request to the advisor model, for
- * endpoints that do not run the server-side tool. Off unless
- * CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL is set; it then replaces the
- * server-side advisor and drops the rank rules, so any model can advise.
+ * The advisor is off unless CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL is
+ * set: no server-side entry, no beta, no local tool, no /advisor.
+ * CLAUDE_CODE_DISABLE_ADVISOR_TOOL wins over it. Official `Lx()` also reads
+ * the `tengu_sage_compass2` flag; this build does not ask GrowthBook.
  */
-export function isLocalAdvisorEnabled(): boolean {
+export function isAdvisorEnabled(): boolean {
   return (
-    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL) &&
+    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL) &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL)
   )
 }
 
-/** Whether requests may carry the server-side advisor at all (provider, env, refusals). */
+/**
+ * Whether requests may carry the server-side advisor (provider, env,
+ * refusals). Where they may not, the local advisor answers instead: `advisor`
+ * as an ordinary client-executed tool that sends its own request to the
+ * advisor model (not in the official client).
+ */
 export function isAdvisorToolAllowed(): boolean {
-  if (
-    isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL) ||
-    isLocalAdvisorEnabled() ||
-    isAdvisorRefusedHere()
-  ) {
-    return false
-  }
   return (
+    isAdvisorEnabled() &&
+    !isAdvisorRefusedHere() &&
     getAPIProvider() === 'firstParty' &&
     !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
-
-/**
- * Official `Lx()` also reads the `tengu_sage_compass2` flag. This build keeps
- * the advisor on locally whatever GrowthBook serves; only
- * CLAUDE_CODE_DISABLE_ADVISOR_TOOL (or a refusal) turns it off.
- */
-export function isAdvisorEnabled(): boolean {
-  return isLocalAdvisorEnabled() || isAdvisorToolAllowed()
-}
-
-export function isAdvisorRankCheckBypassed(): boolean {
-  return (
-    isLocalAdvisorEnabled() ||
-    isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)
-  )
-}
-
-// @[MODEL LAUNCH]: Add the new model's advisor rank (official model catalog
-// `advisor_rank`). Models without a rank cannot use or be the advisor.
-const ADVISOR_RANKS: ReadonlyArray<readonly [string, number]> = (
-  [
-    ['haiku-4-5', 1],
-    ['sonnet-4-6', 2],
-    ['opus-4-6', 3],
-    ['haiku-5-5', 4],
-    ['sonnet-5', 4],
-    ['opus-4-7', 5],
-    ['opus-4-8', 5],
-    ['sonnet-5-5', 6],
-    ['opus-5', 7],
-    ['opus-5-5', 7],
-    ['fable-5', 8],
-    ['mythos-5', 8],
-    ['fable-5-1', 9],
-    ['mythos-5-1', 9],
-    ['fable-5-2', 10],
-    ['mythos-5-2', 10],
-  ] as const
-).slice().sort((a, b) => b[0].length - a[0].length)
-
-const MIN_ADVISOR_RANK = 2
-
-export const ADVISOR_MODEL_ALIASES = ['fable', 'opus', 'sonnet'] as const
 
 /** Full model id an advisor name (alias or id) resolves to. */
 export function resolveAdvisorModelId(model: string): string {
   return normalizeModelStringForAPI(parseUserSpecifiedModel(model))
 }
 
-// After a rank key the id may only end, open a `[1m]` style suffix, or carry
-// an 8-digit snapshot date. `claude-opus-5-1` is not `opus-5`: an unknown
-// minor version has no rank.
-const RANK_KEY_TAIL = /^(?:$|\[|-\d{8}(?:$|\[))/
-
-function findRankEntry(model: string): readonly [string, number] | undefined {
-  const id = resolveAdvisorModelId(model).toLowerCase()
-  for (const entry of ADVISOR_RANKS) {
-    const key = entry[0]
-    for (let at = id.indexOf(key); at !== -1; at = id.indexOf(key, at + 1)) {
-      const before = id[at - 1]
-      if (before !== undefined && /[a-z0-9]/.test(before)) continue
-      if (RANK_KEY_TAIL.test(id.slice(at + key.length))) return entry
-    }
-  }
-  return undefined
-}
-
-export function getAdvisorRank(model: string): number | undefined {
-  return findRankEntry(model)?.[1]
-}
-
-/** The model catalog key (`opus-5`, `fable-5-1`, ...) the model resolves to. */
-export function getAdvisorRankKey(model: string): string | undefined {
-  return findRankEntry(model)?.[0]
-}
-
-/** Whether the main loop model can call the advisor. */
-export function modelSupportsAdvisor(model: string): boolean {
-  return isAdvisorRankCheckBypassed() || getAdvisorRank(model) !== undefined
-}
-
-function canModelAdvise(model: string): boolean {
-  if (isAdvisorRankCheckBypassed()) return true
-  const rank = getAdvisorRank(model)
-  return rank !== undefined && rank >= MIN_ADVISOR_RANK
-}
-
-/** Whether the model can serve as the advisor (availableModels and rank). */
+/**
+ * Whether the model can serve as the advisor. Any model availableModels
+ * allows can, whatever the main model: the endpoint has the last word, and
+ * the local advisor answers what it refuses.
+ */
 export function isValidAdvisorModel(model: string): boolean {
-  return isModelAllowed(model) && canModelAdvise(model)
-}
-
-function compareAdvisorRanks(mainModel: string, advisor: string): boolean {
-  const mainRank = getAdvisorRank(mainModel)
-  const advisorRank = getAdvisorRank(advisor)
-  if (mainRank === undefined || advisorRank === undefined) return true
-  return mainRank <= advisorRank
-}
-
-/** The advisor must be at least as capable as the model it advises. */
-export function isAdvisorPairingAllowed(
-  mainModel: string,
-  advisor: string,
-): boolean {
-  return isAdvisorRankCheckBypassed() || compareAdvisorRanks(mainModel, advisor)
-}
-
-/**
- * Official `XBn`: the rank comparison alone, without the experimental env
- * short-circuit. A model without a rank still passes.
- */
-export function isAdvisorPairingAllowedByRank(
-  mainModel: string,
-  advisor: string,
-): boolean {
-  return compareAdvisorRanks(mainModel, advisor)
-}
-
-/**
- * Official `xXi`, for the standby entry: both models must have a rank and
- * the advisor's must be at least the main model's.
- */
-export function isAdvisorPairingAllowedStrict(
-  mainModel: string,
-  advisor: string,
-): boolean {
-  const mainRank = getAdvisorRank(mainModel)
-  const advisorRank = getAdvisorRank(advisor)
-  return (
-    mainRank !== undefined && advisorRank !== undefined && mainRank <= advisorRank
-  )
+  return isModelAllowed(model)
 }
 
 export function isSameAdvisorModel(a: string, b: string): boolean {
@@ -300,67 +181,37 @@ export function formatAdvisorModelName(model: string): string {
   return capitalize(renderDefaultModelSetting(model))
 }
 
-/** Aliases the picker and error messages offer. */
-export function getAdvisorAliasOptions(): string[] {
-  return ADVISOR_MODEL_ALIASES.filter(alias =>
-    isValidAdvisorModel(resolveAdvisorModelId(alias)),
-  )
-}
-
-let warnedUnrankedBase = false
-
 /** The model the local advisor tool asks, if the setting names a usable one. */
 export function getLocalAdvisorModel(
   setting: string | undefined,
 ): string | undefined {
-  if (!isLocalAdvisorEnabled() || !setting) return undefined
+  if (!isAdvisorEnabled() || !setting) return undefined
   const advisor = resolveAdvisorModelId(setting)
   return isValidAdvisorModel(advisor) ? advisor : undefined
 }
 
 /**
- * The tools a request offers: the local advisor tool goes out only while an
- * advisor model is set. Returns `tools` itself when nothing is left out.
+ * The tools a request offers: the local advisor tool goes out only with a
+ * request the local advisor answers (`localAdvisorModel` of its
+ * AdvisorRequest). Returns `tools` itself when nothing is left out.
  */
-export function omitUnsetLocalAdvisorTool<T extends { readonly name: string }>(
+export function omitLocalAdvisorTool<T extends { readonly name: string }>(
   tools: readonly T[],
-  setting: string | undefined,
+  localAdvisorModel: string | undefined,
 ): readonly T[] {
-  if (!isLocalAdvisorEnabled() || getLocalAdvisorModel(setting) !== undefined) {
-    return tools
-  }
+  if (!isAdvisorEnabled() || localAdvisorModel !== undefined) return tools
   return tools.filter(tool => tool.name !== ADVISOR_TOOL_NAME)
 }
 
-/** The server-side advisor a request for `mainModel` should carry, if any. */
+/** The server-side advisor a request should carry, if any. */
 export function resolveAdvisorModel(
   setting: string | undefined,
-  mainModel: string,
 ): string | undefined {
   if (!isAdvisorToolAllowed() || !setting) return undefined
   const advisor = resolveAdvisorModelId(setting)
-  if (!modelSupportsAdvisor(mainModel)) {
-    logForDebugging(
-      `[AdvisorTool] Skipping advisor - base model ${mainModel} does not support advisor`,
-    )
-    if (!warnedUnrankedBase) {
-      warnedUnrankedBase = true
-      // eslint-disable-next-line no-console
-      console.warn(
-        `Warning: Advisor disabled — base model '${mainModel}' has no advisor rank in the model catalog. Switch to a public model alias (opus, sonnet, fable) or set CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1.`,
-      )
-    }
-    return undefined
-  }
   if (!isValidAdvisorModel(advisor)) {
     logForDebugging(
       `[AdvisorTool] Skipping advisor - ${advisor} is not a valid advisor model`,
-    )
-    return undefined
-  }
-  if (!isAdvisorPairingAllowed(mainModel, advisor)) {
-    logForDebugging(
-      `[AdvisorTool] Skipping advisor - ${advisor} cannot advise ${mainModel} (advisor must be at least as capable as the base model)`,
     )
     return undefined
   }

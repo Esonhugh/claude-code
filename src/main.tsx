@@ -95,9 +95,7 @@ import { settleCodeModeGate } from './tools/REPLTool/codeModeGate.js'
 import {
   getInitialAdvisorSetting,
   isAdvisorEnabled,
-  isAdvisorPairingAllowed,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
   resolveAdvisorModelId,
 } from './utils/advisor.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
@@ -3490,8 +3488,8 @@ async function run(): Promise<CommanderCommand> {
       )
 
       let advisorModel: string | undefined
+      const advisorOption = (options as { advisor?: string }).advisor
       if (isAdvisorEnabled()) {
-        const advisorOption = (options as { advisor?: string }).advisor
         if (advisorOption) {
           logForDebugging(`[AdvisorTool] --advisor ${advisorOption}`)
           // A background session only warns: it has no one to read the error.
@@ -3503,27 +3501,21 @@ async function run(): Promise<CommanderCommand> {
             }
             logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
           }
-          if (!modelSupportsAdvisor(resolvedInitialModel)) {
-            fail(
-              `Error: The model "${resolvedInitialModel}" does not support the advisor tool.`,
-            )
-          }
-          const advisorId = resolveAdvisorModelId(advisorOption)
-          if (!isValidAdvisorModel(advisorId)) {
+          if (!isValidAdvisorModel(resolveAdvisorModelId(advisorOption))) {
             fail(`Error: The model "${advisorOption}" cannot be used as an advisor.`)
-          }
-          if (!isAdvisorPairingAllowed(resolvedInitialModel, advisorId)) {
-            const message = `"${advisorOption}" cannot advise "${resolvedInitialModel}" (the advisor must be at least as capable as the main model). The advisor will not be used for the main model.`
-            if (!isNonInteractiveSession || exitOnError) {
-              process.stderr.write(chalk.yellow(`${message}\n`))
-            } else {
-              logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
-            }
           }
         }
         advisorModel = advisorOption ?? getInitialAdvisorSetting()
         if (advisorModel) {
           logForDebugging(`[AdvisorTool] Advisor model: ${advisorModel}`)
+        }
+      } else if (advisorOption) {
+        const message =
+          'Warning: --advisor is ignored because the advisor is off. Set CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1 to turn it on.'
+        if (process.env.CLAUDE_CODE_SESSION_KIND === 'bg') {
+          logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
+        } else {
+          process.stderr.write(chalk.yellow(`${message}\n`))
         }
       }
 

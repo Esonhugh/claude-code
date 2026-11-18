@@ -168,7 +168,7 @@ import {
   resolveAdvisorForQuery,
   toAdvisorRequest,
 } from './utils/advisorQuery.js'
-import { omitUnsetLocalAdvisorTool } from './utils/advisor.js'
+import { getLocalAdvisorModel, omitLocalAdvisorTool } from './utils/advisor.js'
 import { toolChangesRide } from './utils/advisorToolChanges.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -1019,6 +1019,7 @@ async function* queryLoop(
                 toolChangesRide: rideToolChanges,
               }),
               advisorCarrier,
+              toolUseContext.getAppState().advisorModel,
             ),
         },
         querySource,
@@ -1136,9 +1137,19 @@ async function* queryLoop(
           toolChangesRide: rideToolChanges,
         })
     const advisorRequest: AdvisorRequest =
-      toolUseContext.advisorPin ?? toAdvisorRequest(advisor, advisorCarrier)
-    if (advisor.announcement) {
-      const msg = createAttachmentMessage(advisor.announcement)
+      toolUseContext.advisorPin ??
+      toAdvisorRequest(advisor, advisorCarrier, advisorAppState.advisorModel)
+    // While the local advisor answers, the conversation still has an advisor
+    // tool: it is not told that the server-side one went away. A tool_removal
+    // is still sent, so the tool-change history stays as the API expects.
+    const advisorAnnouncement =
+      advisor.announcement?.available === false &&
+      advisor.announcement.toolChange === undefined &&
+      advisorRequest.localAdvisorModel !== undefined
+        ? undefined
+        : advisor.announcement
+    if (advisorAnnouncement) {
+      const msg = createAttachmentMessage(advisorAnnouncement)
       yield msg
       messagesForQuery.push(msg)
       projectedMessagesForQuery = await projectAttachments(messagesForQuery)
@@ -1302,9 +1313,9 @@ async function* queryLoop(
             ),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
-            tools: omitUnsetLocalAdvisorTool(
+            tools: omitLocalAdvisorTool(
               toolUseContext.options.tools,
-              advisorAppState.advisorModel,
+              advisorRequest.localAdvisorModel,
             ),
             signal: toolUseContext.abortController.signal,
             options: {
@@ -1359,6 +1370,13 @@ async function* queryLoop(
               queryTracking,
               effortValue: appState.effortValue,
               advisorModel: advisorRequest.advisorModel,
+              // A retry that drops the server-side advisor offers the local one.
+              ...(advisorRequest.advisorModel !== undefined &&
+                !toolUseContext.advisorPin &&
+                getLocalAdvisorModel(advisorAppState.advisorModel) !==
+                  undefined && {
+                  advisorRetryTools: toolUseContext.options.tools,
+                }),
               advisorDeferred: advisorRequest.advisorDeferred,
               advisorActive: advisorRequest.advisorActive,
               toolChanges: advisorRequest.toolChanges,

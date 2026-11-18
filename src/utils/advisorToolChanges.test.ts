@@ -20,6 +20,7 @@ const ENV_KEYS = [
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
+  'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   'CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM',
   'ANTHROPIC_BASE_URL',
@@ -32,6 +33,7 @@ beforeEach(() => {
     saved[key] = process.env[key]
     delete process.env[key]
   }
+  process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL = '1'
 })
 afterEach(() => {
   for (const key of ENV_KEYS) {
@@ -59,7 +61,11 @@ describe('modelSupportsToolChanges', () => {
     expect(modelSupportsToolChanges(MODEL)).toBe(false)
   })
 
-  test('the advisor off switch stops offering the betas', () => {
+  test('the betas are offered only while the advisor is on', () => {
+    delete process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL
+    expect(shouldOfferToolChangeBetas(MODEL)).toBe(false)
+    expect(toolChangesRide({}, MODEL)).toBe(false)
+    process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL = '1'
     expect(shouldOfferToolChangeBetas(MODEL)).toBe(true)
     process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL = '1'
     expect(shouldOfferToolChangeBetas(MODEL)).toBe(false)

@@ -8,7 +8,7 @@ export default {
   type: 'local-jsx',
   name: 'advisor',
   description: DESCRIPTION,
-  argumentHint: '[fable|opus|sonnet|off]',
+  argumentHint: '[model|off]',
   isEnabled: isAdvisorEnabled,
   get isHidden() {
     return !isAdvisorEnabled()
@@ -21,7 +21,7 @@ export const advisorNonInteractive = {
   name: 'advisor',
   supportsNonInteractive: true,
   description: DESCRIPTION,
-  argumentHint: '<fable|opus|sonnet|off>',
+  argumentHint: '<model|off>',
   isEnabled: () => getIsNonInteractiveSession() && isAdvisorEnabled(),
   get isHidden() {
     return !getIsNonInteractiveSession()

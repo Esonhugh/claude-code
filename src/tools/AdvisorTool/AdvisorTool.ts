@@ -1,6 +1,7 @@
 import { z } from 'zod/v4'
 import { getUserContext } from '../../context.js'
 import { queryModelWithoutStreaming } from '../../services/api/claude.js'
+import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
 import {
   buildTool,
   getEmptyToolPermissionContext,
@@ -45,8 +46,12 @@ Address the agent directly and be brief: the agent reads your reply as a tool re
 const RESERVED_TOKENS = 40_000
 const CHARS_PER_TOKEN = 3
 
+// Retries of the advisor request. The session default (10) can hold the
+// agent for minutes on a model the endpoint does not serve.
+const MAX_RETRIES = 2
+
 /**
- * The local advisor (see `isLocalAdvisorEnabled`): the client itself asks the
+ * The local advisor (see `isAdvisorToolAllowed`): the client itself asks the
  * advisor model about the conversation so far and hands its reply back as the
  * tool result. One request per call, to the session's endpoint, without tools.
  */
@@ -123,6 +128,8 @@ export const AdvisorTool = buildTool({
         enablePromptCaching: false,
         effortValue: appState.effortValue,
         agentId: context.agentId,
+        // The agent waits on this call: an advisor that keeps failing gives up early.
+        maxRetries: Math.min(MAX_RETRIES, getDefaultMaxRetries()),
       },
     })
     const advice = extractTextContent(response.message.content, '\n').trim()

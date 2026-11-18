@@ -1364,7 +1364,7 @@ export function REPL({
   useSettingsErrors()
   useRateLimitWarningNotification(mainLoopModel)
   useFastModeNotification()
-  useAdvisorNotification(mainLoopModel)
+  useAdvisorNotification()
   useDeprecationWarningNotification(mainLoopModel)
   useNpmDeprecationNotification()
   useMemoryIndexNotification()
