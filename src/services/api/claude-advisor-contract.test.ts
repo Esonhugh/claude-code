@@ -70,9 +70,15 @@ const envKeys = [
   'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+  'CLAUDE_CODE_MAX_RETRIES',
   'ANTHROPIC_BETAS',
 ] as const
 for (const key of envKeys) delete process.env[key]
+// The advisor is off without it; every test starts with it on.
+const SWITCH = 'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL'
+beforeEach(() => {
+  process.env[SWITCH] = '1'
+})
 
 const ADVISOR_BETA = 'advisor-tool-2026-03-01'
 const TOOL_CHANGES_BETA = 'mid-conversation-tool-changes-2026-07-01'
@@ -84,7 +90,13 @@ const requestBetaHeaders: string[] = []
 // 'toolChanges' refuses requests with the tool-change beta, 'system' ones with a system turn,
 // 'always' every request.
 let refusal:
-  | { status: number; message: string; on: 'tool' | 'beta' | 'blocks' | 'toolChanges' | 'system' | 'always' }
+  | {
+      status: number
+      message: string
+      on: 'tool' | 'beta' | 'blocks' | 'toolChanges' | 'system' | 'always'
+      /** The error type in the body; invalid_request_error when absent. */
+      type?: string
+    }
   | undefined
 const hasAdvisorTool = (request: MessageCreateParams) =>
   (request.tools ?? []).some(t => (t as { type?: string }).type === 'advisor_20260301')
@@ -111,7 +123,7 @@ const client = new Anthropic({
               : JSON.stringify(request.messages).includes('ADVICE_TEXT')))
     ) {
       return Response.json(
-        { type: 'error', error: { type: 'invalid_request_error', message: refusal.message } },
+        { type: 'error', error: { type: refusal.type ?? 'invalid_request_error', message: refusal.message } },
         { status: refusal.status },
       )
     }
@@ -302,8 +314,9 @@ test('only agentic requests and pinned forks carry the advisor', async () => {
   expect(sentAdvisorBlocks(0)).toBe(false)
   await ask({ advisorModel: 'opus', querySource: 'compact', forkAdvisor: true })
   expect(advisorTools(1)).toHaveLength(1)
+  // Whatever the main model.
   await ask({ advisorModel: 'opus', model: 'claude-opus-4-5' })
-  expect(advisorTools(2)).toEqual([])
+  expect(advisorTools(2)).toHaveLength(1)
 })
 
 test.each([
@@ -380,16 +393,19 @@ test('a rejected beta header is retried without it and stays off for the host', 
   expect(advisorTools(2)).toEqual([])
 })
 
-test('an incompatible pairing is shown, not retried', async () => {
+test('a pairing the server refuses is retried without the advisor, for the local advisor to answer', async () => {
   refusal = { status: 400, message: 'claude-sonnet-4-6 cannot be used as an advisor when the request model is claude-opus-5', on: 'tool' }
   let refused = 0
   const result = await ask({ advisorModel: 'sonnet', onAdvisorRefused: () => refused++ })
-  expect(requests).toHaveLength(1)
-  expect(refused).toBe(0)
-  expect(result.isApiErrorMessage).toBe(true)
-  expect(JSON.stringify(result.message.content)).toContain(
-    'The configured advisor model is not compatible with this request model',
-  )
+  expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+  expect(requests).toHaveLength(2)
+  expect(advisorTools(0)).toHaveLength(1)
+  expect(advisorTools(1)).toEqual([])
+  expect(refused).toBe(1)
+  // Only this conversation: another one still asks the server.
+  refusal = undefined
+  await ask({ advisorModel: 'opus' })
+  expect(advisorTools(2)).toHaveLength(1)
 })
 
 test('the provider switching to OpenAI mid-session drops the advisor and its history', async () => {
@@ -424,17 +440,27 @@ test('an unprocessable advisor result is retried once without advisor blocks and
   }])
 })
 
-test('with nothing to remove the request is retried as sent and not recorded', async () => {
+test('with nothing to remove the request is retried as sent, then without the advisor, and not recorded', async () => {
   refusal = { status: 400, message: 'tool_use_id srvtoolu_9 found in advisor_tool_result blocks', on: 'tool' }
   let recorded = 0
+  let refused = 0
   const result = await ask(
-    { advisorModel: 'opus', onAdvisorBlocksStripped: () => recorded++ },
+    {
+      advisorModel: 'opus',
+      onAdvisorBlocksStripped: () => recorded++,
+      onAdvisorRefused: () => refused++,
+    },
     [createUserMessage({ content: 'test' })],
   )
-  // The tool-wide fake refuses again; the retry is not repeated.
-  expect(requests).toHaveLength(2)
-  expect(result.isApiErrorMessage).toBe(true)
+  // The tool-wide fake refuses the retry too; the strip is not repeated. What
+  // is left is an error this client cannot attribute, so the last try leaves
+  // the advisor out and the conversation goes on with the local one.
+  expect(requests).toHaveLength(3)
+  expect(advisorTools(1)).toHaveLength(1)
+  expect(advisorTools(2)).toEqual([])
+  expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
   expect(recorded).toBe(0)
+  expect(refused).toBe(1)
   expect(stripEvents()).toMatchObject([{ strip_recorded: false, stripped_message_count: 0 }])
 })
 
@@ -484,7 +510,7 @@ const sentToolChangeBetas = (i: number) => [
   requestBetaHeaders[i]!.includes(SYSTEM_BETA),
 ]
 
-test('a standby advisor is declared deferred, with no system turn or instructions', async () => {
+test('an advisor that is off stays declared deferred, with no system turn or instructions', async () => {
   await ask(toolChangeOptions({}, false))
   expect(advisorTools(0)).toEqual([
     { type: 'advisor_20260301', name: 'advisor', model: opus(), defer_loading: true },
@@ -612,16 +638,102 @@ function consult(overrides: Record<string, unknown> = {}) {
   return AdvisorTool.call({}, context as never)
 }
 
-test('local advisor: the main request carries no server-side advisor tool or beta', async () => {
-  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+test('any main model and any advisor go out as the server-side advisor first', async () => {
+  await ask({ model: 'Grok-4.7', advisorModel: 'Opus 5.5' })
+  expect(advisorTools(0)).toEqual([{ type: 'advisor_20260301', name: 'advisor', model: 'Opus 5.5' }])
+  expect(sentBeta(0)).toBe(true)
+  expect(sentAdvisorBlocks(0)).toBe(true)
+  await ask({ model: 'claude-fable-5-1', advisorModel: 'claude-haiku-4-5' })
+  expect(advisorTools(1)).toHaveLength(1)
+})
+
+test('local advisor: after Anthropic refuses the server-side advisor the local tool answers', async () => {
+  refusal = { status: 400, message: 'the advisor tool is not available for this organization', on: 'tool' }
+  let refused = 0
+  const result = await ask({ advisorModel: 'opus', onAdvisorRefused: () => refused++ })
+  expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+  expect(requests).toHaveLength(2)
+  expect(advisorTools(0)).toHaveLength(1)
+  expect(advisorTools(1)).toEqual([])
+  expect(refused).toBe(1)
+  // Later requests leave the server-side advisor out; the local one takes the setting.
   await ask({ advisorModel: 'opus' })
-  expect(advisorTools(0)).toEqual([])
-  expect(sentBeta(0)).toBe(false)
-  expect(sentAdvisorBlocks(0)).toBe(false)
+  expect(advisorTools(2)).toEqual([])
+  expect(sentBeta(2)).toBe(false)
+  const advice = await consult({ getAppState: () => ({ advisorModel: 'opus' }) })
+  expect(advice.data).toEqual({ advice: 'OK', model: resolveAdvisorModelId('opus') })
+  expect(requests[3]!.model).toBe(resolveAdvisorModelId('opus'))
+  expect(sentBeta(3)).toBe(false)
+})
+
+// What a gateway answers when it cannot read the advisor entry.
+const GATEWAY_ERROR = 'Failed to deserialize the JSON body into the target type'
+
+test.each([400, 422])('local advisor: a %d in other words than Anthropic\'s is retried without the server-side advisor', async status => {
+  refusal = { status, message: GATEWAY_ERROR, on: 'tool' }
+  let refused = 0
+  const result = await ask({ advisorModel: 'opus', onAdvisorRefused: () => refused++ })
+  expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+  expect(requests).toHaveLength(2)
+  expect(advisorTools(0)).toHaveLength(1)
+  expect(advisorTools(1)).toEqual([])
+  expect(sentAdvisorBlocks(1)).toBe(false)
+  // The answered retry is what tells the conversation; nothing is latched beyond it.
+  expect(refused).toBe(1)
+  refusal = undefined
+  await ask({ advisorModel: 'opus' })
+  expect(advisorTools(2)).toHaveLength(1)
+})
+
+test('local advisor: the retry without the server-side advisor offers the local tool in its place', async () => {
+  const localTools = (i: number) =>
+    (requests[i]?.tools ?? []).filter(t => (t as { name?: string; type?: string }).name === 'advisor' && (t as { type?: string }).type === undefined)
+  for (const message of [GATEWAY_ERROR, 'the advisor tool is not available for this organization']) {
+    requests.length = 0
+    resetAdvisorRefusalsForTesting()
+    refusal = { status: 400, message, on: 'tool' }
+    const result = await ask({ advisorModel: 'opus', advisorRetryTools: [AdvisorTool] })
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+    expect(requests).toHaveLength(2)
+    expect(localTools(0)).toEqual([])
+    expect(advisorTools(1)).toEqual([])
+    expect(localTools(1)).toHaveLength(1)
+  }
+})
+
+test('local advisor: an error the retry does not cure is shown and the server-side advisor stays', async () => {
+  refusal = { status: 400, message: 'messages.2: unexpected field', on: 'always' }
+  let refused = 0
+  const result = await ask({ advisorModel: 'opus', onAdvisorRefused: () => refused++ })
+  expect(requests).toHaveLength(2)
+  expect(advisorTools(1)).toEqual([])
+  expect(refused).toBe(0)
+  expect(result.isApiErrorMessage).toBe(true)
+  expect(JSON.stringify(result.message.content)).toContain('unexpected field')
+  refusal = undefined
+  await ask({ advisorModel: 'opus' })
+  expect(advisorTools(2)).toHaveLength(1)
+})
+
+test.each([
+  ['a prompt that is too long', { status: 400, message: 'prompt is too long: 250000 tokens > 200000 maximum' }],
+  ['a billing error', { status: 400, message: 'Your credit balance is too low', type: 'billing_error' }],
+  ['a server error', { status: 500, message: GATEWAY_ERROR }],
+  ['a request without the server-side advisor', { status: 400, message: GATEWAY_ERROR, advisorModel: undefined }],
+] as const)('local advisor: %s is not retried without the advisor', async (_name, { status, message, ...rest }) => {
+  process.env.CLAUDE_CODE_MAX_RETRIES = '0'
+  refusal = { status, message, on: 'always', ...('type' in rest ? { type: rest.type } : {}) }
+  let refused = 0
+  const result = await ask({
+    advisorModel: 'advisorModel' in rest ? rest.advisorModel : 'opus',
+    onAdvisorRefused: () => refused++,
+  })
+  expect(requests).toHaveLength(1)
+  expect(refused).toBe(0)
+  expect(result.isApiErrorMessage).toBe(true)
 })
 
 test('local advisor: the tool sends the conversation to the advisor model and returns its advice', async () => {
-  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
   const result = await consult()
   expect(result.data).toEqual({ advice: 'OK', model: LOCAL_ADVISOR })
   expect(AdvisorTool.mapToolResultToToolResultBlockParam(result.data, 'toolu_advisor')).toEqual({
@@ -649,17 +761,42 @@ test('local advisor: the tool sends the conversation to the advisor model and re
 })
 
 test('local advisor: a failed advisor request becomes a tool error that names the model', async () => {
-  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
   refusal = { status: 400, message: 'unknown model', on: 'always' }
   await expect(consult()).rejects.toThrow(/The advisor model Opus 5\.5 could not answer: .*unknown model/s)
   expect(requests).toHaveLength(1)
 })
 
+test('local advisor: its request is retried at most twice', async () => {
+  refusal = { status: 503, message: 'model unavailable', on: 'always' }
+  await expect(consult()).rejects.toThrow(/The advisor model Opus 5\.5 could not answer: .*model unavailable/s)
+  expect(requests).toHaveLength(3)
+  // A lower CLAUDE_CODE_MAX_RETRIES still applies.
+  requests.length = 0
+  process.env.CLAUDE_CODE_MAX_RETRIES = '0'
+  await expect(consult()).rejects.toThrow(/could not answer/)
+  expect(requests).toHaveLength(1)
+})
+
 test('local advisor: no request goes out without an advisor model, in a fork, or with the switch off', async () => {
-  await expect(consult()).rejects.toThrow('No advisor model is set')
-  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
   await expect(consult({ getAppState: () => ({}) })).rejects.toThrow('No advisor model is set')
   await expect(consult({ advisorPin: {} })).rejects.toThrow('not available to forked agents')
+  delete process.env[SWITCH]
+  await expect(consult()).rejects.toThrow('No advisor model is set')
   expect(requests).toHaveLength(0)
+})
+
+test('without the switch nothing about the advisor goes out', async () => {
+  delete process.env[SWITCH]
+  await ask({ advisorModel: 'opus' })
+  await ask(toolChangeOptions({}, true))
+  // The retired local switch turns nothing on.
+  process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+  await ask({ advisorModel: 'opus' })
+  for (const i of [0, 1, 2]) {
+    expect(advisorTools(i)).toEqual([])
+    expect(sentBeta(i)).toBe(false)
+    expect(sentAdvisorBlocks(i)).toBe(false)
+    expect(sentToolChangeBetas(i)).toEqual([false, false])
+  }
 })
 }

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { getAdvisorNotice } from './useAdvisorNotification.js'
+import { hasAdvisorNotice } from './useAdvisorNotification.js'
 
+const SWITCH = 'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL'
 const ENV_KEYS = [
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
-  'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
+  SWITCH,
   'CLAUDE_CODE_USE_OPENAI',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -23,18 +24,20 @@ afterEach(() => {
   }
 })
 
-test('the advisor notice follows the pairing', () => {
-  expect(getAdvisorNotice('opus', 'claude-sonnet-4-6')).toBe('on')
-  expect(getAdvisorNotice('claude-sonnet-4-6', 'claude-opus-5')).toBe('pairing')
-  expect(getAdvisorNotice(undefined, 'claude-sonnet-4-6')).toBeUndefined()
-  expect(getAdvisorNotice('opus', 'claude-opus-4-5')).toBeUndefined()
-  expect(getAdvisorNotice('claude-opus-4-5', 'claude-sonnet-4-6')).toBeUndefined()
+test('the advisor notice shows for any advisor that is set', () => {
+  process.env[SWITCH] = '1'
+  expect(hasAdvisorNotice('opus')).toBe(true)
+  expect(hasAdvisorNotice('claude-haiku-4-5')).toBe(true)
+  expect(hasAdvisorNotice('Opus 5.5')).toBe(true)
+  expect(hasAdvisorNotice(undefined)).toBe(false)
+  // Another provider still has the local advisor.
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  expect(hasAdvisorNotice('opus')).toBe(true)
 })
 
-test('no notice when the advisor is off for the provider or by env', () => {
+test('no notice when the advisor is off', () => {
+  expect(hasAdvisorNotice('opus')).toBe(false)
+  process.env[SWITCH] = '1'
   process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL = '1'
-  expect(getAdvisorNotice('opus', 'claude-sonnet-4-6')).toBeUndefined()
-  delete process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL
-  process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  expect(getAdvisorNotice('opus', 'claude-sonnet-4-6')).toBeUndefined()
+  expect(hasAdvisorNotice('opus')).toBe(false)
 })

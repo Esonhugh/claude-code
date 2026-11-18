@@ -4,34 +4,17 @@ import type { Message } from '../types/message.js'
 import {
   type AdvisorToolAttachment,
   formatAdvisorModelName,
-  getAdvisorAliasOptions,
   getLastAdvisorAttachment,
   getLastAdvisorToolChange,
+  getLocalAdvisorModel,
   hasFullAdvisorAnnouncement,
-  isAdvisorEnabled,
-  isAdvisorPairingAllowed,
-  isAdvisorPairingAllowedByRank,
-  isAdvisorPairingAllowedStrict,
   isAdvisorToolAllowed,
-  isLocalAdvisorEnabled,
   isSameAdvisorModel,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
   resolveAdvisorModel,
 } from './advisor.js'
 import { type ToolChangeSticky, toolChangesRide } from './advisorToolChanges.js'
-import {
-  getAnthropicApiKeyWithSource,
-  getSubscriptionType,
-  isClaudeAISubscriber,
-} from './auth.js'
-import { logForDebugging } from './debug.js'
 import { logError } from './log.js'
-import {
-  getServedModelCatalog,
-  hasServedModel,
-} from './model/servedModelCatalog.js'
-import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.js'
 
 /**
  * The advisor a conversation is pinned to. Set by its first request and kept
@@ -39,14 +22,13 @@ import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './model/providers.
  * rewrites what the conversation has already been told. With the
  * mid-conversation tool-change beta (`viaToolChange`) the entry is declared
  * deferred and /advisor turns it on and off with tool_addition and
- * tool_removal; `standby` marks an entry declared before any advisor was set,
- * `inFallback` one that fell back to the inline entry after the beta failed.
+ * tool_removal; `inFallback` marks an entry that fell back to the inline one
+ * after the beta failed.
  */
 export type AdvisorHeld = {
   model: string | undefined
   refused?: true
   viaToolChange?: boolean
-  standby?: true
   inFallback?: true
 }
 export type AdvisorCarrier = { held?: AdvisorHeld; toolChanges?: ToolChangeSticky }
@@ -123,103 +105,22 @@ function heldFromLast(last: LastAdvisor | undefined): AdvisorHeld | undefined {
     : { model: last.model, viaToolChange: last.toolChange }
 }
 
-/** Official `F`: a request for `requestModel` may carry `model`. */
-function canCarry(model: string, requestModel: string, configuredModel: string) {
-  return (
-    isAdvisorToolAllowed() &&
-    isValidAdvisorModel(model) &&
-    modelSupportsAdvisor(requestModel) &&
-    (isSameAdvisorModel(requestModel, configuredModel)
-      ? isAdvisorPairingAllowed(requestModel, model)
-      : isAdvisorPairingAllowedByRank(requestModel, model))
-  )
-}
-
-/** Official `C`. */
-function pickFromSetting(
-  setting: string | undefined,
-  requestModel: string,
-  configuredModel: string,
-): string | undefined {
-  const advisor = resolveAdvisorModel(setting, requestModel)
-  return advisor !== undefined &&
-    (isSameAdvisorModel(requestModel, configuredModel) ||
-      isAdvisorPairingAllowedByRank(requestModel, advisor))
-    ? advisor
-    : undefined
+/**
+ * A request may carry `model` as its server-side advisor. Official `F` also
+ * compared the models' ranks; here any model advises any other and the
+ * endpoint has the last word.
+ */
+function canCarry(model: string): boolean {
+  return isAdvisorToolAllowed() && isValidAdvisorModel(model)
 }
 
 /**
- * Official `lTe`: the account can be billed for the model. The served model
- * catalog stands in for official's model access cache.
+ * Official `k`: the advisor a conversation starts with. A conversation
+ * without an advisor declares none (official declared a standby entry picked
+ * by rank).
  */
-function canBillStandby(model: string): boolean {
-  if (getAPIProvider() !== 'firstParty') return false
-  const catalog = getServedModelCatalog()
-  if (catalog !== undefined && catalog.config.models.length > 0) {
-    return hasServedModel(model)
-  }
-  if (!isClaudeAISubscriber()) {
-    return (
-      getAnthropicApiKeyWithSource({ skipRetrievingKeyFromApiKeyHelper: true })
-        .source !== 'none'
-    )
-  }
-  const subscription = getSubscriptionType()
-  return subscription === 'pro' || subscription === 'max' || subscription === 'team'
-}
-
-/**
- * Official `x`: the advisor a conversation without one declares deferred, so
- * turning /advisor on later is a tool_addition rather than a new prefix.
- * Fable is tried last.
- */
-function pickStandby(
-  requestModel: string,
-  configuredModel: string,
-): string | undefined {
-  if (
-    getAPIProvider() !== 'firstParty' ||
-    !isFirstPartyAnthropicBaseUrl() ||
-    !isAdvisorEnabled() ||
-    !modelSupportsAdvisor(requestModel)
-  ) {
-    return undefined
-  }
-  const aliases = getAdvisorAliasOptions()
-  const ordered = [
-    ...aliases.filter(alias => alias !== 'fable'),
-    ...aliases.filter(alias => alias === 'fable'),
-  ]
-  for (const alias of ordered) {
-    const model = pickFromSetting(alias, requestModel, configuredModel)
-    if (model === undefined || !isAdvisorPairingAllowedStrict(requestModel, model)) {
-      continue
-    }
-    if (canBillStandby(model)) return model
-    logForDebugging(
-      `[AdvisorTool] No standby advisor entry - this org is not known to serve ${model}`,
-    )
-    return undefined
-  }
-  return undefined
-}
-
-/** Official `k`: the advisor a conversation starts with. */
-function initialHeld(
-  setting: string | undefined,
-  requestModel: string,
-  configuredModel: string,
-  rides: boolean,
-): AdvisorHeld {
-  const model = pickFromSetting(setting, requestModel, configuredModel)
-  if (model !== undefined || !rides || setting) {
-    return { model, viaToolChange: rides }
-  }
-  const standby = pickStandby(requestModel, configuredModel)
-  return standby === undefined
-    ? { model: undefined, viaToolChange: true }
-    : { model: standby, viaToolChange: true, standby: true }
+function initialHeld(setting: string | undefined, rides: boolean): AdvisorHeld {
+  return { model: resolveAdvisorModel(setting), viaToolChange: rides }
 }
 
 /** Official `_`: without the beta the entry is declared inline. */
@@ -245,17 +146,9 @@ function entry(model: string, deferred: boolean, active: boolean): AdvisorEntry 
 }
 
 /** Official `S`: the entry this request declares. */
-function settleEntry(
-  held: AdvisorHeld,
-  last: LastAdvisor | undefined,
-  requestModel: string,
-  configuredModel: string,
-): AdvisorEntry {
-  if (held.model === undefined || !canCarry(held.model, requestModel, configuredModel)) {
-    return NO_ENTRY
-  }
+function settleEntry(held: AdvisorHeld, last: LastAdvisor | undefined): AdvisorEntry {
+  if (held.model === undefined || !canCarry(held.model)) return NO_ENTRY
   if (held.viaToolChange) return entry(held.model, true, last?.available === true)
-  if (held.standby && last === undefined) return NO_ENTRY
   if (last !== undefined && !last.available && last.toolChange && !last.byBase) {
     return NO_ENTRY
   }
@@ -268,22 +161,17 @@ const ADVISOR: AdvisorToolAttachment['type'] = 'advisor_tool'
 function getAnnouncement(
   attachments: readonly Message[],
   setting: string | undefined,
-  requestModel: string,
-  configuredModel: string,
   heldNow: AdvisorHeld | undefined,
   removeOnFallback = false,
 ): AdvisorToolAttachment | undefined {
   const last = getLastAdvisor(attachments)
   const held = heldNow ??
-    heldFromLast(last) ?? {
-      model: pickFromSetting(setting, requestModel, configuredModel),
-      viaToolChange: false,
-    }
+    heldFromLast(last) ?? { model: resolveAdvisorModel(setting), viaToolChange: false }
   const model = held.model
   const lastAdded = getLastAdvisorToolChange(attachments) === 'add'
-  if (model === undefined || !canCarry(model, requestModel, configuredModel)) {
+  if (model === undefined || !canCarry(model)) {
     const viaToolChange = held.viaToolChange || removeOnFallback
-    const configured = isAdvisorEnabled() && Boolean(setting)
+    const configured = isAdvisorToolAllowed() && Boolean(setting)
     if (last?.available !== true) {
       if (!viaToolChange || model === undefined || last === undefined) return undefined
       if (last.byBase && !configured) {
@@ -302,7 +190,7 @@ function getAnnouncement(
   }
   const hasFull = hasFullAdvisorAnnouncement(attachments)
   if (held.viaToolChange) {
-    if (resolveAdvisorModel(setting, requestModel) === undefined) {
+    if (resolveAdvisorModel(setting) === undefined) {
       return lastAdded || last?.available === true
         ? { type: ADVISOR, available: false, model, toolChange: 'remove' }
         : undefined
@@ -317,17 +205,15 @@ function getAnnouncement(
   const full: AdvisorToolAttachment = { type: ADVISOR, available: true, model }
   const abbreviated: AdvisorToolAttachment = { ...full, abbreviated: true }
   if (removeOnFallback) {
-    if (resolveAdvisorModel(setting, requestModel) === undefined) {
-      return last?.available === true ||
-        (last !== undefined && last.byBase) ||
-        (last === undefined && held.standby !== true)
+    if (resolveAdvisorModel(setting) === undefined) {
+      return last === undefined || last.available || last.byBase
         ? { type: ADVISOR, available: false, model, toolChange: 'remove' }
         : undefined
     }
     if (last?.available === true) return hasFull ? undefined : full
     return hasFull ? abbreviated : full
   }
-  if (last === undefined) return held.standby ? undefined : full
+  if (last === undefined) return full
   if (last.available) return hasFull ? undefined : full
   if (last.toolChange && !last.byBase) return undefined
   return hasFull ? abbreviated : full
@@ -339,21 +225,29 @@ export type AdvisorQueryResolution = AdvisorEntry & {
 
 /**
  * The advisor entry a request declares and the conversation's tool-change
- * beta state. A fork sends exactly its parent's.
+ * beta state. `localAdvisorModel` is the model the local advisor tool asks:
+ * set when the request declares no server-side entry and the local advisor
+ * is on with an advisor model. A fork sends exactly its parent's.
  */
-export type AdvisorRequest = AdvisorEntry & { toolChanges?: ToolChangeSticky }
+export type AdvisorRequest = AdvisorEntry & {
+  toolChanges?: ToolChangeSticky
+  localAdvisorModel?: string
+}
 
 export const NO_ADVISOR_REQUEST: AdvisorRequest = NO_ENTRY
 
 export function toAdvisorRequest(
   { advisorModel, advisorDeferred, advisorActive }: AdvisorEntry,
   carrier: AdvisorCarrier,
+  setting: string | undefined,
 ): AdvisorRequest {
   return {
     advisorModel,
     advisorDeferred,
     advisorActive,
     toolChanges: getToolChangeSticky(carrier),
+    localAdvisorModel:
+      advisorModel === undefined ? getLocalAdvisorModel(setting) : undefined,
   }
 }
 
@@ -380,9 +274,6 @@ export function resolveAdvisorForQuery(
     toolChangesRide?: boolean | ((model: string) => boolean)
   },
 ): AdvisorQueryResolution {
-  // The local advisor is an ordinary tool: no server entry to declare or
-  // announce, and nothing for the conversation to pin.
-  if (isLocalAdvisorEnabled()) return { ...NO_ENTRY, announcement: undefined }
   try {
     const rides =
       typeof toolChangesRide === 'function'
@@ -397,26 +288,19 @@ export function resolveAdvisorForQuery(
     const last = getLastAdvisor(attachments)
     if (kind === 'auxiliary') {
       const held =
-        carrier?.held ??
-        heldFromLast(last) ??
-        initialHeld(setting, pairedModel, configuredModel, rides(pairedModel))
+        carrier?.held ?? heldFromLast(last) ?? initialHeld(setting, rides(pairedModel))
       const settled: AdvisorHeld =
         held.model === undefined && ridesNow && !held.refused
-          ? {
-              model: pickFromSetting(setting, pairedModel, configuredModel),
-              viaToolChange: true,
-            }
+          ? { model: resolveAdvisorModel(setting), viaToolChange: true }
           : held
-      return settleEntry(rideNow(settled, ridesNow), last, pairedModel, configuredModel)
+      return settleEntry(rideNow(settled, ridesNow), last)
     }
     let held = carrier?.held
     if (held === undefined) {
-      held =
-        heldFromLast(last) ??
-        initialHeld(setting, pairedModel, configuredModel, rides(pairedModel))
+      held = heldFromLast(last) ?? initialHeld(setting, rides(pairedModel))
       if (carrier) carrier.held = held
     } else if (held.model === undefined && ridesNow && !held.refused) {
-      const model = pickFromSetting(setting, pairedModel, configuredModel)
+      const model = resolveAdvisorModel(setting)
       if (model !== undefined) {
         held = { model, viaToolChange: true }
         if (carrier) carrier.held = held
@@ -425,28 +309,16 @@ export function resolveAdvisorForQuery(
     const heldNow = rideNow(held, ridesNow)
     const removeOnFallback =
       held.viaToolChange === true && !ridesNow && held.inFallback !== true
-    const announcement = getAnnouncement(
-      attachments,
-      setting,
-      pairedModel,
-      configuredModel,
-      heldNow,
-      removeOnFallback,
-    )
+    const announcement = getAnnouncement(attachments, setting, heldNow, removeOnFallback)
     const settled =
-      held.model === undefined ||
-      last !== undefined ||
-      canCarry(held.model, pairedModel, configuredModel)
+      held.model === undefined || last !== undefined || canCarry(held.model)
     const inFallback = ridesNow ? false : held.inFallback === true || settled
     if (carrier && held.viaToolChange && (held.inFallback === true) !== inFallback) {
       const { inFallback: _, ...rest } = held
       carrier.held = inFallback ? { ...rest, inFallback: true } : rest
     }
     const lastNow = announcement === undefined ? last : toLastAdvisor(announcement)
-    return {
-      ...settleEntry(heldNow, lastNow, pairedModel, configuredModel),
-      announcement,
-    }
+    return { ...settleEntry(heldNow, lastNow), announcement }
   } catch (error) {
     logError(error)
     return { ...NO_ENTRY, announcement: undefined }
@@ -473,40 +345,25 @@ export function describeHeldAdvisor(
   newAdvisor: string | undefined,
   mainModel: string,
 ): string {
-  // The local advisor tool reads the setting on every call.
-  if (isLocalAdvisorEnabled()) return ''
   const carrier = getMainAdvisorCarrier()
   const held = carrier.held ?? heldFromLast(getLastAdvisor(messages))
   if (held === undefined) return ''
-  if (held.refused) {
-    return newAdvisor === undefined
-      ? ''
-      : '\nThe API refused the advisor for the current conversation, so it runs without one until /clear or /compact; the setting applies from there and in new conversations.'
-  }
+  // The local advisor answers a conversation that sends no server-side
+  // advisor, and reads the setting on every call.
+  if (held.model === undefined || !canCarry(held.model)) return ''
   const rides = toolChangesRide(carrier.toolChanges, mainModel)
-  if (held.model === undefined && rides) return ''
-  if (
-    held.viaToolChange &&
-    (rides || (held.inFallback !== true && held.model !== undefined))
-  ) {
-    return held.model !== undefined &&
-      newAdvisor !== undefined &&
-      !isSameAdvisorModel(newAdvisor, held.model)
+  if (held.viaToolChange && (rides || held.inFallback !== true)) {
+    return newAdvisor !== undefined && !isSameAdvisorModel(newAdvisor, held.model)
       ? `\nThe current conversation keeps ${formatAdvisorModelName(held.model)} as its advisor model until /clear or /compact, so the tool it has already declared stays unchanged; turning the advisor on or off applies right away.`
       : ''
   }
   const last = getLastAdvisor(messages)
-  const removed =
-    last !== undefined && !last.available && last.toolChange && !last.byBase
-  const standbyOnly = held.standby === true && last === undefined
-  const model = removed || standbyOnly ? undefined : held.model
-  if (
-    model === newAdvisor ||
-    (model !== undefined &&
-      newAdvisor !== undefined &&
-      isSameAdvisorModel(newAdvisor, model))
-  ) {
+  // Its entry was removed for good, so the local advisor answers from here on.
+  if (last !== undefined && !last.available && last.toolChange && !last.byBase) {
     return ''
   }
-  return `\nThe current conversation ${model === undefined ? 'runs without the advisor' : `keeps ${formatAdvisorModelName(model)} as its advisor`} until /clear or /compact, so the prompt it has already sent stays unchanged; the new setting applies from there and in new conversations.`
+  if (newAdvisor !== undefined && isSameAdvisorModel(newAdvisor, held.model)) {
+    return ''
+  }
+  return `\nThe current conversation keeps ${formatAdvisorModelName(held.model)} as its advisor until /clear or /compact, so the prompt it has already sent stays unchanged; the new setting applies from there and in new conversations.`
 }

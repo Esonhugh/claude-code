@@ -6,9 +6,9 @@
 
 ## 这是什么
 
-Advisor 让主模型在关键节点向一个更强的模型请教：动手之前、卡住的时候、准备收尾的时候。主模型调用服务端的 `advisor` 工具，整段对话会自动转给顾问模型，顾问给出建议后主模型继续干活。常见搭配是 Sonnet 当主模型、Opus 当顾问，日常的步骤走便宜的模型，难的判断交给强的模型。
+Advisor 让主模型在关键节点向另一个模型请教：动手之前、卡住的时候、准备收尾的时候。主模型调用 `advisor` 工具，整段对话交给顾问模型，顾问给出建议后主模型继续干活。常见搭配是便宜的模型当主模型、强的模型当顾问。
 
-这个功能在使用 Anthropic API（Claude 模式）时默认可用，但**只有你选了顾问模型之后才会真的调用**。行为和文案对照官方 2.1.325 的 advisor 实现，不同之处见文末[与官方的差异](#与官方的差异)。
+这个功能**默认关闭**。只有启动前设置了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1`，客户端才会使用 advisor；不设时请求里没有任何与 advisor 有关的内容，`/advisor` 命令也不出现。打开后，请求先使用服务端的 advisor 工具；接口不能运行它时，由客户端自己向顾问模型发请求代为回答（本地 advisor）。行为和文案对照官方 2.1.325 的 advisor 实现，不同之处见文末[与官方的差异](#与官方的差异)。
 
 <details lang="en"><summary>English</summary>
 
@@ -16,9 +16,9 @@ Advisor 让主模型在关键节点向一个更强的模型请教：动手之前
 
 ## What it is
 
-The advisor lets the main model consult a stronger model at key moments: before it starts, when it is stuck, and before it wraps up. The main model calls the server-side `advisor` tool, the whole conversation is forwarded to the advisor model, and the main model carries on with the advice. A common setup is Sonnet as the main model with Opus as the advisor: routine steps run on the cheaper model and the hard calls go to the stronger one.
+The advisor lets the main model consult another model at key moments: before it starts, when it is stuck, and before it wraps up. The main model calls the `advisor` tool, the conversation is handed to the advisor model, and the main model carries on with the advice. A common setup is a cheaper main model with a stronger advisor.
 
-It is available by default with the Anthropic API (Claude mode), but **nothing is consulted until you pick an advisor model**. Behaviour and wording follow the official 2.1.325 advisor; the differences are listed under "与官方的差异" at the end.
+It is **off by default**. The client uses the advisor only when `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` is set before start; without it, requests carry nothing advisor-related and the `/advisor` command does not appear. With it, requests use the server-side advisor tool first; when the endpoint cannot run it, the client asks the advisor model itself and returns the answer (the local advisor). Behaviour and wording follow the official 2.1.325 advisor; the differences are listed under "与官方的差异" at the end.
 
 </details>
 <details lang="zh-Hant"><summary>繁體中文</summary>
@@ -27,36 +27,54 @@ It is available by default with the Anthropic API (Claude mode), but **nothing i
 
 ## 這是什麼
 
-Advisor 讓主模型在關鍵節點向一個更強的模型請教：動手之前、卡住的時候、準備收尾的時候。主模型呼叫伺服端的 `advisor` 工具，整段對話會自動轉給顧問模型，顧問給出建議後主模型繼續做事。常見搭配是 Sonnet 當主模型、Opus 當顧問，日常的步驟走便宜的模型，難的判斷交給強的模型。
+Advisor 讓主模型在關鍵節點向另一個模型請教：動手之前、卡住的時候、準備收尾的時候。主模型呼叫 `advisor` 工具，整段對話交給顧問模型，顧問給出建議後主模型繼續做事。常見搭配是便宜的模型當主模型、強的模型當顧問。
 
-這個功能在使用 Anthropic API（Claude 模式）時預設可用，但**只有你選了顧問模型之後才會真的呼叫**。行為和文案對照官方 2.1.325 的 advisor 實作，不同之處見文末「与官方的差异」。
+這個功能**預設關閉**。只有啟動前設定了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1`，客戶端才會使用 advisor；不設時請求裡沒有任何與 advisor 有關的內容，`/advisor` 指令也不出現。開啟後，請求先使用伺服端的 advisor 工具；介面不能執行它時，由客戶端自己向顧問模型發請求代為回答（本地 advisor）。行為和文案對照官方 2.1.325 的 advisor 實作，不同之處見文末「与官方的差异」。
 
 </details>
 
 ## 快速上手
 
-**1. 选一个顾问模型。** 输入 `/advisor` 打开选择框，或者直接带参数：
+**1. 打开开关。** 启动前设置环境变量，或者写进设置文件的 `env`：
+
+```json
+{ "env": { "CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL": "1" } }
+```
+
+**2. 选一个顾问模型。** 输入 `/advisor` 打开选择框，或者直接带参数：
 
 ```text
-/advisor opus      用 Opus 当顾问
-/advisor off       关掉
+/advisor opus        用 Opus 当顾问
+/advisor Opus 5.5    用网关的模型名
+/advisor off         关掉
 ```
+
+选择框列出的模型和 `/model` 列出的一样（不含其中的 Default 一项），最后是 `No advisor`。下面是在一个自定义网关上的实际画面：
 
 ```text
   Advisor (experimental)
-  When Claude needs stronger judgment — a complex decision, an ambiguous failure, a problem it's circling without progress — it
-  escalates to the advisor model for guidance, then resumes. The advisor runs server-side and uses additional tokens.
-    1. Fable 5.1
-  ❯ 2. Opus 5.5 ✔
-    3. Sonnet 5.5
-    4. No advisor
+
+  When Claude needs stronger judgment — a complex decision, an ambiguous failure, a problem it's circling without
+  progress — it escalates to the advisor model for guidance, then resumes. The advisor uses additional tokens.
+
+    1.  Opus                          Grok-4.7 · Best for everyday, complex tasks
+    2.  Fable                         Fable 5.1 · Most capable for your hardest and longest-running tasks · $10/$50
+                                      per Mtok
+    3.  Sonnet                        Grok-4.7 · Efficient for routine tasks
+    4.  DeepSeek-V4.1-Flash           Custom Haiku model
+    5.  gpt-6.2-sol                   From gateway
+  ❯ 6.  Opus 5.5 ✔                    From gateway
+    7.  GLM-5.3-Flash                 From gateway
+    8.  gpt-5.6-terra                 From gateway
+    9.  gpt-6.2-astra                 From gateway
+  ↓ 10. Opus 5                        From gateway
 ```
 
 选择会写进用户设置的 `advisorModel`，以后的会话都生效；也可以直接在 `settings.json` 里写 `"advisorModel": "opus"`。只想在这一次启动时用，可以加启动参数 `--advisor opus`（`--help` 里不列出），它不改设置。
 
 在 `-p` 模式下，`/advisor` 不带参数时输出当前设置和用法，带参数时和上面一样。
 
-**2. 照常工作。** 顾问生效时，启动后底部会提示 `Advisor Tool (experimental) is on and may use more tokens · /advisor`，之后搭配情况变了会再提示。主模型请教顾问时，对话里是这样的：
+**3. 照常工作。** 顾问生效时，启动后底部会提示 `Advisor Tool (experimental) is on and may use more tokens · /advisor`。主模型请教顾问时，对话里是这样的：
 
 ```text
 ⏺ Advising using Opus 5.5
@@ -69,81 +87,45 @@ Advisor 讓主模型在關鍵節點向一個更強的模型請教：動手之前
 
 | 显示 | 含义 |
 | --- | --- |
-| `Advising using <模型>` | 正在请教顾问 |
+| `Advising using <模型>` | 正在请教服务端顾问 |
 | `✔ Advisor has reviewed the conversation and will apply the feedback` | 顾问给了建议，`Ctrl+O` 展开全文 |
 | `Advisor declined to advise on this request` | 顾问拒绝回答这一次请求 |
 | `Advisor unavailable (<原因>)` | 这一次没请教成，原因是 `overloaded`、`too_many_requests`、`max_uses_exceeded`、`prompt_too_long`、`execution_time_exceeded`、`unavailable` 之一，其他情况显示 `unknown`；主模型照常继续 |
 
 ## 哪些模型可以搭配
 
-顾问至少要和主模型一样强。强弱按下面的等级比较，数字大的更强：
+没有限制：`availableModels` 允许的任何模型都可以给任何主模型当顾问，子代理也一样。设置了 `availableModels` 时，不在名单里的模型不能当顾问。服务端仍然可能不接受某种搭配，这时由本地 advisor 回答（见[服务端拒绝时](#服务端拒绝时)）。
 
-| 等级 | 模型 |
-| --- | --- |
-| 1 | Haiku 4.5（可以请教顾问，自己不能当顾问） |
-| 2 | Sonnet 4.6 |
-| 3 | Opus 4.6 |
-| 4 | Haiku 5.5、Sonnet 5 |
-| 5 | Opus 4.7、Opus 4.8 |
-| 6 | Sonnet 5.5 |
-| 7 | Opus 5、Opus 5.5 |
-| 8 | Fable 5、Mythos 5 |
-| 9 | Fable 5.1、Mythos 5.1 |
-| 10 | Fable 5.2、Mythos 5.2 |
-
-- `/advisor` 接受别名 `fable`、`opus`、`sonnet`，也接受完整的模型 id。在这个构建里 `opus` 是 Opus 5.5，`sonnet` 是 Sonnet 5.5，`fable` 是 Fable 5.1。
-- 不在表里的模型（更老的模型、网关自己的模型名）没有等级：拿它当主模型时顾问不会启用，`/advisor` 会提示 `the current main model (…) does not support the advisor`。
-- 顾问比主模型弱时，`/advisor` 提示 `… is less capable than the current main model …, so the advisor will not activate`，底部提示换成 `Advisor will not activate on the main model (advisor is less capable); subagents may still use it …`。
-- 设置了 `availableModels` 时，不在名单里的模型不能当顾问。
-- 子代理用同一个顾问设置，按子代理自己的模型判断能不能搭配。
+- `/advisor` 接受别名 `fable`、`opus`、`sonnet`，也接受 `/model` 列出的名字和任意模型名。在这个构建里 `opus` 是 Opus 5.5，`sonnet` 是 Sonnet 5.5，`fable` 是 Fable 5.1。
+- 输入的名字不区分大小写地匹配 `/model` 列出的名字（`/advisor opus 5.5` 保存为 `Opus 5.5`）和别名；都匹配不上时按输入保存，交互界面里会先向接口发一个最小请求确认这个模型存在，不存在时显示 `Invalid advisor model: … · model not changed`。
 
 `--advisor` 在启动时检查一遍：
 
 | 情况 | 结果 |
 | --- | --- |
-| 主模型没有等级 | 报错退出：`Error: The model "<主模型>" does not support the advisor tool.` |
-| 给的模型不能当顾问 | 报错退出：`Error: The model "<模型>" cannot be used as an advisor.` |
-| 顾问比主模型弱 | 只警告并继续：`… (the advisor must be at least as capable as the main model). The advisor will not be used for the main model.` |
+| 没有设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` | 警告并继续，不使用顾问：`Warning: --advisor is ignored because the advisor is off. Set CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1 to turn it on.` |
+| 给的模型不在 `availableModels` 里 | 报错退出：`Error: The model "<模型>" cannot be used as an advisor.` |
+
+后台会话两种情况都只写进调试日志。
 
 ## 对话中途开关
 
-- 主模型是 Haiku 5.5、Sonnet 5.5、Opus 4.8、Opus 5、Opus 5.5，或 Fable 5、Mythos 5 系列时，`/advisor <模型>` 和 `/advisor off` 在当前对话里立刻生效。
-- 换成另一个顾问模型不会立刻生效：当前对话继续用原来的顾问，到 `/clear` 或 `/compact` 之后才换。`/advisor` 的输出会说明这一点。
-- 其他主模型，或者服务端不接受这种中途变更时，开、关、换模型都从 `/clear`、`/compact` 或新对话开始生效。
+- 主模型不是 Haiku 4.5、Sonnet 4.6、Opus 4.6、Sonnet 5、Opus 4.7 时（包括网关自己的模型名），`/advisor <模型>` 和 `/advisor off` 在当前对话里立刻生效，服务端顾问通过对话中途的工具变更加入或移除。
+- 当前对话已经在用服务端顾问时，换成另一个顾问模型不会立刻生效：当前对话继续用原来的顾问，到 `/clear` 或 `/compact` 之后才换。`/advisor` 的输出会说明这一点。
+- 上面列出的几个主模型，或者服务端不接受这种中途变更时：当前对话开始时没有顾问，之后选上的顾问从下一次请求起由本地 advisor 回答；当前对话已经在用服务端顾问时，关掉或换模型从 `/clear`、`/compact` 或新对话开始生效。
 
-## 费用
+## 本地 advisor
 
-顾问在服务端运行，会多用 token。顾问的用量按顾问模型的价格计入会话费用。
+有些接口不运行服务端的 advisor 工具：带顾问的请求被拒绝，或者模型发出的 advisor 调用得不到结果（[#1388](https://github.com/Esonhugh/claude-code/issues/1388)）。这时客户端代为完成：`advisor` 是客户端自己执行的普通工具，主模型调用它时，客户端向顾问模型单独发一个请求，把回复作为工具结果交回主模型。官方客户端没有这个做法。
 
-## 在哪些情况下可用
+打开开关并选了顾问后，下面几种情况由本地 advisor 回答：
 
-| 情况 | advisor |
-| --- | --- |
-| Anthropic API（Claude 模式），包括设置了 `ANTHROPIC_BASE_URL` 的自定义网关 | 可用 |
-| Bedrock、Vertex、Foundry | 不可用，请求和以前一样 |
-| OpenAI 模式（包括 ChatGPT 登录） | 不可用，请求和以前一样 |
+- 接入方式不是 Anthropic API（Bedrock、Vertex、Foundry、OpenAI 模式），或者设了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`：从第一次请求起。
+- 带服务端顾问的请求被拒绝，包括按 Anthropic 报错格式的拒绝（见[服务端拒绝时](#服务端拒绝时)）和别的措辞的 400 或 422（例如网关解析不了这个请求）。客户端去掉服务端顾问、换上本地的 `advisor` 工具把这次请求重发一遍；重发成功，当前对话之后的请求都由本地 advisor 回答，到 `/clear` 或 `/compact` 为止。别的措辞的报错重发仍然失败时，照常显示报错，服务端顾问不变。`prompt is too long` 和计费类的报错不重发。
+- 当前对话开始时没有选顾问，之后才选上，而主模型不支持[对话中途开关](#对话中途开关)。
+- 接口接受了带服务端顾问的请求，但模型发回的是一次普通的 `advisor` 工具调用（[#1388](https://github.com/Esonhugh/claude-code/issues/1388) 里的一种表现）：这次调用由本地 advisor 回答。
 
-不可用时 `/advisor` 命令不出现，`--advisor` 被接受但不起作用。
-
-## 使用自定义网关时请注意
-
-功能可用时，即使你没有选顾问，发给模型的请求也会多带 beta 标识：
-
-- 所有请求带 `advisor-tool-2026-03-01`。
-- 主对话的请求还带 `mid-conversation-tool-changes-2026-07-01` 和 `mid-conversation-system-2026-04-07`，条件是主模型属于[对话中途开关](#对话中途开关)列出的那几个，**或者模型名不在这个构建的模型表里**（例如网关自己的模型名）。子代理的请求按子代理的模型同样判断。Haiku 4.5、Sonnet 4.6、Opus 4.7、Sonnet 5 等不带。
-
-网关不认识这些标识时有两种结果：
-
-- 网关的报错和 Anthropic API 的格式一样（报错里点出 `anthropic-beta` 和被拒的标识）：客户端自动去掉它们重发，这一次启动内不再对这个地址发送。你看不到报错，只是第一轮会多发请求（用假 API 实测多发了两次）。
-- 网关的报错是别的格式（例如只说 `unsupported beta flag`）：客户端认不出来，**每一轮都会失败并显示 `API Error: 400 …`**。这时请设置 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` 再启动。
-
-网关接受这些标识、但不运行服务端的 advisor 工具时，可以改用下一节的本地 advisor。
-
-## 本地 advisor（默认关闭）
-
-有些网关不运行服务端的 advisor 工具：带顾问的请求被拒绝，或者模型发出的 advisor 调用得不到结果（[#1388](https://github.com/Esonhugh/claude-code/issues/1388)）。这时可以改用本地 advisor：`advisor` 变成客户端自己执行的普通工具，主模型调用它时，客户端向顾问模型单独发一个请求，把回复作为工具结果交回主模型。官方客户端没有这个做法。
-
-开启：启动前设置 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1`（可以写在设置文件的 `env` 里），再用 `/advisor <模型>` 或 `--advisor <模型>` 选顾问。不设这个变量时，本节的内容都不生效。
+接口一直不支持服务端顾问时，每个新对话、每次 `/compact` 之后和每个子代理的第一次请求都会多发一次失败的请求。另设 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 可以让所有请求都只用本地 advisor（这个变量同时关掉其他实验性 beta 标识）。
 
 ```text
 ❯ /advisor Opus 5.5
@@ -155,55 +137,86 @@ Advisor 讓主模型在關鍵節點向一個更強的模型請教：動手之前
   ⎿  ✔ Advisor (Opus 5.5) has reviewed the conversation and will apply the feedback (ctrl+o to expand)
 ```
 
-开启后和前面各节的不同：
+由本地 advisor 回答时和服务端顾问的不同：
 
 | 项 | 本地 advisor |
 | --- | --- |
-| 请求 | 不带 `advisor-tool-2026-03-01` 等 beta 标识，不挂服务端工具。选了顾问时工具列表里多一个普通的 `advisor` 工具，没选时不带 |
-| 可以搭配的模型 | 没有等级限制。`availableModels` 允许的任何模型都可以当顾问，主模型不限 |
-| 模型名 | `/advisor <模型名>` 按输入的大小写保存（例如 `Opus 5.5`）。交互界面里会先向接口发一个最小请求，确认这个模型存在 |
+| 请求 | 不挂服务端工具，工具列表里多一个普通的 `advisor` 工具；没选顾问时不带。顾问自己的那个请求不带 `advisor-tool-2026-03-01` |
 | 接入方式 | 不限于 Anthropic API。顾问请求发往当前会话的接口，用同一套凭据 |
-| 开关生效 | `/advisor` 的开、关、换模型从下一次请求起生效，不需要 `/clear` |
+| 开关生效 | `/advisor` 的开、关、换模型从下一次请求起生效，不需要 `/clear`。当前对话已经在用服务端顾问时，仍按[对话中途开关](#对话中途开关)的规则 |
 | 顾问看到的内容 | 一份文字记录：项目说明（CLAUDE.md 等）、用户的请求、主模型的回复、工具调用和结果，以及主模型在这次调用前刚写的话。不含系统提示词和思考内容。超过顾问模型的上下文窗口时，保留开头和最近的部分 |
 | 顾问能做什么 | 没有工具，只给建议 |
 | 费用 | 每次调用是一个独立请求，不使用 prompt cache，用量记在顾问模型名下 |
-| 失败时 | 顾问请求失败，主模型收到一条说明原因的工具错误，然后继续工作 |
+| 失败时 | 顾问请求失败后最多重试 2 次（`CLAUDE_CODE_MAX_RETRIES` 更小时按它），仍然失败时主模型收到一条说明原因的工具错误，然后继续工作 |
 | 子代理 | 前台子代理的工具列表包含 `advisor` 或继承全部工具时可以调用；后台子代理没有这个工具。`/btw` 这类从主对话分出去的请求调用时得到“不可用” |
 
 主模型在调用前写下的那句话就是它向顾问提的问题，所以工具本身没有参数。按 ctrl+o 可以看到建议全文。
+
+## 费用
+
+顾问会多用 token。服务端顾问的用量按顾问模型的价格计入会话费用；本地 advisor 的每次调用是一个单独的请求，同样记在顾问模型名下。
+
+## 在哪些情况下可用
+
+| 情况 | 服务端顾问 | 本地 advisor |
+| --- | --- | --- |
+| 没有设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` | 不用 | 不用 |
+| Anthropic API（Claude 模式），包括设置了 `ANTHROPIC_BASE_URL` 的自定义网关 | 先用 | 服务端顾问用不了时 |
+| Bedrock、Vertex、Foundry、OpenAI 模式（包括 ChatGPT 登录） | 不用 | 用 |
+
+## 使用自定义网关时请注意
+
+打开开关后，在 Anthropic API 上，即使你没有选顾问，发给模型的请求也会多带 beta 标识：
+
+- 所有请求带 `advisor-tool-2026-03-01`。
+- 主对话的请求还带 `mid-conversation-tool-changes-2026-07-01` 和 `mid-conversation-system-2026-04-07`，条件是主模型支持[对话中途开关](#对话中途开关)（模型名不在这个构建的模型表里时也算支持）。子代理的请求按子代理的模型同样判断。
+
+网关不认识这些标识时有两种结果：
+
+- 网关的报错和 Anthropic API 的格式一样（报错里点出 `anthropic-beta` 和被拒的标识）：客户端自动去掉它们重发，这一次启动内不再对这个地址发送。
+- 网关的报错是别的格式（例如只说 `unsupported beta flag`）：客户端认不出来，**每一轮都会失败并显示 `API Error: 400 …`**。这时请设置 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`（只用本地 advisor），或者去掉 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`。
 
 ## 环境变量
 
 | 变量 | 作用 |
 | --- | --- |
-| `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` | 完全关闭：不带上面的 beta 标识，不挂 advisor 工具，`/advisor` 不出现 |
-| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` | 同样会关闭 advisor |
-| `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` | 跳过等级检查，任何模型都可以当主模型或顾问（服务端仍可能拒绝） |
-| `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` | 改用[本地 advisor](#本地-advisor默认关闭)，默认不设。同时设了 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` 时以关闭为准 |
+| `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` | 打开 advisor。不设时服务端顾问和本地 advisor 都不用，不带上面的 beta 标识，`/advisor` 不出现 |
+| `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` | 完全关闭，和上一个同时设时以关闭为准 |
+| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` | 不用服务端顾问，也不带上面的 beta 标识；打开了 advisor 时由本地 advisor 回答 |
 
 ## 服务端拒绝时
 
-- 服务端不允许用顾问（组织没有开通、模型不能当顾问等）时，客户端去掉顾问把这一次请求重发一遍，你不会看到报错。按拒绝的原因，之后在当前对话、当前地址或这一次启动内不再带顾问。
+- 服务端不允许用顾问（组织没有开通、不接受这种搭配等）时，客户端去掉服务端顾问把这一次请求重发一遍，你不会看到报错，本地 advisor 接着回答。组织没有开通时这一次启动内不再带服务端顾问；不认识 advisor 工具类型或 beta 标识时，这一次启动内不再对这个地址带；其他情况只在当前对话里不带。
 - 服务端不接受对话中途的变更时，客户端改用普通方式重发，顾问照常可用；当前对话之后的开、关按[对话中途开关](#对话中途开关)的最后一条生效。
-- 报错是 `… cannot be used as an advisor when the request model is …` 时不重发，直接显示报错，后面附 `The configured advisor model is not compatible with this request model — run /advisor to change or disable the advisor`。
 
 ## 与官方的差异
 
 | 项 | 官方 2.1.325 | 这个构建 |
 | --- | --- | --- |
-| 开关 | 由远程开关下发，Anthropic API 上默认关 | 不读远程开关，默认可用 |
-| 可用范围 | Anthropic API，以及 `anthropicAws`、`anthropicGoogleCloud` 两种接入方式 | 只有 Anthropic API（含自定义 `ANTHROPIC_BASE_URL`）；没有后两种接入方式 |
+| 开关 | 远程开关下发或设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 时打开（这个变量还跳过等级检查），Anthropic API 上默认关 | 不读远程开关；只有设置了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 才打开 |
+| 可以搭配的模型 | 按模型等级表：主模型要在表里，顾问至少和主模型一样强 | 没有等级表，`availableModels` 允许的任何模型都可以 |
+| `/advisor` 的候选 | 按等级表列出能当顾问的模型 | 和 `/model` 列出的一样 |
+| 对话开始时没有选顾问 | 在官方地址上按等级预先声明一个延迟加载的顾问，之后选上时不改工具列表 | 不预先声明；之后选上时按[对话中途开关](#对话中途开关)处理，工具列表会变一次（prompt cache 重建一次） |
+| `… cannot be used as an advisor when the request model is …` | 直接显示报错，附提示 | 去掉服务端顾问重发，由本地 advisor 回答 |
+| 可用范围 | Anthropic API，以及 `anthropicAws`、`anthropicGoogleCloud` 两种接入方式 | 服务端顾问只在 Anthropic API（含自定义 `ANTHROPIC_BASE_URL`）上用；没有后两种接入方式 |
 | `fable` 别名 | Fable 5.2 | Fable 5.1 |
-| Fable、Mythos 当顾问 | 组织用不了时不给等级，也就不列出；需要用量额度的 Fable 要先在 `/model` 里同意 | 不知道组织能不能用，总是给等级；没有同意流程 |
+| Fable、Mythos 当顾问 | 需要用量额度的 Fable 要先在 `/model` 里同意 | 没有同意流程 |
 | 对话中途开关的两个 beta 标识 | 也用于其他功能 | 只为 advisor 发送，并且总是一起发、一起去掉 |
 | HIPAA 等受限的组织和会话 | 关闭 advisor | 不判断 |
 | 远程（CCR）会话 | 恢复时还原顾问选择 | 不还原 |
-| 本地 advisor | 没有 | 可选，默认关闭，见[本地 advisor](#本地-advisor默认关闭) |
+| 本地 advisor | 没有 | 服务端顾问用不了时代为回答，见[本地 advisor](#本地-advisor) |
 
 实现细节和完整的差异表见 [`docs/plan/advisor.md`](../plan/advisor.md)。
 
 ## 说明
 
-官方行为来自对 2.1.325 的静态阅读，没有用真实账号对照。上面的画面来自实际运行，模型回复由测试用的假 API 按脚本生成；假 API 只能检查显示和请求的形状，服务端是否接受这些请求（包括对话中途开关时发送的内容）没有验证过。
+官方行为来自对 2.1.325 的静态阅读，没有用真实账号对照。服务端顾问在 api.anthropic.com 上的行为（包括对话中途开关时发送的内容、不预先声明顾问之后的表现）只用假 API 检查过请求的形状，没有在真实接口上验证。
 
-本地 advisor 在一个 Anthropic 格式的自定义网关上实际运行过：主模型 Sonnet 5.5，顾问 Opus 5.5，`-p` 两次、交互界面一次，并录下了发出的请求。其他接入方式、子代理里的调用和顾问请求失败的情况没有在真实接口上试过，后者只有假 API 的测试。
+在一个 Anthropic 格式的自定义网关上，主模型 Opus 5.5，`-p` 运行并录下了发出的请求：
+
+- 不设开关、带 `--advisor`：stderr 显示上面的警告；请求里没有 `advisor` 工具，也没有 advisor 相关的 beta 标识。只设已经去掉的 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` 时结果相同。
+- 设开关、顾问 Fable 5.2：带服务端顾问的第一次请求得到 422（网关自己的措辞，解析不了请求里的 system 内容）。客户端去掉服务端顾问重发，得到回复；之后的请求带本地的 `advisor` 工具，主模型调用后顾问 Fable 5.2 给出建议。
+- 设开关、顾问是网关没有的模型名：同样 422 后重发，重发的请求已经带本地的 `advisor` 工具；主模型调用后，顾问请求发了 3 次（都是 503），主模型收到工具错误后继续回答。
+- 设开关并设 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`：第一次请求就带本地的 `advisor` 工具，没有 advisor 相关的 beta 标识，顾问 Fable 5.2 给出建议。
+
+交互界面里的 `/advisor` 选择框、`/advisor opus 5.5`（保存为 `Opus 5.5`）和网关没有的模型名（显示 `Invalid advisor model: …`）也在这个网关上试过。服务端按 Anthropic 的报错格式拒绝之后改由本地 advisor 回答、网关把服务端顾问的调用当成普通工具调用发回、对话中途先后用到两种 advisor、其他接入方式和子代理里的调用，只有假 API 的测试。

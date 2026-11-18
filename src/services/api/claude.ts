@@ -163,9 +163,7 @@ import type { AgentId } from 'src/types/ids.js'
 import {
   getAdvisorErrorCode,
   isAdvisorBlock,
-  isAdvisorEnabled,
   isAdvisorToolAllowed,
-  modelSupportsAdvisor,
   recordAdvisorRefusal,
   resolveAdvisorModelId,
 } from 'src/utils/advisor.js'
@@ -221,6 +219,7 @@ import {
   classifyAdvisorRefusal,
   classifyToolChangeRejection,
   isAdvisorResultUnprocessableError,
+  isUnattributedRequestError,
   isSystemTurnRejection,
   type ToolChangeRejection,
 } from './advisorRefusal.js'
@@ -867,6 +866,11 @@ export type Options = {
   /** Internal: this request retries one whose advisor the server refused. */
   advisorRefused?: true
   /**
+   * The tools a retry sends once it leaves the server-side advisor out: the
+   * request's tools with the local advisor tool, so it answers in its place.
+   */
+  advisorRetryTools?: Tools
+  /**
    * Called when the server could not process earlier advisor results and the
    * retry left them out, so the caller records that for later requests.
    */
@@ -886,6 +890,8 @@ export type Options = {
   onToolChangeFallback?: () => void
   /** Internal: this request retries one whose tool-change beta or system turn was rejected. */
   toolChangesStripped?: true
+  /** Retries after a failed attempt; absent, the session default (CLAUDE_CODE_MAX_RETRIES). */
+  maxRetries?: number
 }
 
 export async function queryModelWithoutStreaming({
@@ -1013,6 +1019,7 @@ export async function* executeNonStreamingRequest(
     signal: AbortSignal
     initialConsecutive529Errors?: number
     querySource?: QuerySource
+    maxRetries?: number
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams | Promise<BetaMessageStreamParams>,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1087,6 +1094,7 @@ export async function* executeNonStreamingRequest(
       signal: retryOptions.signal,
       initialConsecutive529Errors: retryOptions.initialConsecutive529Errors,
       querySource: retryOptions.querySource,
+      maxRetries: retryOptions.maxRetries,
     },
   )
 
@@ -1214,6 +1222,13 @@ class AdvisorRefusedError extends Error {
   }
 }
 
+/** A request with the advisor failed in words this client cannot attribute. */
+class AdvisorUnattributedError extends Error {
+  constructor(readonly refusal: APIError) {
+    super('advisor request failed', { cause: refusal })
+  }
+}
+
 /** The server rejected the tool-change beta (`kind`) or a role:"system" turn. */
 class ToolChangesRejectedError extends Error {
   constructor(
@@ -1303,6 +1318,12 @@ async function* queryModel(
  * process an advisor result in the history, send the request again once with
  * the advisor blocks removed, and record that (through
  * `onAdvisorBlocksStripped`) so later requests leave them out too.
+ *
+ * Not in the official client: a 400 or 422 this client cannot attribute is
+ * also sent again once without the advisor. Only an answered retry tells the
+ * conversation; a retry that fails too leaves the advisor as it was. Either
+ * way the local advisor serves what the server-side one no longer does, from
+ * the retry on (`advisorRetryTools`).
  */
 async function* queryModelAdvisorRetry(
   messages: Message[],
@@ -1316,16 +1337,42 @@ async function* queryModelAdvisorRetry(
   void
 > {
   let requestOptions = options
+  let requestTools = tools
+  let unattributed = false
   for (;;) {
     try {
-      return yield* queryModelRequest(
+      if (!unattributed) {
+        return yield* queryModelRequest(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          requestTools,
+          signal,
+          requestOptions,
+        )
+      }
+      for await (const message of queryModelRequest(
         messages,
         systemPrompt,
         thinkingConfig,
-        tools,
+        requestTools,
         signal,
         requestOptions,
-      )
+      )) {
+        if (
+          unattributed &&
+          message.type === 'assistant' &&
+          !message.isApiErrorMessage
+        ) {
+          unattributed = false
+          options.onAdvisorRefused?.()
+          logForDebugging(
+            '[advisor] the endpoint answered the request sent without the advisor, so this conversation goes on with the local advisor',
+          )
+        }
+        yield message
+      }
+      return
     } catch (error) {
       if (error instanceof ToolChangesRejectedError) {
         if (error.kind === 'system_turn') {
@@ -1350,6 +1397,20 @@ async function* queryModelAdvisorRetry(
         logAdvisorStripRetry(messages, requestOptions)
         continue
       }
+      if (error instanceof AdvisorUnattributedError) {
+        logForDebugging(
+          `[advisor] HTTP ${error.refusal.status} on a request that carried the advisor; sending it again once without the advisor`,
+          { level: 'warn' },
+        )
+        unattributed = true
+        requestTools = options.advisorRetryTools ?? requestTools
+        requestOptions = {
+          ...requestOptions,
+          advisorModel: undefined,
+          advisorRefused: true,
+        }
+        continue
+      }
       if (!(error instanceof AdvisorRefusedError)) throw error
       const { scope, betaHeader } = error.kind
       if (scope !== 'conversation') recordAdvisorRefusal(scope)
@@ -1365,6 +1426,7 @@ async function* queryModelAdvisorRetry(
         host_wide: scope === 'host',
         beta_header_refused: betaHeader,
       })
+      requestTools = options.advisorRetryTools ?? requestTools
       requestOptions = {
         ...requestOptions,
         advisorModel: undefined,
@@ -1466,17 +1528,13 @@ async function* queryModelRequest(
   let advisorModel =
     (isAgenticQuery || options.forkAdvisor) &&
     options.advisorModel !== undefined &&
-    isAdvisorToolAllowed() &&
-    modelSupportsAdvisor(options.model)
+    isAdvisorToolAllowed()
       ? resolveAdvisorModelId(options.advisorModel)
       : undefined
-  // The beta goes on every request while the advisor is on, so requests that
-  // do not carry it (compact, side questions) still accept advisor blocks in
-  // the history.
-  if (
-    isAdvisorToolAllowed() &&
-    (isAdvisorEnabled() || advisorModel !== undefined)
-  ) {
+  // The beta goes on every request while requests may carry the advisor, so
+  // those that do not (compact, side questions) still accept advisor blocks
+  // in the history. The local advisor's own request sends a plain transcript.
+  if (isAdvisorToolAllowed() && options.querySource !== 'advisor') {
     betas.push(ADVISOR_BETA_HEADER)
   }
 
@@ -2402,6 +2460,7 @@ async function* queryModelRequest(
         ...(isFastModeEnabled() ? { fastMode: isFastMode } : false),
         signal,
         querySource: options.querySource,
+        maxRetries: options.maxRetries,
       },
     )
 
@@ -3218,6 +3277,7 @@ async function* queryModelRequest(
           signal,
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
+          maxRetries: options.maxRetries,
         },
         paramsForAttempt,
         (attempt, _startTime, tokens) => {
@@ -3321,6 +3381,7 @@ async function* queryModelRequest(
             thinkingConfig,
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
+            maxRetries: options.maxRetries,
           },
           paramsForAttempt,
           (attempt, _startTime, tokens) => {
@@ -3457,6 +3518,15 @@ async function* queryModelRequest(
         (advisorModel !== undefined || advisorRefusal.betaHeader)
       ) {
         throw new AdvisorRefusedError(error as APIError, advisorRefusal)
+      }
+      // Before the tool search check: that one retries without deferred
+      // tools and would latch tool search off for an error the advisor caused.
+      if (
+        advisorModel !== undefined &&
+        !options.advisorRefused &&
+        isUnattributedRequestError(error)
+      ) {
+        throw new AdvisorUnattributedError(error)
       }
 
       const toolSearchRefusal =

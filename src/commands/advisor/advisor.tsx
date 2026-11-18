@@ -11,23 +11,23 @@ import type {
   LocalJSXCommandOnDone,
 } from '../../types/command.js'
 import {
-  ADVISOR_MODEL_ALIASES,
   formatAdvisorModelName,
-  getAdvisorAliasOptions,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
   resolveAdvisorModelId,
 } from '../../utils/advisor.js'
+import { isModelAlias } from '../../utils/model/aliases.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import {
   ADVISOR_OFF,
+  getAdvisorModelOptions,
   getInvalidAdvisorText,
   setAdvisor,
   toAdvisorChoice,
 } from './setAdvisor.js'
 
 const ADVISOR_STRATEGY_URL = 'https://claude.com/blog/the-advisor-strategy'
+const MAX_VISIBLE_OPTIONS = 10
 
 function AdvisorPicker({
   onDone,
@@ -40,23 +40,20 @@ function AdvisorPicker({
   const mainLoopModel = useMainLoopModel()
   const setAppState = useSetAppState()
 
+  // The same candidates as /model, plus the current advisor if it is not one.
   const { options, defaultValue } = React.useMemo(() => {
-    const aliases = getAdvisorAliasOptions()
-    const lower = current?.toLowerCase()
-    const alias = lower ? aliases.find(a => lower.includes(a)) : undefined
-    const currentValid =
+    const models = getAdvisorModelOptions()
+    const valid =
       current !== undefined && isValidAdvisorModel(resolveAdvisorModelId(current))
-    const custom =
-      current && !alias && currentValid
-        ? { label: formatAdvisorModelName(current), value: current }
+        ? current
         : undefined
+    const custom =
+      valid !== undefined && !models.some(model => model.value === valid)
+        ? [{ label: formatAdvisorModelName(valid), value: valid }]
+        : []
     return {
-      options: [
-        ...aliases.map(a => ({ label: formatAdvisorModelName(a), value: a })),
-        ...(custom ? [custom] : []),
-        { label: 'No advisor', value: ADVISOR_OFF },
-      ],
-      defaultValue: currentValid ? (custom?.value ?? alias ?? ADVISOR_OFF) : ADVISOR_OFF,
+      options: [...models, ...custom, { label: 'No advisor', value: ADVISOR_OFF }],
+      defaultValue: valid ?? ADVISOR_OFF,
     }
   }, [current])
 
@@ -71,17 +68,12 @@ function AdvisorPicker({
       <Box flexDirection="column" gap={1}>
         <Text>
           {
-            "When Claude needs stronger judgment — a complex decision, an ambiguous failure, a problem it's circling without progress — it escalates to the advisor model for guidance, then resumes. The advisor runs server-side and uses additional tokens."
+            "When Claude needs stronger judgment — a complex decision, an ambiguous failure, a problem it's circling without progress — it escalates to the advisor model for guidance, then resumes. The advisor uses additional tokens."
           }
         </Text>
-        {!modelSupportsAdvisor(mainLoopModel) && (
-          <Text color="warning">
-            The current main model ({formatAdvisorModelName(mainLoopModel)})
-            does not support the advisor.
-          </Text>
-        )}
         <Select
           options={options}
+          visibleOptionCount={Math.min(MAX_VISIBLE_OPTIONS, options.length)}
           defaultValue={defaultValue}
           defaultFocusValue={defaultValue}
           onChange={choice =>
@@ -132,16 +124,21 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
 
   const choice = toAdvisorChoice(typed)
   const model = resolveAdvisorModelId(choice)
-  if (!(ADVISOR_MODEL_ALIASES as readonly string[]).includes(arg)) {
+  if (!isValidAdvisorModel(model)) {
+    onDone(getInvalidAdvisorText(choice))
+    return null
+  }
+  // Like /model: an alias or a listed model is taken as it is; any other
+  // name is checked against the endpoint first.
+  const known =
+    isModelAlias(choice) ||
+    getAdvisorModelOptions().some(option => option.value === choice)
+  if (!known) {
     const { valid, error } = await validateModel(model)
     if (!valid) {
       onDone(`Invalid advisor model: ${error}`)
       return null
     }
-  }
-  if (!isValidAdvisorModel(model)) {
-    onDone(getInvalidAdvisorText(choice))
-    return null
   }
   return apply(choice)
 }

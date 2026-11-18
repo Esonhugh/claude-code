@@ -5,7 +5,6 @@ import {
 import type { ToolChangeRejection } from '../services/api/advisorRefusal.js'
 import {
   getAdvisorHostKey,
-  getAdvisorRankKey,
   isAdvisorToolAllowed,
   resolveAdvisorModelId,
 } from './advisor.js'
@@ -27,21 +26,27 @@ export type ToolChangeSticky = {
   systemRejected?: true
 }
 
-// @[MODEL LAUNCH]: Add the model if its catalog row has `mid_conv_tool_change`.
-// mythos-5 has no catalog flag and official accepts it by name.
-const TOOL_CHANGE_MODELS = new Set([
-  'haiku-5-5',
-  'sonnet-5-5',
-  'opus-4-8',
-  'opus-5',
-  'opus-5-5',
-  'fable-5',
-  'fable-5-1',
-  'fable-5-2',
-  'mythos-5',
-  'mythos-5-1',
-  'mythos-5-2',
-])
+// @[MODEL LAUNCH]: Add the model if its catalog row lacks `mid_conv_tool_change`.
+const NO_TOOL_CHANGE_MODELS = [
+  'haiku-4-5',
+  'sonnet-4-6',
+  'opus-4-6',
+  'sonnet-5',
+  'opus-4-7',
+]
+
+// After a catalog key the id may only end, open a `[1m]` style suffix, or
+// carry an 8-digit snapshot date: `claude-sonnet-5-5` is not `sonnet-5`.
+const CATALOG_KEY_TAIL = /^(?:$|\[|-\d{8}(?:$|\[))/
+
+function isCatalogModel(id: string, key: string): boolean {
+  for (let at = id.indexOf(key); at !== -1; at = id.indexOf(key, at + 1)) {
+    const before = id[at - 1]
+    if (before !== undefined && /[a-z0-9]/.test(before)) continue
+    if (CATALOG_KEY_TAIL.test(id.slice(at + key.length))) return true
+  }
+  return false
+}
 
 // Official host latch `toolChangeHeaderRefused`, keyed here by the base URL
 // host like the advisor's host refusal.
@@ -77,8 +82,8 @@ export function modelSupportsToolChanges(model: string): boolean {
   }
   if (isForced()) return true
   if (unsupportedModels.has(getModelKey(model))) return false
-  const key = getAdvisorRankKey(model)
-  return key === undefined || TOOL_CHANGE_MODELS.has(key)
+  const id = resolveAdvisorModelId(model).toLowerCase()
+  return !NO_TOOL_CHANGE_MODELS.some(key => isCatalogModel(id, key))
 }
 
 /** Official `z`: something outside the beta's own state keeps it off. */

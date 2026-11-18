@@ -8,7 +8,6 @@ import {
 import {
   classifyAdvisorRefusal,
   classifyToolChangeRejection,
-  isAdvisorIncompatibleError,
   isSystemTurnRejection,
 } from './advisorRefusal.js'
 
@@ -38,15 +37,16 @@ describe('classifyAdvisorRefusal', () => {
     expect(classifyAdvisorRefusal(apiError(400, `Unexpected value(s) \`${ADVISOR_BETA_HEADER}\` for the \`anthropic-beta\` header`), [])).toEqual({ scope: 'host', betaHeader: false })
   })
 
-  test('unrelated errors and incompatible pairings are not refusals', () => {
+  test('unrelated errors are not refusals', () => {
     expect(classifyAdvisorRefusal(apiError(400, 'prompt is too long'), withBeta)).toBeUndefined()
     expect(classifyAdvisorRefusal(apiError(422, 'the advisor tool is not available'), withBeta)).toBeUndefined()
     expect(classifyAdvisorRefusal(apiError(500, 'the advisor tool is not available'), withBeta)).toBeUndefined()
     expect(classifyAdvisorRefusal(new Error('the advisor tool is not available'), withBeta)).toBeUndefined()
+  })
+
+  test('a pairing the server will not serve is refused for the conversation', () => {
     const incompatible = apiError(400, 'claude-sonnet-4-6 cannot be used as an advisor when the request model is claude-opus-5')
-    expect(classifyAdvisorRefusal(incompatible, withBeta)).toBeUndefined()
-    expect(isAdvisorIncompatibleError(incompatible)).toBe(true)
-    expect(isAdvisorIncompatibleError(apiError(400, 'claude-haiku-4-5 cannot be used as an advisor'))).toBe(false)
+    expect(classifyAdvisorRefusal(incompatible, withBeta)).toEqual({ scope: 'conversation', betaHeader: false })
   })
 })
 

@@ -19,7 +19,6 @@ export type AdvisorRefusal = {
   betaHeader: boolean
 }
 
-const ADVISOR_INCOMPATIBLE = 'cannot be used as an advisor when the request model is'
 const ADVISOR_INPUT_TAG = new RegExp(
   `^${'advisor_20260301'.replace(/\d+$/, '')}\\d+$`,
 )
@@ -69,15 +68,6 @@ function isAdvisorRefusalError(error: APIError): boolean {
   return error.status === 422 && hasAdvisorInputTag(message)
 }
 
-/** The configured advisor cannot pair with the request model; not retried. */
-export function isAdvisorIncompatibleError(error: unknown): error is APIError {
-  return (
-    error instanceof APIError &&
-    error.status === 400 &&
-    error.message.includes(ADVISOR_INCOMPATIBLE)
-  )
-}
-
 /**
  * Official `Xlt`: the server could not process an advisor result sent back
  * in the history, so the request is sent again without advisor blocks.
@@ -91,15 +81,19 @@ export function isAdvisorResultUnprocessableError(error: unknown): boolean {
   )
 }
 
-/** Official `Qlt` and `hCn`: whether a retry without the advisor may help. */
+/**
+ * Official `Qlt` and `hCn`: whether a retry without the advisor may help.
+ * Unlike official, a pairing the server will not serve ("cannot be used as
+ * an advisor when the request model is") is a refusal too: the local advisor
+ * answers that conversation.
+ */
 export function classifyAdvisorRefusal(
   error: unknown,
   betas: readonly string[],
 ): AdvisorRefusal | undefined {
-  if (!(error instanceof APIError) || isAdvisorIncompatibleError(error)) {
+  if (!(error instanceof APIError) || !isAdvisorRefusalError(error)) {
     return undefined
   }
-  if (!isAdvisorRefusalError(error)) return undefined
   const betaHeader = betas.includes(ADVISOR_BETA_HEADER) && rejectsAdvisorBeta(error)
   const scope: AdvisorRefusalScope = error.message.includes(
     'not available for this organization',
@@ -109,6 +103,20 @@ export function classifyAdvisorRefusal(
       ? 'host'
       : 'conversation'
   return { scope, betaHeader }
+}
+
+/**
+ * A 400 or 422 that names nothing this client knows. On a request that
+ * carried the advisor it may be the endpoint refusing the entry in its own
+ * words; only a retry without the advisor can tell (compare
+ * `getToolSearchRefusal`).
+ */
+export function isUnattributedRequestError(error: unknown): error is APIError {
+  if (!(error instanceof APIError)) return false
+  if (error.status !== 400 && error.status !== 422) return false
+  const body = error.error as { error?: { type?: string } } | undefined
+  if (body?.error?.type === 'billing_error') return false
+  return !error.message.toLowerCase().includes('prompt is too long')
 }
 
 function getErrorCode(error: APIError): unknown {
