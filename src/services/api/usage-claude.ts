@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import { getOauthConfig } from '../../constants/oauth.js'
 import {
@@ -73,7 +74,7 @@ export async function fetchClaudeCodeUtilization(): Promise<Utilization | null> 
 
   const headers = {
     'Content-Type': 'application/json',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     ...authResult.headers,
   }
 

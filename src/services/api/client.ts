@@ -13,6 +13,7 @@ import {
   refreshGcpCredentialsIfNeeded,
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
+import { getClientVersions } from '../../utils/settings/settings.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
@@ -116,14 +117,14 @@ export async function getAnthropicClient({
   const customHeaders = getCustomHeaders()
   const isClaudeAIOAuth =
     getAPIProvider() === 'firstParty' && isClaudeAISubscriber()
+  const versions = getClientVersions()
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
-    'User-Agent': getUserAgent(),
+    'User-Agent': getUserAgent(isClaudeAIOAuth ? versions.ClaudeOAuthClientVersion : versions.ClaudeApiClientVersion),
+    'X-Stainless-Package-Version': versions.ClaudeSDKVersion,
     'X-Claude-Code-Session-Id': getSessionId(),
     ...(isClaudeAIOAuth && {
-      'User-Agent': `claude-cli/2.1.318 (external, ${process.env.CLAUDE_CODE_ENTRYPOINT ?? 'cli'})`,
       'X-Stainless-Lang': 'js',
-      'X-Stainless-Package-Version': '0.128.0',
       'X-Stainless-Runtime': 'node',
       'X-Stainless-Runtime-Version': 'v26.12.1',
       'X-Stainless-Retry-Count': '0',

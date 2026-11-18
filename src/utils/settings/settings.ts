@@ -68,6 +68,7 @@ import {
   type ValidationError,
 } from './validation.js'
 import { isAnt } from 'src/utils/userType.js'
+import { DEFAULT_CLIENT_VERSIONS } from '../../constants/clientVersions.js'
 
 
 /**
@@ -1022,6 +1023,16 @@ function loadSettingsFromDisk(): SettingsWithErrors {
 export function getInitialSettings(): SettingsJson {
   const { settings } = getSettingsWithErrors()
   return settings || {}
+}
+
+export function getClientVersions(): typeof DEFAULT_CLIENT_VERSIONS {
+  const configured = getInitialSettings().versionNumber
+  return {
+    ClaudeOAuthClientVersion: configured?.ClaudeOAuthClientVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeOAuthClientVersion,
+    ClaudeApiClientVersion: configured?.ClaudeApiClientVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeApiClientVersion,
+    CodexVersion: configured?.CodexVersion ?? DEFAULT_CLIENT_VERSIONS.CodexVersion,
+    ClaudeSDKVersion: configured?.ClaudeSDKVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeSDKVersion,
+  }
 }
 
 /**

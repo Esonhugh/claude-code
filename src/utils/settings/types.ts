@@ -38,6 +38,10 @@ export const EnvironmentVariablesSchema = lazySchema(() =>
   z.record(z.string(), z.coerce.string()),
 )
 
+const ClientVersionSchema = lazySchema(() =>
+  z.string().regex(/^[\x21-\x7e]+$/, 'Use a nonempty version without whitespace or HTTP control characters'),
+)
+
 /**
  * Schema for permissions section
  */
@@ -263,6 +267,12 @@ export const SettingsSchema = lazySchema(() =>
         .literal(CLAUDE_CODE_SETTINGS_SCHEMA_URL)
         .optional()
         .describe('JSON Schema reference for Claude Code settings'),
+      versionNumber: z.object({
+        ClaudeOAuthClientVersion: ClientVersionSchema().optional(),
+        ClaudeApiClientVersion: ClientVersionSchema().optional(),
+        CodexVersion: ClientVersionSchema().optional(),
+        ClaudeSDKVersion: ClientVersionSchema().optional(),
+      }).optional().describe('HTTP client version identifiers; omitted fields use built-in defaults. Does not change the build version or installed SDK.'),
       crossSessionInbound: z
         .enum(['accept', 'hold', 'refuse'])
         .optional()

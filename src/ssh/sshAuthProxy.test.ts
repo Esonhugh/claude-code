@@ -4,7 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'bun:test'
-import { startSSHAuthProxy } from './sshAuthProxy.js'
+import { resolveSSHAuthProxyOptions, startSSHAuthProxy } from './sshAuthProxy.js'
+import { saveOpenAIAuth } from '../services/openai-oauth/storage.js'
+import { getChatGPTOAuthInfo, getOpenAIAuthInfo } from '../utils/auth.js'
+import { getSessionSettingsCache, resetSettingsCache, setSessionSettingsCache } from '../utils/settings/settingsCache.js'
 
 function requestUnixSocket(
   socketPath: string,
@@ -45,6 +48,44 @@ function requestUnixSocket(
 }
 
 describe('SSH auth proxy', () => {
+  it('reads default and updated Codex versions for each proxied request', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-versions-'))
+    const keys = ['HOME', 'CLAUDE_CODE_USE_OPENAI', 'OPENAI_AUTH_TOKEN', 'OPENAI_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']
+    const previousEnv = keys.map(key => process.env[key])
+    const previousSettings = getSessionSettingsCache()
+    let proxy: Awaited<ReturnType<typeof startSSHAuthProxy>> | undefined
+    try {
+      process.env.HOME = dir
+      process.env.CLAUDE_CODE_USE_OPENAI = '1'
+      for (const key of keys.slice(2)) delete process.env[key]
+      await saveOpenAIAuth({ auth_mode: 'chatgpt', tokens: { access_token: 'fake-token', account_id: 'fake-account' }, last_refresh: new Date().toISOString() }, { homeDir: dir })
+      setSessionSettingsCache({ settings: {}, errors: [] })
+      const versions: Array<string | null> = []
+      proxy = await startSSHAuthProxy({
+        ...resolveSSHAuthProxyOptions(), socketPath: join(dir, 'proxy.sock'),
+        fetch: async (_input, init) => {
+          versions.push(new Headers(init?.headers).get('version'))
+          return new Response(null, { status: 204 })
+        },
+      })
+      assert.equal((await requestUnixSocket(proxy.socketPath, {}, '/responses')).statusCode, 204)
+      setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'ssh-next' } }, errors: [] })
+      assert.equal((await requestUnixSocket(proxy.socketPath, {}, '/responses')).statusCode, 204)
+      assert.deepEqual(versions, ['0.170.0', 'ssh-next'])
+    } finally {
+      proxy?.stop()
+      for (const [index, key] of keys.entries()) {
+        if (previousEnv[index] === undefined) delete process.env[key]
+        else process.env[key] = previousEnv[index]
+      }
+      getOpenAIAuthInfo.cache.clear?.()
+      getChatGPTOAuthInfo.cache.clear?.()
+      if (previousSettings) setSessionSettingsCache(previousSettings)
+      else resetSettingsCache()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('injects validated local gateway headers after stripping remote credentials', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-ssh-proxy-test-'))
     const previousHeaders = process.env.ANTHROPIC_CUSTOM_HEADERS

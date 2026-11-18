@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import { getClientVersions } from '../../utils/settings/settings.js'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
+import { getSessionSettingsCache, resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -690,7 +690,7 @@ try {
     requests[0]!.url,
     'https://chatgpt.com/backend-api/codex/responses',
   )
-  assert.equal(requests[0]!.version, OPENAI_CODEX_CLIENT_VERSION)
+  assert.equal(requests[0]!.version, getClientVersions().CodexVersion)
   assert.deepEqual(requests[0]!.body.input, [
     {
       type: 'message',
@@ -704,6 +704,13 @@ try {
       ],
     },
   ])
+
+  const previousVersionSettings = getSessionSettingsCache()
+  setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'codex-dynamic' } }, errors: [] })
+  await oauthClient.beta.messages.create({ model: 'gpt-5.5', max_tokens: 16, messages: [{ role: 'user', content: 'version override' }] })
+  assert.equal(requests.at(-1)!.version, 'codex-dynamic')
+  if (previousVersionSettings) setSessionSettingsCache(previousVersionSettings)
+  else resetSettingsCache()
 
   // #1023: ChatGPT keeps `tools` stable; discovered deferred tools travel as
   // client tool_search_output items at the point ToolSearch found them.

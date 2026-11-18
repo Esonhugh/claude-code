@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 /**
  * Policy Limits Service
  *
@@ -315,7 +316,7 @@ async function fetchPolicyLimits(
     const endpoint = getPolicyLimitsEndpoint()
     const headers: Record<string, string> = {
       ...authHeaders.headers,
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     }
 
     if (cachedChecksum) {

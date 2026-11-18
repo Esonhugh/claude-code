@@ -21,7 +21,6 @@ import type {
 import { isDebugMode, logForDebugging } from '../../utils/debug.js'
 import { isAnt } from '../../utils/userType.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 import {
   getProxyFetchOptions,
   getWebSocketProxyAgent,
@@ -29,7 +28,7 @@ import {
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getClientVersions, getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
 import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../../tools/ToolSearchTool/constants.js'
 import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../../tools/ApplyPatchTool/prompt.js'
@@ -72,7 +71,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin',
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'version': OPENAI_CODEX_CLIENT_VERSION,
+      'version': getClientVersions().CodexVersion,
       ...(auth.accountId && { 'chatgpt-account-id': auth.accountId }),
     })
   }
@@ -1284,7 +1283,7 @@ export function createOpenAICompatClient(options: {
       }
       const response = await fetchResponsesWithRetry(
         responsesURL,
-        headers,
+        { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
         body,
         options.maxRetries,
         controller.signal,
@@ -1443,7 +1442,7 @@ export function createOpenAICompatClient(options: {
       if (params.stream) {
         const promise = connectSSE(
           responsesURL,
-          headers,
+          { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
           payload,
           options.maxRetries,
           controller,
@@ -1462,7 +1461,7 @@ export function createOpenAICompatClient(options: {
       const promise = (async () => {
         const adapter = await connectSSE(
           responsesURL,
-          headers,
+          { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
           payload,
           options.maxRetries,
           controller,

@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import { randomUUID } from 'crypto'
 import axios from 'axios'
 import { z } from 'zod'
@@ -88,7 +89,7 @@ function getChatGPTRequestHeaders(): Record<string, string> | null {
     Authorization: `Bearer ${auth.accessToken}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     Referer: 'https://chatgpt.com/',
     Origin: 'https://chatgpt.com',
     ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),

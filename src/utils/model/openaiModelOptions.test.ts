@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { getClientVersions } from '../settings/settings.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
@@ -6,7 +7,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import axios from 'axios'
 import { setIsInteractive } from '../../bootstrap/state.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openai-oauth/client.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -383,8 +383,8 @@ try {
   await openAIModelOptions.fetchModelOptions()
   assert.equal(requests[0]!.url, 'https://chatgpt.com/backend-api/codex/models')
   assert.equal(requests[0]!.headers?.['chatgpt-account-id'], 'account-123')
-  assert.equal(requests[0]!.headers?.version, OPENAI_CODEX_CLIENT_VERSION)
-  assert.deepEqual(requests[0]!.params, { client_version: OPENAI_CODEX_CLIENT_VERSION })
+  assert.equal(requests[0]!.headers?.version, getClientVersions().CodexVersion)
+  assert.deepEqual(requests[0]!.params, { client_version: getClientVersions().CodexVersion })
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI

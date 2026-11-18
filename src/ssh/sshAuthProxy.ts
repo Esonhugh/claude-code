@@ -1,3 +1,4 @@
+import { getClientVersions } from '../utils/settings/settings.js'
 import { chmodSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { dirname } from 'node:path'
@@ -9,7 +10,6 @@ import {
 } from '../utils/auth.js'
 import { getAuthHeaders } from '../utils/http.js'
 import { getAPIProvider } from '../utils/model/providers.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../services/openai-oauth/client.js'
 import { checkAndRefreshOpenAITokenIfNeeded } from '../services/openai-oauth/refresh.js'
 import { getProxyFetchOptions } from '../utils/proxy.js'
 
@@ -119,7 +119,7 @@ export function resolveSSHAuthProxyOptions(): {
                 'sec-fetch-site': 'same-origin',
                 'user-agent':
                   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                version: OPENAI_CODEX_CLIENT_VERSION,
+                version: getClientVersions().CodexVersion,
                 ...(auth.accountId
                   ? { 'chatgpt-account-id': auth.accountId }
                   : {}),

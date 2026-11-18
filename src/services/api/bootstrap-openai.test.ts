@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { getClientVersions } from '../../utils/settings/settings.js'
 import assert from 'node:assert/strict'
 import axios from 'axios'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
+import { getSessionSettingsCache, resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 
 const originalNonessentialTraffic = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 const originalAxiosGet = axios.get
@@ -13,6 +14,7 @@ const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
 const originalGatewayDiscovery =
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
 let restoreGlobalConfig: (() => void) | undefined
+const previousVersionSettings = getSessionSettingsCache()
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
@@ -94,7 +96,7 @@ try {
     requests[0]!.headers?.['chatgpt-account-id'],
     'account-123',
   )
-  assert.deepEqual(requests[0]!.params, { client_version: OPENAI_CODEX_CLIENT_VERSION })
+  assert.deepEqual(requests[0]!.params, { client_version: getClientVersions().CodexVersion })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])
@@ -163,6 +165,21 @@ try {
     ],
   }))
   modelOptionsRefreshes = refreshesBefore
+
+  setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'bootstrap-next', ClaudeApiClientVersion: 'aux-next' } }, errors: [] })
+  requests.length = 0
+  await fetchBootstrapData()
+  assert.equal(requests[0]!.headers?.version, 'bootstrap-next')
+  assert.deepEqual(requests[0]!.params, { client_version: 'bootstrap-next' })
+  assert.equal(requests[0]!.headers?.['User-Agent'], 'claude-code/aux-next')
+  const { fetchModelOptions } = await import('../../utils/model/openaiModelOptions.js')
+  setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'discovery-next' } }, errors: [] })
+  requests.length = 0
+  await fetchModelOptions()
+  assert.equal(requests[0]!.headers?.version, 'discovery-next')
+  assert.deepEqual(requests[0]!.params, { client_version: 'discovery-next' })
+  if (previousVersionSettings) setSessionSettingsCache(previousVersionSettings)
+  else resetSettingsCache()
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -366,6 +383,8 @@ try {
   assert.equal(getGlobalConfig().additionalModelOptionsCache, undefined)
   assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
 } finally {
+  if (previousVersionSettings) setSessionSettingsCache(previousVersionSettings)
+  else resetSettingsCache()
   if (originalNonessentialTraffic === undefined) delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   else process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = originalNonessentialTraffic
   restoreGlobalConfig?.()

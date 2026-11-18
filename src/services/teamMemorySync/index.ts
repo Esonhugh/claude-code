@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 /**
  * Team Memory Sync Service
  *
@@ -176,7 +177,7 @@ function getAuthHeaders(): {
       headers: {
         Authorization: `Bearer ${oauthTokens.accessToken}`,
         'anthropic-beta': OAUTH_BETA_HEADER,
-        'User-Agent': getClaudeCodeUserAgent(),
+        'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
       },
     }
   }
