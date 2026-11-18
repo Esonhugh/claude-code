@@ -27,7 +27,7 @@ import {
   resetCommandQueue,
 } from '../../utils/messageQueueManager.js'
 import { isDeferredTool, formatDeferredToolLines } from '../ToolSearchTool/prompt.js'
-import { capturePaneActionSchema } from './actionSchemas.js'
+import { capturePaneActionSchema, newSessionActionSchema } from './actionSchemas.js'
 import {
   applyTerminalKeystrokes,
   getTerminalManager,
@@ -820,10 +820,13 @@ test('applyTerminalKeystrokes marks lines edited with Tab, history or cursor key
   assert.equal(applyTerminalKeystrokes('', '\r', true).submittedUnknown, true)
 })
 
-async function openPermissionSession(permission: Partial<AppState['toolPermissionContext']>) {
+async function openPermissionSession(
+  permission: Partial<AppState['toolPermissionContext']>,
+  inputMode?: 'interactive',
+) {
   const context = createPermissionContext(permission)
   const opened = await TerminalTool.call(
-    { action: 'new-session', cols: 80, rows: 24 },
+    { action: 'new-session', cols: 80, rows: 24, ...(inputMode ? { inputMode } : {}) },
     context,
     allowPermission,
     TEST_ASSISTANT_MESSAGE,
@@ -840,7 +843,7 @@ async function openPermissionSession(permission: Partial<AppState['toolPermissio
     }
     return decision.behavior
   }
-  return { target, send }
+  return { target, send, context }
 }
 
 test('send-keys checks the accumulated line, so a split command still hits deny rules', async () => {
@@ -900,6 +903,151 @@ test('a line edited with Tab or cursor keys asks even in bypass mode with deny r
   await plain.send({ text: 'touc' })
   await plain.send({ key: 'TAB' })
   assert.equal(await plain.send({ key: 'ENTER' }), 'allow')
+})
+
+test('interactive input mode is only accepted on new-session', () => {
+  assert.equal(newSessionActionSchema.safeParse({ action: 'new-session', inputMode: 'interactive' }).success, true)
+  assert.equal(newSessionActionSchema.safeParse({ action: 'new-session', inputMode: 'shell' }).success, false)
+  assert.equal(TerminalTool.inputSchema.safeParse({ action: 'new-session', inputMode: 'interactive' }).success, true)
+  assert.equal(TerminalTool.inputSchema.safeParse({ action: 'send-keys', target: 'term-1', inputMode: 'interactive', key: 'ENTER' }).success, false)
+  assert.equal(TerminalTool.inputSchema.safeParse({ action: 'capture-pane', target: 'term-1', inputMode: 'interactive' }).success, false)
+})
+
+test('interactive startup requires explicit approval even in bypass mode and spawns nothing before it', async () => {
+  const input = { action: 'new-session', command: 'ls', inputMode: 'interactive' }
+  for (const permission of [
+    { mode: 'default' as const, alwaysAllowRules: { session: ['Tmux', 'Bash(ls:*)'] } },
+    { mode: 'bypassPermissions' as const },
+    { mode: 'auto' as const },
+    { mode: 'plan' as const, isBypassPermissionsModeAvailable: true },
+  ]) {
+    const result = await checkTerminal(input, permission)
+    assert.equal(result.behavior, 'ask')
+    assert.deepEqual(result.decisionReason, {
+      type: 'safetyCheck',
+      reason: 'Terminal interactive session approval',
+      classifierApprovable: false,
+      bypassImmune: true,
+    })
+    assert.match(result.message ?? '', /shell escape/i)
+    assert.match(result.message ?? '', /Bash.*deny/i)
+    assert.deepEqual(getTerminalManager().list(), [])
+  }
+  const noninteractive = await checkTerminal(input, { mode: 'bypassPermissions', shouldAvoidPermissionPrompts: true })
+  assert.equal(noninteractive.behavior, 'deny')
+  assert.deepEqual(getTerminalManager().list(), [])
+  assert.equal((await checkTerminal(TOUCH_KEYS, {
+    mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] },
+  })).behavior, 'deny')
+})
+
+test('interactive startup still honors command, cwd and env deny rules before approval', async () => {
+  const permission = { mode: 'bypassPermissions' as const, alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  assert.equal((await checkTerminal({ action: 'new-session', command: 'touch', args: ['x'], inputMode: 'interactive' }, permission)).behavior, 'deny')
+  assert.equal((await checkTerminal({ action: 'new-session', command: 'ls', inputMode: 'interactive' }, {
+    mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash'] },
+  })).behavior, 'deny')
+  const deniedCwd = mkdtempSync(join(tmpdir(), 'terminal-interactive-deny-'))
+  try {
+    assert.equal((await checkTerminal({ action: 'new-session', command: 'cat', args: ['secret'], cwd: deniedCwd, inputMode: 'interactive' }, {
+      mode: 'bypassPermissions', alwaysDenyRules: { session: [`Read(/${deniedCwd}/**)`] },
+    })).behavior, 'deny')
+  } finally {
+    rmSync(deniedCwd, { recursive: true, force: true })
+  }
+  assert.equal((await checkTerminal({ action: 'new-session', command: 'ls', env: { LD_PRELOAD: '/tmp/x.so' }, inputMode: 'interactive' }, {
+    mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(LD_PRELOAD=*)'] },
+  })).behavior, 'deny')
+  assert.deepEqual(getTerminalManager().list(), [])
+})
+
+test('approved interactive input is scoped to its target and no longer reviewed as Bash', async () => {
+  const permission = { mode: 'bypassPermissions' as const, alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  // Calling the tool after its mandatory ask simulates the executor resuming on human approval.
+  const interactive = await openPermissionSession(permission, 'interactive')
+  assert.equal(await interactive.send({ key: 'TAB' }), 'allow')
+  assert.equal(await interactive.send({ key: 'UP' }), 'allow')
+  assert.equal(await interactive.send({ key: 'ENTER' }), 'allow')
+  assert.equal(await interactive.send({ text: 'touch x', enter: true }), 'allow')
+  const input = { action: 'send-keys', target: interactive.target, text: 'touch x', enter: true } as const
+  assert.match(await TerminalTool.description(input, {} as never), /interactive input/i)
+  assert.doesNotMatch(await TerminalTool.description(input, {} as never), /Runs:|Replayed text/)
+  const classifierInput = TerminalTool.toAutoClassifierInput(input)
+  assert.ok(typeof classifierInput === 'string')
+  assert.match(classifierInput, /interactive-input=true/)
+  assert.doesNotMatch(classifierInput, /command=/)
+
+  const shell = await openPermissionSession(permission)
+  assert.equal(await shell.send({ text: 'touch x', enter: true }), 'deny')
+  assert.equal(await shell.send({ key: 'UP' }), 'allow')
+  assert.equal(await shell.send({ key: 'ENTER' }), 'ask')
+})
+
+test('interactive input still honors Tmux whole-tool and parameter rules', async () => {
+  const session = await openPermissionSession({ mode: 'bypassPermissions' }, 'interactive')
+  const input = { action: 'send-keys', target: session.target, key: 'ENTER' }
+  for (const rule of ['Tmux', 'Tmux(action:send-keys)', `Tmux(target:${session.target})`, 'Terminal']) {
+    assert.equal((await checkTerminal(input, { mode: 'bypassPermissions', alwaysDenyRules: { session: [rule] } })).behavior, 'deny', rule)
+    assert.equal((await checkTerminal(input, { mode: 'bypassPermissions', alwaysAskRules: { session: [rule] } })).behavior, 'ask', rule)
+  }
+})
+
+test('interactive approval is removed on close, exit, signal and manager reset', async () => {
+  const permission = { mode: 'bypassPermissions' as const, alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  for (const end of ['close', 'exit', 'signal', 'reset']) {
+    const driver = new FakePtyDriver()
+    resetTerminalManagerForTesting(new PtySessionManager({ driver }))
+    const session = await openPermissionSession(permission, 'interactive')
+    if (end === 'reset') {
+      resetTerminalManagerForTesting(createFakeTerminalManager())
+      const replacement = await openPermissionSession(permission)
+      assert.equal(replacement.target, session.target)
+    } else if (end === 'close') {
+      await TerminalTool.call({ action: 'kill-pane', target: session.target }, session.context, allowPermission, TEST_ASSISTANT_MESSAGE)
+    } else {
+      if (end === 'exit') driver.finishNaturally(session.target, '', 0)
+      else driver.kill(session.target, 'SIGTERM')
+      await refreshTerminalTaskPreview(session.target, session.context.setAppState)
+    }
+    const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true } as const
+    assert.equal((await checkTerminal(input, permission)).behavior, 'deny', end)
+    assert.doesNotMatch(await TerminalTool.description(input, {} as never), /interactive input/i, end)
+  }
+})
+
+test('a failed interactive startup does not grant the next session', async () => {
+  const driver = new FakePtyDriver()
+  const open = driver.open.bind(driver)
+  driver.open = () => { throw new Error('test spawn failure') }
+  resetTerminalManagerForTesting(new PtySessionManager({ driver }))
+  const result = await TerminalTool.call({ action: 'new-session', inputMode: 'interactive' }, createContext(), allowPermission, TEST_ASSISTANT_MESSAGE)
+  assert.equal((result.data as { error: { message: string } }).error.message, 'test spawn failure')
+  driver.open = open
+  const shell = await openPermissionSession({ mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] } })
+  assert.equal(await shell.send({ text: 'touch x', enter: true }), 'deny')
+})
+
+test('inputMode on send-keys cannot bypass command checks through a schema error', async () => {
+  const driver = new FakePtyDriver()
+  resetTerminalManagerForTesting(new PtySessionManager({ driver }))
+  const session = await openPermissionSession({ mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] } })
+  const input = { action: 'send-keys', target: session.target, text: 'touch x', enter: true, inputMode: 'interactive' } as const
+  const decision = await checkTerminal(input, { mode: 'bypassPermissions', alwaysDenyRules: { session: ['Bash(touch:*)'] } })
+  if (decision.behavior === 'allow') {
+    const result = await TerminalTool.call(input, session.context, allowPermission, TEST_ASSISTANT_MESSAGE)
+    assert.equal((result.data as { error: { code: string } }).error.code, 'INVALID_ACTION_INPUT')
+  }
+  assert.deepEqual(driver.writes, [])
+  assert.equal(await session.send({ text: 'touch x', enter: true }), 'deny')
+})
+
+test('invalid interactive startup mode does not spawn a session', async () => {
+  const result = await TerminalTool.call(
+    { action: 'new-session', inputMode: 'shell' } as never,
+    createContext(), allowPermission, TEST_ASSISTANT_MESSAGE,
+  )
+  assert.equal((result.data as { error: { code: string } }).error.code, 'INVALID_ACTION_INPUT')
+  assert.deepEqual(getTerminalManager().list(), [])
 })
 
 test('new-session checks its command in its cwd and with its env', async () => {

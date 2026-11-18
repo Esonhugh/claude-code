@@ -10,6 +10,7 @@ export const newSessionActionSchema = z.object({
   cols: z.number().int().positive().optional(),
   rows: z.number().int().positive().optional(),
   dangerouslyDisableSandbox: z.boolean().optional(),
+  inputMode: z.literal('interactive').optional(),
 })
 
 export const capturePaneActionSchema = z.object({
@@ -101,7 +102,13 @@ export const actionSchema = z.object({
   signal: z.enum(['SIGINT', 'SIGTERM']).optional(),
   force: z.boolean().optional(),
   dangerouslyDisableSandbox: z.boolean().optional(),
-}).passthrough()
+  inputMode: z.literal('interactive').optional().describe(
+    'new-session only: request one-time human approval for all input to this session, including application shell escapes. Bash command deny rules will not be applied to subsequent input.',
+  ),
+}).passthrough().refine(input => input.inputMode === undefined || input.action === 'new-session', {
+  message: 'inputMode is only supported by new-session',
+  path: ['inputMode'],
+})
 
 // Fork-only `send_terminal_input` control request: keys a host app's user
 // types into a running Terminal task.

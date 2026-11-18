@@ -88,6 +88,8 @@ const terminalInputLines = new Map<string, string>()
 // Sessions whose pending line was edited with keys the replay cannot follow
 // (Tab completion, history, cursor movement), so its text is unknown.
 const terminalUnknownLines = new Set<string>()
+// Granted only after the new-session approval has reached execution.
+const interactiveTerminalSessions = new Set<string>()
 
 /**
  * Replays keystrokes over a session's pending line like a line editor: Enter
@@ -133,6 +135,7 @@ type TerminalPermissionInput = {
   args?: string[]
   cwd?: string
   env?: Record<string, string>
+  inputMode?: 'interactive'
   target?: string
   text?: string
   key?: Parameters<typeof sendKeysSequence>[0]['key']
@@ -170,6 +173,7 @@ function getTerminalCommand(
     return { submitted: [...assignments, argv].join(' ') }
   }
   if (input.action !== 'send-keys') return undefined
+  if (input.target && interactiveTerminalSessions.has(input.target)) return undefined
   const { pending, line, submitted, submittedUnknown } = getSendKeysLines(input)
   if (submitted.length > 0) {
     return {
@@ -231,6 +235,7 @@ export function getTerminalManager(): PtySessionManager {
     terminalManagerInstance = manager
     unregisterTerminalManagerCleanup = registerCleanup(async () => {
       manager.closeAll()
+      interactiveTerminalSessions.clear()
     })
   }
   return terminalManagerInstance
@@ -247,6 +252,7 @@ export function resetTerminalManagerForTesting(manager?: PtySessionManager): voi
   terminalTaskRegistry.clear()
   terminalInputLines.clear()
   terminalUnknownLines.clear()
+  interactiveTerminalSessions.clear()
   terminalTerminationReasons.clear()
   sandboxedTerminalSessions.clear()
 }
@@ -280,6 +286,7 @@ async function finalizeTerminalTask(
   terminalTaskRegistry.delete(sessionId)
   terminalInputLines.delete(sessionId)
   terminalUnknownLines.delete(sessionId)
+  interactiveTerminalSessions.delete(sessionId)
   terminalTerminationReasons.delete(sessionId)
   stopTerminalTaskPolling(sessionId)
   if (sandboxedTerminalSessions.delete(sessionId)) {
@@ -413,11 +420,15 @@ export async function sendTerminalInputFromHost(
   setAppState: Parameters<typeof updateTaskState>[1],
 ): Promise<void> {
   const manager = getTerminalManager()
-  const { line, unknown } = getSendKeysLines({ action: 'send-keys', target: sessionId, ...input })
+  const replay = interactiveTerminalSessions.has(sessionId)
+    ? undefined
+    : getSendKeysLines({ action: 'send-keys', target: sessionId, ...input })
   manager.write(sessionId, sendKeysSequence(input))
-  terminalInputLines.set(sessionId, line)
-  if (unknown) terminalUnknownLines.add(sessionId)
-  else terminalUnknownLines.delete(sessionId)
+  if (replay) {
+    terminalInputLines.set(sessionId, replay.line)
+    if (replay.unknown) terminalUnknownLines.add(sessionId)
+    else terminalUnknownLines.delete(sessionId)
+  }
   await refreshTerminalTaskPreview(sessionId, setAppState, manager)
 }
 
@@ -481,11 +492,17 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   shouldDefer: true,
   maxResultSizeChars: 100_000,
   async description(input) {
+    if (input?.action === 'send-keys' && input.target && interactiveTerminalSessions.has(input.target)) {
+      return `Sends interactive input to approved session ${input.target}; application shell escapes are included in this session's approval.`
+    }
     // The permission dialog shows this: name the whole line Enter submits,
     // not only the keys in this call.
     const command = input && getTerminalCommand(input)
     if (command?.submitted === undefined) return DESCRIPTION
     const cwd = input.action === 'new-session' && input.cwd ? ` (in ${input.cwd})` : ''
+    if (input.action === 'new-session' && input.inputMode === 'interactive') {
+      return `Runs${cwd}: ${command.submitted}; requests session-scoped interactive input approval, including application shell escapes.`
+    }
     return command.unknown
       ? `Submits a line edited with control keys; the terminal shows the command. Replayed text: ${command.submitted}`
       : `Runs${cwd}: ${command.submitted}`
@@ -526,8 +543,16 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
       if (input.dangerouslyDisableSandbox) {
         parts.push('dangerouslyDisableSandbox=true')
       }
+      if (input.inputMode === 'interactive') parts.push('inputMode=interactive')
     }
     if (input.action === 'send-keys') {
+      if (input.target && interactiveTerminalSessions.has(input.target)) {
+        parts.push('interactive-input=true')
+        if (input.text !== undefined) parts.push(`text=${JSON.stringify(input.text)}`)
+        if (input.key) parts.push(`key=${input.key}`)
+        if (input.enter) parts.push('enter=true')
+        return parts.join(' ')
+      }
       const command = getTerminalCommand(input)
       if (command?.submitted !== undefined) {
         parts.push(`command=${JSON.stringify(command.submitted)}`)
@@ -558,6 +583,19 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
       ? await runWithCwdOverride(cwd, () => checkShellCommand(command.submitted!, context))
       : await checkShellCommand(command.submitted, context)
     if (result.behavior === 'deny') return result
+    if (input.action === 'new-session' && input.inputMode === 'interactive') {
+      return {
+        behavior: 'ask',
+        message:
+          'Approve all interactive input for this terminal session, including application shell escapes? Subsequent input will not be checked against Bash command deny rules. This approval ends when the session closes.',
+        decisionReason: {
+          type: 'safetyCheck',
+          reason: 'Terminal interactive session approval',
+          classifierApprovable: false,
+          bypassImmune: true,
+        },
+      }
+    }
     if (command.unknown) {
       // The shell may run something other than the replayed text. Deny rules
       // cannot be checked against it, so they keep it asking in bypass mode.
@@ -598,6 +636,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   async call(input, context, _canUseTool, _assistantMessage, _onProgress) {
     const setTaskAppState = context.setAppStateForTasks ?? context.setAppState
     try {
+      if (input.inputMode !== undefined && input.action !== 'new-session') {
+        return { data: invalidInput('inputMode is only supported by new-session', { action: input.action }) }
+      }
       switch (input.action) {
         case 'new-session': {
           const parsed = newSessionActionSchema.safeParse(input)
@@ -653,6 +694,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             setTaskAppState,
           )
           startTerminalTaskPolling(target, setTaskAppState)
+          if (parsed.data.inputMode === 'interactive') interactiveTerminalSessions.add(target)
           const { sessionId: _sessionId, ...openedOutput } = opened
           return { data: { ...openedOutput, target } }
         }
@@ -666,11 +708,15 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             }
           }
           const manager = getTerminalManager()
-          const { line, unknown } = getSendKeysLines(parsed.data)
+          const replay = interactiveTerminalSessions.has(parsed.data.target)
+            ? undefined
+            : getSendKeysLines(parsed.data)
           const written = handleWrite(manager, parsed.data)
-          terminalInputLines.set(parsed.data.target, line)
-          if (unknown) terminalUnknownLines.add(parsed.data.target)
-          else terminalUnknownLines.delete(parsed.data.target)
+          if (replay) {
+            terminalInputLines.set(parsed.data.target, replay.line)
+            if (replay.unknown) terminalUnknownLines.add(parsed.data.target)
+            else terminalUnknownLines.delete(parsed.data.target)
+          }
           await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: written }
         }
