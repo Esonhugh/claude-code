@@ -41,7 +41,8 @@ if (process.env[isolatedChild] === '1') {
         OPENAI_API_KEY: 'mods-test-dummy-source-only', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
         [isolatedChild]: '1',
       },
-      stdout: 'pipe', stderr: 'pipe', timeout: 4500,
+      // The child transpiles its whole import graph without a cache; a loaded runner needs far more than a few seconds.
+      stdout: 'pipe', stderr: 'pipe', timeout: 60000,
     })
     try {
       const [code, stdout, stderr] = await Promise.all([
@@ -54,7 +55,7 @@ if (process.env[isolatedChild] === '1') {
       if (child.exitCode === null) { child.kill(); await child.exited }
       rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 65000)
 }
 
 async function isolatedAssertions() {

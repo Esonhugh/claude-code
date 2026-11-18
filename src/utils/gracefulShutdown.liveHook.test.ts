@@ -19,9 +19,9 @@ test.skipIf(process.platform === 'win32')(
   async () => {
     const root = mkdtempSync(join(tmpdir(), 'shutdown-live-hook-'))
     const pidFile = join(root, 'pid')
-    const started = Date.now()
+    const startFile = join(root, 'shutdown-start')
     const child = Bun.spawn(
-      [process.execPath, join(import.meta.dir, 'gracefulShutdown.shellGrace.fixture.ts'), join(root, 'sleeps'), 'hook', pidFile],
+      [process.execPath, join(import.meta.dir, 'gracefulShutdown.shellGrace.fixture.ts'), join(root, 'sleeps'), 'hook', pidFile, startFile],
       {
         env: { PATH: process.env.PATH, HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), DISABLE_TELEMETRY: '1' },
         stdout: 'ignore',
@@ -30,12 +30,15 @@ test.skipIf(process.platform === 'win32')(
     )
     const timer = setTimeout(() => child.kill('SIGKILL'), 20_000)
     await child.exited
+    const exited = Date.now()
     clearTimeout(timer)
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
     const left = alive(pid)
     if (left) process.kill(pid, 'SIGKILL')
     expect(left).toBe(false)
-    expect(Date.now() - started).toBeLessThan(2000 + 1500)
+    // Timed from the call to gracefulShutdown: starting the child and loading its
+    // modules takes most of the run and grows with machine load. 2000 is the cleanup budget.
+    expect(exited - Number(readFileSync(startFile, 'utf8'))).toBeLessThan(2000)
   },
   30_000,
 )

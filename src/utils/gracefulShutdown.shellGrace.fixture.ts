@@ -5,7 +5,7 @@ import { mock } from 'bun:test'
 import { spawn } from 'child_process'
 import { appendFileSync } from 'fs'
 
-const [, , logPath, withShell, pidPath] = process.argv
+const [, , logPath, withShell, pidPath, shutdownStartPath] = process.argv
 const sleepPath = new URL('./sleep.ts', import.meta.url).pathname
 const real = await import(sleepPath)
 const realSleep = real.sleep
@@ -33,4 +33,6 @@ if (withShell === 'hook') {
   appendFileSync(pidPath!, `${child.pid}\n`)
 }
 const { gracefulShutdown } = await import('./gracefulShutdown.js')
+// Lets the parent time the shutdown alone, without the module loading above.
+if (shutdownStartPath) appendFileSync(shutdownStartPath, `${Date.now()}\n`)
 await gracefulShutdown(0)
