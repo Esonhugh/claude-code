@@ -81,7 +81,7 @@ bun ./dist/cli.js --help
 |  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | API 过载或断线时自动重试；主模型一直过载就换备用模型；可以让无人值守任务一直等到额度恢复 |
 |  | [Effort 档位](docs/features/effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；按模型保存（与官方共用 `modelSettings.<模型>.effortLevel`），可按会话切，也可给子代理单独指定；`-p` 与 SDK 默认 `high` |
-|  | [Advisor 顾问模型（实验性）](docs/features/advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：用 `/advisor` 选顾问，Claude 模式下可用；走自定义网关前请先看文档里的注意事项 |
+|  | [Advisor 顾问模型（实验性）](docs/features/advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` 后用 `/advisor` 选顾问；Claude 模式下先用服务端顾问，其他接入方式由本地 advisor 回答；走自定义网关前请先看文档里的注意事项 |
 |  | [Codex Apps](docs/features/codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
 |  | [客户端版本号（versionNumber）](docs/features/client-version-numbers.md) | 请求里带的客户端版本号默认跟官方 Claude Code 2.1.327、Codex CLI 0.170.0 一致；官方发新版时在设置里写 `versionNumber` 就能跟上，不用等新构建 |
 | Agent 与编排 | [Agent 与后台任务](docs/features/agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
