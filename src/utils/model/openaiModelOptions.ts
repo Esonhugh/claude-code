@@ -331,12 +331,21 @@ function isTokenCount(value: unknown): value is number {
 /** The cached gateway list, when it was written for this gateway and credential. */
 function readCurrentGatewayModels(): GatewayModel[] {
   if (!isGatewayModelDiscoveryEnabled()) return []
-  const credential = getGatewayCredential()
-  if (!credential) return []
-  const cache = readGatewayModelCache()
-  // A cache written for another gateway or credential says nothing about this one.
-  if (!cache || cache.cacheKey !== getGatewayModelCacheKey(credential)) return []
-  return cache.models
+  try {
+    const credential = getGatewayCredential()
+    if (!credential) return []
+    const cache = readGatewayModelCache()
+    // A cache written for another gateway or credential says nothing about this one.
+    if (!cache || cache.cacheKey !== getGatewayModelCacheKey(credential)) return []
+    return cache.models
+  } catch (error) {
+    // Context sizing asks on every turn. When the credential or the cache key
+    // cannot be worked out, nothing is known about this gateway.
+    logForDebugging(
+      `[Gateway discovery] Cache not checked: ${error instanceof Error ? error.name : 'unknown'}`,
+    )
+    return []
+  }
 }
 
 // Read once per process (context sizing runs on every turn); a new fetch resets it.
