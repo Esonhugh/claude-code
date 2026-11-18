@@ -9450,11 +9450,19 @@ else:
             if current:
                 if case == 'DEFAULT':
                     self.send(target, run_dir, '/model sonnet', 'input-model-alias.txt')
-                    alias_selected = self.wait_until(
-                        lambda: 'Set model to gpt-5.6-terra' in strip_ansi(
-                            self.capture(target, alias_path)
-                        ), 30, 0.25,
-                    )
+
+                    # A warm prompt cache asks before switching models.
+                    def alias_state():
+                        text = strip_ansi(self.capture(target, alias_path))
+                        if 'Set model to gpt-5.6-terra' in text:
+                            return 'set'
+                        match = re.search(r'(\d+)\.\s+Yes, switch to gpt-5\.6-terra', text)
+                        return match.group(1) if 'Switch model?' in text and match else None
+
+                    if self.wait_until(alias_state, 30, 0.25) and (row := alias_state()) not in (None, 'set'):
+                        result['switch_confirm_row'] = row
+                        self.tmux('send-keys', '-t', target, row, check=True)
+                    alias_selected = self.wait_until(lambda: alias_state() == 'set', 30, 0.25)
                 if case == 'EXPLICIT' or alias_selected:
                     self.send(target, run_dir,
                               f'RELEASE_{case}_MODEL_REQUEST: Reply with the validation marker.',

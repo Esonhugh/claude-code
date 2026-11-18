@@ -3877,7 +3877,10 @@ def assert_driver_behavior(module, baseline_module):
                     '04-model-selected-pane.txt': 'gpt-release-discovered',
                     '05-model-current-pane.txt': 'Current model: gpt-release-discovered',
                     '06-explicit-model-pane.txt': 'RELEASE_EXPLICIT_MODEL_OK',
-                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra',
+                    # A warm cache asks before switching models.
+                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra' if keys[2:] == ['1'] else (
+                        'Switch model?\n❯ 1. Yes, switch to gpt-5.6-terra\n  2. No, go back'
+                    ),
                     '08-default-model-pane.txt': 'RELEASE_DEFAULT_MODEL_OK',
                 }.get(path.name, '')
                 if faulty == 'missing-pane' and path.name == '08-default-model-pane.txt':
@@ -3916,7 +3919,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.model_discovery_picker()
             assert recorded[0]['validation_verdict'] == ('passed' if faulty is None else 'failed'), faulty
             if faulty is None:
-                assert keys[:2] == ['M-p', '2'], keys
+                assert keys == ['M-p', '2', '1'], keys
                 assert {item['assertion_id'] for item in recorded[0]['assertions']} >= {
                     'openai-default-model-alias', 'openai-explicit-model-preserved',
                 }
