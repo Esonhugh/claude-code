@@ -25,6 +25,7 @@ import {
   waitForPolicyLimitsToLoad,
 } from '../services/policyLimits/index.js'
 import type { Message } from '../types/message.js'
+import { codeModeRemoteControlRefusal } from '../tools/REPLTool/codeModeGate.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getClaudeAIOAuthTokens,
@@ -68,7 +69,10 @@ import {
 import { logBridgeSkip } from './debugUtils.js'
 import { checkEnvLessBridgeMinVersion } from './envLessBridgeConfig.js'
 import { getPollIntervalConfig } from './pollConfig.js'
-import type { BridgeState, ReplBridgeHandle } from './replBridge.js'
+import type {
+  BridgeStateChangeHandler,
+  ReplBridgeHandle,
+} from './replBridge.js'
 import { initBridgeCore } from './replBridge.js'
 import { setCseShimGate } from './sessionIdCompat.js'
 import type { BridgeWorkerType } from './types.js'
@@ -85,7 +89,7 @@ export type InitBridgeOptions = {
   onSetPermissionMode?: (
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
-  onStateChange?: (state: BridgeState, detail?: string) => void
+  onStateChange?: BridgeStateChangeHandler
   initialMessages?: Message[]
   // Explicit session name from `/remote-control <name>`. When set, overrides
   // the title derived from the conversation or /rename.
@@ -136,6 +140,15 @@ export async function initReplBridge(
   // GrowthBook gate. Daemon/SDK paths skip this — shim defaults to active.
   setCseShimGate(isCseShimEnabled)
 
+  // 0. A Code Mode session keeps Code Mode and does not connect (official
+  // wun: reason repl_mode). Covers every path that flips replBridgeEnabled.
+  const codeModeRefusal = codeModeRemoteControlRefusal()
+  if (codeModeRefusal) {
+    logBridgeSkip('repl_mode', `[bridge:repl] Skipping: ${codeModeRefusal}`)
+    onStateChange?.('failed', codeModeRefusal)
+    return null
+  }
+
   // 1. Runtime gate
   if (!(await isBridgeEnabledBlocking())) {
     logBridgeSkip('not_enabled', '[bridge:repl] Skipping: bridge not enabled')
@@ -151,7 +164,7 @@ export async function initReplBridge(
   // instead of a misleading policy error from a stale/wrong-org cache.
   if (!getBridgeAccessToken()) {
     logBridgeSkip('no_oauth', '[bridge:repl] Skipping: no OAuth tokens')
-    onStateChange?.('failed', '/login')
+    onStateChange?.('failed', '/login', 'auth')
     return null
   }
 
@@ -226,7 +239,7 @@ export async function initReplBridge(
         'oauth_expired_unrefreshable',
         '[bridge:repl] Skipping: OAuth token expired and refresh failed (re-login required)',
       )
-      onStateChange?.('failed', '/login')
+      onStateChange?.('failed', '/login', 'auth')
       // Persist for the next process. Increments failCount when re-discovering
       // the same dead token (matched by expiresAt); resets to 1 for a different
       // token. Once count reaches 3, step 2a's early-return fires and this path
@@ -397,7 +410,7 @@ export async function initReplBridge(
   const orgUUID = await getOrganizationUUID()
   if (!orgUUID) {
     logBridgeSkip('no_org_uuid', '[bridge:repl] Skipping: no org UUID')
-    onStateChange?.('failed', '/login')
+    onStateChange?.('failed', '/login', 'auth')
     return null
   }
 
@@ -422,7 +435,7 @@ export async function initReplBridge(
         `[bridge:repl] Skipping: ${versionError}`,
         true,
       )
-      onStateChange?.('failed', 'run `claude update` to upgrade')
+      onStateChange?.('failed', 'run `claude update` to upgrade', 'terminal')
       return null
     }
     logForDebugging(
@@ -464,7 +477,7 @@ export async function initReplBridge(
   const versionError = checkBridgeMinVersion()
   if (versionError) {
     logBridgeSkip('version_too_old', `[bridge:repl] Skipping: ${versionError}`)
-    onStateChange?.('failed', 'run `claude update` to upgrade')
+    onStateChange?.('failed', 'run `claude update` to upgrade', 'terminal')
     return null
   }
 

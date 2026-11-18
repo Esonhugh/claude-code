@@ -4,15 +4,19 @@ import * as React from 'react'
 import { useEffect, useState } from 'react'
 import { getOriginalCwd } from '../bootstrap/state.js'
 import {
+  BRIDGE_FAILED_NOTIFICATION_KEY,
+  bridgeFailedFooter,
+} from '../bridge/bridgeFailure.js'
+import {
   buildActiveFooterText,
   buildIdleFooterText,
-  FAILED_FOOTER_TEXT,
   getBridgeStatus,
 } from '../bridge/bridgeStatusUtil.js'
 import {
   BRIDGE_FAILED_INDICATOR,
   BRIDGE_READY_INDICATOR,
 } from '../constants/figures.js'
+import { useNotifications } from '../context/notifications.js'
 import { useRegisterOverlay } from '../context/overlayContext.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw 'd' key for disconnect, not a configurable keybinding action
 import { Box, Text, useInput } from '../ink.js'
@@ -35,11 +39,14 @@ export function BridgeDialog({ onDone }: Props): React.ReactNode {
   const connectUrl = useAppState(s => s.replBridgeConnectUrl)
   const sessionUrl = useAppState(s => s.replBridgeSessionUrl)
   const error = useAppState(s => s.replBridgeError)
+  const errorKind = useAppState(s => s.replBridgeErrorKind)
+  const enabled = useAppState(s => s.replBridgeEnabled)
   const explicit = useAppState(s => s.replBridgeExplicit)
   const environmentId = useAppState(s => s.replBridgeEnvironmentId)
   const sessionId = useAppState(s => s.replBridgeSessionId)
   const verbose = useAppState(s => s.verbose)
   const setAppState = useSetAppState()
+  const { removeNotification } = useNotifications()
 
   const [showQR, setShowQR] = useState(false)
   const [qrText, setQrText] = useState('')
@@ -82,22 +89,40 @@ export function BridgeDialog({ onDone }: Props): React.ReactNode {
     { context: 'Confirmation' },
   )
 
-  useInput(input => {
+  // After an auth failure the bridge is off; 'r' turns it back on.
+  const canReconnect = !enabled && error !== undefined && errorKind === 'auth'
+
+  useInput((input, key) => {
+    if (key.ctrl || key.meta) return
     if (input === 'd') {
       // Persist opt-out only for CLI-flag/command-activated bridge.
       // Config-driven and GB-auto-connect users get session-only disconnect
       // — writing false would silently undo a Settings choice or opt a
-      // GB-rollout user out permanently.
-      if (explicit) {
+      // GB-rollout user out permanently. Dismissing a failure isn't an opt-out.
+      if (explicit && enabled && error === undefined) {
         saveGlobalConfig(current => {
           if (current.remoteControlAtStartup === false) return current
           return { ...current, remoteControlAtStartup: false }
         })
       }
-      setAppState(prev => {
-        if (!prev.replBridgeEnabled) return prev
-        return { ...prev, replBridgeEnabled: false }
-      })
+      removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
+      setAppState(prev => ({
+        ...prev,
+        replBridgeEnabled: false,
+        replBridgeError: undefined,
+        replBridgeErrorKind: undefined,
+      }))
+      onDone()
+    }
+    if (input === 'r' && canReconnect) {
+      removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
+      setAppState(prev => ({
+        ...prev,
+        replBridgeEnabled: true,
+        replBridgeExplicit: true,
+        replBridgeError: undefined,
+        replBridgeErrorKind: undefined,
+      }))
       onDone()
     }
   })
@@ -120,7 +145,7 @@ export function BridgeDialog({ onDone }: Props): React.ReactNode {
 
   // Footer text matches standalone bridge
   const footerText = error
-    ? FAILED_FOOTER_TEXT
+    ? bridgeFailedFooter(error, errorKind)
     : displayUrl
       ? sessionActive
         ? buildActiveFooterText(displayUrl)
@@ -152,7 +177,14 @@ export function BridgeDialog({ onDone }: Props): React.ReactNode {
         )}
         {footerText && <Text dimColor>{footerText}</Text>}
         <Text dimColor>
-          d to disconnect · space for QR code · Enter/Esc to close
+          {[
+            `d to ${error !== undefined ? 'dismiss' : 'disconnect'}`,
+            canReconnect && 'r to reconnect',
+            displayUrl && 'space for QR code',
+            'Enter/Esc to close',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </Text>
       </Box>
     </Dialog>

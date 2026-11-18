@@ -8,6 +8,12 @@ import {
   getBridgeDisabledReason,
   isEnvLessBridgeEnabled,
 } from '../../bridge/bridgeEnabled.js'
+import {
+  BRIDGE_FAILED_NOTIFICATION_KEY,
+  BRIDGE_LOGIN_DETAIL,
+  bridgeFailedDialogHint,
+} from '../../bridge/bridgeFailure.js'
+import { getBridgeStatus } from '../../bridge/bridgeStatusUtil.js'
 import { checkEnvLessBridgeMinVersion } from '../../bridge/envLessBridgeConfig.js'
 import {
   BRIDGE_LOGIN_INSTRUCTION,
@@ -16,6 +22,8 @@ import {
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { ListItem } from '../../components/design-system/ListItem.js'
 import { shouldShowRemoteCallout } from '../../components/RemoteCallout.js'
+import { BRIDGE_FAILED_INDICATOR } from '../../constants/figures.js'
+import { useNotifications } from '../../context/notifications.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
 import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
@@ -25,6 +33,7 @@ import {
 } from '../../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
+import { codeModeRemoteControlRefusal } from '../../tools/REPLTool/codeModeGate.js'
 import type {
   LocalJSXCommandContext,
   LocalJSXCommandOnDone,
@@ -110,6 +119,8 @@ function BridgeToggle({ onDone, name }: Props): React.ReactNode {
           replBridgeExplicit: true,
           replBridgeOutboundOnly: false,
           replBridgeInitialName: name,
+          replBridgeError: undefined,
+          replBridgeErrorKind: undefined,
         }
       })
       onDone('Remote Control connecting\u2026', {
@@ -130,19 +141,31 @@ function BridgeToggle({ onDone, name }: Props): React.ReactNode {
 }
 
 /**
- * Dialog shown when /remote-control is used while the bridge is already connected.
- * Shows the session URL and lets the user disconnect or continue.
+ * Dialog shown when /remote-control is used while the bridge is connected or
+ * enabled. Shows the session URL, or why Remote Control isn't connected, and
+ * lets the user disconnect or continue.
  */
 function BridgeDisconnectDialog({ onDone }: Props): React.ReactNode {
   useRegisterOverlay('bridge-disconnect-dialog')
   const setAppState = useSetAppState()
+  const { removeNotification } = useNotifications()
   const sessionUrl = useAppState(s => s.replBridgeSessionUrl)
   const connectUrl = useAppState(s => s.replBridgeConnectUrl)
   const sessionActive = useAppState(s => s.replBridgeSessionActive)
-  const [focusIndex, setFocusIndex] = useState(2)
+  const connected = useAppState(s => s.replBridgeConnected)
+  const reconnecting = useAppState(s => s.replBridgeReconnecting)
+  const enabled = useAppState(s => s.replBridgeEnabled)
+  const error = useAppState(s => s.replBridgeError)
+  const errorKind = useAppState(s => s.replBridgeErrorKind)
+  const [focusKey, setFocusKey] = useState<DialogItemKey>('continue')
   const [showQR, setShowQR] = useState(false)
   const [qrText, setQrText] = useState('')
 
+  const live = connected && !reconnecting
+  const [liveAtOpen] = useState(live)
+  const failed = !live && Boolean(error)
+  const notConnected = failed || (!connected && !enabled)
+  const hint = failed && error ? bridgeFailedDialogHint(error, errorKind) : ''
   const displayUrl = sessionActive ? sessionUrl : connectUrl
 
   // Generate QR code when URL changes or QR is toggled on
@@ -161,15 +184,15 @@ function BridgeDisconnectDialog({ onDone }: Props): React.ReactNode {
   }, [showQR, displayUrl])
 
   function handleDisconnect(): void {
-    setAppState(prev => {
-      if (!prev.replBridgeEnabled) return prev
-      return {
-        ...prev,
-        replBridgeEnabled: false,
-        replBridgeExplicit: false,
-        replBridgeOutboundOnly: false,
-      }
-    })
+    removeNotification(BRIDGE_FAILED_NOTIFICATION_KEY)
+    setAppState(prev => ({
+      ...prev,
+      replBridgeEnabled: false,
+      replBridgeExplicit: false,
+      replBridgeOutboundOnly: false,
+      replBridgeError: undefined,
+      replBridgeErrorKind: undefined,
+    }))
     logEvent('tengu_bridge_command', {
       action:
         'disconnect' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -178,42 +201,83 @@ function BridgeDisconnectDialog({ onDone }: Props): React.ReactNode {
   }
 
   function handleShowQR(): void {
-    setShowQR(prev => !prev)
+    if (live) setShowQR(prev => !prev)
   }
 
   function handleContinue(): void {
     onDone(undefined, { display: 'skip' })
   }
 
-  const ITEM_COUNT = 3
+  // The QR row stays (as "unavailable") if the link dropped while open.
+  const items: { key: DialogItemKey; label: string; run: () => void }[] = [
+    { key: 'disconnect', label: 'Disconnect this session', run: handleDisconnect },
+    ...(live || liveAtOpen
+      ? [
+          {
+            key: 'qr' as const,
+            label: !live
+              ? 'QR code unavailable'
+              : showQR
+                ? 'Hide QR code'
+                : 'Show QR code',
+            run: handleShowQR,
+          },
+        ]
+      : []),
+    { key: 'continue', label: 'Continue', run: handleContinue },
+  ]
+  const focusIndex = Math.max(
+    0,
+    items.findIndex(item => item.key === focusKey),
+  )
 
   useKeybindings(
     {
-      'select:next': () => setFocusIndex(i => (i + 1) % ITEM_COUNT),
+      'select:next': () =>
+        setFocusKey(items[(focusIndex + 1) % items.length]!.key),
       'select:previous': () =>
-        setFocusIndex(i => (i - 1 + ITEM_COUNT) % ITEM_COUNT),
-      'select:accept': () => {
-        if (focusIndex === 0) {
-          handleDisconnect()
-        } else if (focusIndex === 1) {
-          handleShowQR()
-        } else {
-          handleContinue()
-        }
-      },
+        setFocusKey(
+          items[(focusIndex - 1 + items.length) % items.length]!.key,
+        ),
+      'select:accept': () => items[focusIndex]!.run(),
     },
     { context: 'Select' },
   )
 
-  const qrLines = qrText ? qrText.split('\n').filter(l => l.length > 0) : []
+  const qrLines =
+    live && qrText ? qrText.split('\n').filter(l => l.length > 0) : []
+  const { label: statusLabel, color: statusColor } = getBridgeStatus({
+    error,
+    connected,
+    sessionActive,
+    reconnecting,
+  })
 
   return (
     <Dialog title="Remote Control" onCancel={handleContinue} hideInputGuide>
       <Box flexDirection="column" gap={1}>
-        <Text>
-          This session is available via Remote Control
-          {displayUrl ? ` at ${displayUrl}` : ''}.
-        </Text>
+        {live ? (
+          <Text>
+            This session is available via Remote Control
+            {displayUrl ? ` at ${displayUrl}` : ''}.
+          </Text>
+        ) : (
+          <Box flexDirection="column">
+            <Text color={statusColor}>
+              {notConnected
+                ? `${BRIDGE_FAILED_INDICATOR} Remote Control isn't connected.`
+                : statusLabel}
+            </Text>
+            {error && (
+              <Text color="error">
+                {error === BRIDGE_LOGIN_DETAIL
+                  ? 'Remote Control needs a claude.ai sign-in.'
+                  : error}
+              </Text>
+            )}
+          </Box>
+        )}
+        {hint && <Text>{hint}</Text>}
         {showQR && qrLines.length > 0 && (
           <Box flexDirection="column">
             {qrLines.map((line, i) => (
@@ -222,21 +286,19 @@ function BridgeDisconnectDialog({ onDone }: Props): React.ReactNode {
           </Box>
         )}
         <Box flexDirection="column">
-          <ListItem isFocused={focusIndex === 0}>
-            <Text>Disconnect this session</Text>
-          </ListItem>
-          <ListItem isFocused={focusIndex === 1}>
-            <Text>{showQR ? 'Hide QR code' : 'Show QR code'}</Text>
-          </ListItem>
-          <ListItem isFocused={focusIndex === 2}>
-            <Text>Continue</Text>
-          </ListItem>
+          {items.map((item, i) => (
+            <ListItem key={item.key} isFocused={focusIndex === i}>
+              <Text>{item.label}</Text>
+            </ListItem>
+          ))}
         </Box>
         <Text dimColor>Enter to select · Esc to continue</Text>
       </Box>
     </Dialog>
   )
 }
+
+type DialogItemKey = 'disconnect' | 'qr' | 'continue'
 
 /**
  * Check bridge prerequisites. Returns an error message if a precondition
@@ -245,6 +307,9 @@ function BridgeDisconnectDialog({ onDone }: Props): React.ReactNode {
  * or the flag just launched) gets an accurate result on the first try.
  */
 async function checkBridgePrerequisites(): Promise<string | null> {
+  const codeModeRefusal = codeModeRemoteControlRefusal()
+  if (codeModeRefusal) return codeModeRefusal
+
   // Check organization policy — remote control may be disabled
   const { waitForPolicyLimitsToLoad, isPolicyAllowed } = await import(
     '../../services/policyLimits/index.js'

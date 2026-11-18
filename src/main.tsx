@@ -4606,6 +4606,7 @@ async function run(): Promise<CommanderCommand> {
         replBridgeEnvironmentId: undefined,
         replBridgeSessionId: undefined,
         replBridgeError: undefined,
+        replBridgeErrorKind: undefined,
         replBridgeInitialName: remoteControlName,
         showRemoteCallout: false,
         notifications: {
