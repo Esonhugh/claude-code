@@ -9404,16 +9404,17 @@ else:
                 'M-p (default chat:modelPicker keybinding)\n'
             )
             self.tmux('send-keys', '-t', target, 'M-p', check=True)
-            picker_visible = self.wait_until(
-                lambda: all(
-                    marker in strip_ansi(self.capture(target, picker_path))
-                    for marker in ('Select model', 'GPT Release Discovered')
-                ),
-                30,
-                0.25,
-            )
+
+            # The picker lists Default first; pick the discovered model by its row number.
+            def discovered_row():
+                text = strip_ansi(self.capture(target, picker_path))
+                match = re.search(r'(\d+)\.\s+GPT Release Discovered', text)
+                return match.group(1) if 'Select model' in text and match else None
+
+            picker_visible = self.wait_until(discovered_row, 30, 0.25)
             if picker_visible:
-                self.tmux('send-keys', '-t', target, '1', check=True)
+                result['picker_row'] = row = discovered_row()
+                self.tmux('send-keys', '-t', target, row, check=True)
                 selected = self.wait_until(
                     lambda: (
                         'Select model' not in strip_ansi(

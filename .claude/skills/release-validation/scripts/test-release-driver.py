@@ -3865,10 +3865,15 @@ def assert_driver_behavior(module, baseline_module):
                 'authorization': {'present': True, 'matches_dummy': True},
             }]
             gate.mock_servers = {run_dir.name: SimpleNamespace(snapshot=lambda: requests)}
-            gate.tmux = lambda *args, **kwargs: None
+            keys = []
+            gate.tmux = lambda *args, **kwargs: keys.append(args[-1]) if args[0] == 'send-keys' else None
             def capture_model(_target, path, **_kwargs):
                 text = {
-                    '03-model-picker-pane.txt': 'Select model\nGPT Release Discovered',
+                    # The picker lists Default first, as on the real binary.
+                    '03-model-picker-pane.txt': (
+                        'Select model\n❯ 1. Default (gpt-5.6-sol) ✔  Current model\n'
+                        '  2. GPT Release Discovered   Release validation model'
+                    ),
                     '04-model-selected-pane.txt': 'gpt-release-discovered',
                     '05-model-current-pane.txt': 'Current model: gpt-release-discovered',
                     '06-explicit-model-pane.txt': 'RELEASE_EXPLICIT_MODEL_OK',
@@ -3911,6 +3916,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.model_discovery_picker()
             assert recorded[0]['validation_verdict'] == ('passed' if faulty is None else 'failed'), faulty
             if faulty is None:
+                assert keys[:2] == ['M-p', '2'], keys
                 assert {item['assertion_id'] for item in recorded[0]['assertions']} >= {
                     'openai-default-model-alias', 'openai-explicit-model-preserved',
                 }
