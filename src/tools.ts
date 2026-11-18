@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
+import { AdvisorTool } from './tools/AdvisorTool/AdvisorTool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
@@ -14,6 +15,7 @@ import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
+import { isLocalAdvisorEnabled } from './utils/advisor.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const SuggestBackgroundPRTool =
@@ -269,6 +271,8 @@ export function getAllBaseTools(
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),
+    // Opt-in (CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL): absent otherwise.
+    ...(isLocalAdvisorEnabled() ? [AdvisorTool] : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
     ...(getREPLTool() ? [getREPLTool()!] : []),
     ...(getPollTool() ? [getPollTool()!] : []),

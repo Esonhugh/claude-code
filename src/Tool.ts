@@ -419,6 +419,12 @@ export type ToolUseContext = {
   requestAdvisor?: AdvisorRequest
   /** Set by runForkedAgent: every request of the fork carries exactly this advisor. */
   advisorPin?: AdvisorRequest
+  /**
+   * The assistant messages of the response being streamed, one per content
+   * block. `messages` ends before them; the local advisor tool reads them so
+   * the advisor sees what the model wrote before calling it.
+   */
+  getResponseMessages?: () => readonly AssistantMessage[]
 }
 
 // Re-export ToolProgressData from centralized location

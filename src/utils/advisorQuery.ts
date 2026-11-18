@@ -13,6 +13,7 @@ import {
   isAdvisorPairingAllowedByRank,
   isAdvisorPairingAllowedStrict,
   isAdvisorToolAllowed,
+  isLocalAdvisorEnabled,
   isSameAdvisorModel,
   isValidAdvisorModel,
   modelSupportsAdvisor,
@@ -379,6 +380,9 @@ export function resolveAdvisorForQuery(
     toolChangesRide?: boolean | ((model: string) => boolean)
   },
 ): AdvisorQueryResolution {
+  // The local advisor is an ordinary tool: no server entry to declare or
+  // announce, and nothing for the conversation to pin.
+  if (isLocalAdvisorEnabled()) return { ...NO_ENTRY, announcement: undefined }
   try {
     const rides =
       typeof toolChangesRide === 'function'
@@ -469,6 +473,8 @@ export function describeHeldAdvisor(
   newAdvisor: string | undefined,
   mainModel: string,
 ): string {
+  // The local advisor tool reads the setting on every call.
+  if (isLocalAdvisorEnabled()) return ''
   const carrier = getMainAdvisorCarrier()
   const held = carrier.held ?? heldFromLast(getLastAdvisor(messages))
   if (held === undefined) return ''

@@ -168,6 +168,7 @@ import {
   resolveAdvisorForQuery,
   toAdvisorRequest,
 } from './utils/advisorQuery.js'
+import { omitUnsetLocalAdvisorTool } from './utils/advisor.js'
 import { toolChangesRide } from './utils/advisorToolChanges.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -1143,11 +1144,13 @@ async function* queryLoop(
       projectedMessagesForQuery = await projectAttachments(messagesForQuery)
     }
 
+    const assistantMessages: AssistantMessage[] = []
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
       requestAdvisor: advisorRequest,
+      getResponseMessages: () => assistantMessages,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1162,7 +1165,6 @@ async function* queryLoop(
       })
     }
 
-    const assistantMessages: AssistantMessage[] = []
     const toolResults: (UserMessage | AttachmentMessage)[] = []
     // @see https://docs.claude.com/en/docs/build-with-claude/tool-use
     // Note: stop_reason === 'tool_use' is unreliable -- it's not always set correctly.
@@ -1300,7 +1302,10 @@ async function* queryLoop(
             ),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
-            tools: toolUseContext.options.tools,
+            tools: omitUnsetLocalAdvisorTool(
+              toolUseContext.options.tools,
+              advisorAppState.advisorModel,
+            ),
             signal: toolUseContext.abortController.signal,
             options: {
               async getToolPermissionContext() {

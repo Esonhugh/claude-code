@@ -26,6 +26,11 @@ const {
   resetAdvisorRefusalsForTesting,
   resolveAdvisorModel,
   ADVISOR_TOOL_INSTRUCTIONS,
+  ADVISOR_TOOL_NAME,
+  LOCAL_ADVISOR_TOOL_PROMPT,
+  getLocalAdvisorModel,
+  isLocalAdvisorEnabled,
+  omitUnsetLocalAdvisorTool,
 } = await import('./advisor.js')
 
 const ENV_KEYS = [
@@ -35,6 +40,7 @@ const ENV_KEYS = [
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_DISABLE_ADVISOR_TOOL',
   'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL',
+  'CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   'CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY',
   'ANTHROPIC_BASE_URL',
@@ -254,5 +260,66 @@ describe('advisor blocks and attachments', () => {
     expect(hasFullAdvisorAnnouncement(messages)).toBe(false)
     messages.push(attach({ type: 'advisor_tool', available: true, model: 'a' }))
     expect(hasFullAdvisorAnnouncement(messages)).toBe(true)
+  })
+})
+
+describe('local advisor', () => {
+  const tools = [{ name: 'Bash' }, { name: ADVISOR_TOOL_NAME }]
+
+  test('is off by default and leaves the server-side advisor as it was', () => {
+    expect(isLocalAdvisorEnabled()).toBe(false)
+    expect(isAdvisorToolAllowed()).toBe(true)
+    expect(getLocalAdvisorModel('opus')).toBeUndefined()
+    expect(isValidAdvisorModel('Opus 5.5')).toBe(false)
+    expect(omitUnsetLocalAdvisorTool(tools, undefined)).toBe(tools)
+  })
+
+  test('the switch replaces the server-side advisor on any provider', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    expect(isLocalAdvisorEnabled()).toBe(true)
+    expect(isAdvisorToolAllowed()).toBe(false)
+    expect(isAdvisorEnabled()).toBe(true)
+    expect(resolveAdvisorModel('opus', 'claude-sonnet-5')).toBeUndefined()
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(isAdvisorEnabled()).toBe(true)
+    process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+    expect(isAdvisorEnabled()).toBe(true)
+  })
+
+  test('CLAUDE_CODE_DISABLE_ADVISOR_TOOL wins over the switch', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL = '1'
+    expect(isLocalAdvisorEnabled()).toBe(false)
+    expect(isAdvisorEnabled()).toBe(false)
+    expect(getLocalAdvisorModel('opus')).toBeUndefined()
+  })
+
+  test('any allowed model can advise any main model', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    expect(modelSupportsAdvisor('Grok-4.7')).toBe(true)
+    expect(isValidAdvisorModel('Opus 5.5')).toBe(true)
+    expect(isAdvisorPairingAllowed('claude-fable-5-1', 'claude-haiku-4-5')).toBe(true)
+    expect(getLocalAdvisorModel('Opus 5.5')).toBe('Opus 5.5')
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'gateway-opus'
+    expect(getLocalAdvisorModel('opus')).toBe('gateway-opus')
+    expect(getLocalAdvisorModel(undefined)).toBeUndefined()
+    allowedModels = model => model !== 'Opus 5.5'
+    expect(getLocalAdvisorModel('Opus 5.5')).toBeUndefined()
+  })
+
+  test('a request offers the tool only while an advisor model is set', () => {
+    process.env.CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL = '1'
+    expect(omitUnsetLocalAdvisorTool(tools, 'Opus 5.5')).toBe(tools)
+    expect(omitUnsetLocalAdvisorTool(tools, undefined)).toEqual([{ name: 'Bash' }])
+  })
+
+  test('the tool prompt keeps the official guidance without the stronger-model claim', () => {
+    const guidance = ADVISOR_TOOL_INSTRUCTIONS.slice(
+      ADVISOR_TOOL_INSTRUCTIONS.indexOf('Call advisor BEFORE substantive work'),
+    )
+    expect(guidance.length).toBeGreaterThan(1000)
+    expect(LOCAL_ADVISOR_TOOL_PROMPT.endsWith(guidance)).toBe(true)
+    expect(LOCAL_ADVISOR_TOOL_PROMPT).toContain('takes NO parameters')
+    expect(LOCAL_ADVISOR_TOOL_PROMPT).not.toContain('stronger')
   })
 })
