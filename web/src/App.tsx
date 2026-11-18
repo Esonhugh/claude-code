@@ -973,6 +973,12 @@ export function App() {
     return run
   }
   const resumeOnce = async (id: string): Promise<boolean> => {
+    // A session reopened a moment ago (a reload, a click on its row) shows its box read-only while
+    // this page still reads its transcript and attaches. A resume started then (the prewarm on
+    // focus, a message sent at once) waits for that open: asking for the session itself, it would
+    // find this page's own socket and take it for another tab (#1383).
+    await opening.current.get(`s:${id}`)?.catch(() => {})
+    if (sockets.current.has(id)) return true
     const current = stateRef.current.chats[id]
     if (!current || current.mode === 'live') return true
     // A project or session opened a moment ago shows its box while it still attaches: a message
