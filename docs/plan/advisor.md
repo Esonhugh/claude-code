@@ -3,8 +3,8 @@
 ## 1. 文档状态
 
 - **类型**：实施计划
-- **状态**：已实现（含 5.13 的对话中途开关），未对真实账号验证
-- **日期**：2026-11-17
+- **状态**：已实现（含 5.13 的对话中途开关），未对真实账号验证。2026-11-18 改为显式开关、去掉等级表，见第 10 节；第 3 至 8 节里与第 10 节冲突的内容以第 10 节为准
+- **日期**：2026-11-17，2026-11-18 修订
 - **对照版本**：官方 2.1.325（`~/.local/share/claude/versions/2.1.325`），参考 2.1.322。官方实现的抽取和偏移见 `/tmp/advisor-design/official.md`，核心常量和提示原文见 `/tmp/advisor-design/official/m0502-advisor-core.js`
 - **其他依据**：用户文档 https://code.claude.com/docs/zh-CN/advisor ；fork 现状调研 `/tmp/advisor-design/fork-current.md`；25b0a9 的调研 `/tmp/ccs-coord/advisor-research-25b0a9.md`（下文记为 R25，以文件开头的更正记录为准）
 - **证据边界**：官方行为来自静态阅读 minify 后的模块，没有用真实账号运行。fork 调用点按 dev f72df3f3 核对
@@ -13,8 +13,8 @@
 
 本地构建默认提供和官方 2.1.325 一致的 advisor：主模型在关键节点调用服务端 `advisor` 工具，由更强的模型审查整段对话后给出建议。具体要求：
 
-- 不读远程开关，默认开启。`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 完全关闭，`CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 跳过 rank 检查。
-- provider、rank 配对、请求形状、拒绝后重发、`/advisor`、`--advisor`、启动提示、transcript 显示、计费、subagent、fork、压缩和恢复，都按官方的行为和原文实现。
+- 不读远程开关。只有设置了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` 才打开，`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 优先关闭（第 10 节；最初的方案是默认开启）。
+- 不按 rank 限制搭配（第 10 节）。provider、请求形状、拒绝后重发、`/advisor`、`--advisor`、启动提示、transcript 显示、计费、subagent、fork、压缩和恢复，都按官方的行为和原文实现。
 - 有意的偏差写在第 7 节，每条附原因。
 
 ## 3. 官方行为摘要
@@ -210,33 +210,45 @@ fork 的实现：
 | extractMemories 跳过 | MCP 账户记忆路径在 advisor 撤不下时跳过 | 不适用 | fork 的 extractMemories 没有 MCP 模式 |
 | 结果无法处理时剥块重发 | 剥掉 advisor 块重发并记录；必要时连之后的 thinking 一起剥；partial compact 和 rewind 会重新追加 `advisor_stripped`；compact 带 `advisorStripPlan` 重放 | 剥块、日志、事件、`advisor_stripped` 和后续按它剥块照官方；不剥 thinking（`thinking_also_stripped` 恒为 false）；partial compact、rewind 不重新追加；auto-compact 的摘要请求读同一批消息，按 attachment 剥块 | fork 没有 `thinking_stripped` 基础设施，也没有 partial compact |
 | 按对话重置的入口 | advisorHeld 和 sticky betas 在同一个按对话对象里 | 挂在 `clearBetaHeaderLatches()` 上，worktree 切换、setup、resume 和 subagent 压缩也会触发 | 见 5.4；held 从 attachment 恢复，影响只限对话级拒绝记录 |
-| `advisor_incompatible` | apiError 类型 `advisor_incompatible` | 文案照官方，错误类型用 `invalid_request` | fork 的 SDK 错误类型里没有这一项 |
+| `advisor_incompatible` | 不重发，显示 `advisor_incompatible` 报错 | 当作对话级拒绝，去掉服务端条目重发，由本地 advisor 回答（第 10 节） | 搭配由用户决定，不在客户端限制 |
 | CCR 受限会话、HIPAA | 关闭 advisor | 不判断 | fork 没有这两个状态 |
 | 只读客户端 | `/advisor` 拒绝修改 | 不判断 | fork 没有对应的 view-only 连接 |
 | Fable、Mythos 的 rank | `ra()` 只在组织能用 Fable（`j0e()`）、启用了 Mythos（`V2o()`）时才给这两个系列 advisor rank；否则它们不能当顾问，`/advisor` 也不列出 | 总是给 rank（`src/utils/advisor.ts:161-180`、`:209`），`/advisor` 总是列出 `fable` | fork 没有组织级的模型可用性状态。组织用不了时服务端怎么回应没有验证过 |
-| 没配 advisor 时的 beta | firstParty 的 advisor 默认关，不配就不带 advisor beta；`nE`、`PS` 由 `tengu_foamy_spring` 和模型目录决定，与 advisor 无关 | advisor 默认开，Claude 模式下没配 advisor 的请求也带 `advisor-tool-2026-03-01`；主模型在 `TOOL_CHANGE_MODELS` 里，或模型名不在本地模型表里时（`modelSupportsToolChanges` 对未知模型名返回 true，`src/utils/advisorToolChanges.ts:66-82`），主对话和子代理的请求还带 `nE`、`PS`。自定义 `ANTHROPIC_BASE_URL` 也一样 | 按用户决定默认开、网关拒绝不特殊处理。tmux 加假 API 实测：网关按 Anthropic 的措辞拒绝时，去掉后重发并按 host 记住（第一轮多发两次请求）；用其他措辞拒绝（如 `unsupported beta flag`）时每一轮都是 `API Error: 400`，要设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`。官方 `F_e` 对目录外模型的处理只见于该文件的注释，没有单独核对 |
+| 没配 advisor 时的 beta | firstParty 的 advisor 默认关，不配就不带 advisor beta；`nE`、`PS` 由 `tengu_foamy_spring` 和模型目录决定，与 advisor 无关 | 不设开关时都不带（第 10 节）。设了开关时，Claude 模式下没配 advisor 的请求也带 `advisor-tool-2026-03-01`；主模型在 `TOOL_CHANGE_MODELS` 里，或模型名不在本地模型表里时（`modelSupportsToolChanges` 对未知模型名返回 true，`src/utils/advisorToolChanges.ts:66-82`），主对话和子代理的请求还带 `nE`、`PS`。自定义 `ANTHROPIC_BASE_URL` 也一样 | 按用户决定默认开、网关拒绝不特殊处理。tmux 加假 API 实测：网关按 Anthropic 的措辞拒绝时，去掉后重发并按 host 记住（第一轮多发两次请求）；用其他措辞拒绝（如 `unsupported beta flag`）时每一轮都是 `API Error: 400`，要设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`。官方 `F_e` 对目录外模型的处理只见于该文件的注释，没有单独核对 |
 
 ## 8. 风险和未决项
 
-- OpenAI 模式不挂服务端 advisor，请求与改动前一致。客户端执行的做法见第 9 节的本地 advisor，默认关闭。
+- OpenAI 模式不挂服务端 advisor。设了开关时由第 9 节的本地 advisor 回答。
 - 5.13 的 system turn 放在 user 之后、text 块不包 system-reminder，这两点和 cache breakpoint 的位置只按官方静态阅读实现，服务端接不接受只能用真实账号验证；假 API 只检查形状。被拒时有回退。
 
-- 默认开启后，firstParty 上没配 advisor 的请求也带 `advisor-tool-2026-03-01`，与官方一致。自定义网关不认识这个 beta 时，第一次 400 会走官方的“beta 被拒，按 host 记住并重发一次”路径；用户也可以设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 关闭。
+- 设了开关时，firstParty 上没配 advisor 的请求也带 `advisor-tool-2026-03-01`。自定义网关不认识这个 beta 时，第一次 400 会走官方的“beta 被拒，按 host 记住并重发一次”路径；用户也可以去掉开关或设 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`。
 - 说明文字从 system prompt 移到 attachment 后，已有会话恢复时历史里没有 attachment，第一轮会补发完整版，多一次 meta 消息。
 - 官方 `ra` 按目录取 rank，目录外的模型没有 rank。fork 按 id 匹配，限定了 key 前后的字符（5.2），自定义 id 里含完整官方名字（如 `my-claude-opus-5`）时仍会被当成该模型。
 - 官方行为来自静态阅读，没有真实账号对照；假 API 验收只覆盖渲染和请求形状。
 
 ## 9. 本地 advisor（官方没有）
 
-背景：[#1388](https://github.com/Esonhugh/claude-code/issues/1388)。有的网关不运行服务端 advisor 工具，带 `advisor_20260301` 的请求被拒绝、被丢掉，或者模型发回一个普通的 `tool_use(name=advisor)`，没有人执行。本地 advisor 把 `advisor` 做成客户端执行的普通工具，默认关闭。
+背景：[#1388](https://github.com/Esonhugh/claude-code/issues/1388)。有的网关不运行服务端 advisor 工具，带 `advisor_20260301` 的请求被拒绝、被丢掉，或者模型发回一个普通的 `tool_use(name=advisor)`，没有人执行。本地 advisor 把 `advisor` 做成客户端执行的普通工具。设了开关（第 10 节）后服务端 advisor 优先，它用不了的请求由本地 advisor 回答。
 
-- **开关**（`src/utils/advisor.ts`）：`isLocalAdvisorEnabled()` 读 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL`，`CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 优先。不识别网关，不自动开启。
-- **与服务端 advisor 互斥**：本地模式下 `isAdvisorToolAllowed()` 为假，所以请求不带服务端工具和三个 beta 标识；`resolveAdvisorForQuery` 直接返回空，不声明、不公告、不固定；`describeHeldAdvisor` 返回空串。`isAdvisorEnabled()` 仍为真，`/advisor`、`--advisor` 和启动提示照常。
-- **不做等级检查**：本地模式下 `isAdvisorRankCheckBypassed()` 为真，`availableModels` 仍然生效。`getLocalAdvisorModel(setting)` 给出实际请求的模型。
-- **工具**（`src/tools/AdvisorTool/`）：名字 `advisor`，无参数，只读，可并发。只在开关打开时注册（`src/tools.ts`）。每次请求由 `omitUnsetLocalAdvisorTool`（`src/query.ts`）决定带不带：没选顾问就不带。工具说明用官方的使用指引（`ADVISOR_GUIDANCE`，与服务端说明共用），开头一段另写，不说顾问更强。
-- **顾问收到的内容**（`transcript.ts`）：一条 user 消息里的文字记录。来源是 `normalizeMessagesForAPI(prependUserContext(context.messages, userContext))` 加上当前这次回复已经流出的 assistant 消息。后者通过 `ToolUseContext.getResponseMessages` 取得，这是为此新增的字段，因为 `context.messages` 不含正在进行的回复。不发真实的 tool_use 和 thinking 块：别的模型的 thinking 签名和没有工具定义的 tool_use 在网关上容易被拒。正在被回答的那次 advisor 调用不写进记录。超过 `(顾问上下文窗口 − 40,000) × 3` 个字符时去掉中间。
-- **请求**（`AdvisorTool.ts`）：`queryModelWithoutStreaming`，无工具，单独的系统提示词，沿用会话的 thinking 设置，`querySource: 'advisor'`，不开 prompt cache。用量由通用管线记在顾问模型名下。API 报错或回复为空时抛出带模型名的错误，成为工具错误。
+- **服务端优先**：第 5 节的状态机照常运行。`isAdvisorToolAllowed()`（开关打开、没有进程或 host 级拒绝、firstParty、没设 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`）为真时，`resolveAdvisorModel` 给出服务端条目的模型，`canCarry` 和 `claude.ts` 挂工具条目时只再看 `availableModels`。
+- **本地退避**：`toAdvisorRequest` 在请求没有声明服务端条目（`advisorModel` 为空）时，把 `getLocalAdvisorModel(setting)` 记到 `AdvisorRequest.localAdvisorModel`。没有服务端条目的情况包括：接入方式不支持、设了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`、服务端拒绝过（`held.refused` 或进程、host 级的拒绝记录）、对话开始时没有顾问而主模型不支持中途开关。fork 沿用父请求的 `advisorPin`，其中也带这个字段。请求声明了服务端条目、模型却发回普通的 `tool_use(name=advisor)` 时，工具仍在 `toolUseContext.options.tools` 里，照常由本地执行。
+- **拒绝后重发**（`claude.ts` 的 `queryModelAdvisorRetry`）：Anthropic 措辞的拒绝按 `classifyAdvisorRefusal` 分范围，包括 `cannot be used as an advisor when the request model is`（对话级）。别的措辞的 400 或 422，只要请求带着服务端条目、`isUnattributedRequestError` 为真（不是计费错误、不是 `prompt is too long`），抛 `AdvisorUnattributedError`，去掉顾问重发一次；重发得到回复才调用 `onAdvisorRefused`，重发也失败时不记录，报错照常显示。这个判断排在 tool search 的判断之前，否则后者会先去掉延迟加载的工具重发，并在重发成功后把 tool search 关掉。两种重发都用 `Options.advisorRetryTools` 作为工具列表：`query.ts` 在请求带服务端条目、不是 fork、`getLocalAdvisorModel(setting)` 有值时传入完整的工具列表（含本地 `advisor`），所以重发的那次请求就能调用本地 advisor。
+- **公告**（`src/query.ts`）：由本地 advisor 回答的请求不发“advisor 不再可用”的普通公告，因为对话里仍然有 `advisor` 工具；以 tool_removal 形式发送的公告照发。`describeHeldAdvisor` 在之后的请求由本地 advisor 回答时返回空串，对话仍带着服务端顾问时照旧说明。
+- **工具**（`src/tools/AdvisorTool/`）：名字 `advisor`，无参数，只读，可并发。只在开关打开时注册（`src/tools.ts`）。每次请求由 `omitLocalAdvisorTool`（`src/query.ts`）按 `localAdvisorModel` 决定带不带：请求声明了服务端条目或没选顾问时不带。工具说明用官方的使用指引（`ADVISOR_GUIDANCE`，与服务端说明共用），开头一段另写，不说顾问更强。
+- **顾问收到的内容**（`transcript.ts`）：一条 user 消息里的文字记录。来源是 `normalizeMessagesForAPI(prependUserContext(context.messages, userContext))` 加上当前这次回复已经流出的 assistant 消息。后者通过 `ToolUseContext.getResponseMessages` 取得，因为 `context.messages` 不含正在进行的回复。不发真实的 tool_use 和 thinking 块：别的模型的 thinking 签名和没有工具定义的 tool_use 在网关上容易被拒。正在被回答的那次 advisor 调用不写进记录。超过 `(顾问上下文窗口 − 40,000) × 3` 个字符时去掉中间。
+- **请求**（`AdvisorTool.ts`）：`queryModelWithoutStreaming`，无工具，单独的系统提示词，沿用会话的 thinking 设置，`querySource: 'advisor'`，不开 prompt cache。用量由通用管线记在顾问模型名下。请求不带 `advisor-tool-2026-03-01`。重试上限是 2 次和 `getDefaultMaxRetries()` 中较小的一个（`Options.maxRetries`）；会话默认的 10 次在网关没有这个模型时要等将近三分钟。API 报错或回复为空时抛出带模型名的错误，成为工具错误。
 - **fork**：`runForkedAgent` 的 fork（上下文里有 `advisorPin`）调用时直接报不可用，不发请求。工具仍留在 fork 的工具列表里，与父对话的缓存前缀一致。
-- **`/advisor`**（`src/commands/advisor/`）：`toAdvisorChoice` 在本地模式下保留非别名模型名的大小写，别名、`off`、`unset` 仍不分大小写。开关关闭时与原来一样全部转小写。
-- **未做**：`'advisor'` 不在 529 重试的前台来源里；不给顾问发主模型的系统提示词；后台子代理的工具白名单里没有 `advisor`。
+- **未做**：网关用自己的措辞拒绝、且请求没有带服务端条目（只带 beta 标识）时不重发；`'advisor'` 不在 529 重试的前台来源里；不给顾问发主模型的系统提示词；后台子代理的工具白名单里没有 `advisor`。
 - **验证**：单测见 `src/utils/advisor.test.ts`、`src/utils/advisorQuery.test.ts`、`src/commands/advisor/setAdvisor.test.ts`、`src/tools/AdvisorTool/transcript.test.ts`、`src/query.localAdvisor.test.ts`、`src/services/api/claude-advisor-contract.test.ts`。真实网关上的运行见 `docs/features/advisor.md` 的说明一节。
+
+## 10. 显式开关和去掉等级表（2026-11-18）
+
+按用户决定修订，与前面各节冲突时以这里为准。
+
+- **开关**：`isAdvisorEnabled()` 只在设了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`、没设 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` 时为真。不设时服务端条目、advisor beta、`nE`/`PS`、本地 `advisor` 工具和 `/advisor` 都没有。`CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL` 去掉，设了也不起作用。`--advisor` 在开关关闭时向 stderr 打印警告并继续（后台会话写调试日志）。
+- **没有等级表**：删掉 `ADVISOR_RANKS` 和所有配对规则。`isValidAdvisorModel` 只看 `availableModels`，任何允许的模型都可以给任何主模型或子代理当顾问。`--advisor` 只检查 `availableModels`；启动提示只有一条，不再按配对结果区分。
+- **`/advisor` 的候选**：`getAdvisorModelOptions()` 取 `getModelOptions()`（`/model` 用的那份，已按 `availableModels` 过滤），去掉 Default 一行。输入的名字不区分大小写地匹配候选和别名，匹配不上时按输入保存；交互界面里不是别名、也不在候选里的名字先用 `validateModel` 确认。
+- **去掉 standby**：对话开始时没有顾问时不再预先声明延迟加载的条目（官方 m0913 `x()`）。之后选上顾问时，支持中途开关的主模型用 `tool_addition` 加入服务端条目（工具列表变一次，prompt cache 重建一次），其他主模型由本地 advisor 回答。
+- **搭配不兼容**：`cannot be used as an advisor when the request model is` 不再单独显示报错（`errors.ts` 里的提示删除），按对话级拒绝去掉服务端条目重发。
+- **认不出的 400/422**：不再要求单独的本地开关，带服务端条目的请求都适用。
+- **`modelSupportsToolChanges`**：不再依赖等级表的 key，改为不支持的模型列表 `NO_TOOL_CHANGE_MODELS`（haiku-4-5、sonnet-4-6、opus-4-6、sonnet-5、opus-4-7），已知 id 的结果与之前相同，未知模型名仍视为支持。
