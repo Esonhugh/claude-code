@@ -332,6 +332,12 @@ describe('REPL async lane limits', () => {
 
   test('a stopped dispatched script passes the abort reason to its inner calls', async () => {
     const reasons: unknown[] = []
+    let entered = () => {}
+    /** Resolves once a script has reached its Waiter call. */
+    const waiterEntered = () =>
+      new Promise<void>(resolve => {
+        entered = resolve
+      })
     const waiter = buildTool({
       ...(fakeRead as object),
       name: 'Waiter',
@@ -342,37 +348,48 @@ describe('REPL async lane limits', () => {
             reasons.push(inner.abortController.signal.reason)
             resolve({ data: 'stopped' })
           })
+          entered()
         }),
     } as unknown as Parameters<typeof buildTool>[0]) as Tool
     const between = contextFor()
     ;(between.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, waiter]
+    const first = waiterEntered()
     expect((await run('await Waiter({})', between)).text).toBe('(dispatched #1)')
-    await calling()
+    await first
     // Esc between turns (official `kge.abort` stops the eval with "user-cancel").
     abortPendingReplEvals(findReplSession(between.agentId!)!, 'user-cancel')
     await poll(contextAfterAbort(between))
 
     const interrupted = contextFor()
     ;(interrupted.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, waiter]
+    const second = waiterEntered()
     expect((await run('await Waiter({})', interrupted)).text).toBe('(dispatched #1)')
-    await calling()
+    await second
     interrupted.abortController.abort('background')
     await poll(contextAfterAbort(interrupted))
     expect(reasons).toEqual(['user-cancel', 'background'])
   })
 
   test('a dispatched script the user stops lists the tool calls it started', async () => {
+    let entered = () => {}
+    /** Resolves once the script has reached its Waiter call. */
+    const waiterEntered = new Promise<void>(resolve => {
+      entered = resolve
+    })
     const waiter = buildTool({
       ...(fakeRead as object),
       name: 'Waiter',
       inputSchema: z.object({}),
       call: (_input: unknown, inner: ToolUseContext) =>
-        new Promise(resolve => inner.abortController.signal.addEventListener('abort', () => resolve({ data: 'stopped' }))),
+        new Promise(resolve => {
+          inner.abortController.signal.addEventListener('abort', () => resolve({ data: 'stopped' }))
+          entered()
+        }),
     } as unknown as Parameters<typeof buildTool>[0]) as Tool
     const context = contextFor()
     ;(context.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, fakeRead, waiter]
     expect((await run(`await Read({file_path: 'a'}); await Waiter({})`, context)).text).toBe('(dispatched #1)')
-    await calling()
+    await waiterEntered
     abortPendingReplEvals(findReplSession(context.agentId!)!, 'user-cancel')
     const { text } = await poll(contextAfterAbort(context))
     expect(text).toContain(
