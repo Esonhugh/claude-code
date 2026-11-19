@@ -377,7 +377,10 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     | 'high'
     | 'xhigh'
     | 'max'
+    | 'ultra'
 } | undefined {
+  // Sent as configured; a server that rejects a level returns the API error
+  // and the user picks another one with /effort.
   if (
     effort === 'none' ||
     effort === 'minimal' ||
@@ -385,12 +388,12 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     effort === 'medium' ||
     effort === 'high' ||
     effort === 'xhigh' ||
-    effort === 'max'
+    effort === 'max' ||
+    effort === 'ultra'
   ) {
     return { effort }
   }
-  // The Responses API rejects 'ultra'; Codex sends xhigh for it and delegates client-side.
-  if (effort === 'ultra' || effort === 'ultracode' || typeof effort === 'number') {
+  if (effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }
   }
   return undefined
