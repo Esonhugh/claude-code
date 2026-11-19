@@ -83,11 +83,11 @@
 - OpenAI `ultra`（#1395）：`openai-compat.test.ts` 检查 `ultra` 原样发送、`ultracode` 发 `xhigh`；binary 门禁 `effort-openai-responses-wire` 检查请求里的值。服务端拒绝 `ultra` 后显示 API 错误这一条没有专门测试，走的是通用的 400 错误路径。
 - 拒绝规则（#1395、#1396）：`bashPermissionHardening.test.ts` 检查指向项目外的符号链接在 `Read(./.env-link)` 和 `Read(**/.env-link)` 下，`cat`、`tac`、`cat <` 在默认和 `bypassPermissions` 模式下都被拒绝；新增 `PowerShellTool/pathValidation.test.ts`，对同样的符号链接检查 `Get-Content`、`gc`、`cat` 和带反引号的路径。只有单测：两个 `pathValidation.ts` 不触发 binary target，没有 tmux 交互验证；PowerShell 测试用手写的解析结果直接调用 `checkPathConstraints`，没有经过真实的 pwsh 解析，也没有在 Windows 上运行过（单测 CI 只在 ubuntu 上跑，而这个工具只在 Windows 上启用）；项目目录本身经过符号链接的情况只有 macOS 的 `tmpdir()` 会测到。Edit 类拒绝规则、glob 的基础目录是符号链接、allow 规则写链接本身时不放行项目外的目标，这几种情况没有专门用例。
 - `versionNumber`（#1395）：`versionNumbers.test.ts` 覆盖多层设置合并、不合法字段和非对象 `versionNumber` 只丢弃该项并提示、二次读取仍提示；`cchFetch.test.ts` 覆盖 Claude 账号、API key、自定义网关、Bedrock、Vertex、Foundry 的 `User-Agent` 和 `X-Stainless-Package-Version`，自定义头优先，OpenAI 模式（ChatGPT、API key、`OPENAI_BASE_URL`）不带 `x-stainless-*`，`cc_version` 不变；`openai-compat.test.ts` 覆盖 ChatGPT 的 Responses、压缩、WebSocket 握手和重试时读到新的 `CodexVersion`，API key 网关和 tunnel 不带 `version`；`policyLimits/userAgent.test.ts`、`SSETransport.userAgent.test.ts` 覆盖辅助请求的 `claude-code/<版本>`。binary 门禁 `client-version-headers` 9 个场景通过；Claude 账号登录和 Anthropic 模型请求只有单测，Bedrock、Vertex、Foundry 和自定义网关只断言了默认值。
-- 本轮发布验收（四路，`dev` `5377b047`）：
-  - 单测：release 范围内改动的测试和改动实现的直接、相邻测试共 590 个文件，5138 项通过；按 CI 的方式逐文件跑全量 1238 个文件，9716 项通过、23 项失败（16 个文件）。这 16 个文件在 `v2.1.297` 快照上失败项和报错相同，其中 `refresh.test.ts` 是 macOS `/var` 符号链接导致，把 `TMPDIR` 换成真实路径后通过。
-  - `make release-check` 各阶段通过。
-  - binary 门禁：driver 按 `v2.1.297..HEAD` 算出 21 个 required target，加 readiness smoke 全部通过（binary sha256 `907448d4…`）。`terminal-interaction`、`terminal-canonical-diff` 的 `full_terminal_coverage` 仍为 `not covered`。
-  - 文档审计发现的不符（本条目的门禁覆盖说明、#1396 的归属、`docs/features/permissions.md`、`openai-provider.md`、`effort.md`）已在发布准备提交里修正。
+- 本轮发布验收（四路）。`5377b047` 上先跑一轮，修正文档后在发布准备分支上重跑；之后只有 CHANGELOG 改动：
+  - 单测（`80d7121f`）：release 范围内改动的测试和改动实现的直接、相邻测试共 590 个文件，5138 项通过、3 项失败，失败都在下面 16 个已有失败的文件里；`code-mode-conformance` 的 `mock-api.test.ts` 要带 `./` 前缀才能被 bun 找到，单独跑 12 项通过。按 CI 的方式逐文件跑全量 1238 个文件，9715 项通过、24 项失败（17 个文件）。其中 16 个文件在 `v2.1.297` 快照上失败项和报错相同，`refresh.test.ts` 是 macOS `/var` 符号链接导致，把 `TMPDIR` 换成真实路径后通过；另一个 `modelNonInteractive.test.ts` 读了本机 `~/.claude/settings.json` 里保存的 effort，空 HOME 下重跑通过。
+  - `make release-check`（`80d7121f`）各阶段通过。
+  - binary 门禁（`fa63d919`）：driver 按 `v2.1.297..HEAD` 算出 21 个 required target，加 readiness smoke 全部通过（binary sha256 `e9fbc69a…`），和 `5377b047` 一轮的 target 相同。`terminal-interaction`、`terminal-canonical-diff` 只有 bounded 验收，`full_terminal_coverage` 仍为 `not covered`。
+  - 文档审计发现的不符（本条目的门禁覆盖说明和提交归属、`docs/features/permissions.md`、`openai-provider.md`、`effort.md`）已在发布准备提交里修正。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
