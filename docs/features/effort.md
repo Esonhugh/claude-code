@@ -124,7 +124,7 @@ Claude 调用 Agent 工具时可以按次指定 `effort`，例如让搜索类子
 
 ## 和官方的区别
 
-- 你通过命令行、settings、环境变量指定的档位**原样发给 API**，不会按模型能力自动改写；`/model` 里可选的档位仍按模型能力显示。
+- 你通过命令行、settings、环境变量指定的档位**原样发给 API**，不会按模型能力自动改写；`/model` 里可选的档位仍按模型能力显示。OpenAI provider 下也是这样：`ultra` 发 `ultra`，服务端不接受时显示 API 错误，用 `/effort` 换一档。
 - 新增 `ultracode` 本地档（发送 `xhigh`）；Agent 工具支持按次 `effort`。
 
 ## 说明
