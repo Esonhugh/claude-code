@@ -21,7 +21,7 @@
 ### 关联提交
 
 - PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口；#1366 上一轮未发布条目、发布验收与门禁 driver 修复；#1367 PTY 证据测试的临时目录；#1368 `query.mods` 测试隔离；#1374 单测 CI 补跑顶层测试文件；#1381 慢 CI 上的时间上限；#1380 子 agent 消息不再显示原始 XML；#1378 Terminal 交互输入授权；#1375 Advisor 顾问模型（实验性）；#1385 自定义主题 watch 测试；#1387 claude web 恢复会话；#1386 Code Mode 测试；#1390 网关模型缓存无法校验；#1391 本地 advisor（实验性）；#1364 Remote Control 失败处理；#1393 Advisor 改为显式开关、失败后退回本地；#1395 客户端版本号可配置，同时带 OpenAI `ultra` 原样发送与 Bash 拒绝规则修复；#1396 PowerShell 拒绝规则修复。
-- 随 PR 合入的其他提交：#1366 的 `c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363），`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；#1395 的 `c6f5ca47` OpenAI 的 `ultra` 原样发送，`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径，`c4ba4756`、`899f2710`、`22283480` 发布门禁；#1396 的 `8587e41f` PowerShell 工具做同样的修复；其余是文档提交。
+- 随 PR 合入的其他提交：#1366 的 `c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363），`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；#1395 的 `886d4161`、`5d3653de`、`38fc1848` 是 `versionNumber` 本身和它的测试，`c6f5ca47` OpenAI 的 `ultra` 原样发送，`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径，`035f0ce6`、`c4ba4756`、`899f2710`、`22283480` 发布门禁；#1396 的 `8587e41f` PowerShell 工具做同样的修复；其余是文档提交。另有直接提交到 master 的 `51d3573d`：release workflow 的 macOS 构建改用 `macos-latest`（`macos-14` 镜像已下线）。
 - 对应 issue：#1357；#1358（#1360、#1361）；#1369（#1374）、#1370、#1376（#1381）、#1372（#1375）、#1373（#1390）、#1377（#1378）、#1379（#1380）、#1382（#1385）、#1383（#1387）、#1384（#1386）、#1388（#1391）、#1389（#1364）、#1392（#1393）、#1394（#1395）。
 
 ### 变更内容
@@ -69,7 +69,7 @@
 - 新增 target `client-version-headers`：默认、全部覆盖、只覆盖 `CodexVersion` 三组设置，分别在 OpenAI API key、Claude 一侧 bootstrap、ChatGPT 登录三种接入方式下对假服务录请求并检查版本号（#1395、`035f0ce6`）。
 - 门禁 target 分为 7 组（terminal、mods、agents、workflow、openai、models、ssh），可以用 `--group` 或 `--only-target` 单独跑。只跑一部分时结果写 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`；`--merge-manifests` 合并 HEAD、binary、baseline、driver 的 sha256 和 required targets 都相同的几次结果，同一 target 以较新的一次为准。
 - 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；产品代码和仓库根 `scripts/` 的修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖、构建配置和构建打包脚本的改动仍作废全部四路。
-- 除上面列出的改动，这几个 target 原有的检查没有放宽。Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Advisor（`src/utils/advisor.ts`）、Remote Control（`src/bridge/`）、虚拟滚动（`useVirtualScroll`）和 Bash、PowerShell 的路径校验（两个 `pathValidation.ts`）的改动不会触发任何 binary target。Codex 式压缩（`codexCompact.ts`）会触发 `openai-remote-compaction`，设置变更检测（`changeDetector.ts`）和 Terminal 工具（`TerminalTool.ts`）会触发 `deferred-tool-discovery`，#1360 的渲染改动会触发 `terminal-interaction` 和 `terminal-canonical-diff`，但这些 target 不检查对应的新行为（压缩只保留用户消息、500 ms 轮询、`inputMode` 授权、`/clear` 后的视口）。
+- 除上面列出的改动，这几个 target 原有的检查没有放宽。Code Mode（`REPLTool`、`PollTool`）、Advisor（`src/utils/advisor.ts`）、Remote Control（`src/bridge/`）、虚拟滚动（`useVirtualScroll`）和 Bash、PowerShell 的路径校验（两个 `pathValidation.ts`）的改动不会触发任何 binary target。Codex 式压缩（`codexCompact.ts`）会触发 `openai-remote-compaction`，设置变更检测（`changeDetector.ts`）和 Terminal 工具（`TerminalTool.ts`）会触发 `deferred-tool-discovery`，#1360 的渲染改动会触发 `terminal-interaction` 和 `terminal-canonical-diff`，但这些 target 不检查对应的新行为（压缩只保留用户消息、500 ms 轮询、`inputMode` 授权、`/clear` 后的视口）。
 
 ### 测试覆盖
 
