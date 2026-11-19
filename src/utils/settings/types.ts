@@ -38,7 +38,7 @@ export const EnvironmentVariablesSchema = lazySchema(() =>
   z.record(z.string(), z.coerce.string()),
 )
 
-const ClientVersionSchema = lazySchema(() =>
+export const ClientVersionSchema = lazySchema(() =>
   z.string().regex(/^[\x21-\x7e]+$/, 'Use a nonempty version without whitespace or HTTP control characters'),
 )
 

@@ -121,7 +121,10 @@ export async function getAnthropicClient({
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(isClaudeAIOAuth ? versions.ClaudeOAuthClientVersion : versions.ClaudeApiClientVersion),
-    'X-Stainless-Package-Version': versions.ClaudeSDKVersion,
+    // Anthropic SDK identity; the OpenAI-compatible client is not that SDK.
+    ...(getAPIProvider() !== 'openai' && {
+      'X-Stainless-Package-Version': versions.ClaudeSDKVersion,
+    }),
     'X-Claude-Code-Session-Id': getSessionId(),
     ...(isClaudeAIOAuth && {
       'X-Stainless-Lang': 'js',

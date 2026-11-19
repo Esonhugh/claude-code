@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { getClientVersions } from '../../utils/settings/settings.js'
 import assert from 'node:assert/strict'
 import axios from 'axios'
 import { getSessionSettingsCache, resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
@@ -96,7 +95,7 @@ try {
     requests[0]!.headers?.['chatgpt-account-id'],
     'account-123',
   )
-  assert.deepEqual(requests[0]!.params, { client_version: getClientVersions().CodexVersion })
+  assert.deepEqual(requests[0]!.params, { client_version: '0.170.0' })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])

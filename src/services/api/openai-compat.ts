@@ -601,7 +601,8 @@ async function connectResponsesWebSocket(
 
 async function fetchResponsesWithRetry(
   url: string,
-  headers: Record<string, string>,
+  // Called per attempt so a retry picks up settings changed in between.
+  getHeaders: () => Record<string, string>,
   body: string,
   maxRetries: number,
   signal: AbortSignal,
@@ -612,7 +613,7 @@ async function fetchResponsesWithRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const createRequestHeaders = () => ({
-        ...headers,
+        ...getHeaders(),
         'x-client-request-id': randomUUID(),
         ...(turnScope?.getTurnState() && {
           'x-codex-turn-state': turnScope.getTurnState()!,
@@ -676,7 +677,7 @@ async function fetchResponsesWithRetry(
 
 async function connectSSE(
   url: string,
-  headers: Record<string, string>,
+  getHeaders: () => Record<string, string>,
   payload: any,
   maxRetries: number,
   controller: AbortController,
@@ -798,7 +799,7 @@ async function connectSSE(
   try {
     const resp = await fetchResponsesWithRetry(
       url,
-      headers,
+      getHeaders,
       body,
       maxRetries,
       controller.signal,
@@ -1198,7 +1199,8 @@ export function createOpenAICompatClient(options: {
   const responsesURL = `${baseURL}/responses`
   const headers: Record<string, string> = {}
   new Headers(options.defaultHeaders).forEach((value, name) => {
-    headers[name] = value
+    // x-stainless-* identify the Anthropic SDK, which this client is not.
+    if (!name.startsWith('x-stainless-')) headers[name] = value
   })
   for (const [name, value] of Object.entries(
     tunnel
@@ -1215,6 +1217,10 @@ export function createOpenAICompatClient(options: {
     headers['session-id'] = options.promptCacheKey
     headers['thread-id'] = options.promptCacheKey
   }
+  const getRequestHeaders = () => ({
+    ...headers,
+    ...(!tunnel && auth.isChatGPT && { version: getClientVersions().CodexVersion }),
+  })
 
   logForDebugging(
     `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
@@ -1283,7 +1289,7 @@ export function createOpenAICompatClient(options: {
       }
       const response = await fetchResponsesWithRetry(
         responsesURL,
-        { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
+        getRequestHeaders,
         body,
         options.maxRetries,
         controller.signal,
@@ -1442,7 +1448,7 @@ export function createOpenAICompatClient(options: {
       if (params.stream) {
         const promise = connectSSE(
           responsesURL,
-          { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
+          getRequestHeaders,
           payload,
           options.maxRetries,
           controller,
@@ -1461,7 +1467,7 @@ export function createOpenAICompatClient(options: {
       const promise = (async () => {
         const adapter = await connectSSE(
           responsesURL,
-          { ...headers, ...(!tunnel && auth.isChatGPT ? { version: getClientVersions().CodexVersion } : {}) },
+          getRequestHeaders,
           payload,
           options.maxRetries,
           controller,

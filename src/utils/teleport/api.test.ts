@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { DEFAULT_CLIENT_VERSIONS } from '../../constants/clientVersions.js'
 import { resetSettingsCache, setSessionSettingsCache } from '../settings/settingsCache.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
@@ -13,7 +12,7 @@ afterEach(resetSettingsCache)
 test('getOAuthHeaders uses the default API client version instead of the build version', async () => {
   const { getOAuthHeaders } = await import('./api.js')
   expect(getOAuthHeaders('tok')).toEqual({
-    'User-Agent': `claude-code/${DEFAULT_CLIENT_VERSIONS.ClaudeApiClientVersion}`,
+    'User-Agent': 'claude-code/2.1.327',
     Authorization: 'Bearer tok',
     'Content-Type': 'application/json',
     'anthropic-version': '2023-06-01',
@@ -48,7 +47,7 @@ test('getOAuthHeaders preserves the API default when only another version is con
     errors: [],
   })
   expect(getOAuthHeaders('tok')).toEqual({
-    'User-Agent': `claude-code/${DEFAULT_CLIENT_VERSIONS.ClaudeApiClientVersion}`,
+    'User-Agent': 'claude-code/2.1.327',
     Authorization: 'Bearer tok',
     'Content-Type': 'application/json',
     'anthropic-version': '2023-06-01',
