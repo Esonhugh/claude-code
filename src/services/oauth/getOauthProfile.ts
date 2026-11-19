@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import { getOauthConfig, OAUTH_BETA_HEADER } from 'src/constants/oauth.js'
 import type { OAuthProfileResponse } from 'src/services/oauth/types.js'
@@ -42,7 +43,7 @@ export async function getOauthProfileFromOauthToken(
   try {
     const response = await axios.get<OAuthProfileResponse>(endpoint, {
       headers: {
-        'User-Agent': getClaudeCodeUserAgent(),
+        'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'Cache-Control': 'no-cache',

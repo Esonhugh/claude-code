@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test'
+import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test'
+import chokidar from 'chokidar'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -89,15 +90,34 @@ test('slugs are file-name safe and unique', () => {
 })
 
 test('files added, changed or removed by hand reload the themes', async () => {
+  mkdirSync(getCustomThemesDir(), { recursive: true })
   reloadCustomThemes()
+  const watch = spyOn(chokidar, 'watch')
   const stop = watchCustomThemes()
+  const watcher = watch.mock.results[0]!.value as ReturnType<typeof chokidar.watch>
   const file = join(getCustomThemesDir(), 'by-hand.json')
   const waitFor = async (check: () => boolean) => {
     for (let i = 0; i < 50 && !check(); i++) await Bun.sleep(100)
     expect(check()).toBe(true)
   }
   try {
-    await Bun.sleep(200)
+    expect(watch.mock.calls[0]![1]).toMatchObject({ usePolling: true, interval: 500 })
+    await new Promise<void>(resolve => watcher.once('ready', resolve))
+    // chokidar reports `ready` before the poller has taken its first reading of
+    // the directory, and a file created before that reading is never reported.
+    // Create a file that is not a theme until the watcher reports it, so that
+    // the steps below start with the poller running.
+    const probe = join(getCustomThemesDir(), 'probe.txt')
+    let polling = false
+    watcher.on('add', path => {
+      if (path.endsWith('probe.txt')) polling = true
+    })
+    for (let attempt = 0; attempt < 10 && !polling; attempt++) {
+      rmSync(probe, { force: true })
+      writeFileSync(probe, 'probe')
+      for (let i = 0; i < 20 && !polling; i++) await Bun.sleep(100)
+    }
+    expect(polling).toBe(true)
     writeFileSync(file, JSON.stringify({ name: 'By hand', base: 'light', overrides: {} }))
     await waitFor(() => getCustomThemes().some(theme => theme.name === 'By hand'))
     writeFileSync(file, JSON.stringify({ name: 'Edited', base: 'light', overrides: {} }))
@@ -106,5 +126,7 @@ test('files added, changed or removed by hand reload the themes', async () => {
     await waitFor(() => !getCustomThemes().some(theme => theme.slug === 'by-hand'))
   } finally {
     stop()
+    await watcher.close()
+    watch.mockRestore()
   }
 })

@@ -107,6 +107,7 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 - 有语法错误的命令（以 `&&`、`||` 结尾，或双引号没闭合）即使匹配 allow 规则也会询问，同官方。
 - 只读命令按解析后的词判断：`cat 'a|b'`、`ls "a&b"`、`find . -name 'a;b'`、`[ -f "a;b" ]` 这类引号或转义里的 shell 字符不会触发询问，同官方。
 - 不带根的 Read/Edit deny 规则（如 `./secret/**`、`.env`）在命令里 `cd` 之后仍按启动目录匹配；`cp` / `mv` 的来源按读取检查，deny 规则也检查符号链接指向的真实路径。bypass 和 Bash allow 规则都不会绕过这些 deny。
+- deny 规则写的是符号链接本身时也生效：`Read(./.env)` 而 `.env` 链接到项目外的文件时，`cat .env`、`tac .env`、`cat < .env` 都被拒绝，bypass 下也一样。Windows 上的 PowerShell 工具相同（`Get-Content`、`gc`、`cat`，以及带反引号、只能猜测的路径）。allow 规则仍只按链接指向的真实路径匹配。
 - 没有规则时哪些 Bash 命令直接执行，也和官方 2.1.322 一致：`[[ a && b ]]` 当作一个测试；只含数字的 `$((…))` 先算出来，所以 `echo $((1+2))` 直接执行；只读命令可以带安全的环境变量前缀（如 `CI=1`、`COLUMNS=80`）或 `command` / `builtin` / `timeout N`。会询问的情况：本来会放行的命令放到后台（`&`）、写入路径里有命令替换或未知变量、`< 文件` 读工作目录外的文件、accept edits 下包在 wrapper 里或带选项的 `touch`。
 - Read 的 deny 规则也挡住对同一路径的 Write / Edit：`Read(**/.env)` 时不能新建或改写 `.env`。
 - `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。

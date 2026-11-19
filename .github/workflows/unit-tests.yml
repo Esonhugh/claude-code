@@ -56,7 +56,8 @@ jobs:
           ANTHROPIC_API_KEY: sk-ant-test-placeholder
         run: |
           mkdir -p "$RUNNER_TEMP/unit"
-          git ls-files 'src/**/*.test.ts' 'src/**/*.test.tsx' 'web/src/**/*.test.ts' 'bench/**/*.test.ts' \
+          # :(glob) lets **/ match no directory, so tests directly in src/ and web/src/ are listed too.
+          git ls-files ':(glob)src/**/*.test.ts' ':(glob)src/**/*.test.tsx' ':(glob)web/src/**/*.test.ts' ':(glob)bench/**/*.test.ts' \
             | grep -vxF -e src/utils/permissions/permissions.networkLists.test.ts -e src/utils/sandbox/sandbox-adapter.test.ts \
             | bun scripts/split-unit-tests.mjs ${{ matrix.shard }} 5 \
             > "$RUNNER_TEMP/unit/files.txt"

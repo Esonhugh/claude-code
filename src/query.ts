@@ -102,9 +102,18 @@ const jobClassifier = feature('TEMPLATES')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   remove as removeFromQueue,
+  consume as consumeFromQueue,
+  countRemainingWakePollEventsAfter,
   getCommandsByMaxPriority,
   isSlashCommand,
+  settlePollEventsDelivered,
+  subscribeToCommandQueue,
+  takePollEventChunk,
 } from './utils/messageQueueManager.js'
+import { pollEventsAttachment } from './tools/PollTool/delivery.js'
+import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
+import { findReplSession, MAIN_REPL_SESSION, takeReplLateMessages } from './tools/REPLTool/sessions.js'
+import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
@@ -149,6 +158,18 @@ import {
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
+import {
+  type AdvisorCarrier,
+  type AdvisorRequest,
+  getAdvisorQueryKind,
+  getMainAdvisorCarrier,
+  getToolChangeSticky,
+  markAdvisorToolChangeFallback,
+  resolveAdvisorForQuery,
+  toAdvisorRequest,
+} from './utils/advisorQuery.js'
+import { getLocalAdvisorModel, omitLocalAdvisorTool } from './utils/advisor.js'
+import { toolChangesRide } from './utils/advisorToolChanges.js'
 import { count } from './utils/array.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -530,6 +551,35 @@ export async function* query(
   return terminal
 }
 
+/**
+ * Official 2.1.325 poll-event absorption (`pCs`, then `Fp`): one chunk of the
+ * agent's queued poll events becomes a `poll_events` attachment and the events
+ * leave the queue as delivered. Nothing when the turn was aborted, so they stay
+ * queued for the next delivery.
+ */
+function foldPollEvents(
+  queued: readonly QueuedCommand[],
+  agentId: string | undefined,
+  signal: AbortSignal,
+  consumedCommandUuids: string[],
+  messages: readonly Message[],
+): AttachmentMessage | undefined {
+  const chunk = takePollEventChunk(
+    queued.filter(cmd => cmd.mode === 'poll-event' && cmd.agentId === agentId),
+  )
+  const attachment = pollEventsAttachment(chunk, countRemainingWakePollEventsAfter(chunk), messages)
+  if (!attachment || signal.aborted) return undefined
+  consumeFromQueue(chunk, { reason: 'absorbed_mid_turn' })
+  settlePollEventsDelivered(chunk)
+  for (const cmd of chunk) {
+    if (cmd.uuid) {
+      consumedCommandUuids.push(cmd.uuid)
+      notifyCommandLifecycle(cmd.uuid, 'started')
+    }
+  }
+  return createAttachmentMessage(attachment)
+}
+
 async function* queryLoop(
   params: QueryParams,
   consumedCommandUuids: string[],
@@ -566,6 +616,15 @@ async function* queryLoop(
   let resolvedContext: PromptContext | undefined
   let cacheSafeParamsEmitted = false
   let stepIndex = 0
+  // Official 2.1.325: the main thread keeps one advisor per conversation; a
+  // subagent's loop and a teammate keep their own.
+  const advisorCarrier: AdvisorCarrier =
+    getAdvisorQueryKind(querySource) === 'subagent' ||
+    params.toolUseContext.agentId !== undefined
+      ? {}
+      : getMainAdvisorCarrier()
+  const rideToolChanges = (model: string) =>
+    toolChangesRide(getToolChangeSticky(advisorCarrier), model)
   const snapshot = params.toolUseContext.modsSnapshot
   async function refreshContext(messages: Message[]) {
     if (params.resolvedPromptContextBlocks !== undefined) return
@@ -732,7 +791,20 @@ async function* queryLoop(
       stopHookBlockingCount,
       turnCount,
     } = state
-    await refreshContext(messages)
+    const startedAborted = toolUseContext.abortController.signal.aborted
+    try {
+      await refreshContext(messages)
+    } catch (error) {
+      // An iteration that starts aborted (Esc ended the wait for its scripts,
+      // Bu) ends as an interrupted request, as official 2.1.325 does when the
+      // request of that iteration aborts (7qa83fnn.js:10127). An abort during
+      // the refresh still rejects with its reason.
+      if (!startedAborted) throw error
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
+        yield createUserInterruptionMessage({ toolUse: false })
+      }
+      return { reason: 'aborted_streaming' }
+    }
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the
@@ -795,6 +867,28 @@ async function* queryLoop(
         messagesForQuery.push(msg)
       }
       pendingMemoryPrefetch.consumedOnIteration = 0
+    }
+
+    // Official 2.1.325 turn-start fold: poll events queued while the agent
+    // was idle arrive with this turn's first request (a subagent's only in
+    // its own loop).
+    if (
+      turnCount === 1 &&
+      (querySource.startsWith('repl_main_thread') ||
+        querySource === 'sdk' ||
+        toolUseContext.agentId !== undefined)
+    ) {
+      const folded = foldPollEvents(
+        getCommandsByMaxPriority('next'),
+        toolUseContext.agentId,
+        toolUseContext.abortController.signal,
+        consumedCommandUuids,
+        toolUseContext.messages,
+      )
+      if (folded) {
+        yield folded
+        messagesForQuery.push(folded)
+      }
     }
 
     let tracking = autoCompactTracking
@@ -912,6 +1006,21 @@ async function* queryLoop(
           systemContext,
           toolUseContext,
           forkContextMessages: projectedMessagesForQuery,
+          // Automatic compaction keeps the conversation's advisor (official).
+          advisor:
+            toolUseContext.advisorPin ??
+            toAdvisorRequest(
+              resolveAdvisorForQuery(messagesForQuery, {
+                querySource: 'compact',
+                setting: toolUseContext.getAppState().advisorModel,
+                configuredModel: toolUseContext.options.mainLoopModel,
+                requestModel: toolUseContext.options.mainLoopModel,
+                carrier: advisorCarrier,
+                toolChangesRide: rideToolChanges,
+              }),
+              advisorCarrier,
+              toolUseContext.getAppState().advisorModel,
+            ),
         },
         querySource,
         tracking,
@@ -1008,10 +1117,51 @@ async function* queryLoop(
       }
     }
 
+    // Official 2.1.325: settle this request's advisor and announce a change.
+    // A fork carries its parent's advisor unchanged.
+    const advisorAppState = toolUseContext.getAppState()
+    const advisor = toolUseContext.advisorPin
+      ? { ...toolUseContext.advisorPin, announcement: undefined }
+      : resolveAdvisorForQuery(messagesForQuery, {
+          querySource,
+          setting: advisorAppState.advisorModel,
+          configuredModel: toolUseContext.options.mainLoopModel,
+          requestModel: getRuntimeMainLoopModel({
+            permissionMode: advisorAppState.toolPermissionContext.mode,
+            mainLoopModel: toolUseContext.options.mainLoopModel,
+            exceeds200kTokens:
+              advisorAppState.toolPermissionContext.mode === 'plan' &&
+              doesMostRecentAssistantMessageExceed200k(messagesForQuery),
+          }),
+          carrier: advisorCarrier,
+          toolChangesRide: rideToolChanges,
+        })
+    const advisorRequest: AdvisorRequest =
+      toolUseContext.advisorPin ??
+      toAdvisorRequest(advisor, advisorCarrier, advisorAppState.advisorModel)
+    // While the local advisor answers, the conversation still has an advisor
+    // tool: it is not told that the server-side one went away. A tool_removal
+    // is still sent, so the tool-change history stays as the API expects.
+    const advisorAnnouncement =
+      advisor.announcement?.available === false &&
+      advisor.announcement.toolChange === undefined &&
+      advisorRequest.localAdvisorModel !== undefined
+        ? undefined
+        : advisor.announcement
+    if (advisorAnnouncement) {
+      const msg = createAttachmentMessage(advisorAnnouncement)
+      yield msg
+      messagesForQuery.push(msg)
+      projectedMessagesForQuery = await projectAttachments(messagesForQuery)
+    }
+
+    const assistantMessages: AssistantMessage[] = []
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
+      requestAdvisor: advisorRequest,
+      getResponseMessages: () => assistantMessages,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1026,7 +1176,6 @@ async function* queryLoop(
       })
     }
 
-    const assistantMessages: AssistantMessage[] = []
     const toolResults: (UserMessage | AttachmentMessage)[] = []
     // @see https://docs.claude.com/en/docs/build-with-claude/tool-use
     // Note: stop_reason === 'tool_use' is unreliable -- it's not always set correctly.
@@ -1146,6 +1295,9 @@ async function* queryLoop(
     }
 
     let attemptWithFallback = true
+    // Set when the server could not process earlier advisor results and the
+    // retry removed them; the next streamed message records that.
+    let advisorBlocksStripped = false
 
     queryCheckpoint('query_api_loop_start')
     try {
@@ -1161,7 +1313,10 @@ async function* queryLoop(
             ),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
-            tools: toolUseContext.options.tools,
+            tools: omitLocalAdvisorTool(
+              toolUseContext.options.tools,
+              advisorRequest.localAdvisorModel,
+            ),
             signal: toolUseContext.abortController.signal,
             options: {
               async getToolPermissionContext() {
@@ -1214,7 +1369,29 @@ async function* queryLoop(
               ),
               queryTracking,
               effortValue: appState.effortValue,
-              advisorModel: appState.advisorModel,
+              advisorModel: advisorRequest.advisorModel,
+              // A retry that drops the server-side advisor offers the local one.
+              ...(advisorRequest.advisorModel !== undefined &&
+                !toolUseContext.advisorPin &&
+                getLocalAdvisorModel(advisorAppState.advisorModel) !==
+                  undefined && {
+                  advisorRetryTools: toolUseContext.options.tools,
+                }),
+              advisorDeferred: advisorRequest.advisorDeferred,
+              advisorActive: advisorRequest.advisorActive,
+              toolChanges: advisorRequest.toolChanges,
+              ...(toolUseContext.advisorPin
+                ? { forkAdvisor: true }
+                : {
+                    onToolChangeFallback: () =>
+                      markAdvisorToolChangeFallback(advisorCarrier),
+                  }),
+              onAdvisorRefused: () => {
+                advisorCarrier.held = { model: undefined, refused: true }
+              },
+              onAdvisorBlocksStripped: () => {
+                advisorBlocksStripped = true
+              },
               skipCacheWrite,
               agentId: toolUseContext.agentId,
               openAITurnScope: toolUseContext.openAITurnScope,
@@ -1243,6 +1420,12 @@ async function* queryLoop(
               }), request.signal)
             : deps.callModel(request)
           for await (const message of modelStream) {
+            if (advisorBlocksStripped) {
+              advisorBlocksStripped = false
+              const stripped = createAttachmentMessage({ type: 'advisor_stripped' })
+              yield stripped
+              messagesForQuery.push(stripped)
+            }
             observeResponse?.(message)
             if (message.type === 'assistant') {
               const skill = toolUseContext.options.activeSkill ?? toolUseContext.options.spawnedBySkill
@@ -2298,9 +2481,31 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
-    const queuedCommandsSnapshot = getCommandsByMaxPriority(
+    // Official 2.1.325 `Bu`: wait for the outcomes of the scripts this reply
+    // dispatched, so they fold into this turn below.
+    if (
+      (isMainThread || currentAgentId !== undefined) &&
+      shouldWaitAfterToolCalls({
+        isMainThread,
+        lastIteration: !!maxTurns && turnCount + 1 > maxTurns,
+      })
+    ) {
+      await waitForReplScriptsAfterToolCalls(currentAgentId, toolUseContext.abortController.signal, {
+        queued: () =>
+          getCommandsByMaxPriority('next').filter(cmd =>
+            isMainThread
+              ? cmd.agentId === undefined
+              : (cmd.mode === 'task-notification' || cmd.mode === 'poll-event') && cmd.agentId === currentAgentId,
+          ),
+        subscribe: subscribeToCommandQueue,
+      })
+    }
+    const queuedForDrain = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
-    ).filter((cmd) => {
+    )
+    const queuedCommandsSnapshot = queuedForDrain.filter((cmd) => {
+      // Poll events fold in on their own below.
+      if (cmd.mode === 'poll-event') return false
       if (cmd.admitted && (
         cmd.admitted.shouldQuery === false || cmd.admitted.admission?.drop !== undefined
       )) return false
@@ -2332,6 +2537,27 @@ async function* queryLoop(
     )) {
       yield attachment
       toolResults.push(attachment)
+    }
+
+    // Official 2.1.325 mid-turn fold: this agent's queued poll events, one chunk.
+    const foldedPollEvents =
+      isMainThread || currentAgentId !== undefined
+        ? foldPollEvents(
+            queuedForDrain,
+            currentAgentId,
+            toolUseContext.abortController.signal,
+            consumedCommandUuids,
+            updatedToolUseContext.messages,
+          )
+        : undefined
+    if (foldedPollEvents) {
+      yield foldedPollEvents
+      toolResults.push(foldedPollEvents)
+    }
+    // The inner calls of the scripts it delivered are recorded with it (virtual rows, not sent to the API).
+    if (foldedPollEvents) {
+      const replSession = findReplSession(currentAgentId ?? MAIN_REPL_SESSION)
+      for (const message of replSession ? takeReplLateMessages(replSession) : []) yield message
     }
 
     // Memory prefetch consume: only if settled and not already consumed on

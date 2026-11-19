@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import { hasProfileScope, isClaudeAISubscriber } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
@@ -39,7 +40,7 @@ async function _fetchMetricsEnabled(): Promise<MetricsEnabledResponse> {
 
   const headers = {
     'Content-Type': 'application/json',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     ...authResult.headers,
   }
 

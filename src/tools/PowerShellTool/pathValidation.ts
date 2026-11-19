@@ -13,6 +13,7 @@ import type { PermissionRule } from '../../types/permissions.js'
 import { getCwd } from '../../utils/cwd.js'
 import {
   getFsImplementation,
+  getPathsForPermissionCheck,
   safeResolvePath,
 } from '../../utils/fsOperations.js'
 import { containsPathTraversal, getDirectoryForPath } from '../../utils/path.js'
@@ -866,20 +867,28 @@ function isPathAllowed(
   context: ToolPermissionContext,
   operationType: FileOperationType,
   precomputedPathsToCheck?: readonly string[],
+  asWrittenPath?: string,
 ): PathCheckResult {
   const permissionType = operationType === 'read' ? 'read' : 'edit'
 
-  // 1. Check deny rules first
-  const denyRule = matchingRuleForInput(
+  // 1. Check deny rules first, on the path as written and on where its
+  // symlinks lead.
+  for (const pathToCheck of new Set([
+    ...(asWrittenPath === undefined ? [] : [asWrittenPath]),
     resolvedPath,
-    context,
-    permissionType,
-    'deny',
-  )
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: 'rule', rule: denyRule },
+    ...(precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)),
+  ])) {
+    const denyRule = matchingRuleForInput(
+      pathToCheck,
+      context,
+      permissionType,
+      'deny',
+    )
+    if (denyRule !== null) {
+      return {
+        allowed: false,
+        decisionReason: { type: 'rule', rule: denyRule },
+      }
     }
   }
 
@@ -1001,13 +1010,16 @@ function checkDenyRuleForGuessedPath(
     : resolve(cwd, tildeExpanded)
   const { resolvedPath } = safeResolvePath(getFsImplementation(), abs)
   const permissionType = operationType === 'read' ? 'read' : 'edit'
-  const denyRule = matchingRuleForInput(
-    resolvedPath,
-    toolPermissionContext,
-    permissionType,
-    'deny',
-  )
-  return denyRule ? { resolvedPath, rule: denyRule } : null
+  for (const pathToCheck of new Set([abs, resolvedPath])) {
+    const denyRule = matchingRuleForInput(
+      pathToCheck,
+      toolPermissionContext,
+      permissionType,
+      'deny',
+    )
+    if (denyRule) return { resolvedPath, rule: denyRule }
+  }
+  return null
 }
 
 /**
@@ -1191,6 +1203,7 @@ function validatePath(
         toolPermissionContext,
         operationType,
         isCanonical ? [resolvedPath] : undefined,
+        absolutePath,
       )
       return {
         allowed: result.allowed,
@@ -1258,6 +1271,7 @@ function validatePath(
     toolPermissionContext,
     operationType,
     isCanonical ? [resolvedPath] : undefined,
+    absolutePath,
   )
   return {
     allowed: result.allowed,

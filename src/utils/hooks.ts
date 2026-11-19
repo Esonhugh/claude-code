@@ -4320,6 +4320,7 @@ const STOP_HOOK_TASK_TYPE_LABELS: Record<string, string> = {
   in_process_teammate: 'teammate',
   dream: 'dream',
   remote_agent: 'cloud session',
+  local_script: 'code',
 }
 const STOP_HOOK_FIELD_CAP = 1000
 

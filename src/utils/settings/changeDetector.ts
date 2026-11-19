@@ -179,7 +179,9 @@ export async function initialize(): Promise<void> {
     },
     // Additional options for stability
     ignorePermissionErrors: true,
-    usePolling: false, // Use native file system events
+    // Bun can block the input thread while registering native FSEvents watchers.
+    usePolling: typeof Bun !== 'undefined',
+    interval: 500,
     atomic: true, // Handle atomic writes better
   })
 
@@ -188,7 +190,7 @@ export async function initialize(): Promise<void> {
   watcher.on('unlink', handleDelete)
   watcher.on('add', handleAdd)
   watcher.once('ready', () => {
-    if (!disposed) logForDebugging('Settings watcher ready (native events)')
+    if (!disposed) logForDebugging(`Settings watcher ready (${typeof Bun !== 'undefined' ? 'polling' : 'native events'})`)
   })
 }
 

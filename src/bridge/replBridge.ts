@@ -87,6 +87,19 @@ export type ReplBridgeHandle = {
 export type BridgeState = 'ready' | 'connected' | 'reconnecting' | 'failed'
 
 /**
+ * Why a 'failed' state fired (official 2.1.325). 'auth' arms the sign-in
+ * watcher, 'ended_elsewhere' means another device/app ended the session.
+ * 'network' is in official's type and hint map but nothing emits it.
+ */
+export type BridgeErrorKind = 'auth' | 'ended_elsewhere' | 'terminal' | 'network'
+
+export type BridgeStateChangeHandler = (
+  state: BridgeState,
+  detail?: string,
+  kind?: BridgeErrorKind,
+) => void
+
+/**
  * Explicit-param input to initBridgeCore. Everything initReplBridge reads
  * from bootstrap state (cwd, session ID, git, OAuth) becomes a field here.
  * A daemon caller (Agent SDK, PR 4) that never runs main.tsx fills these
@@ -197,7 +210,7 @@ export type BridgeCoreParams = {
   onSetPermissionMode?: (
     mode: PermissionMode,
   ) => { ok: true } | { ok: false; error: string }
-  onStateChange?: (state: BridgeState, detail?: string) => void
+  onStateChange?: BridgeStateChangeHandler
   /**
    * Fires on each real user message to flow through writeMessages() until
    * the callback returns true (done). Mirrors remoteBridgeCore.ts's
@@ -368,7 +381,7 @@ export async function initBridgeCore(
     if (prior) {
       await clearBridgePointer(dir)
     }
-    onStateChange?.('failed', errorMessage(err))
+    onStateChange?.('failed', errorMessage(err), 'terminal')
     return null
   }
 
@@ -474,7 +487,7 @@ export async function initBridgeCore(
       )
       logEvent('tengu_bridge_repl_session_failed', {})
       await api.deregisterEnvironment(environmentId).catch(() => {})
-      onStateChange?.('failed', 'Session creation failed')
+      onStateChange?.('failed', 'Session creation failed', 'terminal')
       return null
     }
 
@@ -926,7 +939,7 @@ export async function initBridgeCore(
 
     if (closeCode === 1000) {
       // Clean close — session ended normally. Tear down the bridge.
-      onStateChange?.('failed', 'session ended')
+      onStateChange?.('failed', 'session ended', 'ended_elsewhere')
       pollController.abort()
       triggerTeardown()
       return
@@ -966,7 +979,7 @@ export async function initBridgeCore(
       logEvent('tengu_bridge_repl_reconnect_failed', {
         close_code: closeCode,
       })
-      onStateChange?.('failed', 'reconnection failed')
+      onStateChange?.('failed', 'reconnection failed', 'terminal')
       triggerTeardown()
     })
   }
@@ -1882,7 +1895,7 @@ async function startWorkPollLoop({
   api: BridgeApiClient
   getCredentials: () => { environmentId: string; environmentSecret: string }
   signal: AbortSignal
-  onStateChange?: (state: BridgeState, detail?: string) => void
+  onStateChange?: BridgeStateChangeHandler
   onWorkReceived: (
     sessionId: string,
     ingressToken: string,
@@ -2247,6 +2260,7 @@ async function startWorkPollLoop({
           onStateChange?.(
             'failed',
             'Environment deleted and re-registration limit reached',
+            'terminal',
           )
           onFatalError?.()
           break
@@ -2280,6 +2294,7 @@ async function startWorkPollLoop({
         onStateChange?.(
           'failed',
           'Environment deleted and re-registration failed',
+          'terminal',
         )
         onFatalError?.()
         break
@@ -2311,6 +2326,7 @@ async function startWorkPollLoop({
             isExpiry
               ? 'session expired · /remote-control to reconnect'
               : err.message,
+            'terminal',
           )
         }
         // Always trigger teardown — matches bridgeMain.ts where fatalExit=true
@@ -2375,7 +2391,7 @@ async function startWorkPollLoop({
           elapsedMs: elapsed,
           lastStatus: httpStatus,
         } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-        onStateChange?.('failed', 'connection to server lost')
+        onStateChange?.('failed', 'connection to server lost', 'terminal')
         break
       }
 

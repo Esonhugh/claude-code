@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { toolMatchesName, type Tool, type Tools } from './Tool.js'
+import { AdvisorTool } from './tools/AdvisorTool/AdvisorTool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
 import { BashTool } from './tools/BashTool/BashTool.js'
@@ -14,12 +15,9 @@ import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
+import { isAdvisorEnabled } from './utils/advisor.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-const REPLTool =
-  isAnt()
-    ? require('./tools/REPLTool/REPLTool.js').REPLTool
-    : null
 const SuggestBackgroundPRTool =
   isAnt()
     ? require('./tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.js')
@@ -144,12 +142,48 @@ import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
 import {
   REPL_TOOL_NAME,
-  REPL_ONLY_TOOLS,
+  CODE_MODE_ONLY_TOOLS,
   isReplModeEnabled,
 } from './tools/REPLTool/constants.js'
+import { isCodeModeEnabled } from './tools/REPLTool/codeModeGate.js'
 import { isAnt } from 'src/utils/userType.js'
 
-export { REPL_ONLY_TOOLS }
+export { CODE_MODE_ONLY_TOOLS }
+/* eslint-disable @typescript-eslint/no-require-imports */
+let replTool: Tool | null | undefined
+/**
+ * REPL loads only when Code Mode (or the ant REPL default) asks for it. The
+ * module may be absent: a source run throws on require, and the release
+ * build's missing-module shim hands back a Proxy whose `name` is a function,
+ * so only a real tool with a string name counts.
+ */
+export function getREPLTool(): Tool | null {
+  // The gate is per context: an in-process teammate of a Code Mode leader
+  // gets null even after the leader cached the tool.
+  if (!isAnt() && !isCodeModeEnabled()) return null
+  if (replTool !== undefined) return replTool
+  try {
+    const tool = (require('./tools/REPLTool/REPLTool.js') as { REPLTool?: Tool }).REPLTool
+    replTool = typeof tool?.name === 'string' ? tool : null
+  } catch {
+    replTool = null
+  }
+  return replTool
+}
+let pollTool: Tool | null | undefined
+/** Poll, which delivers the outcomes of REPL scripts the async lane dispatched; it rides with REPL. */
+export function getPollTool(): Tool | null {
+  if (!getREPLTool()) return null
+  if (pollTool !== undefined) return pollTool
+  try {
+    const tool = (require('./tools/PollTool/PollTool.js') as { PollTool?: Tool }).PollTool
+    pollTool = typeof tool?.name === 'string' ? tool : null
+  } catch {
+    pollTool = null
+  }
+  return pollTool
+}
+/* eslint-enable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-require-imports */
 const getPowerShellTool = () => {
   if (!isPowerShellToolEnabled()) return null
@@ -237,8 +271,11 @@ export function getAllBaseTools(
     ...(isWorktreeModeEnabled() ? [EnterWorktreeTool, ExitWorktreeTool] : []),
     getSendMessageTool(),
     ...(ListAgentsTool ? [ListAgentsTool] : []),
+    // The local advisor: absent unless the advisor is on (isAdvisorEnabled).
+    ...(isAdvisorEnabled() ? [AdvisorTool] : []),
     ...(VerifyPlanExecutionTool ? [VerifyPlanExecutionTool] : []),
-    ...(isAnt() && REPLTool ? [REPLTool] : []),
+    ...(getREPLTool() ? [getREPLTool()!] : []),
+    ...(getPollTool() ? [getPollTool()!] : []),
     ...getWorkflowTools(),
     ...(SleepTool ? [SleepTool] : []),
     ...cronTools,
@@ -291,9 +328,10 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     // --bare + REPL mode: REPL wraps Bash/Read/Edit/etc inside the VM, so
     // return REPL instead of the raw primitives. Matches the non-bare path
-    // below which also hides REPL_ONLY_TOOLS when REPL is enabled.
-    if (isReplModeEnabled() && REPLTool) {
-      const replSimple: Tool[] = [REPLTool]
+    // below which also hides CODE_MODE_ONLY_TOOLS when REPL is enabled.
+    const repl = isReplModeEnabled() ? getREPLTool() : null
+    if (repl) {
+      const replSimple: Tool[] = [repl, ...(getPollTool() ? [getPollTool()!] : [])]
       if (permissionContext.mode === 'plan') replSimple.push(ExitPlanModeV2Tool)
       if (
         feature('COORDINATOR_MODE') &&
@@ -343,7 +381,7 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     )
     if (replEnabled) {
       allowedTools = allowedTools.filter(
-        tool => !REPL_ONLY_TOOLS.has(tool.name),
+        tool => !CODE_MODE_ONLY_TOOLS.has(tool.name),
       )
     }
   }

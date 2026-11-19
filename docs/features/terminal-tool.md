@@ -69,7 +69,7 @@ Terminal 工具給 Claude 一個**一直開著的終端**（PTY）：它可以�
 
 | 操作 | 作用 |
 | --- | --- |
-| `new-session` | 启动程序，可指定 `command`、`args`、`cwd`、`env`、`cols`、`rows`；不写 `command` 时用你的默认 shell |
+| `new-session` | 启动程序，可指定 `command`、`args`、`cwd`、`env`、`cols`、`rows`；不写 `command` 时用你的默认 shell。带 `"inputMode": "interactive"` 时申请这个会话的交互输入授权，见下面「权限怎么算」 |
 | `send-keys` | 输入文字（`text`），可加回车（`enter`），或发特殊键 `ENTER` `TAB` `ESC` `BACKSPACE` `UP` `DOWN` `LEFT` `RIGHT` `CTRL_C` `CTRL_D` `CTRL_L` |
 | `capture-pane` | 读取屏幕；`compact`（默认，精简）、`full`（完整）、`save_file`（写到文件，只回预览） |
 | `resize-pane` | 改窗口大小，测试 TUI 布局时用 |
@@ -80,8 +80,9 @@ Terminal 工具給 Claude 一個**一直開著的終端**（PTY）：它可以�
 ## 权限怎么算
 
 - `new-session` 把 `command + args` 当成一条 Bash 命令检查，`send-keys` 在回车提交时把这一整行当成命令检查，所以分几次输入也会命中你的 `Bash(...)` allow / ask / deny 规则；还没按回车的部分只检查 deny 规则。
+- `new-session` 带 `"inputMode": "interactive"` 时，确认框问的是整个会话的交互输入（包括程序里的 shell escape），必须由你明确批准一次，bypass 和自动模式下也要问。批准后，只对返回的那个会话放行输入，之后的输入不再按 Bash 规则（包括 deny）检查；授权到会话结束为止，不写允许规则，其他会话照常检查。其他操作带这个参数会被拒绝。
 - `capture-pane`、`display-message`、`list-panes` 是只读的，直接放行；`resize-pane`、`send-signal`、`kill-pane` 不走 Bash 规则。
-- 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Tmux"` allow 规则（旧的 `"Terminal"` 规则等同于它）。
+- 确认框只有单次批准，不提供「不再询问」。想整体放行，可以自己在 `permissions.allow` 里写 `"Tmux"`（旧的 `"Terminal"` 规则等同于它）。
 - 开了 [Bash 沙箱](sandbox.md)（`sandbox.enabled`）时，`new-session` 的命令在沙箱里启动，限制和 Bash 一样；命中 `excludedCommands` 或带 `dangerouslyDisableSandbox`（且设置允许）时在沙箱外启动。Linux 上沙箱里的命令仍有自己的 PTY，`Ctrl+C` 和 `resize-pane` 照常可用；终端关闭时清理沙箱。
 - 不管是否在沙箱里，sandbox 的自动放行对 Terminal 都无效，仍按上面的规则确认；[自动模式](auto-mode.md) 下 `Tmux`（或旧名 `Terminal`）的 allow 规则会被暂时搁置，交给分类器判断。
 
@@ -102,7 +103,7 @@ Tmux 工具的终端是 Claude 进程内的 PTY，不经过 tmux，也不继承 
 | 配置项 | 写法 | 说明 |
 | --- | --- | --- |
 | `permissions.allow` | `"Bash(python3:*)"`、`"Tmux"` | 按 Bash 规则放行特定程序，或整体放行这个工具 |
-| `permissions.deny` | `"Bash(rm:*)"` 等 | 同样作用于终端里提交的每一行 |
+| `permissions.deny` | `"Bash(rm:*)"` 等 | 同样作用于终端里提交的每一行；批准了交互输入的会话除外 |
 
 ## 进程结束后
 

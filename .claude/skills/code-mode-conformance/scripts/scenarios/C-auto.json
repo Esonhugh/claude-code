@@ -1,0 +1,103 @@
+{
+ "name": "C-auto",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "commands": {
+  "AUTO": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "// AUTO-CODE-MARKER\nconst a = await Bash({command: 'touch auto-ok.txt && echo auto-ok'})\nconst b = await Bash({command: 'curl -s http://127.0.0.1:9/auto-block-probe || echo curl-ran'})\nconst c = await Bash({command: 'curl -s http://127.0.0.1:9/auto-allow-probe || echo curl-allowed-ran'})\nJSON.stringify({a: a.stdout?.trim() ?? a.error, b: b.error ?? b.stdout?.trim(), c: c.error ?? c.stdout?.trim()})",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} auto"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "auto"
+   }
+  },
+  {
+   "capture": "auto-start"
+  },
+  {
+   "turn": "AUTO",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "auto: classifier gets the whole REPL code",
+    "role": "^side$",
+    "field": "messages",
+    "match": "AUTO-CODE-MARKER[\\s\\S]*touch auto-ok\\.txt[\\s\\S]*auto-block-probe[\\s\\S]*auto-allow-probe",
+    "nth": 0
+   }
+  },
+  {
+   "expect": {
+    "name": "auto: inner Bash call is classified on its own (request for the inner curl)",
+    "role": "^side$",
+    "field": "messages",
+    "match": "Bash\\W{0,20}curl -s http://127\\.0\\.0\\.1:9/auto-block-probe(?!')",
+    "nth": 1
+   }
+  },
+  {
+   "expect": {
+    "name": "auto: inner call the classifier allows runs",
+    "cmd": "AUTO",
+    "step": 1,
+    "match": "\\\\?\"c\\\\?\":\\\\?\"curl-allowed-ran"
+   }
+  },
+  {
+   "expect": {
+    "name": "auto: whole-code request is stage 1 of the REPL call itself (transcript action is REPL)",
+    "role": "^side$",
+    "nth": 0,
+    "field": "lastUser",
+    "match": "REPL // AUTO-CODE-MARKER"
+   }
+  },
+  {
+   "expect": {
+    "name": "auto: inner call blocked by the classifier gives {error}",
+    "cmd": "AUTO",
+    "step": 1,
+    "match": "\\\\?\"b\\\\?\":\\\\?\"[^\"]*auto mode classifier"
+   }
+  },
+  {
+   "expect": {
+    "name": "auto: blocked inner call did not run",
+    "cmd": "AUTO",
+    "step": 1,
+    "match": "curl-ran\\b",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ],
+ "side": [
+  {
+   "match": "Bash\\W{0,20}curl -s http://127\\.0\\.0\\.1:9/auto-block-probe(?!')",
+   "text": "<severity>90</severity><category>Irreversible Local Destruction</category>"
+  },
+  {
+   "match": "<transcript>",
+   "text": "<severity>5</severity>"
+  }
+ ]
+}

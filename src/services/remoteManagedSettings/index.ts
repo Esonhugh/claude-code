@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 /**
  * Remote Managed Settings Service
  *
@@ -267,7 +268,7 @@ async function fetchRemoteManagedSettings(
     const endpoint = getRemoteManagedSettingsEndpoint()
     const headers: Record<string, string> = {
       ...authHeaders.headers,
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     }
 
     // Add If-None-Match header for ETag-based caching

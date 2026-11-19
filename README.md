@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/064b525d-945d-462b-a7c3-a2ea4fdf5288
 
 项目网站：<https://esonhugh.github.io/claude-code/>（功能导览、文档、基准结果与网页界面演示）。
 
-当前发布版本为 `2.1.297`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
+当前发布版本为 `2.1.298`；发布历史、具体变更和验收边界统一记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 安装与运行
 
@@ -81,7 +81,9 @@ bun ./dist/cli.js --help
 |  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | API 过载或断线时自动重试；主模型一直过载就换备用模型；可以让无人值守任务一直等到额度恢复 |
 |  | [Effort 档位](docs/features/effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；按模型保存（与官方共用 `modelSettings.<模型>.effortLevel`），可按会话切，也可给子代理单独指定；`-p` 与 SDK 默认 `high` |
+|  | [Advisor 顾问模型（实验性）](docs/features/advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` 后用 `/advisor` 选顾问；Claude 模式下先用服务端顾问，其他接入方式由本地 advisor 回答；走自定义网关前请先看文档里的注意事项 |
 |  | [Codex Apps](docs/features/codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
+|  | [客户端版本号（versionNumber）](docs/features/client-version-numbers.md) | 请求里带的客户端版本号默认跟官方 Claude Code 2.1.327、Codex CLI 0.170.0 一致；官方发新版时在设置里写 `versionNumber` 就能跟上，不用等新构建 |
 | Agent 与编排 | [Agent 与后台任务](docs/features/agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](docs/features/agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
 |  | [Dynamic Workflow](docs/features/workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
@@ -93,10 +95,11 @@ bun ./dist/cli.js --help
 |  | [Bash 沙箱](docs/features/sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认；Linux、macOS、Windows 都支持 |
 | 工具 | [Tmux 工具（原 Terminal）](docs/features/terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
 |  | [Monitor 工具](docs/features/monitor-tool.md) | 让 Claude 在后台盯着日志或命令输出，有新内容就自动叫醒它，不用反复 sleep 轮询 |
+|  | [Code Mode（实验性）](docs/features/code-mode.md) | 设 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 启动后，Claude 只用一个 `REPL` 工具，写一段 JavaScript 一次调用 Read、Grep、Bash 等多个工具；每次调用照常走权限确认和 hook；以 auto / bypass 模式启动时脚本在后台跑，结果在同一轮送回；等待时你说话会结束等待，之后跑完的脚本在 Claude 空闲时开启新一轮 |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](docs/features/scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](docs/features/terminal-status.md) | 支持的终端能在标签页上显示 Claude 正在忙、在等你批准、还是已经做完，不用切回来看 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](docs/features/memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
-|  | [自动压缩窗口](docs/features/compaction.md) | 对话太长时把早期内容压成摘要，请求超长时先压缩再重试；`/autocompact`（`/context-window`）在 128k / 200k / 272k / 500k / 1M 档位里选上下文窗口（按模型分别保存，网页模型菜单也有），`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 强制指定窗口，`/compact` 手动压缩；可换成保留最近原文的 Codex 式压缩（`compact.mode: "codex"`），或用 `compact.keepRecentRatio` 让自动压缩原样多保留最近几轮 |
+|  | [自动压缩窗口](docs/features/compaction.md) | 对话太长时把早期内容压成摘要，请求超长时先压缩再重试；`/autocompact`（`/context-window`）在 128k / 200k / 272k / 500k / 1M 档位里选上下文窗口（按模型分别保存，网页模型菜单也有），`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 强制指定窗口，`/compact` 手动压缩；可换成只保留最近用户消息原文的 Codex 式压缩（`compact.mode: "codex"`），或用 `compact.keepRecentRatio` 让自动压缩原样多保留最近几轮 |
 |  | [Prompt context 与 Tool search](docs/features/prompt-context.md) | 让每次请求更省 token：提示词分层利于缓存，MCP 工具用到时才加载，大量同类工具只发一行汇总 |
 |  | [Agent 基准测试套件（bench/）](docs/features/agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画图；公开基准带防污染扰动 |
 |  | [缓存命中与用户体验基准](docs/features/cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |

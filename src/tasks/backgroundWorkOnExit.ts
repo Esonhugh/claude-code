@@ -13,6 +13,8 @@ const TASK_LABELS: Record<string, string> = {
   monitor_mcp: 'monitor',
   in_process_teammate: 'teammate',
   interactive_terminal: 'terminal',
+  // Official 2.1.325 `AUe`: a Code Mode script.
+  local_script: 'code',
 }
 
 const DETAIL_WIDTH = 50

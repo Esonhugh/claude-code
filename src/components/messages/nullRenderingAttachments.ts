@@ -35,6 +35,8 @@ const NULL_RENDERING_TYPES = [
   'todo_reminder',
   'context_efficiency',
   'deferred_tools_delta',
+  'advisor_tool',
+  'advisor_stripped',
   'mcp_instructions_delta',
   'companion_intro',
   'token_usage',
@@ -53,6 +55,7 @@ const NULL_RENDERING_TYPES = [
   'compaction_reminder',
   'date_change',
   'session_context',
+  'poll_events',
 ] as const satisfies readonly Attachment['type'][]
 
 export type NullRenderingAttachmentType = (typeof NULL_RENDERING_TYPES)[number]

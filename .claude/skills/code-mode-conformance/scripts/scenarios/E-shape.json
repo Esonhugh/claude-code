@@ -1,0 +1,103 @@
+{
+ "name": "E-shape",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "commands": {
+  "SHAPE": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const b = await Bash({command: 'echo shape-inner'})\nb.stdout.trim()",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} shape"
+   }
+  ],
+  "AFTER": [
+   {
+    "text": "DONE {{nonce}} after"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "bypassPermissions"
+   }
+  },
+  {
+   "turn": "SHAPE"
+  },
+  {
+   "exit": true
+  },
+  {
+   "expect_transcript": {
+    "name": "JSONL: REPL shell tool_use (not virtual)",
+    "match": "(?m)^(?![^\\n]*\"isVirtual\":true)[^\\n]*\"type\":\"tool_use\"[^\\n]*\"name\":\"REPL\"[^\\n]*$"
+   }
+  },
+  {
+   "expect_transcript": {
+    "name": "JSONL: the REPL result is recorded (<repl-output>, or the repl-eval event of a dispatched eval)",
+    "match": "(<repl-output|kind=\\\\\"repl-eval\\\\\")[^\\n]*<result>shape-inner"
+   }
+  },
+  {
+   "expect_transcript": {
+    "name": "JSONL: inner Bash tool_use is isVirtual",
+    "match": "(\"isVirtual\":true[^\\n]*\"name\":\"Bash\"|\"name\":\"Bash\"[^\\n]*\"isVirtual\":true)"
+   }
+  },
+  {
+   "expect_transcript": {
+    "name": "JSONL: inner Bash tool_result is isVirtual",
+    "match": "(\"isVirtual\":true[^\\n]*\"tool_use_id\":\"repl_|\"tool_use_id\":\"repl_[^\\n]*\"isVirtual\":true)"
+   }
+  },
+  {
+   "expect_transcript": {
+    "name": "JSONL: repl-mode entry {type,replMode,sessionId}",
+    "match": "\\{\"type\":\"repl-mode\",\"replMode\":true,\"sessionId\":\"[0-9a-f-]+\"\\}"
+   }
+  },
+  {
+   "launch": {
+    "mode": "bypassPermissions",
+    "args": "--resume {{session}}"
+   }
+  },
+  {
+   "turn": "AFTER"
+  },
+  {
+   "expect": {
+    "name": "resume: API gets the REPL result (<repl-output>, or the repl-eval event of a dispatched eval)",
+    "cmd": "AFTER",
+    "step": 0,
+    "field": "messages",
+    "match": "(<repl-output|kind=\\\\\"repl-eval\\\\\")[\\s\\S]{0,120}shape-inner"
+   }
+  },
+  {
+   "expect": {
+    "name": "resume: virtual inner pairs are not sent to the API",
+    "cmd": "AFTER",
+    "step": 0,
+    "field": "messages",
+    "match": "\"name\": \"Bash\"|tool_use_id\": \"repl_",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  }
+ ]
+}

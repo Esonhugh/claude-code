@@ -71,7 +71,15 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../types/message.js'
-import { isAdvisorBlock } from './advisor.js'
+import {
+  type AdvisorToolAttachment,
+  getAdvisorAnnouncementText,
+  isAdvisorBlock,
+} from './advisor.js'
+import {
+  createAdvisorToolChangeMarker,
+  isAdvisorToolChangeMarker,
+} from './advisorToolChangeWire.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
 import {
@@ -79,6 +87,7 @@ import {
   type HookAttachment,
   type HookPermissionDecisionAttachment,
   memoryHeader,
+  type PollEventsAttachment,
 } from './attachments.js'
 import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
@@ -141,6 +150,9 @@ import {
   FileReadTool,
   type Output as FileReadToolOutput,
 } from '../tools/FileReadTool/FileReadTool.js'
+import { formatPollDelivery, POLL_SPLICE_ID_PREFIX } from '../tools/PollTool/delivery.js'
+import { isReplEventDeliveryEnabled } from '../tools/REPLTool/codeModeGate.js'
+import { POLL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
@@ -495,6 +507,7 @@ export function createUserMessage({
   isVisibleInTranscriptOnly,
   isVirtual,
   isCompactSummary,
+  modelOnlyText,
   summarizeMetadata,
   toolUseResult,
   toolDenialKind,
@@ -513,6 +526,7 @@ export function createUserMessage({
   isVisibleInTranscriptOnly?: true
   isVirtual?: true
   isCompactSummary?: true
+  modelOnlyText?: string
   toolUseResult?: unknown // Matches tool's `Output` type
   toolDenialKind?: UserMessage['toolDenialKind']
   userFeedback?: string
@@ -548,6 +562,7 @@ export function createUserMessage({
     isVisibleInTranscriptOnly,
     isVirtual,
     isCompactSummary,
+    ...(modelOnlyText !== undefined && { modelOnlyText }),
     summarizeMetadata,
     uuid: (uuid as UUID | undefined) || randomUUID(),
     timestamp: timestamp ?? new Date().toISOString(),
@@ -2131,9 +2146,86 @@ export const attachmentMessagesForAPI = new WeakMap<
   UserMessage[]
 >()
 
+/** Official `U$o`: an assistant message of thinking only, some of it unsigned, cannot host a call. */
+function isUnsignedThinkingOnly(message: AssistantMessage): boolean {
+  const content = message.message.content
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(block => block.type === 'thinking' || block.type === 'redacted_thinking') &&
+    content.some(block => block.type === 'thinking' && !block.signature)
+  )
+}
+
+/**
+ * Official `qyi` (2.1.325 chunk-wqb2b4v0.js) for an unguarded delivery, mode
+ * `tail_text`: the chunk becomes a Poll call the harness made, appended to the
+ * last assistant message, with its result after the tool results of the user
+ * message that follows. A second delivery to the same assistant message goes
+ * as text at the end of the last user message. False when no assistant
+ * message can host the call, so the attachment is sent as text instead.
+ */
+function splicePollDelivery(
+  messages: (UserMessage | AssistantMessage)[],
+  attachment: PollEventsAttachment,
+): boolean {
+  const at = messages.findLastIndex(m => m.type === 'assistant')
+  if (at === -1) return false
+  const assistant = messages[at] as AssistantMessage
+  if (isUnsignedThinkingOnly(assistant)) return false
+  const id = `${POLL_SPLICE_ID_PREFIX}${assistant.uuid}`
+  const text = formatPollDelivery(attachment.envelopes, attachment.remainingWakeCount, attachment.toolsUsed)
+  type Content = UserMessage['message']['content']
+  const asContent = (content: Content): ContentBlockParam[] =>
+    typeof content === 'string' ? [{ type: 'text', text: content }] : (content.slice() as ContentBlockParam[])
+
+  if (assistant.message.content.some(block => block.type === 'tool_use' && block.id === id)) {
+    const tail = messages.at(-1)
+    const block: ContentBlockParam = { type: 'text', text: wrapInSystemReminder(text) }
+    if (tail?.type === 'user') {
+      messages[messages.length - 1] = {
+        ...tail,
+        message: { ...tail.message, content: [...asContent(tail.message.content), block] as Content },
+      }
+    } else {
+      messages.push(createUserMessage({ content: [block], isMeta: true }))
+    }
+    return true
+  }
+
+  messages[at] = {
+    ...assistant,
+    message: {
+      ...assistant.message,
+      content: [...assistant.message.content, { type: 'tool_use', id, name: POLL_TOOL_NAME, input: {} }],
+    },
+  }
+  const result: ContentBlockParam = { type: 'tool_result', tool_use_id: id, content: text }
+  const next = messages[at + 1]
+  if (next?.type === 'user') {
+    const content = asContent(next.message.content)
+    const after = content.findLastIndex(block => block.type === 'tool_result') + 1
+    content.splice(after, 0, result)
+    messages[at + 1] = { ...next, message: { ...next.message, content: content as Content } }
+  } else {
+    messages.splice(at + 1, 0, createUserMessage({ content: [result], isMeta: true }))
+  }
+  return true
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
+  {
+    advisorToolChanges = false,
+  }: {
+    /**
+     * The request declares the advisor deferred under the mid-conversation
+     * tool-change beta: an advisor_tool attachment with a toolChange becomes
+     * an AdvisorToolChangeMarker instead of a reminder.
+     */
+    advisorToolChanges?: boolean
+  } = {},
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
@@ -2445,15 +2537,37 @@ export function normalizeMessagesForAPI(
           return
         }
         case 'attachment': {
-          const rawAttachmentMessage =
-            attachmentMessagesForAPI.get(message) ??
+          if (
+            message.attachment.type === 'poll_events' &&
+            isReplEventDeliveryEnabled() &&
+            splicePollDelivery(result, message.attachment)
+          ) {
+            return
+          }
+          const advisorToolChange =
+            advisorToolChanges &&
+            message.attachment.type === 'advisor_tool' &&
+            message.attachment.toolChange !== undefined
+              ? createUserMessage({
+                  content: [
+                    createAdvisorToolChangeMarker(
+                      message.attachment as AdvisorToolAttachment & {
+                        toolChange: 'add' | 'remove'
+                      },
+                    ) as unknown as ContentBlockParam,
+                  ],
+                  isMeta: true,
+                })
+              : undefined
+          const rawAttachmentMessage = advisorToolChange
+            ? [advisorToolChange]
+            : attachmentMessagesForAPI.get(message) ??
             normalizeAttachmentForAPI(
               // @ts-ignore - recovered code
               message.attachment,
             )
-          const attachmentMessage = checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-            'tengu_chair_sermon',
-          )
+          const attachmentMessage = !advisorToolChange &&
+            checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_chair_sermon')
             ? rawAttachmentMessage.map(ensureSystemReminderWrap)
             : rawAttachmentMessage
 
@@ -2820,8 +2934,13 @@ export function mergeUserContentBlocks(
   // Universal smoosh (gated): fold all non-tool_result block types (text,
   // image, document, search_result) into tool_result.content. tool_result
   // blocks stay as siblings (hoisted later by hoistToolResults).
-  const toSmoosh = b.filter(x => x.type !== 'tool_result')
-  const toolResults = b.filter(x => x.type === 'tool_result')
+  // Advisor tool-change markers become system turns, so they stay siblings.
+  const toSmoosh = b.filter(
+    x => x.type !== 'tool_result' && !isAdvisorToolChangeMarker(x),
+  )
+  const toolResults = b.filter(
+    x => x.type === 'tool_result' || isAdvisorToolChangeMarker(x),
+  )
   if (toSmoosh.length === 0) {
     return [...a, ...b]
   }
@@ -4553,6 +4672,15 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'poll_events': {
+      // Official `qvo.poll_events`: a delivery no Poll call could carry goes as text.
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: formatPollDelivery(attachment.envelopes, attachment.remainingWakeCount, attachment.toolsUsed),
+          isMeta: true,
+        }),
+      ])
+    }
     case 'ultrathink_effort': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
@@ -4561,6 +4689,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
         }),
       ])
     }
+    case 'advisor_tool': {
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content: getAdvisorAnnouncementText(attachment),
+          isMeta: true,
+        }),
+      ])
+    }
+    case 'advisor_stripped':
+      return []
     case 'deferred_tools_delta': {
       const parts: string[] = []
       if (attachment.addedLines.length > 0) {
@@ -5909,12 +6047,19 @@ export function ensureToolResultPairing(
  * Strip advisor blocks from messages. The API rejects server_tool_use blocks
  * with name "advisor" unless the advisor beta header is present.
  */
+/**
+ * Removes advisor blocks from assistant messages, from all of them or only
+ * those whose API message id is in `ids`.
+ */
 export function stripAdvisorBlocks(
   messages: (UserMessage | AssistantMessage)[],
+  ids?: ReadonlySet<string>,
 ): (UserMessage | AssistantMessage)[] {
+  if (ids?.size === 0) return messages
   let changed = false
   const result = messages.map(msg => {
     if (msg.type !== 'assistant') return msg
+    if (ids !== undefined && !ids.has(msg.message.id)) return msg
     const content = msg.message.content
     const filtered = content.filter(b => !isAdvisorBlock(b))
     if (filtered.length === content.length) return msg
@@ -5938,6 +6083,29 @@ export function stripAdvisorBlocks(
     return { ...msg, message: { ...msg.message, content: filtered } }
   })
   return changed ? result : messages
+}
+
+const NO_STRIPPED_ADVISOR_IDS: ReadonlySet<string> = new Set()
+
+/**
+ * Official `pq`: the assistant messages before the last advisor_stripped
+ * attachment, whose advisor blocks the server once could not process and
+ * later requests leave out.
+ */
+export function getAdvisorStrippedMessageIds(
+  messages: readonly Message[],
+): ReadonlySet<string> {
+  const last = messages.findLastIndex(
+    m => m.type === 'attachment' && m.attachment.type === 'advisor_stripped',
+  )
+  if (last === -1) return NO_STRIPPED_ADVISOR_IDS
+  const ids = new Set<string>()
+  for (const m of messages.slice(0, last)) {
+    if (m.type === 'assistant' && typeof m.message.id === 'string') {
+      ids.add(m.message.id)
+    }
+  }
+  return ids
 }
 
 export function wrapCommandText(

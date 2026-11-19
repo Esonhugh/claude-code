@@ -37,6 +37,14 @@ def load_driver():
     return module
 
 
+def title_instructions(module):
+    # The OpenAI wire shape of a session title request's instructions.
+    head, tail = module.TITLE_GENERATION_INSTRUCTIONS
+    return ('x-anthropic-billing-header: cc_version=0.0.0; cc_entrypoint=cli;\n\n'
+            "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+            + head + ' The title is a name for what the session is about.\n\n' + tail)
+
+
 def load_baseline():
     spec = importlib.util.spec_from_file_location(
         'capture_release_baseline', BASELINE_PATH
@@ -1901,6 +1909,7 @@ def assert_driver_behavior(module, baseline_module):
         'openai-responses-usage-error',
         'model-discovery-picker',
         'prompt-modes-cache-prefix',
+        'client-version-headers',
     }
     assert module.required_targets_for_paths([
         'src/commands/fast/fast.tsx',
@@ -2152,6 +2161,7 @@ def assert_driver_behavior(module, baseline_module):
         'model-discovery-picker',
         'model-discovery-empty-picker',
         'first-party-bootstrap-picker',
+        'client-version-headers',
         'model-internal-update-config-skill',
         'prompt-modes-cache-prefix',
         'team-concurrency',
@@ -2224,16 +2234,19 @@ def assert_driver_behavior(module, baseline_module):
         def probe_request(phase, task, output):
             return {'body': {'input': [
                 {'type': 'function_call', 'call_id': f'fc_retention_probe_{phase}',
-                 'name': 'TaskOutput', 'arguments': json.dumps({'task_id': task, 'block': False})},
+                 'name': 'TaskStop', 'arguments': json.dumps({'task_id': task})},
                 {'type': 'function_call_output', 'call_id': f'fc_retention_probe_{phase}', 'output': output},
             ]}}
-        before = '<task_id>task-real</task_id>\n<task_type>in_process_teammate</task_type>\n<status>completed</status>'
+        before = '<tool_use_error>Task task-real is not running (status: completed)</tool_use_error>'
         server.requests = [{'method': 'GET', 'path': '/v1/models', 'body': None}]
         assert not gate.retention_probe_result(server, 'task-real', 'before')
         server.requests.append(probe_request('before', 'task-real', before))
         assert gate.retention_probe_result(server, 'task-real', 'before')
         assert not gate.retention_probe_result(server, 'wrong-task', 'before')
         assert not gate.retention_probe_result(server, 'task-real', 'after')
+        server.requests[-1]['body']['input'][-1]['output'] = before.replace('completed', 'running')
+        assert not gate.retention_probe_result(server, 'task-real', 'before')
+        server.requests[-1]['body']['input'][-1]['output'] = before
         missing = '<tool_use_error>No task found with ID: task-real</tool_use_error>'
         server.requests.append(probe_request('after', 'task-real', missing))
         assert gate.retention_probe_result(server, 'task-real', 'after')
@@ -2379,13 +2392,20 @@ def assert_driver_behavior(module, baseline_module):
         ' \x1b[1m\x1b[38;5;153m❯ \x1b[0;3m\x1b[38;5;153m(current)\x1b[0m\n\n'
         ' \x1b[3m\x1b[38;5;246mEnter to continue · Esc to exit\x1b[0m\n'
     )
+    panel = ('  ❯ ⏺ retention-worker  release transcript retention worker  5s\n'
+             '    ● main\n  Enter to view · Esc to cancel')
+    assert module.agent_panel_selection(panel) == 'retention-worker'
+    assert module.agent_panel_selection('❯ Launch retention-worker now\n    ● main') is None
+    assert module.agent_panel_has_row('    ◯ retention-worker  release', 'retention-worker')
+    assert not module.agent_panel_has_row('⏺ Agent(release transcript retention-worker)', 'retention-worker')
+    assert not module.agent_panel_has_row('@main @retention-worker', 'retention-worker')
     for scenario in ('no-active-abort', 'no-escape-window', 'no-gc', 'second-exit-rewind', 'parent-only', 'rewind-with-input',
                      'pass', 'team-only', 'wrong-task', 'no-reopen', 'no-marker',
-                     'no-shift', 'no-spinner', 'no-tasks', 'stale-entry',
+                     'no-tasks', 'stale-entry',
                      'duplicate-spawn', 'no-exit', 'no-selection',
                      'no-pills', 'input-only', 'stale-exit', 'wrong-exit-task',
                      'still-viewing', 'empty-main', 'unrelated-main',
-                     'no-shift-transcript', 'no-spinner-transcript', 'no-tasks-transcript'):
+                     'no-tasks-transcript', 'panel-selected'):
         with tempfile.TemporaryDirectory(prefix='release-retention-handler-') as root_string:
             run_dir = Path(root_string)
             gate = object.__new__(module.BinaryGate)
@@ -2419,7 +2439,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.retention_escape_window = lambda *args: scenario != 'no-escape-window'
             gate.retention_active_abort = lambda *args: scenario != 'no-active-abort'
 
-            ui = {'state': 'main', 'tree': False, 'index': -1, 'captures': 0}
+            ui = {'state': 'main', 'captures': 0, 'panel': False}
             commands = []
             gate.send = lambda *args: ui.update(state='tasks') if args[2] == '/tasks' else None
 
@@ -2427,17 +2447,18 @@ def assert_driver_behavior(module, baseline_module):
                 ui['captures'] += 1
                 state = ui['state']
                 text = {
-                    'main': '@main @retention-worker shift + ↓ expand',
-                    'footer': '@main @retention-worker selected main',
-                    'worker': '@main @retention-worker selected worker',
-                    'selection': ('› ╒═ team-lead hide' if ui['index'] == -1 else
-                                  '› ├─ retention-worker enter to view hide' if ui['index'] == 0 else
-                                  '› ╘═ hide enter to collapse'),
-                    'tasks': 'Background tasks › @team-lead @retention-worker',
-                    'task-row': 'Background tasks › @retention-worker',
+                    'main': '    ● main\n    ◯ retention-worker  release transcript retention worker',
+                    'footer': ('  ❯ ● main\n    ◯ retention-worker  release transcript retention worker\n'
+                               '  Enter to view · Esc to cancel'),
+                    'worker': ('    ● main\n  ❯ ⏺ retention-worker  release transcript retention worker\n'
+                               '  Enter to view · x to clear · Esc to cancel'),
+                    'tasks': '  Background\n › @team-lead @retention-worker',
+                    'task-row': '  Background\n › @retention-worker',
                     'detail': '@retention-worker Completed Prompt f to foreground go back',
                     'view': '@retention-worker RELEASE_RETENTION_WORKER_DONE',
                 }[state]
+                if state == 'view' and ui['panel']:
+                    text += '\n    ○ main\n  ❯ ⏺ retention-worker  release\n  Enter to view · Esc to cancel'
                 if scenario == 'no-marker' or (opens and scenario == f'no-{opens[-1]}-transcript'):
                     text = text.replace('RELEASE_RETENTION_WORKER_DONE', '')
                 if state == 'main':
@@ -2465,24 +2486,18 @@ def assert_driver_behavior(module, baseline_module):
                 ui['captures'] = 0
                 state = ui['state']
                 if key == 'Down':
-                    ui['state'] = 'task-row' if state == 'tasks' else 'footer'
-                elif key == 'Right':
-                    if scenario != 'no-selection':
-                        ui['state'] = 'worker'
-                elif key == 'S-Down':
-                    ui['index'] = ui['index'] + 1 if ui['tree'] else -1
-                    ui.update(tree=True, state='selection')
-                elif key == 'S-Up':
-                    ui.update(index=ui['index'] - 1, state='selection')
+                    if state == 'tasks':
+                        ui['state'] = 'task-row'
+                    elif state == 'footer':
+                        if scenario != 'no-selection':
+                            ui['state'] = 'worker'
+                    else:
+                        ui['state'] = 'footer'
                 elif key in ('Enter', 'f'):
-                    if state == 'selection' and ui['index'] == 1:
-                        ui.update(tree=False, index=-1, state='main')
-                        return
                     if state == 'task-row':
                         ui['state'] = 'detail'
                         return
-                    route = ('tasks' if state == 'detail' else 'spinner' if key == 'f'
-                             else 'shift' if state == 'selection' else 'footer')
+                    route = 'tasks' if state == 'detail' else 'footer'
                     opens.append(route)
                     blocked = scenario == f'no-{route}' or (scenario == 'no-reopen' and len(opens) > 1)
                     if not blocked:
@@ -2491,9 +2506,11 @@ def assert_driver_behavior(module, baseline_module):
                             log.append('[viewed_agent_changed] before=task-real after=main reason=exit\n')
                         if scenario != 'stale-entry' or len(opens) == 1:
                             log.append(f'[viewed_agent_changed] before=main after={task} type=in_process_teammate\n')
-                        ui['state'] = 'view'
+                        ui.update(state='view', panel=scenario == 'panel-selected' and route == 'footer')
                         if scenario == 'duplicate-spawn' and len(opens) == 2:
                             log.append('[spawnInProcessTeammate] Spawning retention-worker@test (taskId: task-extra)\n')
+                elif key == 'Escape' and ui['panel']:
+                    ui['panel'] = False
                 elif key == 'Escape' and scenario != 'no-exit':
                     if scenario != 'stale-exit':
                         task = 'wrong' if scenario == 'wrong-exit-task' else 'task-real'
@@ -2504,7 +2521,13 @@ def assert_driver_behavior(module, baseline_module):
             gate.capture = retention_capture
             gate.tmux = retention_tmux
             module.BinaryGate.transcript_retention(gate)
-            assert recorded[0]['validation_verdict'] == ('passed' if scenario == 'pass' else 'failed'), scenario
+            assert recorded[0]['validation_verdict'] == (
+                'passed' if scenario in ('pass', 'panel-selected') else 'failed'), scenario
+            if scenario == 'panel-selected':
+                # Two footer views each need one panel Esc before the timed exit Esc.
+                assert opens == ['footer', 'footer', 'tasks']
+                assert commands.count('Escape') == 5
+                assert recorded[0]['single_escape_exits'] == [True, True, True]
             if scenario == 'no-gc':
                 assert recorded[0]['assertions'][0]['passed']
             if scenario in ('no-pills', 'input-only'):
@@ -2518,11 +2541,9 @@ def assert_driver_behavior(module, baseline_module):
                 assert recorded[0]['single_escape_exits'] == [True, False], scenario
                 assert commands.count('Escape') == 2
                 assert opens == ['footer', 'footer']
-                assert not any(key in ('S-Down', 'S-Up') for key in commands)
-                assert recorded[0]['entry_paths'] == {
-                    'footer': True, 'shift': False, 'spinner': False, 'tasks': False,
-                }
-                assert not (run_dir / 'shift-selection.txt').exists()
+                assert commands.count('Down') == 4
+                assert recorded[0]['entry_paths'] == {'footer': True, 'tasks': False}
+                assert not (run_dir / 'tasks-list.txt').exists()
                 assert log[-1] == '[viewed_agent_changed] before=task-real after=main reason=exit\n'
             if scenario in ('no-exit', 'stale-exit', 'wrong-exit-task',
                             'still-viewing', 'empty-main', 'unrelated-main',
@@ -2534,11 +2555,11 @@ def assert_driver_behavior(module, baseline_module):
                 assert not opens
             assert server.retention_stopped.is_set()
             if scenario == 'pass':
-                assert opens == ['footer', 'footer', 'shift', 'spinner', 'tasks']
-                assert commands.count('Escape') == 5
+                assert opens == ['footer', 'footer', 'tasks']
+                assert commands.count('Escape') == 3
                 assert all(recorded[0]['entry_paths'].values())
-                assert len(recorded[0]['assertions']) == 9
-            if scenario in ('no-shift', 'no-spinner', 'no-tasks'):
+                assert len(recorded[0]['assertions']) == 7
+            if scenario == 'no-tasks':
                 assert not recorded[0]['entry_paths'][scenario[3:]]
                 assert any(not assertion['passed'] for assertion in recorded[0]['assertions'])
 
@@ -2588,28 +2609,34 @@ def assert_driver_behavior(module, baseline_module):
                  {'role': 'user', 'content': 'RELEASE_RETENTION_RESUME'}]
         results = []
         try:
-            team = retention_request(parent)
-            assert '"name":"TeamCreate"' in team
-            assert retention_request(parent + [{'type': 'function_call', 'arguments': 'RELEASE_RETENTION_CHILD_REQUEST'}]) == team
-            agent = retention_request(parent + [retention_output('team')])
+            agent = retention_request(parent)
+            assert 'TeamCreate' not in agent
+            assert retention_request(parent + [{'type': 'function_call', 'arguments': 'RELEASE_RETENTION_CHILD_REQUEST'}]) == agent
             assert '"name":"Agent"' in agent
             assert '\\"run_in_background\\":true' in agent
             assert 'retention-worker' in agent
             assert 'RELEASE_RETENTION_WORKER_DONE' in retention_request(child)
-            assert server.response_for({'instructions': module.TITLE_GENERATION_INSTRUCTION})[0] == 'title'
+            assert server.response_for({'instructions': title_instructions(module)})[0] == 'title'
             probe_input = parent + [retention_output('shutdown'), {
                 'role': 'user', 'content': 'RELEASE_RETENTION_PROBE task-real before',
             }]
             probe = retention_request(probe_input)
             reminder = {'type': 'input_text', 'text': '<system-reminder>Reminder</system-reminder>'}
-            for command, marker in [('RELEASE_RETENTION_PROBE task-real before', '"name":"TaskOutput"'),
+            for command, marker in [('RELEASE_RETENTION_PROBE task-real before', '"name":"ToolSearch"'),
                                     ('RELEASE_RETENTION_GC_TICK', 'RELEASE_RETENTION_GC_TICK_DONE')]:
                 assert marker in retention_request(parent + [retention_output('shutdown'), {
                     'role': 'user', 'content': [{'type': 'input_text', 'text': command}, reminder],
                 }])
-            assert '"name":"TaskOutput"' in probe
+            assert '"name":"ToolSearch"' in probe and 'select:TaskStop' in probe
+            probe_input = probe_input + [
+                {'type': 'function_call', 'call_id': 'fc_retention_probe_search', 'name': 'ToolSearch',
+                 'arguments': '{"query":"select:TaskStop"}'},
+                {'type': 'function_call_output', 'call_id': 'fc_retention_probe_search', 'output': 'loaded'},
+                {'role': 'user', 'content': [{'type': 'input_text', 'text': 'Tool loaded.'}]},
+            ]
+            probe = retention_request(probe_input)
+            assert '"name":"TaskStop"' in probe and 'TaskOutput' not in probe
             assert '\\"task_id\\":\\"task-real\\"' in probe
-            assert '\\"block\\":false' in probe
             probe_result = probe_input + [{
                 'type': 'function_call_output', 'call_id': 'fc_retention_probe_before',
                 'output': 'actual tool result',
@@ -2622,7 +2649,7 @@ def assert_driver_behavior(module, baseline_module):
             worker.start()
             assert server.retention_parent_waiting.wait(2)
             assert worker.is_alive()
-            assert retention_request(parent) == team
+            assert retention_request(parent) == agent
             server.retention_release.set()
             worker.join(3)
             assert not worker.is_alive()
@@ -2746,7 +2773,7 @@ def assert_driver_behavior(module, baseline_module):
                 'type': 'function_call', 'name': 'Agent',
                 'arguments': json.dumps({'prompt': 'RELEASE_COORDINATOR_CHILD_REQUEST'}),
             }]) == agent
-            assert server.response_for({'instructions': module.TITLE_GENERATION_INSTRUCTION, 'input': parent})[0] == 'title'
+            assert server.response_for({'instructions': title_instructions(module), 'input': parent})[0] == 'title'
             assert coordinator_request(child + [tool_output('unrelated', 'ok')]) == bash
             parent_done = coordinator_request(parent + [tool_output('fc_release_coordinator_agent', 'background task result')])
             assert 'RELEASE_COORDINATOR_PARENT_OK' in parent_done
@@ -2858,7 +2885,7 @@ def assert_driver_behavior(module, baseline_module):
 
             title_sse = post_response(
                 base_url,
-                instructions=module.TITLE_GENERATION_INSTRUCTION,
+                instructions=title_instructions(module),
             )
             title_events = [
                 json.loads(line[6:])
@@ -3292,6 +3319,13 @@ def assert_driver_behavior(module, baseline_module):
         'different input',
     ) is False
     assert module.submitted_input_pending('❯ \n') is False
+    menu_pane = ('────────\n❯ /stats\n────────\n'
+                 '  ❯ /stats      Show your Claude Code usage statistics and activity\n'
+                 '    /status     Show Claude Code status\n')
+    assert module.submitted_input_visible(menu_pane, '/stats') is True
+    assert module.submitted_input_pending(menu_pane) is True
+    assert module.submitted_input_visible(menu_pane.replace('❯ /stats\n', '❯ /sta\n', 1), '/stats') is False
+    assert module.submitted_input_visible('────────\n❯ \n────────\n ❯ 1. Yes\n', '1. Yes') is False
     assert module.input_prompt_ready('❯ /goal wait for token\nGoal is set\n') is False
     assert module.input_prompt_ready(
         '❯ /goal wait for token\nGoal is set\n✶ Working…\n❯ \n'
@@ -3306,13 +3340,17 @@ def assert_driver_behavior(module, baseline_module):
         'method': 'POST',
         'path': '/v1/responses',
         'body': {
-            'instructions': (
-                'system prefix\n'
-                + module.TITLE_GENERATION_INSTRUCTION
-                + ' (3-7 words)\nReturn JSON.'
-            ),
+            'instructions': title_instructions(module),
         },
     }
+    for stale in (
+        'Generate a concise, sentence-case title (3-7 words)\nReturn JSON.',
+        module.TITLE_GENERATION_INSTRUCTIONS[0],
+        title_instructions(module) + '\nmore system prompt',
+    ):
+        assert module.is_main_response_request({
+            'method': 'POST', 'path': '/v1/responses',
+            'body': {'instructions': stale}})
     main_request = {
         'method': 'POST',
         'path': '/v1/responses',
@@ -3395,7 +3433,7 @@ def assert_driver_behavior(module, baseline_module):
         'target': 'session:0.0',
     }
 
-    with tempfile.TemporaryDirectory(prefix='release-driver-assertions-') as root_string:
+    with tempfile.TemporaryDirectory(prefix='release-driver-assertions-', dir=module.HOST_TMP_ROOT) as root_string:
         root = Path(root_string)
         source_run = root / 'run-a'
         source_run.mkdir()
@@ -3816,6 +3854,10 @@ def assert_driver_behavior(module, baseline_module):
     for faulty in (None, 'alias-model', 'explicit-model', 'missing-response', 'missing-pane', 'duplicate-response'):
         with tempfile.TemporaryDirectory(prefix='release-driver-default-model-') as root_string:
             run_dir = Path(root_string)
+            # The picker opens only once discovery is cached in the global config.
+            (run_dir / 'config').mkdir()
+            (run_dir / 'config/.claude.json').write_text(json.dumps({
+                'additionalModelOptionsCache': [{'value': 'gpt-release-discovered'}]}))
             gate = object.__new__(module.BinaryGate)
             gate.start = lambda _label: (run_dir, 'model-session', 'model-target', True)
             requests = [{
@@ -3823,14 +3865,22 @@ def assert_driver_behavior(module, baseline_module):
                 'authorization': {'present': True, 'matches_dummy': True},
             }]
             gate.mock_servers = {run_dir.name: SimpleNamespace(snapshot=lambda: requests)}
-            gate.tmux = lambda *args, **kwargs: None
+            keys = []
+            gate.tmux = lambda *args, **kwargs: keys.append(args[-1]) if args[0] == 'send-keys' else None
             def capture_model(_target, path, **_kwargs):
                 text = {
-                    '03-model-picker-pane.txt': 'Select model\nGPT Release Discovered',
+                    # The picker lists Default first, as on the real binary.
+                    '03-model-picker-pane.txt': (
+                        'Select model\n❯ 1. Default (gpt-5.6-sol) ✔  Current model\n'
+                        '  2. GPT Release Discovered   Release validation model'
+                    ),
                     '04-model-selected-pane.txt': 'gpt-release-discovered',
                     '05-model-current-pane.txt': 'Current model: gpt-release-discovered',
                     '06-explicit-model-pane.txt': 'RELEASE_EXPLICIT_MODEL_OK',
-                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra',
+                    # A warm cache asks before switching models.
+                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra' if keys[2:] == ['1'] else (
+                        'Switch model?\n❯ 1. Yes, switch to gpt-5.6-terra\n  2. No, go back'
+                    ),
                     '08-default-model-pane.txt': 'RELEASE_DEFAULT_MODEL_OK',
                 }.get(path.name, '')
                 if faulty == 'missing-pane' and path.name == '08-default-model-pane.txt':
@@ -3869,6 +3919,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.model_discovery_picker()
             assert recorded[0]['validation_verdict'] == ('passed' if faulty is None else 'failed'), faulty
             if faulty is None:
+                assert keys == ['M-p', '2', '1'], keys
                 assert {item['assertion_id'] for item in recorded[0]['assertions']} >= {
                     'openai-default-model-alias', 'openai-explicit-model-preserved',
                 }
@@ -3922,6 +3973,7 @@ def assert_driver_behavior(module, baseline_module):
         requests = [
             {
                 'body': {
+                    'model': 'release-effort-model',
                     'reasoning': {'effort': expected},
                     'prompt_cache_key': 'cache-key',
                 },
@@ -3972,9 +4024,10 @@ def assert_driver_behavior(module, baseline_module):
             if prompt.startswith('Reply with'):
                 visible_requests += 1
             elif prompt == '/effort ultracode':
-                (run_dir / 'config' / 'settings.json').write_text(
-                    json.dumps({'effortLevel': 'ultracode'})
-                )
+                # The product saves effort per model, not at the top level.
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps(
+                    {'modelSettings': {'release-effort-model': {'effortLevel': 'ultracode'}}}
+                ))
 
         effort_gate.send = send_effort
         effort_gate.wait_until = lambda predicate, timeout, interval=0.5: predicate()
@@ -4027,6 +4080,27 @@ def assert_driver_behavior(module, baseline_module):
         }):
             module.BinaryGate.effort_openai_responses_wire(effort_gate)
         assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['settings_effort_level'] == 'ultracode'
+
+        # A top-level effortLevel alone is not the product's per-model save.
+        original_send = effort_gate.send
+
+        def send_top_level(*args):
+            original_send(*args)
+            if str(args[2]) == '/effort ultracode':
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps({'effortLevel': 'ultracode'}))
+
+        effort_gate.send = send_top_level
+        visible_requests = 0
+        transcript_open = False
+        recorded.clear()
+        with patch.object(module, 'analyze_openai_wire_debug', return_value={
+            'matched': True, 'cross_client_append_only': True,
+        }):
+            module.BinaryGate.effort_openai_responses_wire(effort_gate)
+        assert recorded[0]['validation_verdict'] == 'failed'
+        assert recorded[0]['settings_effort_level'] is None
+        effort_gate.send = original_send
 
     with tempfile.TemporaryDirectory(prefix='release-driver-fast-wire-') as root_string:
         run_dir = Path(root_string) / 'fast-openai-responses-wire'
@@ -4221,8 +4295,8 @@ def assert_driver_behavior(module, baseline_module):
     assert module.analyze_openai_wire_debug(diagnostic_text, with_models)['matched']
     title_only = json.loads(json.dumps(wire_requests))
     for request in title_only:
-        request['body']['instructions'] = module.TITLE_GENERATION_INSTRUCTION
-    title_text = diagnostic_text.replace('19B', str(len(module.TITLE_GENERATION_INSTRUCTION.encode())) + 'B')
+        request['body']['instructions'] = title_instructions(module)
+    title_text = diagnostic_text.replace('19B', str(len(title_instructions(module).encode())) + 'B')
     title_analysis = module.analyze_openai_wire_debug(title_text, title_only)
     assert title_analysis['matched']
     assert not title_analysis['create_compact_isolated']
@@ -4692,7 +4766,7 @@ def assert_driver_behavior(module, baseline_module):
     launcher = LAUNCHER_PATH.read_text()
     assert "value = os.environ.get(f'CC_VALIDATION_{name}') or os.environ.get(name)" in driver
     assert "value = merge_no_proxy(value, '127.0.0.1', 'localhost')" in driver
-    assert "uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'" in driver
+    assert "uses_local_mock = label in MOCK_OPENAI_TARGETS or label in FIRST_PARTY_BOOTSTRAP_LABELS" in driver
     assert "if uses_local_mock:\n            mock_server = MockOpenAIServer(run_dir, label)" in driver
     assert "if name == 'NO_PROXY' and uses_local_mock:" in driver
     assert 'set -- env -i' in launcher
@@ -4943,10 +5017,12 @@ def assert_deferred_tool_discovery(module):
         label = 'deferred-tool-discovery' if enabled else 'deferred-tool-discovery-off'
         with tempfile.TemporaryDirectory() as tmp:
             server = module.MockOpenAIServer(Path(tmp), label)
-            body = {'tools': [{'name': 'ToolSearch'}], 'input': []}
+            workflow_tool = {'name': 'Workflow', 'parameters': {'type': 'object', 'properties': {
+                name: {'type': 'string'} for name in ('name', 'script', 'scriptPath')}}}
+            body = {'tools': [{'name': 'ToolSearch'}, *([workflow_tool] if enabled else [])], 'input': []}
             requests = []
             results = {
-                'deferred-search': 'Terminal, Workflow' if enabled else 'Terminal',
+                'deferred-search': 'Tmux, Workflow' if enabled else 'Tmux',
                 'deferred-workflow-off': 'No matching deferred tools found',
                 'deferred-open': json.dumps({'target': 'unit-session', 'isRunning': True, 'pid': 88097,
                     'command': '/bin/sh', 'args': ['-c', 'stty -echo; exec cat'],
@@ -4978,14 +5054,13 @@ def assert_deferred_tool_discovery(module):
                 assert all(event.get('item', {}).get('id', 'fc_').startswith('fc_') for event in events)
                 arguments = json.loads(call['arguments'])
                 if kind not in ('deferred-search', 'deferred-workflow-off', 'deferred-open'):
-                    assert call['name'] == 'Terminal' and arguments['target'] == 'unit-session'
+                    assert call['name'] == 'Tmux' and arguments['target'] == 'unit-session'
                 body['input'].append({'type': 'function_call', 'call_id': call['call_id'],
                                       'name': call['name'], 'arguments': call['arguments']})
                 body['input'].append({'type': 'function_call_output', 'call_id': 'fc_' + kind, 'output': results[kind]})
-                body['tools'] = [{'name': 'ToolSearch'}, {'name': 'Terminal', 'parameters': terminal_schema}]
+                body['tools'] = [{'name': 'ToolSearch'}, {'name': 'Tmux', 'parameters': terminal_schema}]
                 if enabled:
-                    body['tools'].append({'name': 'Workflow', 'parameters': {'type': 'object', 'properties': {
-                        name: {'type': 'string'} for name in ('name', 'script', 'scriptPath')}}})
+                    body['tools'].append(workflow_tool)
             if enabled:
                 notification = ('<task-notification>\n<task-id>unit-task</task-id>\n'
                     '<tool-use-id>fc_deferred-open</tool-use-id>\n'
@@ -5105,6 +5180,16 @@ def assert_deferred_tool_discovery(module):
                 else:
                     broken[0]['body']['tools'].append({'name': 'Terminal'})
                 assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed'], mutation
+            for name in ('Tmux', 'Terminal'):
+                broken = json.loads(json.dumps(requests))
+                broken[0]['body']['tools'].append({'name': name})
+                assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed'], name
+            # Workflow is loaded up front exactly when workflows are enabled.
+            broken = json.loads(json.dumps(requests))
+            first_tools = broken[0]['body']['tools']
+            broken[0]['body']['tools'] = ([tool for tool in first_tools if tool['name'] != 'Workflow']
+                                          if enabled else [*first_tools, workflow_tool])
+            assert not module.BinaryGate.deferred_discovery_evidence(broken, enabled)['passed']
 
 
 def assert_plugins_reload(module):
@@ -5353,8 +5438,37 @@ def assert_team_concurrency_mock(module):
         '    def team_concurrency(self):', 1
     )[1].split('\n    def ', 1)[0]
     assert "if terminal:\n                self.send(target, run_dir, '/tasks'" in source
-    assert "'Background tasks' in (" in source
+    assert 'background_tasks_dialog_visible(' in source
     assert "f'Team: {team_name} (4)' in text" in source
+    assert 'TeamCreate' not in source
+    assert module.background_tasks_dialog_visible('  Background\n  3 agents\n')
+    assert not module.background_tasks_dialog_visible('Background tasks dialog dismissed\n')
+    with tempfile.TemporaryDirectory(prefix='release-session-team-') as directory:
+        assert module.session_team_name(directory) is None
+        team_dir = Path(directory) / 'config' / 'teams' / 'session-8fef6dbb'
+        team_dir.mkdir(parents=True)
+        (team_dir / 'config.json').write_text(json.dumps({'leadSessionId': '8fef6dbb-9530-4031'}))
+        assert module.session_team_name(directory) == 'session-8fef6dbb'
+        # Delivered notifications leave the inbox; the leader transcript keeps them.
+        def idle(name):
+            return json.dumps({'type': 'idle_notification', 'from': name,
+                               'timestamp': 't0', 'idleReason': 'available'})
+        inbox = team_dir / 'inboxes' / 'team-lead.json'
+        inbox.parent.mkdir()
+        inbox.write_text(json.dumps([{'from': 'worker-c', 'text': idle('worker-c')}]))
+        transcript = Path(directory) / 'config' / 'projects' / 'p' / '8fef6dbb-9530-4031.jsonl'
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text('\n'.join(json.dumps(entry) for entry in (
+            {'type': 'attachment', 'attachment': {'type': 'teammate_mailbox', 'messages': [
+                {'from': 'worker-a', 'text': idle('worker-a')}]}},
+            {'type': 'user', 'message': {'role': 'user', 'content': (
+                f'<teammate-message teammate_id="worker-b">\n{idle("worker-b")}\n</teammate-message>\n\n'
+                f'<teammate-message teammate_id="worker-c">\n{idle("worker-c")}\n</teammate-message>')}},
+        )) + '\n')
+        config = {'leadSessionId': '8fef6dbb-9530-4031'}
+        assert sorted(item['from'] for item in module.leader_idle_notifications(directory, config, inbox)) == [
+            'worker-a', 'worker-b', 'worker-c']
+        assert [item['from'] for item in module.leader_idle_notifications(directory, None, inbox)] == ['worker-c']
     assert "not submitted_input_pending(text)" in source
 
     assert 'team-concurrency' in module.MOCK_OPENAI_TARGETS
@@ -5371,7 +5485,6 @@ def assert_team_concurrency_mock(module):
     assert child_kind == 'team-worker-completed'
     assert 'worker-a' in child_sse
     expected = [
-        ('team-create', 'fc_team_create', 'TeamCreate'),
         ('team-agents', 'fc_team_worker_a', 'Agent'),
         ('team-completed', None, None),
     ]
@@ -5391,17 +5504,14 @@ def assert_team_concurrency_mock(module):
             for event in events
             if event['type'] == 'response.function_call_arguments.done'
         ]
-        if expected_kind == 'team-create':
-            assert len(calls) == 1
-        else:
-            assert len(calls) == 3
-            assert [call['call_id'] for call in calls] == [
-                'fc_team_worker_a', 'fc_team_worker_b', 'fc_team_worker_c',
-            ]
-            assert [json.loads(call['arguments'])['name'] for call in calls] == [
-                'worker-a', 'worker-b', 'worker-c',
-            ]
-            assert all(json.loads(call['arguments'])['run_in_background'] for call in calls)
+        assert len(calls) == 3
+        assert [call['call_id'] for call in calls] == [
+            'fc_team_worker_a', 'fc_team_worker_b', 'fc_team_worker_c',
+        ]
+        assert [json.loads(call['arguments'])['name'] for call in calls] == [
+            'worker-a', 'worker-b', 'worker-c',
+        ]
+        assert all(json.loads(call['arguments'])['run_in_background'] for call in calls)
         assert calls[0]['call_id'] == expected_call_id
         assert calls[0]['name'] == expected_name
         for call in calls:
@@ -5663,7 +5773,7 @@ def assert_terminal_request_predicate(module):
     assert not module.terminal_request_submitted([old, request('中文'), request('wrong')], 1, '中文')
 
     title = request('中文')
-    title['body']['instructions'] = module.TITLE_GENERATION_INSTRUCTION
+    title['body']['instructions'] = title_instructions(module)
     main = request_with_blocks(
         '<available-deferred-tools>ToolSearch</available-deferred-tools>',
         '<system-reminder>context</system-reminder>',
@@ -5869,7 +5979,7 @@ def assert_terminal_matrix_execution(module):
             if failure is None:
                 incomplete = {'normal_native_exit', 'independent_pty_capture_identity',
                               'independent_pty_resize_sequence', 'bounded_terminal_evidence',
-                              'full_terminal_coverage'}
+                              'bounded_terminal_verify'}
                 assert all(value for key, value in checks.items()
                            if not key.startswith('frame_') and key not in incomplete), checks
                 assert all(checks[key] is False for key in incomplete), checks
@@ -6372,6 +6482,211 @@ def test_retained_builtin_invalid_launch_keeps_failed_originals():
             assert recorded[0]['assertions'][0]['validation_verdict'] == 'failed'
 
 
+CLIENT_VERSION_PATHS = (
+    'src/constants/clientVersions.ts', 'src/utils/settings/settings.ts',
+    'src/utils/settings/types.ts', 'src/utils/http.ts', 'src/utils/userAgent.ts',
+    'src/services/api/client.ts', 'src/services/api/openai-compat.ts',
+    'src/services/api/bootstrap.ts', 'src/utils/model/openaiModelOptions.ts',
+    'src/ssh/sshAuthProxy.ts',
+)
+
+
+def test_retained_client_version_headers_target_contract():
+    import re
+    module = load_driver()
+    driver = DRIVER_PATH.read_text()
+    for path in CLIENT_VERSION_PATHS:
+        assert 'client-version-headers' in module.required_targets_for_paths([path]), path
+    assert 'client-version-headers' not in module.required_targets_for_paths(['src/utils/settings/constants.ts'])
+    assert 'client-version-headers' in module.TARGET_GROUPS['models']
+    assert "'client-version-headers': self.client_version_headers" in driver
+    # The gate's expected defaults must track the product constants it validates.
+    source = (DRIVER_PATH.parents[4] / 'src/constants/clientVersions.ts').read_text()
+    assert dict(re.findall(r"(\w+): '([^']+)'", source)) == module.CLIENT_VERSION_DEFAULTS
+    overrides = module.CLIENT_VERSION_VARIANTS['override']
+    assert set(overrides) == set(module.CLIENT_VERSION_DEFAULTS)
+    assert len(set(overrides.values())) == len(overrides)
+    assert not set(overrides.values()) & set(module.CLIENT_VERSION_DEFAULTS.values())
+    assert module.CLIENT_VERSION_VARIANTS['default'] is None
+    assert 0 < len(module.CLIENT_VERSION_VARIANTS['partial']) < len(overrides)
+    assert {(variant, mode) for _, variant, mode in module.CLIENT_VERSION_SCENARIOS} == {
+        (variant, mode) for variant in ('default', 'override', 'partial')
+        for mode in ('openai', 'bootstrap', 'chatgpt')}
+
+
+def test_retained_client_version_headers_fixture():
+    module = load_driver()
+    with tempfile.TemporaryDirectory(prefix='client-version-fixture-') as tmp:
+        gate = object.__new__(module.BinaryGate)
+        gate.repo = DRIVER_PATH.parents[4]
+        gate.evidence_root = Path(tmp)
+        gate.auth_source = Path(tmp) / 'must-not-read-real-auth'
+        gate.auth_homes = set()
+        try:
+            for label, variant, mode in module.CLIENT_VERSION_SCENARIOS:
+                run = Path(tmp) / label
+                config, home = gate.make_fixture(run, label)
+                settings = json.loads((config / 'settings.json').read_text())
+                assert settings.get('versionNumber') == module.CLIENT_VERSION_VARIANTS[variant], label
+                auth = json.loads((home / '.codex/auth.json').read_text())
+                assert auth == {
+                    'openai': {'OPENAI_API_KEY': module.DUMMY_OPENAI_API_KEY},
+                    'bootstrap': {},
+                    'chatgpt': {'auth_mode': 'chatgpt',
+                                'tokens': {'access_token': module.OpenAIStatsServer.token}},
+                }[mode], label
+                assert (config / '.claude-local-oauth.json').exists() == (mode == 'bootstrap'), label
+                metadata = json.loads((run / 'auth-source-metadata.json').read_text())
+                assert metadata['uses_dummy_credential'] and metadata['source'] is None, label
+                assert (label in module.MOCK_OPENAI_TARGETS) == (mode == 'openai'), label
+                assert (label in module.FIRST_PARTY_BOOTSTRAP_LABELS) == (mode == 'bootstrap'), label
+                assert (label in module.CHATGPT_FIXTURE_LABELS) == (mode == 'chatgpt'), label
+        finally:
+            assert not gate.remove_auth_homes()['errors']
+    import http.client
+    import ssl
+    with tempfile.TemporaryDirectory(prefix='client-version-stats-') as tmp:
+        root = Path(tmp)
+        server = module.OpenAIStatsServer(root, root)
+        port = int(server.start().rsplit(':', 1)[1])
+        try:
+            connection = http.client.HTTPSConnection(
+                '127.0.0.1', port, context=ssl.create_default_context(cafile=str(server.ca)), timeout=5)
+            try:
+                connection.request('GET', 'https://chatgpt.com/backend-api/codex/models?client_version=9.9.3',
+                                   headers={'Authorization': f'Bearer {server.token}',
+                                            'Cookie': 'session=release-cookie', 'version': '9.9.3',
+                                            'User-Agent': 'claude-code/9.9.2'})
+                assert connection.getresponse().status == 200
+            finally:
+                connection.close()
+            (row,) = server.snapshot()
+            assert row['route'] == 'models' and row['query'] == 'client_version=9.9.3'
+            assert row['headers']['version'] == '9.9.3'
+            assert row['headers']['user-agent'] == 'claude-code/9.9.2'
+            assert 'authorization' not in row['headers'] and 'cookie' not in row['headers']
+            recorded = (root / 'openai-stats-http.json').read_text()
+            assert server.token not in recorded and 'release-cookie' not in recorded
+        finally:
+            assert server.stop()['tls_removed']
+
+
+def _client_version_rows(mode, expected):
+    api, codex = expected['ClaudeApiClientVersion'], expected['CodexVersion']
+    if mode == 'chatgpt':
+        return [{'method': 'GET', 'route': 'models', 'status': 200, 'matches_dummy': True,
+                 'query': f'client_version={codex}',
+                 'headers': {'user-agent': f'claude-code/{api}', 'version': codex}}]
+    if mode == 'bootstrap':
+        return [{'method': 'GET', 'path': '/api/claude_cli/bootstrap',
+                 'headers': {'user-agent': f'claude-code/{api}'}, 'body': None,
+                 'response_kind': 'bootstrap'}]
+    return [
+        {'method': 'GET', 'path': '/v1/models', 'headers': {'user-agent': f'claude-code/{api}'},
+         'body': None, 'response_kind': 'models'},
+        {'method': 'POST', 'path': '/v1/responses',
+         'headers': {'user-agent': f'claude-cli/{api} (external, cli)'},
+         'body': {'model': 'gpt-5.6-terra',
+                  'input': [{'role': 'user', 'content': 'RELEASE_CLIENT_VERSION_REQUEST'}]},
+         'response_kind': 'completed'},
+    ]
+
+
+def test_retained_client_version_headers_verdicts():
+    # Synthetic snapshots exercise driver verdicts only, never product behaviour.
+    module = load_driver()
+
+    def drop_requests(rows):
+        rows.clear()
+
+    def drop_codex_header(rows):
+        del rows[0]['headers']['version']
+
+    def default_agent(rows):
+        rows[0]['headers']['user-agent'] = f"claude-code/{module.CLIENT_VERSION_DEFAULTS['ClaudeApiClientVersion']}"
+
+    def default_codex_query(rows):
+        rows[0]['query'] = f"client_version={module.CLIENT_VERSION_DEFAULTS['CodexVersion']}"
+
+    def stainless(rows):
+        rows[-1]['headers']['x-stainless-package-version'] = '9.9.4'
+
+    def version_header(rows):
+        rows[-1]['headers']['version'] = module.CLIENT_VERSION_DEFAULTS['CodexVersion']
+
+    mutations = {
+        None: (None, None, None),
+        'missing-request': ('client-version-headers-override-chatgpt', drop_requests,
+                            'codex-version-header'),
+        'missing-bootstrap': ('client-version-headers-default-bootstrap', drop_requests,
+                              'bootstrap-user-agent'),
+        'missing-header': ('client-version-headers-override-chatgpt', drop_codex_header,
+                           'codex-version-header'),
+        'override-default-agent': ('client-version-headers-override-openai', default_agent,
+                                   'no-replaced-default'),
+        'partial-default-query': ('client-version-headers-partial-chatgpt', default_codex_query,
+                                  'codex-client-version-query'),
+        'stainless-openai': ('client-version-headers-override-openai', stainless, 'no-stainless'),
+        'stainless-chatgpt': ('client-version-headers-default-chatgpt', stainless, 'no-stainless'),
+        'openai-version-header': ('client-version-headers-default-openai', version_header,
+                                  'no-version-header'),
+    }
+    for mutation, (mutated_label, mutate, failed_check) in mutations.items():
+        with tempfile.TemporaryDirectory(prefix='client-version-verdict-') as tmp:
+            root = Path(tmp)
+            gate = object.__new__(module.BinaryGate)
+            gate.evidence_root = root
+            gate.mock_servers = {}
+            registered = {}
+            recorded = []
+            scenarios = {label: (variant, mode) for label, variant, mode in module.CLIENT_VERSION_SCENARIOS}
+
+            def start(label):
+                variant, mode = scenarios[label]
+                run = root / 'runs' / label
+                run.mkdir(parents=True)
+                (run / 'run-metadata.json').write_text(json.dumps({
+                    'driver_run': 'client-version-unit', 'source_run': run.name,
+                    'label': label, 'evidence_dir': str(run.resolve()),
+                }))
+                registered[str(run.resolve())] = (run / 'run-metadata.json').read_text()
+                (run / 'pane-target.txt').write_text('synthetic-only')
+                expected = {**module.CLIENT_VERSION_DEFAULTS, **(module.CLIENT_VERSION_VARIANTS[variant] or {})}
+                rows = _client_version_rows(mode, expected)
+                if label == mutated_label:
+                    mutate(rows)
+                name = 'openai-stats-http.json' if mode == 'chatgpt' else 'mock-openai-requests.json'
+                (run / name).write_text(json.dumps(rows))
+                gate.mock_servers[run.name] = SimpleNamespace(snapshot=lambda rows=rows: json.loads(json.dumps(rows)))
+                return run, label, label, True
+
+            gate.start = start
+            gate.send = lambda *args, **kwargs: None
+            gate.wait_until = lambda predicate, *args: predicate()
+            gate.close = lambda *args: {'process_remaining': False, 'forced_termination': []}
+            gate.record = lambda result: recorded.append(result)
+            gate.client_version_headers()
+            (result,) = recorded
+            result['driver_run'] = 'client-version-unit'
+            assert result['label'] == 'client-version-headers'
+            assert result['coverage_gaps'] == 'not covered: anthropic-messages, claude-oauth (unit covered)'
+            assert [item['label'] for item in result['scenarios']] == list(scenarios)
+            verdicts = {item['assertion_id']: item for item in result['assertions']}
+            assert list(verdicts) == list(scenarios)
+            assert (result['validation_verdict'] == 'passed') == (mutation is None), mutation
+            for label, assertion in verdicts.items():
+                assert (assertion['validation_verdict'] == 'passed') == (label != mutated_label), (mutation, label)
+                assert assertion['source_run'] == label
+                assert any(path.endswith('client-version-headers.json')
+                           for path in assertion['observed_evidence_paths']), label
+            if mutation is None:
+                assert module.validate_required_target_results(
+                    {'client-version-headers'}, recorded, registered)['passed']
+            else:
+                assert failed_check in verdicts[mutated_label]['reason_if_not_passed'], (
+                    mutation, verdicts[mutated_label]['reason_if_not_passed'])
+
+
 def main():
     for name, test in sorted(globals().items()):
         if name.startswith('test_retained_') and callable(test):
@@ -6423,7 +6738,7 @@ def _code_review_fork_fixture(module, root):
     }
     notification = (
         '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n'
-        f'<summary>Agent "{prompt}" completed</summary>\n'
+        f'<summary>Agent "{prompt[:49]}…" finished</summary>\n'
         f'<result>{json.dumps(module.CODE_REVIEW_FINDINGS)}</result>\n</task-notification>')
     notified = {
         **review, 'sequence': 2, 'headers': {'session-id': 'parent-session'},
@@ -6481,6 +6796,9 @@ def test_retained_code_review_runs_as_forked_skill():
         ('no notification', write_file('config/projects/owned-project/session-one.jsonl', ''),
          {'background-notification'}),
         ('not persisted', write_file('config/.claude.json', '{}'), {'typed-level-persisted'}),
+        ('untruncated summary', lambda gate, run: (run / 'config/projects/owned-project/session-one.jsonl').write_text(
+            (run / 'config/projects/owned-project/session-one.jsonl').read_text().replace('\\u2026', 'a...HEAD', 1)),
+         {'background-notification'}),
     ):
         with tempfile.TemporaryDirectory(prefix='code-review-fork-') as directory:
             gate, run, prompt, terminal = _code_review_fork_fixture(module, Path(directory))
@@ -6654,7 +6972,7 @@ def _canonical_wire_fixture(module, root):
                      'prompt_cache_key': session, 'stream': True, 'store': False,
                      'input': json.loads(json.dumps(items))}})
     append('title', [{'role': 'user', 'content': f'RELEASE_CANONICAL_DIFF:{nonce}:alpha'}],
-           module.TITLE_GENERATION_INSTRUCTION)
+           title_instructions(module))
     history = []
     for file in ('alpha', 'omega'):
         history.append({'role': 'user', 'content': f'RELEASE_CANONICAL_DIFF:{nonce}:{file}'})
@@ -7660,7 +7978,7 @@ def test_retained_canonical_diff_accepts_real_local_command_message_envelope():
         # Actual Native12 wire shape: processUserInput merges local /diff receipts
         # with the next user prompt; prior alpha tool calls precede this message.
         texts = [
-            '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>\n',
+            "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>\n",
             '<command-name>/diff</command-name>\n            <command-message>diff</command-message>\n            <command-args></command-args>\n',
             '<local-command-stdout>Diff panel shown</local-command-stdout>\n',
             prompt,
@@ -8074,7 +8392,177 @@ def test_retained_capture_roster_missing_or_ambiguous_intent_fails_closed():
                       for value in (None, '', 1))):
         assert module.terminal_capture_required_files(invalid) is None, invalid
     for target in module.TERMINAL_ACCEPTANCE:
-        assert {'bounded_terminal_evidence', 'full_terminal_coverage'} <= module.TERMINAL_REQUIRED_CHECKS[target]
+        assert {'bounded_terminal_evidence', 'bounded_terminal_verify'} <= module.TERMINAL_REQUIRED_CHECKS[target]
+        assert 'full_terminal_coverage' not in module.TERMINAL_REQUIRED_CHECKS[target]
+
+
+def test_retained_target_groups_partition_every_defined_target():
+    module = load_driver()
+    defined = {*module.DEFAULT_TARGETS, *(target for target, _ in module.TARGET_PATH_RULES)}
+    grouped = [target for members in module.TARGET_GROUPS.values() for target in members]
+    assert len(grouped) == len(set(grouped)), 'a target is in more than one group'
+    assert set(grouped) == defined, (sorted(defined - set(grouped)), sorted(set(grouped) - defined))
+    assert module.select_partial_targets(['terminal'], ['builtin-mods'], defined) == [
+        'terminal-interaction', 'terminal-canonical-diff', 'builtin-mods']
+    for groups, only in ((['nope'], []), ([], ['nope']), (['terminal', 'terminal'], []),
+                         (['terminal'], ['terminal-interaction'])):
+        try:
+            module.select_partial_targets(groups, only, defined)
+        except ValueError:
+            continue
+        raise AssertionError((groups, only))
+
+
+def _fake_gate_run(module, root, targets, *, partial=None, required=(), failing=(), started=1.0, **identity):
+    import collections, contextlib, io
+    gate = object.__new__(module.BinaryGate)
+    gate.evidence_root = root
+    gate.baseline = {}
+    gate.registered_runs = {}
+    gate.cleanup_started = False
+    gate.manifest = {'started': started, 'head': 'h1', 'binary_sha256': 'b1', 'baseline': '/tmp/baseline.json',
+                     'baseline_sha256': 's1', 'driver_sha256': 'd1', 'required_targets': sorted(required),
+                     'runs': [], **identity}
+    gate.acquire_lease = lambda: None
+    gate.release_lease = lambda: {'released': True}
+    gate.close_active_runs = lambda: []
+    gate.remove_auth_homes = lambda: {'errors': []}
+    gate.archive_and_remove_workflow_runs = lambda: {'passed': True}
+    gate.repository_state = lambda: collections.defaultdict(lambda: None)
+    gate.run_target = lambda label, action: gate.manifest['runs'].append({
+        'label': label, 'evidence_dir': str(root / label), 'assertions': [{'assertion_id': label}],
+        'validation_verdict': 'failed' if label in failing else 'passed'})
+
+    def coverage(required_targets, runs, registered_runs=None):
+        labels = {run['label'] for run in runs}
+        invalid = sorted(run['label'] for run in runs
+                         if run['label'] in required_targets and run['validation_verdict'] != 'passed')
+        missing = sorted(set(required_targets) - labels)
+        return {'passed': not missing and not invalid, 'missing_targets': missing, 'invalid_targets': invalid}
+    with patch.object(module, 'validate_required_target_results', side_effect=coverage), \
+            contextlib.redirect_stdout(io.StringIO()):
+        returned = gate.run(targets, partial)
+    return returned, json.loads((root / 'driver-final-manifest.json').read_text())
+
+
+def test_retained_partial_runs_never_pass_release_and_merge_fails_closed():
+    module = load_driver()
+    required = {'terminal-interaction', 'terminal-canonical-diff', 'builtin-mods'}
+    terminal = list(module.TARGET_GROUPS['terminal'])
+    with tempfile.TemporaryDirectory(prefix='gate-groups-unit-') as tmp:
+        root = Path(tmp)
+        ok, first = _fake_gate_run(module, root / 'a', terminal, partial={'groups': ['terminal']},
+                                   required=required, failing={'terminal-canonical-diff'}, started=1.0)
+        assert not ok and first['overall_verdict'] == 'failed' and first['run_integrity'] is True
+        ok, rerun = _fake_gate_run(module, root / 'b', terminal, partial={'groups': ['terminal']},
+                                   required=required, started=2.0)
+        assert ok and rerun['overall_verdict'] == 'partial_passed'
+        assert rerun['scope'] == 'partial' and rerun['selected_groups'] == ['terminal']
+        assert rerun['selected_targets'] == terminal and rerun['head'] == 'h1'
+        assert rerun['binary_sha256'] == 'b1' and rerun['baseline_sha256'] == 's1'
+        ok, mods = _fake_gate_run(module, root / 'c', ['builtin-mods'], partial={'groups': []},
+                                  required=required, started=3.0)
+        assert ok and mods['overall_verdict'] == 'partial_passed'
+        # The same targets without the partial flag are a full run that misses required targets.
+        ok, full = _fake_gate_run(module, root / 'full-short', terminal, required=required)
+        assert not ok and full['scope'] == 'full' and full['overall_verdict'] == 'failed'
+        ok, full = _fake_gate_run(module, root / 'full', sorted(required), required=required)
+        assert ok and full['overall_verdict'] == 'passed'
+
+        merged = module.merge_gate_manifests([root / 'a', root / 'b', root / 'c'])
+        assert merged['overall_verdict'] == 'passed', merged['merge_failures']
+        assert merged['scope'] == 'merged' and merged['required_target_coverage']['passed']
+        canonical = merged['targets']['terminal-canonical-diff']
+        assert canonical['selected']['manifest'].startswith(str(root / 'b'))
+        assert [entry['validation_verdict'] for entry in canonical['superseded']] == ['failed']
+        assert {run['label'] for run in merged['runs']} == required
+
+        def failures(paths):
+            result = module.merge_gate_manifests(paths)
+            assert result['overall_verdict'] == 'failed'
+            return ' | '.join(result['merge_failures'])
+        assert 'terminal-canonical-diff: latest result' in failures([root / 'a', root / 'c'])
+        assert 'required targets not covered' in failures([root / 'a', root / 'b'])
+        for key, value in (('binary_sha256', 'b2'), ('head', 'h2'), ('baseline_sha256', 's2')):
+            _fake_gate_run(module, root / key, ['builtin-mods'], partial={'groups': []},
+                           required=required, started=4.0, **{key: value})
+            assert f'{key} differs' in failures([root / 'a', root / 'b', root / key])
+        broken = json.loads((root / 'c' / 'driver-final-manifest.json').read_text())
+        broken['run_integrity'] = False
+        (root / 'broken').mkdir()
+        (root / 'broken' / 'driver-final-manifest.json').write_text(json.dumps(broken))
+        assert 'did not exit cleanly' in failures([root / 'b', root / 'broken'])
+        assert 'unreadable manifest' in failures([root / 'b', root / 'c', root / 'missing'])
+
+        argv = ['run-binary-gate.py', '--evidence-root', str(root / 'merged'), '--merge-manifests',
+                str(root / 'a'), str(root / 'b'), str(root / 'c')]
+        import contextlib, io
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+            assert module.main() == 0
+        written = json.loads((root / 'merged' / 'driver-final-manifest.json').read_text())
+        assert written['overall_verdict'] == 'passed'
+        assert 'scope is' in failures([root / 'merged', root / 'c'])
+
+
+def test_retained_bounded_terminal_verify_gates_and_full_coverage_is_reported_only():
+    module = load_driver()
+    with tempfile.TemporaryDirectory() as directory:
+        run_dir = Path(directory)
+        gate = object.__new__(module.BinaryGate)
+        calls = []
+        def verify(codes):
+            def command(action, descriptor, *options):
+                calls.append((action, descriptor, options))
+                outcome = codes[options]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return subprocess.CompletedProcess([], outcome, '', '')
+            return command
+        cases = (
+            # bounded, full -> bounded_terminal_verify, full_terminal_coverage
+            ((0, 1), True, 'not covered'),
+            ((0, 0), True, 'passed'),
+            ((1, 1), False, 'not covered'),
+            ((1, 0), False, 'passed'),
+            ((subprocess.TimeoutExpired('bun', 90), 1), False, 'not covered'),
+        )
+        (run_dir / 'capture-launch.json').write_text('{}')
+        for (bounded, full), gated, reported in cases:
+            calls.clear()
+            gate.terminal_capture_command = verify({('--bounded',): bounded, (): full})
+            checks, result = {}, {}
+            gate.verify_terminal_capture(run_dir, checks, result)
+            assert checks == {'bounded_terminal_verify': gated}, (bounded, full, checks)
+            assert result['full_terminal_coverage'] == reported
+            assert 'full_terminal_coverage' not in checks
+            assert [options for _, _, options in calls] == [('--bounded',), ()]
+            assert ('bounded_verify_error' in result) == isinstance(bounded, Exception)
+        # No sealed descriptor: nothing runs and the target cannot pass.
+        (run_dir / 'capture-launch.json').unlink()
+        calls.clear()
+        checks, result = {}, {}
+        gate.verify_terminal_capture(run_dir, checks, result)
+        assert calls == [] and checks == {'bounded_terminal_verify': False}
+        assert result['full_terminal_coverage'] == 'not covered'
+
+
+def test_retained_terminal_assertion_revalidation_uses_bounded_verify():
+    # Required-target coverage re-runs the capture verify; it must apply the
+    # same bounded standard as the target, or a passed target reads as invalid.
+    module = load_driver()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        launch = {'capture': {'captureId': 'cap-1'}, 'binarySha256': 'b' * 64}
+        (root / 'capture-launch.json').write_text(json.dumps(launch))
+        seen = []
+        def run(command, **_):
+            seen.append(command)
+            verdict = 'passed' if '--bounded' in command else 'failed'
+            out = {'verdict': verdict, 'run': str(root), 'captureId': 'cap-1', 'binarySha256': 'b' * 64}
+            return subprocess.CompletedProcess(command, 0 if verdict == 'passed' else 1, json.dumps(out), '')
+        with patch.object(module.subprocess, 'run', side_effect=run):
+            assert module.revalidate_terminal_assertion(root) is True
+        assert len(seen) == 1 and seen[0][-1] == '--bounded'
 
 
 if __name__ == '__main__':

@@ -1,0 +1,207 @@
+# Code Mode（实验性）
+
+<!-- lang: zh-Hans -->
+
+> 英文名：`code-mode` · 领域：工具 · [返回功能索引](README.md)
+
+## 这是什么
+
+平时 Claude 每做一步都要发一次工具调用：读一个文件、搜一次、跑一条命令，各算一轮。步骤一多，来回的轮数和 token 都会涨。
+
+打开 Code Mode 后，Claude 手里只有一个 `REPL` 工具。它在 `REPL` 里写一小段 JavaScript，用 `await Read(...)`、`await Grep(...)`、`await Bash(...)` 一次做完几步，再把整理好的结果带回对话。**脚本里的每次工具调用仍然和平时一样做校验、跑 hook、按权限规则确认**，Code Mode 只改变调用方式，不放宽权限。
+
+行为和文案对照官方 2.1.325 的 Code Mode 实现，不同之处见文末[与官方的差异](#与官方的差异)。
+
+<details lang="en"><summary>English</summary>
+
+> Name: `code-mode` · Area: Tools · [Back to index](README.md)
+
+## What it is
+
+Normally Claude makes one tool call per step: read a file, run a search, run a command, one round each. Many steps mean many round trips and more tokens.
+
+With Code Mode on, Claude has a single `REPL` tool. It writes a short JavaScript script inside `REPL` that calls `await Read(...)`, `await Grep(...)`, `await Bash(...)` and so on, does several steps at once, and brings a tidy result back to the conversation. **Every tool call inside the script is still validated, still runs your hooks and still goes through your permission rules**; Code Mode changes how tools are called, not what is allowed.
+
+Behaviour and wording follow the official 2.1.325 Code Mode; the differences are listed under "与官方的差异" at the end.
+
+</details>
+<details lang="zh-Hant"><summary>繁體中文</summary>
+
+> 英文名：`code-mode` · 領域：工具 · [返回功能索引](README.md)
+
+## 這是什麼
+
+平時 Claude 每做一步都要發一次工具呼叫：讀一個檔案、搜一次、跑一條命令，各算一輪。步驟一多，來回的輪數和 token 都會漲。
+
+打開 Code Mode 後，Claude 手裡只有一個 `REPL` 工具。它在 `REPL` 裡寫一小段 JavaScript，用 `await Read(...)`、`await Grep(...)`、`await Bash(...)` 一次做完幾步，再把整理好的結果帶回對話。**腳本裡的每次工具呼叫仍然和平時一樣做校驗、跑 hook、按權限規則確認**，Code Mode 只改變呼叫方式，不放寬權限。
+
+行為和文案對照官方 2.1.325 的 Code Mode 實作，不同之處見文末「与官方的差异」。
+
+</details>
+
+## 什么时候用
+
+- 任务要做很多小步骤：一次读十几个文件、先 `Grep` 再按结果读、批量改名或批量检查，一段脚本做完，比一步一轮少很多来回。
+- 要把大量输出先在脚本里过滤、汇总，只把结论带回对话，省上下文。
+- 有要跑很久的命令（构建、测试）又想让 Claude 同时做别的：以 `auto` 或 `bypassPermissions` 启动，脚本在后台跑，结果回来时 Claude 接着处理。
+- 只问一两个问题、做一两步的对话用不上它。它是实验功能，行为可能随官方变化，不想要时不设变量重启即可。
+
+## 打开和关闭
+
+Code Mode 只有一个开关：启动 `claude` 时设环境变量 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`。
+
+```bash
+CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude
+```
+
+开关在启动时决定一次，整个进程不变；要关掉就不设这个变量重新启动。没有 settings 项，也没有 `/config` 开关。用 API key、自定义 `ANTHROPIC_BASE_URL` 时同样可以打开。
+
+启动时输入框上方会出现一行提示：
+
+| 情况 | 提示 | 结果 |
+| --- | --- | --- |
+| `=1`，可以开启 | `⚠ Code Mode (experimental) is on · this session can be resumed only with Code Mode on` | Code Mode 开启 |
+| 设成 `1` 以外的值（如 `=2`） | `⚠ Code Mode (experimental) isn't available: CLAUDE_CODE_EXPERIMENTAL_CODE_MODE must be 1 to turn it on. Starting with the ordinary tools.` | 普通工具 |
+| 后台会话、teammate 窗格、Remote Control | `⚠ Code Mode (experimental) isn't available: for now it doesn't work in background jobs, in teammates' panes or with Remote Control. Starting with the ordinary tools.` | 普通工具 |
+| `--remote`、`CLAUDE_CODE_REMOTE` | `⚠ Code Mode (experimental) isn't available: for now it only works in the interactive terminal. Starting with the ordinary tools.` | 普通工具 |
+| `-p`、SDK、IDE 插件等非交互入口 | 不显示提示，只写 debug 日志 | 普通工具 |
+
+## 快速上手
+
+下面的画面来自 `./built-claude` 在 110×36 的 tmux pane 中的实际运行（多数是节选），模型回复由测试用假 API 按脚本生成。
+
+**1. 一段脚本做完几步。** 问「统计一下 src 里有多少 TODO」，Claude 写的脚本先 `Grep` 再 `Glob`，两次调用合在一个 `REPL` 里完成。平时的视图里不显示 `REPL` 本身，只把脚本里的调用汇总成一行：
+
+![启动提示和一段脚本的结果](images/code-mode-start.png)
+
+这一轮模型实际发出的脚本：
+
+```js
+const hits = await Grep({pattern: 'TODO', path: 'src', output_mode: 'count'})
+const files = await Glob({pattern: 'src/**/*.ts'})
+hits.content + `\n(${files.numFiles} files scanned)`
+```
+
+按 `Ctrl+O` 展开详细记录，`REPL` 显示为一行 `Code(脚本的说明) · 3 lines`，下面是脚本里每次调用各自的结果。脚本的返回值只交给 Claude，界面上不显示：
+
+![展开后的 Code 和脚本里的调用](images/code-mode-expanded.png)
+
+在详细记录里再按 `Ctrl+E`，`Code` 下面显示脚本源码，再按一次收起：
+
+![按 Ctrl+E 显示脚本源码](images/code-mode-source.png)
+
+**2. 变量在调用之间保留。** 脚本里用 `var` 或 `globalThis` 存下的值，下一次 `REPL` 还在，Claude 不用重新读一遍：
+
+```text
+❯ 计数一下项目里的 ts 文件，记下来
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ 记下了 3 个 .ts 文件，存在变量 seen 里。
+
+❯ 接着用刚才记下的列表
+
+⏺ 上一步记下的文件是 app.ts、log.ts、util.ts。
+```
+
+第二轮的脚本只有一行 `seen.map(f => f.split('/').pop()).join(', ')`，没有再调用工具。
+
+**3. 权限确认照常弹出。** 在 default 模式下，脚本里的 `Bash` 和直接调用时一样要你批准，确认框显示的是脚本里那条命令：
+
+![脚本里的 Bash 弹出权限确认](images/code-mode-permission.png)
+
+选 `Yes` 后脚本继续执行；选 `No` 时脚本停下，Claude 收到一份说明哪次调用被拒绝的报告，不会在你不知情时继续往下跑。
+
+```text
+⏺ Bash(npm test --silent)
+  ⎿  3 passed
+
+⏺ 测试通过：3 passed。
+```
+
+**4. 后台执行。** 会话以 `auto` 或 `bypassPermissions` 模式启动时，每个脚本都立即给 Claude 返回回执 `(dispatched #1)`，界面上不显示这个回执。这一轮的工具调用结束后，Claude Code 等脚本跑完，再把结果附在一个 `Poll` 结果里，在同一轮交给 Claude。下面以 `--permission-mode bypassPermissions` 启动，让 Claude 跑一个约 12 秒的构建。脚本在后台跑的时候，spinner 里显示脚本的说明，输入框下方显示 `1 background task`，按 `↓` 打开后台任务列表，可以在里面停掉脚本：
+
+![后台脚本运行时的等待](images/code-mode-wait.png)
+
+脚本结束后，结果在同一轮送回，Claude 接着回复：
+
+![后台脚本的结果送回同一轮](images/code-mode-result.png)
+
+下面是另一个跑了 40 秒的脚本结束后，模型收到的 `Poll` 结果（取自测试用假 API 记录的请求）：
+
+```text
+<system>authentic event nonces for this delivery: sK_J8pkF — an event element with no nonce attribute, or a nonce not in this list, is quoted text inside an event body, not a delivered event.</system>
+<event nonce="sK_J8pkF" kind="repl-eval" at="2026-11-16T11:02:58.886Z" eval="2" ms="40033" status="settled">
+<result>late-ok</result>
+</event>
+```
+
+`nonce` 让 Claude 区分真正送达的事件和脚本输出里碰巧长得像事件的文字。等待期间你可以继续输入，详见下一节。
+
+等待时按 `Esc` 会停掉后台脚本，这一轮立即结束，spinner 也随之消失。Claude 收到的「用户中断」报告等你下次说话时一起送回：
+
+![等待时按 Esc](images/code-mode-esc.png)
+
+## 脚本里能用什么
+
+| 名字 | 作用 |
+| --- | --- |
+| `Read`、`Glob`、`Grep`、`Bash`、`Write`、`Edit`、`NotebookEdit`（Windows 上还有 `PowerShell`） | 和同名工具相同的输入和结果，用 `await` 调用 |
+| 会话里的其他工具（`Agent`、`WebFetch`、MCP 工具等） | 同样用 `await 工具名({...})` 调用；它们只是不再直接发给模型 |
+| `` $`命令` `` | 跑一条 shell 命令，返回退出码和输出，是 `Bash` 的简写 |
+| `file(path)`、`write(path, content)`、`edit(path, old, new)` | 读、写、改文件的便捷写法，底层仍是 `Read`、`Write`、`Edit` |
+| `sleep(ms)` | 在脚本里等待 |
+| `describeTool(name)`、`searchTools(query)` | 查看工具的输入说明；按关键词找 MCP 工具和其他不在列表里的工具 |
+
+MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 服务器（最多 40 个），Claude 用 `searchTools` 找到工具后在脚本里调用。
+
+## 时间限制、Esc 和后台执行
+
+- **脚本时间**：一次 `REPL` 默认最多跑 30 秒脚本自身的时间，Claude 可以用 `timeout` 放宽到 600 秒。等待工具调用（例如一条慢命令、一个权限确认框）的时间不算在内。超时后脚本停下，Claude 收到超时说明。
+- **脚本总时长**：除 `auto`（包括用自动模式分类器的 plan 模式）和 `bypassPermissions` 外，脚本从开始起满 600 秒就停下，等权限确认框的时间也算在内；这时还在跑的命令一起停掉，输出丢失。系统提示里写明了这一点，并让 Claude 给长命令设一个更早结束的 `timeout`。
+- **Esc**：回合中按 `Esc` 会停掉正在跑的脚本，Claude 收到一份「用户中断」的报告，里面写明停下时还在跑哪些调用。
+- **后台执行**只在会话以 `auto` 或 `bypassPermissions` 模式**启动**时提供。这时 Claude 多一个 `Poll` 工具，系统提示开头写成 `Your two tools are REPL and Poll`：
+  - 每个脚本都立即返回 `(dispatched #N)`，脚本在后台跑；同一轮的多个脚本按顺序跑，前一个跑满 30 秒还没结束，后一个就开始和它并行；
+  - 这一轮的工具调用结束后，Claude Code 先等这些脚本的结果（第一个结果到了之后最多再等 3 秒收齐），把结果以 `<event kind="repl-eval">` 事件附在一次 `Poll` 结果里，在同一轮交给 Claude；
+  - 等待期间你可以继续输入，新消息会结束等待，Claude 收到「脚本还在跑」的状态；之后结束的脚本在 Claude 空闲时自动开始新一轮，回合中调用 `Poll` 时作为 `Poll` 的结果返回；
+  - 脚本里的 `running()` 列出未结束的脚本（等待中、运行中、已转后台、迟到的输出），每项的 `abort()` 停掉它；
+  - 回合之间按 `Esc` 也会停掉后台脚本，Claude 收到「用户中断」报告，这份报告不会自己开始新一轮，等你下次说话时一起送回；
+  - 同时最多挂 8 个未结束的脚本，每个最长 2 小时；
+  - 是否有 `Poll` 只看会话启动时的权限模式。以其他模式启动的会话没有 `Poll`，之后切到 `auto` 也不会出现。
+
+## 权限与 hook
+
+- 脚本里的每次调用都按调用的那个工具判定权限：`Bash(npm test:*)` 这样的 allow / ask / deny 规则照常生效；整个工具被 deny 时，脚本里也调不到它。
+- PreToolUse / PostToolUse hook 看到的 `tool_name`、`tool_input` 是脚本里调用的工具（如 `Bash`），已有的 matcher 不用改；hook 修改输入、拦截调用、改写输出都对脚本生效。
+- [自动模式](auto-mode.md)下，分类器在调用 `REPL` 时审一次整段脚本，脚本里的每次调用仍然逐次走权限判定。
+- [Mods](mods.md) 的 `tool.call` hook 对脚本里的调用照常触发。
+
+## 子代理、压缩和恢复会话
+
+- **子代理**：定义里写了 `Read`、`Bash` 等工具的子代理同样拿到 `REPL`，脚本里只能调用定义允许的那些工具。主线程直接启动的子代理在 `auto` / `bypassPermissions` 下同样有 `Poll`，脚本在后台跑；子代理再启动的子代理没有后台执行，调用 `Poll` 时会被告知用现有工具完成任务后把结果交回。
+- **Agent Teams 的 teammate** 使用普通工具，不进入 Code Mode。
+- **`/compact`**：压缩后脚本里的变量还在，摘要会告诉 Claude 哪些变量仍可直接使用。
+- **恢复会话**：Code Mode 会话要在打开开关时 `--resume` 才继续用 Code Mode。新进程里上一次的脚本变量已经不在，Claude 会收到提示。上一个进程退出时还在后台跑的脚本，会以 `<event kind="repl-eval" … status="lost">eval #N never settled: …</event>` 事件告诉 Claude 结果已丢失；这个事件不会自己开始一轮，等你下次说话时一起送给 Claude（不设开关恢复时，同样的文字放在提醒里）。
+- 不设开关恢复 Code Mode 会话时，会话改用普通工具继续，界面显示 `This session was started in Code Mode (experimental), which isn't available where it runs now. It continues with the ordinary tools and stays out of Code Mode from now on.`
+
+## 与官方的差异
+
+| 方面 | 官方 2.1.325 | 本 fork |
+| --- | --- | --- |
+| 怎么打开 | 远程 feature gate、确认对话框，同意后重启；只支持 Anthropic 官方 API 和 Opus / Sonnet 5.5 及以上 | 只看环境变量；API key、自定义 `ANTHROPIC_BASE_URL` 都能开；不限模型 |
+| 超时或 `Esc` 之后 | 脚本里的变量保留 | 脚本运行环境重建，之前的变量丢失，Claude 下一次调用时会收到「新环境」的提示 |
+| 不设开关恢复 Code Mode 会话 | 交互界面拒绝恢复 | 改用普通工具继续，并提示 Claude 和你 |
+| 开关打开时恢复普通会话 | 这个会话继续用普通工具 | 整个进程都是 Code Mode，恢复的会话也用 `REPL` |
+| 装了带 `tool.call` hook 的 mod | 拒绝开启 Code Mode | 照常开启，hook 照常触发 |
+| `REPL` 系统提示里的 skill 列表 | 有 | 没有 |
+
+还没做的部分（计划中的 Phase 5）：
+
+- `auto` 模式下开启前的确认对话框，说明分类器只审一次整段脚本；
+- 使用非 Anthropic provider 时的启动提示。
+
+## 说明
+
+- 画面来自实际运行（110×36），模型回复由测试用假 API 按脚本生成，不代表真实模型的输出。
+- 实施计划和设计决策见 [`docs/plan/code-mode.md`](../plan/code-mode.md)；和官方逐项对照的结果见 [`docs/research/code-mode-conformance-20261116.md`](../research/code-mode-conformance-20261116.md)。
+- 这是实验性功能，行为跟随官方版本调整。

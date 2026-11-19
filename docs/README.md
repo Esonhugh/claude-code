@@ -48,6 +48,7 @@
 ## 研究与设计
 
 - [`research/`](research/) 保存 CCH 请求链、官方 Workflow 二进制、兼容性实验和 Codex 对比材料。
+- [`research/code-mode-325-20261115.md`](research/code-mode-325-20261115.md) 分析官方 2.1.325 Code Mode（`REPL` 工具）的工具调用与执行机制，引用的模块备份在 [`recover/claude-v2.1.325-code-mode/`](../recover/claude-v2.1.325-code-mode/README.md)；对应的实施计划见 [`plan/code-mode.md`](plan/code-mode.md)。
 - [`design/private-plugin-marketplace.md`](design/private-plugin-marketplace.md) 是企业私有插件市场设计提案。
 - [`design/workflow-runtime-parity.md`](design/workflow-runtime-parity.md) 定义 Workflow runtime parity 的证据基线和行为边界。
 

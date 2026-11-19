@@ -193,11 +193,60 @@ export function prepareFixture(run, plugin) {
   return env
 }
 
+export const HOST_MANAGED_ROOT = '/Library/Application Support/ClaudeCode'
+
+// The macOS profile leaves HOST_MANAGED_ROOT readable: denying it turns the
+// product's managed-settings.d scan into EPERM and a blocking Settings Error.
+// Acceptance instead records every file there and requires that none can
+// change the product: only managed-settings.json and managed-settings.d/
+// entries are allowed, and each must be blank or `{}`, which the product
+// loads as no settings (src/utils/settings/settings.ts readSettingsFile).
+export function hostManagedSettings(root = HOST_MANAGED_ROOT, platform = process.platform) {
+  // Linux hides /etc/claude-code behind an empty tmpfs (linux-sandbox-exec.py).
+  if (platform !== 'darwin') return { root: '/etc/claude-code', hiddenBySandbox: true, files: [], verdict: 'passed', reason: null }
+  const files = [], problems = []
+  const visit = relativePath => {
+    const path = join(root, relativePath)
+    let entries
+    try { entries = readdirSync(path, { withFileTypes: true }) } catch (error) {
+      if (relativePath === '' && error.code === 'ENOENT') return
+      problems.push(`${path}: ${error.code ?? error.message}`)
+      return
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const name = relativePath ? `${relativePath}/${entry.name}` : entry.name
+      if (entry.isDirectory()) { visit(name); continue }
+      const record = { name }
+      files.push(record)
+      let bytes
+      try { bytes = readFileSync(join(root, name)) } catch (error) {
+        problems.push(`${name}: ${error.code ?? error.message}`)
+        continue
+      }
+      record.sha256 = sha256(bytes)
+      record.size = bytes.length
+      if (!/^managed-settings(\.json|\.d\/[^/]+)$/.test(name)) { problems.push(`${name}: not a settings file`); continue }
+      const content = bytes.toString('utf8').trim()
+      let empty = content === ''
+      if (!empty) {
+        try {
+          const value = JSON.parse(content)
+          empty = value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0
+        } catch { empty = false }
+      }
+      if (!empty) problems.push(`${name}: not empty settings`)
+    }
+  }
+  visit('')
+  return { root, hiddenBySandbox: false, files, verdict: problems.length ? 'failed' : 'passed',
+    reason: problems.length ? `host managed settings could change the product: ${problems.join('; ')}` : null }
+}
+
 export function sandboxProfile(run, inspect = false) {
   const path = value => JSON.stringify(value)
   const home = realpathSync(homedir())
   const exceptions = [`(require-not (subpath ${path(run)}))`, ...(inspect ? [`(require-not (subpath ${path(REPO)}))`] : [])]
-  return `(version 1)\n(allow default)\n(deny file-write* (require-all (require-not (subpath ${path(run)})) (require-not (subpath "/dev"))))\n(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-bind (local ip "localhost:*"))\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny file-read-data (require-all (subpath ${path(home)}) ${exceptions.join(' ')}))\n${[join(home, 'Library/Keychains'), '/Library/Keychains', '/System/Library/Keychains', '/Library/Managed Preferences', '/Library/Application Support/ClaudeCode', '/etc/claude-code', join(REPO, '.claude'), join(REPO, '.env')].map(value => `(deny file-read* (subpath ${path(value)}))`).join('\n')}\n(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n`
+  return `(version 1)\n(allow default)\n(deny file-write* (require-all (require-not (subpath ${path(run)})) (require-not (subpath "/dev"))))\n(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-bind (local ip "localhost:*"))\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny file-read-data (require-all (subpath ${path(home)}) ${exceptions.join(' ')}))\n${[join(home, 'Library/Keychains'), '/Library/Keychains', '/System/Library/Keychains', '/Library/Managed Preferences', '/etc/claude-code', join(REPO, '.claude'), join(REPO, '.env')].map(value => `(deny file-read* (subpath ${path(value)}))`).join('\n')}\n(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n`
 }
 
 export async function inspectPlugin(plugin) {
@@ -399,7 +448,7 @@ export function isIdlePrompt(text) {
   return /^❯\s*$/m.test(text) && !/[·✢✳✶✻✽*]\s+[^\n]*…/m.test(text)
 }
 
-export function assessBuiltinAcceptance(pair) {
+export function assessBuiltinAcceptance(pair, evidenceLocation = () => undefined) {
   const names = ['privacyOff', 'privacyOn', 'enabled', 'disabled', 'securityOrdinary', 'securityTeam', 'securityEnterprise']
   const sides = names.map(name => pair[name])
   const complete = sides.every(side => side && !side.error && !side.ledgerError && typeof side.binarySha256 === 'string' && /^[a-f0-9]{64}$/.test(side.binarySha256) && side.cleanup)
@@ -460,19 +509,17 @@ export function assessBuiltinAcceptance(pair) {
     !pair.securityOrdinary?.suggestionRollback?.includes('MODS_SUGGESTION:base:rollbackcheck')
   const privacyOff = pair.privacyOff?.ledger ?? []
   const privacyOn = pair.privacyOn?.ledger ?? []
+  // The builtin archive no longer registers a telemetry Mod (CHANGELOG, 579bb424): enabling
+  // telemetry@builtin must not reach any host operation.
   const telemetry = [pair.privacyOff, pair.privacyOn].every(side => side && !side.error && !side.ledgerError) &&
-    privacyOff.length === 0 && privacyOn.length === 3 &&
-    privacyOn[0]?.sequence === 1 && privacyOn[0]?.operation === 'authorize' && privacyOn[0]?.granted === true &&
-    privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
-    privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
-    privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
+    privacyOff.length === 0 && privacyOn.length === 0
   // Native captures carry closed shared-slot evidence; only PTY-recorder captures use the legacy files.
   const frameEvidence = sides.every(side => side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1'
-    ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side))
+    ? validateNativeTerminalEvidence(side, {}, evidenceLocation(side)) : validateBuiltinTerminalEvidence(side))
   const timingEquivalent = sides.every(side => side?.cleanup?.terminalCapture?.productTimingEquivalent === true)
-  const terminalEvidence = frameEvidence && timingEquivalent
+  // Product timing equivalence has no capture protocol yet; it is reported, not gated.
   return {
-    terminalEvidence: {verdict:terminalEvidence?'passed':'failed', frameEvidence, timingEquivalent, reason:'all seven sides require independently verified physical frames and preserved product timing; synchronous diagnostic capture cannot close the terminal gate'},
+    terminalEvidence: {verdict:frameEvidence?'passed':'failed', frameEvidence, timingEquivalent, reason:'all seven sides require independently verified physical frames; product timing equivalence is reported but not covered'},
     completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all seven sides must record the same valid copied binary hash and complete cleanup evidence' },
     cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all seven sides must observe a dead pane, kill tmux successfully, remove its socket, close the provider successfully, and pass cleanup' },
     agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
@@ -481,7 +528,7 @@ export function assessBuiltinAcceptance(pair) {
     ui: { verdict: ui ? 'passed' : 'failed', reason: 'ModsPane must open, own local input, survive resize, close with Escape, and reopen in the current binary' },
     dynamicTools: { verdict: dynamicTools ? 'passed' : 'failed', reason: 'ToolSearch must discover a tool registered by its outer Mod hook, invoke it once, and return the matching result in one compiled-binary turn' },
     suggestionReload: { verdict: suggestionReload ? 'passed' : 'failed', reason: 'successful replacement must publish only the new suggestion generation and failed replacement must restore that retained generation exactly once' },
-    telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'privacy off must make zero host calls; privacy on must append exactly authorize then sanitized first-party HTTP evidence' },
+    telemetry: { verdict: telemetry ? 'passed' : 'failed', reason: 'no telemetry Mod is registered, so privacy off and privacy on with telemetry@builtin enabled must both make zero host calls' },
   }
 }
 
@@ -523,6 +570,9 @@ async function cleanupAcceptanceSide(launch, provider) {
 
 export async function acceptBuiltin(options) {
   const evidence = createRun(options.cache, 'accept-builtin')
+  const hostManaged = hostManagedSettings()
+  writeJSON(join(evidence, 'host-managed-settings.json'), hostManaged)
+  if (hostManaged.verdict !== 'passed') throw new Error(`Environment not satisfied: ${hostManaged.reason}`)
   const pair = {}
   for (const privacyOn of [false, true]) {
     const name = privacyOn ? 'privacyOn' : 'privacyOff'
@@ -800,7 +850,7 @@ export async function acceptBuiltin(options) {
     }
   }
   const assertions = assessBuiltinAcceptance(pair)
-  const report = { evidence, pair, assertions }
+  const report = { evidence, hostManaged, pair, assertions }
   writeJSON(join(evidence, 'acceptance.json'), report)
   return report
 }

@@ -7,7 +7,7 @@ import { HookCommandSchema, HookMatcherSchema } from '../../schemas/hooks.js'
 import { validatePermissionRule } from './permissionValidation.js'
 import { generateSettingsJSONSchema } from './schemaOutput.js'
 import type { SettingsJson } from './types.js'
-import { SettingsSchema } from './types.js'
+import { ClientVersionSchema, SettingsSchema } from './types.js'
 import { getValidationTip } from './validationTips.js'
 
 /**
@@ -311,6 +311,59 @@ function holdsGuardHooks(value: unknown, depth = 3): boolean {
     ([key, child]) =>
       GUARD_HOOK_EVENTS.has(key) || holdsGuardHooks(child, depth - 1),
   )
+}
+
+const VERSION_NUMBER_FIELDS = [
+  'ClaudeOAuthClientVersion',
+  'ClaudeApiClientVersion',
+  'CodexVersion',
+  'ClaudeSDKVersion',
+] as const
+
+/**
+ * Drops an invalid versionNumber object or invalid fields inside it before
+ * schema validation, so a bad version string falls back to its built-in
+ * default instead of rejecting the whole settings file. Returns a warning for
+ * each dropped value.
+ */
+export function filterInvalidVersionNumber(
+  data: unknown,
+  filePath: string,
+): ValidationError[] {
+  if (!data || typeof data !== 'object') return []
+  const settings = data as Record<string, unknown>
+  const versionNumber = settings.versionNumber
+  if (versionNumber === undefined) return []
+  if (
+    !versionNumber ||
+    typeof versionNumber !== 'object' ||
+    Array.isArray(versionNumber)
+  ) {
+    delete settings.versionNumber
+    return [
+      {
+        file: filePath,
+        path: 'versionNumber',
+        message:
+          'versionNumber must be an object. It was ignored and built-in versions are used.',
+        invalidValue: versionNumber,
+      },
+    ]
+  }
+  const fields = versionNumber as Record<string, unknown>
+  const warnings: ValidationError[] = []
+  for (const field of VERSION_NUMBER_FIELDS) {
+    if (fields[field] === undefined) continue
+    if (ClientVersionSchema().safeParse(fields[field]).success) continue
+    warnings.push({
+      file: filePath,
+      path: `versionNumber.${field}`,
+      message: `Invalid ${field} was ignored; the built-in default is used. Use a nonempty version without whitespace or HTTP control characters.`,
+      invalidValue: fields[field],
+    })
+    delete fields[field]
+  }
+  return warnings
 }
 
 /**

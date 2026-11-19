@@ -11,7 +11,7 @@
 - **自动压缩**：对话长度到达「压缩窗口」时自动进行；
 - **手动压缩**：随时输入 `/compact`。
 
-本 fork 让你按模型设置这个窗口：例如 1M 上下文的模型，你可能想在 200k 时就压缩，省钱也让模型更专注。还可以换成[Codex 式压缩](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 时交给服务端压缩。
+本 fork 让你按模型设置这个窗口：例如 1M 上下文的模型，你可能想在 200k 时就压缩，省钱也让模型更专注。还可以换成[Codex 式压缩](#换一种压缩方式codex-式压缩)：摘要后只原样保留最近的用户消息，用 OpenAI 时交给服务端压缩。
 
 <details lang="en"><summary>English</summary>
 
@@ -24,7 +24,7 @@ A model can only see so much at once (its context window), and the longer a conv
 - **Auto-compact** runs when the conversation reaches the compaction window.
 - **Manual compaction**: type `/compact` at any time.
 
-This fork lets you set that window per model: with a 1M-context model, for example, you may want to compact at 200k to save money and keep the model focused. You can also switch to [Codex-style compaction](#换一种压缩方式codex-式压缩), which keeps the most recent stretch of the conversation verbatim and, on OpenAI, lets the server do the compaction.
+This fork lets you set that window per model: with a 1M-context model, for example, you may want to compact at 200k to save money and keep the model focused. You can also switch to [Codex-style compaction](#换一种压缩方式codex-式压缩), which keeps only your most recent messages verbatim after the summary and, on OpenAI, lets the server do the compaction.
 
 </details>
 <details lang="zh-Hant"><summary>繁體中文</summary>
@@ -38,7 +38,7 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 - **自動壓縮**：對話長度到達「壓縮視窗」時自動進行；
 - **手動壓縮**：隨時輸入 `/compact`。
 
-本 fork 讓你按模型設定這個視窗：例如 1M 上下文的模型，你可能想在 200k 時就壓縮，省錢也讓模型更專注。還可以換成[Codex 式壓縮](#换一种压缩方式codex-式压缩)：保留最近一段原文，用 OpenAI 時交給服務端壓縮。
+本 fork 讓你按模型設定這個視窗：例如 1M 上下文的模型，你可能想在 200k 時就壓縮，省錢也讓模型更專注。還可以換成[Codex 式壓縮](#换一种压缩方式codex-式压缩)：摘要後只原樣保留最近的使用者訊息，用 OpenAI 時交給服務端壓縮。
 
 </details>
 
@@ -150,13 +150,13 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 打开后，手动 `/compact` 和自动压缩都按这种方式进行：
 
 - **用 OpenAI provider 时**：交给 OpenAI 服务端压缩（请求里带 `compaction_trigger`），服务端返回一段加密的压缩内容，之后的请求带着它继续，多次压缩会接上之前的压缩历史。服务端不支持时（返回 404 / 405 / 426 或 `not supported`），改走下面的方式。
-- **其他情况**：照常写摘要，但摘要后面**原样保留最近一段对话**，大约 `retainedUserMessageTokens` 个 token（默认 20000），工具调用和它的结果成对保留。超过 32000 字符的工具结果换成 `[tool output truncated during codex-style compaction]`。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
+- **其他情况**：照常写摘要，并和 Codex 一样**只原样保留最近的用户消息**，从新到旧累计大约 `retainedUserMessageTokens` 个 token（默认 20000）。模型的回复、工具调用（包括 `Write` 写入的文件内容）和工具结果都不保留，交给摘要概括；放不下的那条用户消息只保留开头一段，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
 - 两种情况都不走 session memory 压缩。
 
 | 配置项 | 写法 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `compact.mode` | `claude` / `codex` | `claude` | 压缩方式 |
-| `compact.codex.retainedUserMessageTokens` | 正整数 | `20000` | Codex 式压缩保留的最近对话大约多少 token |
+| `compact.codex.retainedUserMessageTokens` | 正整数 | `20000` | Codex 式压缩保留的最近用户消息大约多少 token |
 | `compact.codex.keepPostCompactAttachments` | `true` / `false` | `false` | 写摘要的那种情况下，压缩后照常重新附上最近读过的文件、计划等附件（和默认压缩一样）；OpenAI 服务端压缩不受影响 |
 
 实际效果（OpenAI provider，tmux 里对着测试用假服务运行，`compact.mode` 设为 `codex`）：

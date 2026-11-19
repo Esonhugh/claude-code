@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -210,6 +210,15 @@ function isolatedWrapper(loop: (...args: any[]) => AsyncGenerator<any, any>, dia
 }
 
 afterEach(async()=>{for(const runtime of fixtureRuntimes.splice(0))await runtime.dispose();resetStateForTests()})
+
+// query() starts memory recall from the host's settings and memory store.
+// Keep it off so a request holds only what each test puts in it.
+const hostAutoMemory = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+beforeAll(() => { process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1' })
+afterAll(() => {
+  if (hostAutoMemory === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+  else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = hostAutoMemory
+})
 
 test('turn.step drops every model text block without manufacturing assistant history', async () => {
   const root=await mkdtemp(join(tmpdir(),'mods-step-drop-'))
@@ -2514,7 +2523,8 @@ test('Worker usage inside a query reads that conversation rather than the main h
 
 test('usage read by refreshed context after compaction does not retain the precompact response', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mods-query-usage-compact-'))
-  const runtime = createModsRuntime()
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
   try {
     const entry = join(root,'register.ts')
     await writeFile(entry, `export function register(on) {
@@ -2532,12 +2542,19 @@ test('usage read by refreshed context after compaction does not retain the preco
       boundaryMarker:createCompactBoundaryMessage('auto',307),summaryMessages:[createUserMessage({content:'summary'})],attachments:[],hookResults:[],
     }})
     const original = process.env.NODE_ENV
+    const originalWindow = process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
     process.env.NODE_ENV = 'development'
+    // Outside test mode a config read throws until enableConfigs(). A forced
+    // window keeps session.usage() off the host's ChatGPT model catalog.
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = '200000'
     try {await drain(query(h.params))}
     finally {
       if (original === undefined) delete process.env.NODE_ENV
       else process.env.NODE_ENV = original
+      if (originalWindow === undefined) delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+      else process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = originalWindow
     }
+    expect(diagnostics).toEqual([])
     expect(requests).toHaveLength(1)
     expect(JSON.stringify(requests[0].messages)).toContain('# inputTokens\\nundefined')
     expect(JSON.stringify(requests[0].messages)).not.toContain('# inputTokens\\n207')

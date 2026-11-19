@@ -424,7 +424,7 @@ import {
   subscribeLspInitialization,
 } from '../services/lsp/manager.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
-import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
+import { primitiveToolGrant, resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
 import { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } from '../utils/model/model.js'
@@ -478,6 +478,19 @@ import {
   saveAiGeneratedTitle,
 } from '../utils/sessionStorage.js'
 import { deserializeMessages } from '../utils/conversationRecovery.js'
+import { planCodeModeResume, reportLostReplEvals } from '../utils/codeModeResume.js'
+import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
+import {
+  abortPendingReplEvals,
+  describeMainReplScripts,
+  findReplSession,
+  interruptReplSession,
+  isMainReplScriptRunning,
+  MAIN_REPL_SESSION,
+  onMainReplScriptsChange,
+} from '../tools/REPLTool/sessions.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useIsOverlayActive } from '../context/overlayContext.js'
 import {
   extractReadFilesFromMessages,
   extractBashToolsFromMessages,
@@ -570,6 +583,7 @@ import {
   enqueueTracked,
   type SetAppState,
   getCommandQueue,
+  countCommandsAwaitingTurn,
   getCommandQueueLength,
   removeByFilter,
   remove,
@@ -637,6 +651,7 @@ import { SandboxPermissionRequest } from 'src/components/permissions/SandboxPerm
 import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExpandedView.js'
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js'
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js'
+import { useAdvisorNotification } from 'src/hooks/notifs/useAdvisorNotification.js'
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js'
 import {
   AUTO_MODE_DESCRIPTION,
@@ -748,6 +763,34 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0
     ? Math.round((sorted[mid - 1]! + sorted[mid]!) / 2)
     : sorted[mid]!
+}
+
+/**
+ * Esc at an empty prompt between turns stops the main thread's dispatched
+ * REPL scripts. Official 325 stops them with `ReplSessions.interrupt([qx])`
+ * during a turn, and between turns through the background task each eval
+ * registers (`Rds`; stopping it calls `kge.abort(…, "person")`), both with
+ * the reason "user-cancel". Capture phase so it runs before PromptInput's
+ * double-Esc; with nothing pending it returns false and the key falls through.
+ * Must be rendered inside KeybindingSetup to access keybinding context.
+ */
+function ReplEvalCancelHandler({ isActive }: { isActive: boolean }): null {
+  const isOverlayActive = useIsOverlayActive()
+  const isViewingTeammate = useAppState(s => s.viewSelectionMode) === 'viewing-agent'
+  const stopDispatchedReplEvals = useCallback(() => {
+    const session = findReplSession(MAIN_REPL_SESSION)
+    if (!session || session.pending.size === 0) return false
+    logEvent('tengu_cancel', {
+      source: 'escape' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    abortPendingReplEvals(session, 'user-cancel')
+  }, [])
+  useKeybinding('chat:cancel', stopDispatchedReplEvals, {
+    context: 'Chat',
+    isActive: isActive && !isOverlayActive && !isViewingTeammate,
+    capture: true,
+  })
+  return null
 }
 
 /**
@@ -1321,6 +1364,7 @@ export function REPL({
   useSettingsErrors()
   useRateLimitWarningNotification(mainLoopModel)
   useFastModeNotification()
+  useAdvisorNotification()
   useDeprecationWarningNotification(mainLoopModel)
   useNpmDeprecationNotification()
   useMemoryIndexNotification()
@@ -2958,7 +3002,7 @@ export function REPL({
       // Without this, the spinner briefly disappears between consecutive notifications
       // (e.g., multiple background agents completing in rapid succession) because
       // isLoading goes false momentarily between processing each one.
-      getCommandQueueLength() > 0) &&
+      countCommandsAwaitingTurn() > 0) &&
     // Hide spinner when waiting for leader to approve permission request
     !pendingWorkerRequest &&
     !onlySleepToolActive &&
@@ -3061,6 +3105,8 @@ export function REPL({
         // Deserialize messages to properly clean up the conversation
         // This filters unresolved tool uses and adds a synthetic assistant message if needed
         const messages = deserializeMessages(log.messages)
+        const codeModePlan = planCodeModeResume(log.replMode, messages, isCodeModeEnabled())
+        messages.push(...codeModePlan.messages)
 
         // Match coordinator/normal mode to the resumed session
         if (feature('COORDINATOR_MODE')) {
@@ -3199,7 +3245,11 @@ export function REPL({
         // a session without an agent name would inherit the previous session's
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
-        restoreSessionMetadata(log)
+        restoreSessionMetadata({ ...log, replMode: codeModePlan.replMode })
+        // Official qKa runs once the restored session is the current one; interactive, it starts no turn.
+        void reportLostReplEvals(messages, { startsTurn: false }).then(rows => {
+          if (rows.length > 0) setMessages(prev => [...prev, ...rows])
+        })
         restoreSessionCosts(log)
         const resumedPermissionContext = restorePermissionModeForResume(
           store.getState().toolPermissionContext,
@@ -3362,6 +3412,10 @@ export function REPL({
   useEffect(() => {
     if (initialMessages && initialMessages.length > 0) {
       restoreReadFileState(initialMessages, getOriginalCwd())
+      // After launch, so event delivery for this session is known (official qKa); interactive, it starts no turn.
+      void reportLostReplEvals(initialMessages, { startsTurn: false }).then(rows => {
+        if (rows.length > 0) setMessages(prev => [...prev, ...rows])
+      })
       void restoreRemoteAgentTasks({
         abortController: new AbortController(),
         getAppState: () => store.getState(),
@@ -3730,6 +3784,13 @@ export function REPL({
       activeRemote.cancelRequest()
     } else {
       abortController?.abort('user-cancel')
+    }
+
+    // Official `ReplSessions.interrupt([qx])`: a stop during a turn also stops
+    // the session's dispatched scripts, those of earlier turns included.
+    if (!activeRemote.isRemoteMode) {
+      const replSession = findReplSession(MAIN_REPL_SESSION)
+      if (replSession) interruptReplSession(replSession)
     }
 
     // Clear the controller so subsequent Escape presses don't see a stale
@@ -4222,6 +4283,11 @@ export function REPL({
           appendSystemPrompt,
           refreshTools: computeTools,
         },
+        // An --agent main thread limits its REPL scripts the way a subagent's are.
+        primitiveToolGrant:
+          mainThreadAgentDefinition && isCodeModeEnabled()
+            ? primitiveToolGrant(mainThreadAgentDefinition)
+            : undefined,
         getAppState: () => store.getState(),
         setAppState,
         requestPermissionModeChange,
@@ -6879,6 +6945,19 @@ export function REPL({
       : `running stop hooks… ${completedCount}/${total}`
   }, [messages, isLoading])
 
+  // Official 2.1.325 (chunk-rz2q8akm.js): in the main thread's view the
+  // running background script's description goes in the spinner, before a
+  // stop hook's status unless no script has started.
+  const scriptsDescription = React.useSyncExternalStore(onMainReplScriptsChange, describeMainReplScripts)
+  const scriptRunning = React.useSyncExternalStore(onMainReplScriptsChange, isMainReplScriptRunning)
+  const spinnerSuffix = !isLoading
+    ? null
+    : viewedAgentTask !== undefined
+      ? stopHookSpinnerSuffix
+      : scriptRunning
+        ? scriptsDescription
+        : (stopHookSpinnerSuffix ?? scriptsDescription)
+
   // Capture the active context when entering transcript mode so the view
   // remains on the selected agent while the transcript is rendered.
   const handleEnterTranscript = useCallback(() => {
@@ -7468,6 +7547,17 @@ export function REPL({
         />
       ) : null}
       <CancelRequestHandler {...cancelRequestProps} />
+      <ReplEvalCancelHandler
+        isActive={
+          !isLoading &&
+          !inputValue &&
+          !focusedInputDialog &&
+          !toolJSX &&
+          !isMessageSelectorVisible &&
+          !isSearchingHistory &&
+          !isHelpOpen
+        }
+      />
       <MCPConnectionManager
         key={remountKey}
         dynamicMcpConfig={dynamicMcpConfig}
@@ -7583,7 +7673,7 @@ export function REPL({
                   responseLengthRef={responseLengthRef}
                   apiMetricsRef={apiMetricsRef}
                   overrideMessage={spinnerMessage}
-                  spinnerSuffix={stopHookSpinnerSuffix}
+                  spinnerSuffix={spinnerSuffix}
                   verbose={verbose}
                   loadingStartTimeRef={loadingStartTimeRef}
                   totalPausedMsRef={totalPausedMsRef}

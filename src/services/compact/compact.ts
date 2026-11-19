@@ -130,6 +130,7 @@ import {
   hasSummaryBlock,
   SUMMARY_BLOCK_NUDGE,
 } from './prompt.js'
+import { replStateNoteForCompaction } from './replStateNote.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -555,6 +556,9 @@ export async function compactConversation(
   keptRounds = 1,
 ): Promise<CompactionResult> {
   const compactStartedAt = Date.now()
+  // Official 2.1.325: a manual /compact summarizes without the advisor;
+  // automatic compaction keeps the conversation's.
+  if (!isAutoCompact) cacheSafeParams = { ...cacheSafeParams, advisor: undefined }
   let compactFailure: unknown
   try {
     if (messages.length === 0) {
@@ -882,6 +886,7 @@ export async function compactConversation(
     }
 
     const transcriptPath = getTranscriptPath()
+    const replNote = await replStateNoteForCompaction(context.agentId)
     // A remote compaction still gets a summary row so the transcript and mods
     // see one; the API layer drops it in favour of the opaque item.
     const summaryMessages: UserMessage[] = [
@@ -892,8 +897,11 @@ export async function compactConversation(
             summary,
             suppressFollowUpQuestions || messagesToKeep.length > 0,
             transcriptPath,
+            undefined,
+            replNote,
           ) + (messagesToKeep.length > 0 ? `\n\n${KEPT_TAIL_NOTE}` : ''),
         isCompactSummary: true,
+        modelOnlyText: replNote,
         isVisibleInTranscriptOnly: true,
       }),
     ]
@@ -1360,10 +1368,12 @@ export async function partialCompactConversation(
     }
 
     const transcriptPath = getTranscriptPath()
+    const replNote = await replStateNoteForCompaction(context.agentId)
     const summaryMessages: UserMessage[] = [
       createUserMessage({
-        content: getCompactUserSummaryMessage(summary, false, transcriptPath),
+        content: getCompactUserSummaryMessage(summary, false, transcriptPath, undefined, replNote),
         isCompactSummary: true,
+        modelOnlyText: replNote,
         ...(messagesToKeep.length > 0
           ? {
               summarizeMetadata: {

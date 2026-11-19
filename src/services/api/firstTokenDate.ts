@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
@@ -29,7 +30,7 @@ export async function fetchAndStoreClaudeCodeFirstTokenDate(): Promise<void> {
     const response = await axios.get(url, {
       headers: {
         ...authHeaders.headers,
-        'User-Agent': getClaudeCodeUserAgent(),
+        'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
       },
       timeout: 10000,
     })

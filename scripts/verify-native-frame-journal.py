@@ -131,10 +131,10 @@ def verify_native_content(run, expected, cleanup):
     return close, data_by_name
 
 
-def native_resize_events(io, header, registration, records, initial):
+def native_resize_events(io, header, registration, records, initial, raw=None):
     """Only non-overlapping kernel brackets determine physical resize offsets."""
     writes = [row for row in records if row['kind'] == 1]
-    outputs = journal.native_write_outputs(records, initial['outputFlags'])
+    outputs = journal.native_write_outputs(records, initial['outputFlags'], raw)
     spans = journal.frame_spans(records, 'ink-post-write-v1')
     by_sequence = {row['sequence']: row for row in records}
     events = []
@@ -307,7 +307,7 @@ def derive_frames(run, expected, archive_receipt=None):
     records = journal.decode_records(header, packets, registration, expected['childPid'])
     raw = native_bytes('raw.bin')
     entries = journal.ink_frame_entries(records, raw, expected['captureId'], initial['outputFlags'])
-    geometry = native_resize_events(io, header, registration, records, initial)
+    geometry = native_resize_events(io, header, registration, records, initial, raw)
     return {'entries': entries, 'io': io, 'geometryEvents': geometry, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
             'tailBase64': base64.b64encode(raw[entries[-1]['rawEnd']:]).decode(),
             'productTimingEquivalent': False, 'fullNativeGatePassed': False}

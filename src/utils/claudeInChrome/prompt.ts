@@ -1,3 +1,8 @@
+import {
+  codeModeChromeUnavailableText,
+  isCodeModeEnabled,
+} from '../../tools/REPLTool/codeModeGate.js'
+
 export const BASE_CHROME_PROMPT = `# Claude in Chrome browser automation
 
 You have access to browser automation tools (mcp__claude-in-chrome__*) for interacting with web pages in Chrome. Follow these guidelines for effective browser automation.
@@ -66,7 +71,15 @@ For example, to get tab context:
  * based on the actual tool search enabled state.
  */
 export function getChromeSystemPrompt(): string {
+  // Code Mode replaces the section when its REPL tool is there (official xVn).
+  if (isCodeModeEnabled() && hasReplTool()) return codeModeChromeUnavailableText()
   return BASE_CHROME_PROMPT
+}
+
+// Lazy: the tool registry's import graph reaches this module.
+function hasReplTool(): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return (require('../../tools.js') as typeof import('../../tools.js')).getREPLTool() !== null
 }
 
 /**

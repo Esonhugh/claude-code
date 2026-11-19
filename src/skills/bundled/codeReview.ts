@@ -25,6 +25,7 @@ import { gitExe } from '../../utils/git.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCanonicalName } from '../../utils/model/model.js'
+import { escapeControlCharacters } from '../../utils/sanitization.js'
 import { plural } from '../../utils/stringUtils.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 import {
@@ -653,47 +654,6 @@ const findingsSchema = lazySchema(() =>
   ),
 )
 const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gim
-// Makes control and invisible characters visible, keeping emoji sequences.
-function escapeControlCharacters(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  const UNSAFE_CHARS =
-    /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu
-  if (!UNSAFE_CHARS.test(text)) return text
-  let out = ''
-  for (const { segment } of new Intl.Segmenter(undefined, {
-    granularity: 'grapheme',
-  }).segment(text)) {
-    const emoji =
-      /\p{Extended_Pictographic}|\p{Regional_Indicator}|^[#*0-9]\uFE0F?\u20E3$/u.test(
-        segment,
-      )
-    const tagFlag =
-      /^\u{1F3F4}[\u{E0030}-\u{E0039}\u{E0061}-\u{E007A}]{1,6}\u{E007F}$/u.test(
-        segment,
-      )
-    UNSAFE_CHARS.lastIndex = 0
-    out += segment.replace(UNSAFE_CHARS, (char, offset: number) => {
-      if (char === '\n' || char === '\t') return char
-      const code = char.codePointAt(0) ?? 0
-      if (
-        emoji &&
-        (char === '\uFE0F' ||
-          char === '\uFE0E' ||
-          char === '\u20E3' ||
-          (char === '\u200D' && offset + char.length < segment.length) ||
-          (tagFlag && code >= 0xe0020 && code <= 0xe007f))
-      ) {
-        return char
-      }
-      if (code === 27) return '\u241B'
-      if (code < 32) return String.fromCodePoint(0x2400 + code)
-      if (code === 127) return '\u2421'
-      return `\\u{${code.toString(16).toUpperCase()}}`
-    })
-  }
-  return out
-}
-
 function formatFindingsJson(json: string): string | undefined {
   const result = findingsSchema().safeParse(safeParseJSON(json.trim(), false))
   if (!result.success) return undefined

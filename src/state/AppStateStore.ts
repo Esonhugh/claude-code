@@ -2,6 +2,7 @@ import type { Notification } from 'src/context/notifications.js'
 import type { SdkWorkflowProgress } from 'src/types/tools.js'
 import type { TodoList } from 'src/utils/todo/types.js'
 import type { BridgePermissionCallbacks } from '../bridge/bridgePermissionCallbacks.js'
+import type { BridgeErrorKind } from '../bridge/replBridge.js'
 import type { Command } from '../commands.js'
 import type { GoalStatus } from '../commands/goal/types.js'
 import type { ChannelPermissionCallbacks } from '../services/mcp/channelPermissions.js'
@@ -180,6 +181,8 @@ export type AppState = DeepImmutable<{
   replBridgeSessionId: string | undefined
   // Always-on bridge: error message when connection fails (shown in BridgeDialog)
   replBridgeError: string | undefined
+  // Always-on bridge: why it failed; 'auth' arms the sign-in watcher
+  replBridgeErrorKind: BridgeErrorKind | undefined
   // Always-on bridge: session name set via `/remote-control <name>` (used as session title)
   replBridgeInitialName: string | undefined
   // Always-on bridge: first-time remote dialog pending (set by /remote-control command)
@@ -539,6 +542,7 @@ export function getDefaultAppState(): AppState {
     replBridgeEnvironmentId: undefined,
     replBridgeSessionId: undefined,
     replBridgeError: undefined,
+    replBridgeErrorKind: undefined,
     replBridgeInitialName: undefined,
     showRemoteCallout: false,
     toolPermissionContext: {

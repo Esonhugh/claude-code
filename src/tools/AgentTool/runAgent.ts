@@ -124,8 +124,11 @@ import {
   filterToolsForExactAgent,
   findUnresolvedToolUses,
   isToolDisallowedForAgent,
+  primitiveToolGrant,
   resolveAgentTools,
+  zeroToolSpawnRefusal,
 } from './agentToolUtils.js'
+import { isCodeModeEnabled, withoutCodeModeTools } from '../REPLTool/codeModeGate.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import {
   capAgentPermissionMode,
@@ -804,11 +807,17 @@ export async function* runAgent({
     }
   }
 
-  const resolvedTools = useExactTools
-    ? filterToolsForExactAgent(availableTools)
+  // An in-process teammate starts from the leader's pool but keeps the
+  // ordinary tools when the leader runs Code Mode (D3).
+  const agentAvailableTools = withoutCodeModeTools(
+    availableTools,
+    appState.toolPermissionContext,
+  )
+  const toolResolution = useExactTools
+    ? undefined
     : resolveAgentTools(
         { ...agentDefinition, permissionMode },
-        availableTools,
+        agentAvailableTools,
         filterToolsAsAsync,
         false,
         // Same depth the Agent tool's call-time limit check reads.
@@ -816,7 +825,8 @@ export async function* runAgent({
           subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
           spawnDepth,
         }),
-      ).resolvedTools
+      )
+  const resolvedTools = toolResolution?.resolvedTools ?? filterToolsForExactAgent(agentAvailableTools)
 
   logForDebugging(
     `[runAgent] agentId=${agentId}, agentType=${agentDefinition.agentType}, model=${resolvedAgentModel}, tools=${resolvedTools.map(tool => tool.name).join(',')}`,
@@ -1026,6 +1036,21 @@ export async function* runAgent({
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
 
+  if (mergedTools.length === 0) {
+    const refusal = zeroToolSpawnRefusal(agentDefinition, toolResolution, agentAvailableTools.length, {
+      isAsync,
+      isContinuation: (recordedUuids?.size ?? 0) > 0,
+    })
+    if (refusal !== undefined) {
+      // Official undoes what this run set up so far before refusing.
+      await mcpCleanup()
+      if (agentDefinition.hooks) clearSessionHooks(rootSetAppState, agentId)
+      clearAgentTranscriptSubdir(agentId)
+      unregisterPerfettoAgent(agentId)
+      throw new Error(refusal)
+    }
+  }
+
   // Like official 2.1.311, a new agent that can SendMessage learns which other
   // named agents in this session it can reach. A transcript with recorded
   // messages (a teammate's later turns) does not get it again.
@@ -1160,6 +1185,12 @@ export async function* runAgent({
   // Preserve tool use results for subagents with viewable transcripts (in-process teammates)
   if (preserveToolUseResults) {
     agentToolUseContext.preserveToolUseResults = true
+  }
+
+  // A fork keeps its parent's grant (createSubagentContext copies it); any
+  // other agent gets the primitives its own tools list names (official VQt).
+  if (isCodeModeEnabled() && !useExactTools) {
+    agentToolUseContext.primitiveToolGrant = primitiveToolGrant(agentDefinition)
   }
 
   // Record initial messages before the query loop starts, plus the agentType
@@ -1460,6 +1491,11 @@ export async function* runAgent({
     // `run_in_background` shell loop (e.g. test fixture fake-logs.sh) outlives
     // the agent as a PPID=1 zombie once the main session eventually exits.
     if (!keepBackgroundShells) killShellTasksForAgent(agentId, toolUseContext.getAppState, rootSetAppState)
+    // End this agent's REPL context (Code Mode); a resumed agent starts a new one.
+    if (isCodeModeEnabled()) {
+      const { releaseReplSession } = await import('../REPLTool/sessions.js')
+      releaseReplSession(agentId)
+    }
     /* eslint-disable @typescript-eslint/no-require-imports */
     if (feature('MONITOR_TOOL')) {
       const mcpMod =

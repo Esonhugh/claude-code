@@ -1,9 +1,11 @@
 import type { QueuedCommand } from '../types/textInputTypes.js'
+import { logForDebugging } from './debug.js'
 import {
   dequeue,
   dequeueAllMatching,
   hasCommandsInQueue,
   peek,
+  pollEventWakes,
 } from './messageQueueManager.js'
 
 type ProcessQueueParams = {
@@ -58,12 +60,16 @@ export function processQueueIfReady({
   // matching that mode with agentId===undefined, and we'd return processed:
   // false with the queue unchanged → the React effect never re-fires and any
   // queued user prompt stalls permanently.
-  const isMainThread = (cmd: QueuedCommand) => cmd.agentId === undefined
+  // Poll events are not input: a turn's first request or a Poll call takes
+  // them, and a waking one starts a turn below.
+  const isMainThread = (cmd: QueuedCommand) =>
+    cmd.agentId === undefined && cmd.mode !== 'poll-event'
 
   const next = peek(isMainThread)
   if (!next) {
-    return { processed: false }
+    return dispatchForPollEvents(executeInput)
   }
+  wokenFor = undefined
 
   // Slash commands and bash-mode commands are processed individually.
   // Bash commands need per-command error isolation, exit codes, and progress UI.
@@ -89,6 +95,44 @@ export function processQueueIfReady({
   }
 
   void executeInput(commands)
+  return { processed: true }
+}
+
+/** The waking event the last empty dispatch was for (official `pollEmptyDispatchStalled`). */
+let wokenFor: QueuedCommand | undefined
+
+/**
+ * Official idle wake (2.1.325 chunk-rz2q8akm.js): with nothing else queued, a
+ * main-thread poll event that wakes starts a turn as an empty prompt, and
+ * that turn's first request folds the events in. When the same event is
+ * still the head after its dispatch, the fold did not take it, and it waits
+ * for the next turn instead of starting turns without end.
+ */
+function dispatchForPollEvents(
+  executeInput: ProcessQueueParams['executeInput'],
+): ProcessQueueResult {
+  const head = peek(
+    cmd =>
+      cmd.agentId === undefined &&
+      cmd.mode === 'poll-event' &&
+      cmd.pollEvent !== undefined &&
+      pollEventWakes(cmd.pollEvent),
+  )
+  if (!head) return { processed: false }
+  if (wokenFor === head) {
+    logForDebugging('poll empty dispatch stalled: the turn it started did not take the waking event', { level: 'error' })
+    return { processed: false }
+  }
+  wokenFor = head
+  void executeInput([
+    {
+      value: [],
+      mode: 'prompt',
+      isMeta: true,
+      pollEmptyDispatch: true,
+      skipSubmissionHooks: true,
+    },
+  ])
   return { processed: true }
 }
 

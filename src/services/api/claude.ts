@@ -86,6 +86,7 @@ import {
   createAssistantAPIErrorMessage,
   createUserMessage,
   ensureToolResultPairing,
+  getAdvisorStrippedMessageIds,
   normalizeContentFromAPI,
   normalizeMessagesForAPI,
   stripAdvisorBlocks,
@@ -160,11 +161,11 @@ import { addToTotalSessionCost } from 'src/cost-tracker.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
-  ADVISOR_TOOL_INSTRUCTIONS,
-  getExperimentAdvisorModels,
-  isAdvisorEnabled,
-  isValidAdvisorModel,
-  modelSupportsAdvisor,
+  getAdvisorErrorCode,
+  isAdvisorBlock,
+  isAdvisorToolAllowed,
+  recordAdvisorRefusal,
+  resolveAdvisorModelId,
 } from 'src/utils/advisor.js'
 import { getAgentContext } from 'src/utils/agentContext.js'
 import { isClaudeAISubscriber } from 'src/utils/auth.js'
@@ -209,12 +210,36 @@ import {
   type ToolSearchRefusal,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
-import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
+import {
+  ADVISOR_BETA_HEADER,
+  MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
+} from '../../constants/betas.js'
+import {
+  type AdvisorRefusal,
+  classifyAdvisorRefusal,
+  classifyToolChangeRejection,
+  isAdvisorResultUnprocessableError,
+  isUnattributedRequestError,
+  isSystemTurnRejection,
+  type ToolChangeRejection,
+} from './advisorRefusal.js'
+import {
+  applyToolChangeBetas,
+  modelSupportsToolChanges,
+  recordSystemTurnRejection,
+  recordToolChangeRejection,
+  type ToolChangeSticky,
+} from '../../utils/advisorToolChanges.js'
+import { splitAdvisorToolChanges } from '../../utils/advisorToolChangeWire.js'
 import {
   formatDeferredToolLines,
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
+import {
+  codeModeHidesTools,
+  hideCodeModeOnlyTools,
+} from '../../tools/REPLTool/codeModeGate.js'
 import { count } from '../../utils/array.js'
 import { insertBlockAfterToolResults } from '../../utils/contentArray.js'
 import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
@@ -834,6 +859,39 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Internal: this request retries one whose tool search the endpoint refused. */
   toolSearchRefused?: true
+  /** The request continues a parent's prompt as a fork, so it may keep the parent's advisor. */
+  forkAdvisor?: true
+  /** Called once when the server refused this conversation's advisor, before the retry. */
+  onAdvisorRefused?: () => void
+  /** Internal: this request retries one whose advisor the server refused. */
+  advisorRefused?: true
+  /**
+   * The tools a retry sends once it leaves the server-side advisor out: the
+   * request's tools with the local advisor tool, so it answers in its place.
+   */
+  advisorRetryTools?: Tools
+  /**
+   * Called when the server could not process earlier advisor results and the
+   * retry left them out, so the caller records that for later requests.
+   */
+  onAdvisorBlocksStripped?: () => void
+  /** Internal: this request retries one without any advisor blocks. */
+  advisorBlocksStripped?: true
+  /**
+   * The advisor entry is declared with defer_loading under the
+   * mid-conversation tool-change beta; /advisor adds and removes it with
+   * tool_addition and tool_removal. `advisorActive` says whether it is added.
+   */
+  advisorDeferred?: boolean
+  advisorActive?: boolean
+  /** The conversation's tool-change beta state; absent, the beta is not sent. */
+  toolChanges?: ToolChangeSticky
+  /** Called once when the tool-change beta failed, before the retry without it. */
+  onToolChangeFallback?: () => void
+  /** Internal: this request retries one whose tool-change beta or system turn was rejected. */
+  toolChangesStripped?: true
+  /** Retries after a failed attempt; absent, the session default (CLAUDE_CODE_MAX_RETRIES). */
+  maxRetries?: number
 }
 
 export async function queryModelWithoutStreaming({
@@ -961,6 +1019,7 @@ export async function* executeNonStreamingRequest(
     signal: AbortSignal
     initialConsecutive529Errors?: number
     querySource?: QuerySource
+    maxRetries?: number
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams | Promise<BetaMessageStreamParams>,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1035,6 +1094,7 @@ export async function* executeNonStreamingRequest(
       signal: retryOptions.signal,
       initialConsecutive529Errors: retryOptions.initialConsecutive529Errors,
       querySource: retryOptions.querySource,
+      maxRetries: retryOptions.maxRetries,
     },
   )
 
@@ -1153,6 +1213,38 @@ export function stripExcessMediaItems(
   }) as (UserMessage | AssistantMessage)[]
 }
 
+class AdvisorRefusedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: AdvisorRefusal,
+  ) {
+    super('advisor refused', { cause: refusal })
+  }
+}
+
+/** A request with the advisor failed in words this client cannot attribute. */
+class AdvisorUnattributedError extends Error {
+  constructor(readonly refusal: APIError) {
+    super('advisor request failed', { cause: refusal })
+  }
+}
+
+/** The server rejected the tool-change beta (`kind`) or a role:"system" turn. */
+class ToolChangesRejectedError extends Error {
+  constructor(
+    readonly refusal: APIError,
+    readonly kind: ToolChangeRejection | 'system_turn',
+  ) {
+    super('tool changes rejected', { cause: refusal })
+  }
+}
+
+class AdvisorResultUnprocessableError extends Error {
+  constructor(readonly refusal: APIError) {
+    super('advisor result unprocessable', { cause: refusal })
+  }
+}
+
 class ToolSearchRefusedError extends Error {
   constructor(
     readonly refusal: APIError,
@@ -1180,7 +1272,7 @@ async function* queryModel(
 > {
   let refused: ToolSearchRefusedError
   try {
-    return yield* queryModelRequest(
+    return yield* queryModelAdvisorRetry(
       messages,
       systemPrompt,
       thinkingConfig,
@@ -1203,7 +1295,7 @@ async function* queryModel(
     ),
     isMeta: true,
   })
-  for await (const message of queryModelRequest(
+  for await (const message of queryModelAdvisorRetry(
     [...messages, reminder],
     systemPrompt,
     thinkingConfig,
@@ -1216,6 +1308,158 @@ async function* queryModel(
     }
     yield message
   }
+}
+
+/**
+ * Like 2.1.325: when the server refuses the advisor, send the request again
+ * once without it. An organization-wide refusal turns the advisor off for the
+ * process, an unknown tool type or beta for the host, anything else only for
+ * the conversation (through `onAdvisorRefused`). When the server cannot
+ * process an advisor result in the history, send the request again once with
+ * the advisor blocks removed, and record that (through
+ * `onAdvisorBlocksStripped`) so later requests leave them out too.
+ *
+ * Not in the official client: a 400 or 422 this client cannot attribute is
+ * also sent again once without the advisor. Only an answered retry tells the
+ * conversation; a retry that fails too leaves the advisor as it was. Either
+ * way the local advisor serves what the server-side one no longer does, from
+ * the retry on (`advisorRetryTools`).
+ */
+async function* queryModelAdvisorRetry(
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  thinkingConfig: ThinkingConfig,
+  tools: Tools,
+  signal: AbortSignal,
+  options: Options,
+): AsyncGenerator<
+  StreamEvent | AssistantMessage | SystemAPIErrorMessage,
+  void
+> {
+  let requestOptions = options
+  let requestTools = tools
+  let unattributed = false
+  for (;;) {
+    try {
+      if (!unattributed) {
+        return yield* queryModelRequest(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          requestTools,
+          signal,
+          requestOptions,
+        )
+      }
+      for await (const message of queryModelRequest(
+        messages,
+        systemPrompt,
+        thinkingConfig,
+        requestTools,
+        signal,
+        requestOptions,
+      )) {
+        if (
+          unattributed &&
+          message.type === 'assistant' &&
+          !message.isApiErrorMessage
+        ) {
+          unattributed = false
+          options.onAdvisorRefused?.()
+          logForDebugging(
+            '[advisor] the endpoint answered the request sent without the advisor, so this conversation goes on with the local advisor',
+          )
+        }
+        yield message
+      }
+      return
+    } catch (error) {
+      if (error instanceof ToolChangesRejectedError) {
+        if (error.kind === 'system_turn') {
+          recordSystemTurnRejection(requestOptions.toolChanges)
+          logEvent('tengu_mid_conv_system_fallback_retry', {})
+        } else {
+          recordToolChangeRejection(
+            requestOptions.toolChanges,
+            error.kind,
+            requestOptions.model,
+          )
+        }
+        options.onToolChangeFallback?.()
+        requestOptions = { ...requestOptions, toolChangesStripped: true }
+        continue
+      }
+      if (error instanceof AdvisorResultUnprocessableError) {
+        requestOptions = {
+          ...requestOptions,
+          advisorBlocksStripped: true,
+        }
+        logAdvisorStripRetry(messages, requestOptions)
+        continue
+      }
+      if (error instanceof AdvisorUnattributedError) {
+        logForDebugging(
+          `[advisor] HTTP ${error.refusal.status} on a request that carried the advisor; sending it again once without the advisor`,
+          { level: 'warn' },
+        )
+        unattributed = true
+        requestTools = options.advisorRetryTools ?? requestTools
+        requestOptions = {
+          ...requestOptions,
+          advisorModel: undefined,
+          advisorRefused: true,
+        }
+        continue
+      }
+      if (!(error instanceof AdvisorRefusedError)) throw error
+      const { scope, betaHeader } = error.kind
+      if (scope !== 'conversation') recordAdvisorRefusal(scope)
+      options.onAdvisorRefused?.()
+      logForDebugging(
+        `[advisor] the server refused the advisor ${betaHeader ? 'beta header' : 'entry'} (scope: ${scope}); retrying once without the advisor`,
+        { level: 'warn' },
+      )
+      logEvent('tengu_advisor_entry_refused_retry', {
+        query_source:
+          options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        organization_wide: scope === 'process',
+        host_wide: scope === 'host',
+        beta_header_refused: betaHeader,
+      })
+      requestTools = options.advisorRetryTools ?? requestTools
+      requestOptions = {
+        ...requestOptions,
+        advisorModel: undefined,
+        advisorRefused: true,
+      }
+    }
+  }
+}
+
+/** Official `K0o`'s log line and event; records the strip when it removed anything. */
+function logAdvisorStripRetry(messages: Message[], options: Options): void {
+  const alreadyStripped = getAdvisorStrippedMessageIds(messages)
+  const stripped = messages.filter(
+    m =>
+      m.type === 'assistant' &&
+      !alreadyStripped.has(m.message.id) &&
+      m.message.content.some(isAdvisorBlock),
+  ).length
+  const recorded = stripped > 0 && options.onAdvisorBlocksStripped !== undefined
+  if (recorded) options.onAdvisorBlocksStripped!()
+  logForDebugging(
+    stripped === 0
+      ? '[advisor] the server could not process an advisor result sent earlier in this conversation; nothing to remove, retrying as sent.'
+      : `[advisor] the server could not process an advisor result sent earlier in this conversation; retrying with the advisor blocks removed from ${stripped} message(s)${recorded ? '; recorded, so later requests leave them out too.' : '; not recorded, so the next request sends them again.'}`,
+    { level: 'warn' },
+  )
+  logEvent('tengu_advisor_strip_retry', {
+    query_source:
+      options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    strip_recorded: recorded,
+    stripped_message_count: stripped,
+    thinking_also_stripped: false,
+  })
 }
 
 async function* queryModelRequest(
@@ -1273,50 +1517,25 @@ async function* queryModelRequest(
     options.querySource === 'hook_agent' ||
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
-
-  // Always send the advisor beta header when advisor is enabled, so
-  // non-agentic queries (compact, side_question, extract_memories, etc.)
-  // can parse advisor server_tool_use blocks already in the conversation history.
-  if (isAdvisorEnabled()) {
-    betas.push(ADVISOR_BETA_HEADER)
+  if (options.toolChangesStripped) {
+    applyToolChangeBetas(undefined, betas, options.model)
+  } else {
+    applyToolChangeBetas(options.toolChanges, betas, options.model)
   }
 
-  let advisorModel: string | undefined
-  if (isAgenticQuery && isAdvisorEnabled()) {
-    let advisorOption = options.advisorModel
-
-    const advisorExperiment = getExperimentAdvisorModels()
-    if (advisorExperiment !== undefined) {
-      if (
-        normalizeModelStringForAPI(advisorExperiment.baseModel) ===
-        normalizeModelStringForAPI(options.model)
-      ) {
-        // Override the advisor model if the base model matches. We
-        // should only have experiment models if the user cannot
-        // configure it themselves.
-        advisorOption = advisorExperiment.advisorModel
-      }
-    }
-
-    if (advisorOption) {
-      const normalizedAdvisorModel = normalizeModelStringForAPI(
-        parseUserSpecifiedModel(advisorOption),
-      )
-      if (!modelSupportsAdvisor(options.model)) {
-        logForDebugging(
-          `[AdvisorTool] Skipping advisor - base model ${options.model} does not support advisor`,
-        )
-      } else if (!isValidAdvisorModel(normalizedAdvisorModel)) {
-        logForDebugging(
-          `[AdvisorTool] Skipping advisor - ${normalizedAdvisorModel} is not a valid advisor model`,
-        )
-      } else {
-        advisorModel = normalizedAdvisorModel
-        logForDebugging(
-          `[AdvisorTool] Server-side tool enabled with ${advisorModel} as the advisor model`,
-        )
-      }
-    }
+  // Official 2.1.325: the query loop already picked this request's advisor;
+  // only main-loop, agent and fork requests carry it.
+  let advisorModel =
+    (isAgenticQuery || options.forkAdvisor) &&
+    options.advisorModel !== undefined &&
+    isAdvisorToolAllowed()
+      ? resolveAdvisorModelId(options.advisorModel)
+      : undefined
+  // The beta goes on every request while requests may carry the advisor, so
+  // those that do not (compact, side questions) still accept advisor blocks
+  // in the history. The local advisor's own request sends a plain transcript.
+  if (isAdvisorToolAllowed() && options.querySource !== 'advisor') {
+    betas.push(ADVISOR_BETA_HEADER)
   }
 
   const modDescriptions = await resolveModToolDescriptions(tools, {
@@ -1329,9 +1548,15 @@ async function* queryModelRequest(
     signal,
   })
 
+  // Code Mode sends only REPL/Poll/StructuredOutput; the rest are called from
+  // REPL scripts, so they are neither declared nor deferred behind ToolSearch.
+  // `tools` stays the full pool: it is the prompt context REPL describes.
+  const codeModeHiding = codeModeHidesTools(tools)
+  const apiTools = hideCodeModeOnlyTools(tools)
+
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
-  let useToolSearch = !options.toolSearchRefused && await isToolSearchEnabled(
+  let useToolSearch = !codeModeHiding && !options.toolSearchRefused && await isToolSearchEnabled(
     options.model,
     tools,
     options.getToolPermissionContext,
@@ -1343,14 +1568,14 @@ async function* queryModelRequest(
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
   const deferredToolNames = new Set<string>()
   if (useToolSearch) {
-    for (const t of tools) {
+    for (const t of apiTools) {
       if (isDeferredTool(t, modDescriptions?.get(t)?.isDeferred))
         deferredToolNames.add(t.name)
     }
   }
 
   const departedTools = useToolSearch
-    ? getDepartedReferencedTools(messages, tools, deferredToolNames)
+    ? getDepartedReferencedTools(messages, apiTools, deferredToolNames)
     : []
   for (const tool of departedTools) deferredToolNames.add(tool.name)
 
@@ -1378,7 +1603,7 @@ async function* queryModelRequest(
     // to predeclare all deferred tools upfront and removes limits on tool quantity.
     const discoveredToolNames = extractDiscoveredToolNames(messages)
 
-    filteredTools = tools.filter(tool => {
+    filteredTools = apiTools.filter(tool => {
       // Always include non-deferred tools
       if (!deferredToolNames.has(tool.name)) return true
       // Always include ToolSearchTool (so it can discover more tools)
@@ -1393,7 +1618,7 @@ async function* queryModelRequest(
       )
     }
   } else {
-    filteredTools = tools.filter(
+    filteredTools = apiTools.filter(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
     )
   }
@@ -1456,6 +1681,29 @@ async function* queryModelRequest(
   })
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
+
+  // Official 2.1.325: with the tool-change beta the advisor entry is declared
+  // deferred, so /advisor turns it on and off without touching the tools
+  // prefix. Without the beta an entry not yet added is left out.
+  const advisorDeferLoading =
+    advisorModel !== undefined &&
+    options.advisorDeferred === true &&
+    betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER) &&
+    [...toolSchemas, ...(options.extraToolSchemas ?? [])].some(
+      t => !('defer_loading' in t && t.defer_loading),
+    )
+  if (
+    options.advisorDeferred === true &&
+    options.advisorActive === false &&
+    !advisorDeferLoading
+  ) {
+    advisorModel = undefined
+  }
+  const advisorToolChanges =
+    advisorModel !== undefined &&
+    options.advisorDeferred === true &&
+    betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER) &&
+    modelSupportsToolChanges(options.model)
 
   // MCP tools are per-user → dynamic tool section → the system prompt behind
   // them can't be globally cached, so it falls back to org-scoped markers.
@@ -1576,6 +1824,7 @@ async function* queryModelRequest(
         )
       : schemaMessages,
     filteredTools,
+    { advisorToolChanges },
   )
   queryCheckpoint('query_message_normalization_end')
 
@@ -1613,10 +1862,13 @@ async function* queryModelRequest(
   // tool_uses and strips orphaned tool_results referencing non-existent tool_uses.
   messagesForAPI = ensureToolResultPairing(messagesForAPI)
 
-  // Strip advisor blocks — the API rejects them without the beta header.
-  if (!betas.includes(ADVISOR_BETA_HEADER)) {
-    messagesForAPI = stripAdvisorBlocks(messagesForAPI)
-  }
+  // Strip advisor blocks whenever this request does not carry the advisor,
+  // or the server could not process them; otherwise only the ones an earlier
+  // advisor_stripped attachment recorded.
+  messagesForAPI =
+    advisorModel === undefined || options.advisorBlocksStripped
+      ? stripAdvisorBlocks(messagesForAPI)
+      : stripAdvisorBlocks(messagesForAPI, getAdvisorStrippedMessageIds(messages))
 
   // Strip excess media items before making the API call.
   // The API rejects requests with >100 media items but returns a confusing error.
@@ -1641,7 +1893,7 @@ async function* queryModelRequest(
   // via persisted deferred_tools_delta attachments instead of this
   // ephemeral prepend (which busts cache whenever the pool changes).
   if (useToolSearch && !isDeferredToolsDeltaEnabled()) {
-    const deferredToolList = tools.filter(t => deferredToolNames.has(t.name))
+    const deferredToolList = apiTools.filter(t => deferredToolNames.has(t.name))
     const formattedDeferredToolList =
       formatDeferredToolLines(deferredToolList).join('\n')
     if (formattedDeferredToolList) {
@@ -1663,7 +1915,6 @@ async function* queryModelRequest(
         hasAppendSystemPrompt: options.hasAppendSystemPrompt,
       }),
       ...prompt,
-      ...(advisorModel ? [ADVISOR_TOOL_INSTRUCTIONS] : []),
     ].filter(Boolean),
   )
 
@@ -1687,6 +1938,7 @@ async function* queryModelRequest(
       type: 'advisor_20260301',
       name: 'advisor',
       model: advisorModel,
+      ...(advisorDeferLoading && { defer_loading: true }),
     } as unknown as BetaToolUnion)
   }
   const allTools = [
@@ -1697,7 +1949,8 @@ async function* queryModelRequest(
   // Consume once because request params are assembled repeatedly for logging and retries.
   const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
   const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
-  const messagesWithCacheBreakpoints = addCacheBreakpoints(
+  // Advisor tool changes ride as role:"system" turns (no-op without them).
+  const messagesWithCacheBreakpoints = splitAdvisorToolChanges(addCacheBreakpoints(
     messagesForAPI,
     enablePromptCaching,
     options.querySource,
@@ -1707,7 +1960,7 @@ async function* queryModelRequest(
     consumedCacheEdits,
     consumedPinnedEdits,
     options.skipCacheWrite,
-  )
+  )) as MessageParam[]
   if (
     enablePromptCaching &&
     getExtendedCacheTtlEnabled(options.querySource) &&
@@ -2207,6 +2460,7 @@ async function* queryModelRequest(
         ...(isFastModeEnabled() ? { fastMode: isFastMode } : false),
         signal,
         querySource: options.querySource,
+        maxRetries: options.maxRetries,
       },
     )
 
@@ -2411,6 +2665,35 @@ async function* queryModelRequest(
                 ) {
                   isAdvisorInProgress = false
                   logForDebugging(`[AdvisorTool] Advisor tool result received`)
+                  const errorCode = getAdvisorErrorCode(part.content_block)
+                  const eventModels = {
+                    model:
+                      options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    advisor_model: (advisorModel ??
+                      'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    query_source:
+                      options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                  }
+                  if (errorCode !== undefined) {
+                    logForDebugging(
+                      `[AdvisorTool] Advisor tool result error: ${errorCode}`,
+                    )
+                    logEvent('tengu_advisor_tool_error', {
+                      ...eventModels,
+                      error_code:
+                        errorCode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                  } else {
+                    const stopReason = (
+                      part.content_block as { content?: { stop_reason?: unknown } }
+                    ).content?.stop_reason
+                    logEvent('tengu_advisor_tool_result', {
+                      ...eventModels,
+                      stop_reason: (typeof stopReason === 'string'
+                        ? stopReason
+                        : 'none') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                  }
                 }
                 break
             }
@@ -2994,6 +3277,7 @@ async function* queryModelRequest(
           signal,
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
+          maxRetries: options.maxRetries,
         },
         paramsForAttempt,
         (attempt, _startTime, tokens) => {
@@ -3097,6 +3381,7 @@ async function* queryModelRequest(
             thinkingConfig,
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
+            maxRetries: options.maxRetries,
           },
           paramsForAttempt,
           (attempt, _startTime, tokens) => {
@@ -3202,6 +3487,46 @@ async function* queryModelRequest(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      if (
+        !options.toolChangesStripped &&
+        betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER)
+      ) {
+        const kind = isSystemTurnRejection(error)
+          ? 'system_turn'
+          : classifyToolChangeRejection(error)
+        if (kind !== undefined) {
+          throw new ToolChangesRejectedError(error as APIError, kind)
+        }
+      }
+
+      if (
+        !options.advisorBlocksStripped &&
+        isAdvisorResultUnprocessableError(error)
+      ) {
+        throw new AdvisorResultUnprocessableError(error as APIError)
+      }
+
+      const advisorRefusal =
+        !options.advisorRefused &&
+        (advisorModel !== undefined || betas.includes(ADVISOR_BETA_HEADER))
+          ? classifyAdvisorRefusal(error, betas)
+          : undefined
+      if (
+        advisorRefusal &&
+        (advisorModel !== undefined || advisorRefusal.betaHeader)
+      ) {
+        throw new AdvisorRefusedError(error as APIError, advisorRefusal)
+      }
+      // Before the tool search check: that one retries without deferred
+      // tools and would latch tool search off for an error the advisor caused.
+      if (
+        advisorModel !== undefined &&
+        !options.advisorRefused &&
+        isUnattributedRequestError(error)
+      ) {
+        throw new AdvisorUnattributedError(error)
       }
 
       const toolSearchRefusal =

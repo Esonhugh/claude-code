@@ -1,10 +1,10 @@
+import { getClientVersions } from '../settings/settings.js'
 import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import axios from 'axios'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getCustomHeaders } from '../../services/api/client.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openai-oauth/client.js'
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper,
@@ -254,7 +254,7 @@ function getGatewayHeaders(
     }),
     Accept: 'application/json',
     'anthropic-version': '2023-06-01',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
   }
   for (const [name, value] of Object.entries(getCustomHeaders())) {
     for (const existing of Object.keys(headers)) {
@@ -331,12 +331,21 @@ function isTokenCount(value: unknown): value is number {
 /** The cached gateway list, when it was written for this gateway and credential. */
 function readCurrentGatewayModels(): GatewayModel[] {
   if (!isGatewayModelDiscoveryEnabled()) return []
-  const credential = getGatewayCredential()
-  if (!credential) return []
-  const cache = readGatewayModelCache()
-  // A cache written for another gateway or credential says nothing about this one.
-  if (!cache || cache.cacheKey !== getGatewayModelCacheKey(credential)) return []
-  return cache.models
+  try {
+    const credential = getGatewayCredential()
+    if (!credential) return []
+    const cache = readGatewayModelCache()
+    // A cache written for another gateway or credential says nothing about this one.
+    if (!cache || cache.cacheKey !== getGatewayModelCacheKey(credential)) return []
+    return cache.models
+  } catch (error) {
+    // Context sizing asks on every turn. When the credential or the cache key
+    // cannot be worked out, nothing is known about this gateway.
+    logForDebugging(
+      `[Gateway discovery] Cache not checked: ${error instanceof Error ? error.name : 'unknown'}`,
+    )
+    return []
+  }
 }
 
 // Read once per process (context sizing runs on every turn); a new fetch resets it.
@@ -509,17 +518,17 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
     headers: {
       Authorization: `Bearer ${auth.accessToken}`,
       Accept: 'application/json',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
       ...(auth.isChatGPT
         ? {
             Referer: 'https://chatgpt.com/',
             Origin: 'https://chatgpt.com',
-            version: OPENAI_CODEX_CLIENT_VERSION,
+            version: getClientVersions().CodexVersion,
             ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),
           }
         : {}),
     },
-    ...(auth.isChatGPT ? { params: { client_version: OPENAI_CODEX_CLIENT_VERSION } } : {}),
+    ...(auth.isChatGPT ? { params: { client_version: getClientVersions().CodexVersion } } : {}),
     parseOptions: {
       includeUnknownModels: !auth.isChatGPT && Boolean(customBaseURL),
     },

@@ -91,12 +91,12 @@ import {
   isSyntheticOutputToolEnabled,
 } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { getAllBaseTools, getTools } from './tools.js'
+import { settleCodeModeGate } from './tools/REPLTool/codeModeGate.js'
 import {
-  canUserConfigureAdvisor,
   getInitialAdvisorSetting,
   isAdvisorEnabled,
   isValidAdvisorModel,
-  modelSupportsAdvisor,
+  resolveAdvisorModelId,
 } from './utils/advisor.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { count, uniq } from './utils/array.js'
@@ -2262,6 +2262,16 @@ async function run(): Promise<CommanderCommand> {
           ? remoteControlOption
           : undefined
 
+      // Code Mode decides here: interactivity is set and the Remote Control
+      // ask is known, before the Chrome prompt and the first tool pool. The
+      // bridge entitlement check comes later, so the ask decides. The
+      // remoteControlAtStartup default is not an ask: like official, Code
+      // Mode stays on and initReplBridge refuses the bridge.
+      settleCodeModeGate({
+        remoteControl: remoteControlOption !== undefined || kairosEnabled,
+        remote: remote !== null,
+      })
+
       // Validate session ID if provided
       if (sessionId) {
         // Check for conflicting flags
@@ -3478,37 +3488,34 @@ async function run(): Promise<CommanderCommand> {
       )
 
       let advisorModel: string | undefined
+      const advisorOption = (options as { advisor?: string }).advisor
       if (isAdvisorEnabled()) {
-        const advisorOption = canUserConfigureAdvisor()
-          ? (options as { advisor?: string }).advisor
-          : undefined
         if (advisorOption) {
           logForDebugging(`[AdvisorTool] --advisor ${advisorOption}`)
-          if (!modelSupportsAdvisor(resolvedInitialModel)) {
-            process.stderr.write(
-              chalk.red(
-                `Error: The model "${resolvedInitialModel}" does not support the advisor tool.\n`,
-              ),
-            )
-            process.exit(1)
+          // A background session only warns: it has no one to read the error.
+          const exitOnError = process.env.CLAUDE_CODE_SESSION_KIND !== 'bg'
+          const fail = (message: string): void => {
+            if (exitOnError) {
+              process.stderr.write(chalk.red(`${message}\n`))
+              process.exit(1)
+            }
+            logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
           }
-          const normalizedAdvisorModel = normalizeModelStringForAPI(
-            parseUserSpecifiedModel(advisorOption),
-          )
-          if (!isValidAdvisorModel(normalizedAdvisorModel)) {
-            process.stderr.write(
-              chalk.red(
-                `Error: The model "${advisorOption}" cannot be used as an advisor.\n`,
-              ),
-            )
-            process.exit(1)
+          if (!isValidAdvisorModel(resolveAdvisorModelId(advisorOption))) {
+            fail(`Error: The model "${advisorOption}" cannot be used as an advisor.`)
           }
         }
-        advisorModel = canUserConfigureAdvisor()
-          ? (advisorOption ?? getInitialAdvisorSetting())
-          : advisorOption
+        advisorModel = advisorOption ?? getInitialAdvisorSetting()
         if (advisorModel) {
           logForDebugging(`[AdvisorTool] Advisor model: ${advisorModel}`)
+        }
+      } else if (advisorOption) {
+        const message =
+          'Warning: --advisor is ignored because the advisor is off. Set CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1 to turn it on.'
+        if (process.env.CLAUDE_CODE_SESSION_KIND === 'bg') {
+          logForDebugging(`[AdvisorTool] ${message}`, { level: 'warn' })
+        } else {
+          process.stderr.write(chalk.yellow(`${message}\n`))
         }
       }
 
@@ -4591,6 +4598,7 @@ async function run(): Promise<CommanderCommand> {
         replBridgeEnvironmentId: undefined,
         replBridgeSessionId: undefined,
         replBridgeError: undefined,
+        replBridgeErrorKind: undefined,
         replBridgeInitialName: remoteControlName,
         showRemoteCallout: false,
         notifications: {
@@ -5725,14 +5733,12 @@ async function run(): Promise<CommanderCommand> {
     'Create a tmux session for the worktree (requires --worktree). Uses iTerm2 native panes when available; use --tmux=classic for traditional tmux.',
   )
 
-  if (canUserConfigureAdvisor()) {
-    program.addOption(
-      new Option(
-        '--advisor <model>',
-        'Enable the server-side advisor tool with the specified model (alias or full ID).',
-      ).hideHelp(),
-    )
-  }
+  program.addOption(
+    new Option(
+      '--advisor <model>',
+      'Enable the server-side advisor tool with the specified model (alias or full ID).',
+    ).hideHelp(),
+  )
 
   if (isAnt()) {
     program.addOption(

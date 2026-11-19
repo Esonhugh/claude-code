@@ -1,0 +1,117 @@
+{
+ "name": "D-main-agent",
+ "env": {
+  "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"
+ },
+ "files": {
+  "hello.txt": "hello\n",
+  ".claude/agents/reader.md": "---\nname: reader\ndescription: Reads files for the conformance run\ntools: Read, Bash\n---\nYou are the reader agent.\n",
+  ".claude/agents/norepl.md": "---\nname: norepl\ndescription: Agent with REPL disallowed\ntools: Read, Bash\ndisallowedTools: REPL\n---\nYou are the norepl agent.\n"
+ },
+ "commands": {
+  "MAIN": [
+   {
+    "tools": [
+     {
+      "name": "REPL",
+      "input": {
+       "code": "const names = tools.list()\nlet w\ntry { w = await Write({file_path: '{{work}}/sub-write.txt', content: 'x'}) } catch (e) { w = 'threw: ' + e.message }\nconst r = await Read({file_path: '{{work}}/hello.txt'})\nJSON.stringify({names, write: typeof w === 'string' ? w : (w?.error ?? 'wrote'), read: r?.file?.content?.trim() ?? r?.error})",
+       "description": "probe"
+      }
+     }
+    ]
+   },
+   {
+    "text": "DONE {{nonce}} main"
+   }
+  ],
+  "HEADLESS": [
+   {
+    "text": "DONE {{nonce}} headless"
+   }
+  ]
+ },
+ "drive": [
+  {
+   "launch": {
+    "mode": "default",
+    "args": "--agent reader"
+   }
+  },
+  {
+   "capture": "agent-start"
+  },
+  {
+   "turn": "MAIN",
+   "timeout": 90
+  },
+  {
+   "expect": {
+    "name": "--agent reader (interactive): tools REPL only",
+    "cmd": "MAIN",
+    "step": 0,
+    "field": "tools",
+    "match": "^REPL$"
+   }
+  },
+  {
+   "expect": {
+    "name": "--agent reader: script tools.list() is Read and Bash",
+    "cmd": "MAIN",
+    "step": 1,
+    "match": "names[^\\]]*Bash[^\\]]*Read|names[^\\]]*Read[^\\]]*Bash"
+   }
+  },
+  {
+   "expect": {
+    "name": "--agent reader: Write is refused",
+    "cmd": "MAIN",
+    "step": 1,
+    "match": "write[^,]*threw: "
+   }
+  },
+  {
+   "expect_file": {
+    "name": "--agent reader: Write did not write",
+    "path": "sub-write.txt",
+    "absent": true
+   }
+  },
+  {
+   "exit": true
+  },
+  {
+   "headless": {
+    "prompt": "@@ h1 HEADLESS",
+    "args": "--agent reader --permission-mode default",
+    "as": "p"
+   }
+  },
+  {
+   "expect_headless": {
+    "name": "-p --agent reader: run completes",
+    "as": "p",
+    "match": "DONE h1 headless"
+   }
+  },
+  {
+   "expect": {
+    "name": "-p --agent reader: Code Mode refused, ordinary agent tools sent",
+    "cmd": "HEADLESS",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(Bash|Read)(,|$)"
+   }
+  },
+  {
+   "expect": {
+    "name": "-p --agent reader: no REPL/Poll",
+    "cmd": "HEADLESS",
+    "step": 0,
+    "field": "tools",
+    "match": "(^|,)(REPL|Poll)(,|$)",
+    "absent": true
+   }
+  }
+ ]
+}

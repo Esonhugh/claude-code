@@ -195,11 +195,32 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
     return decoded
 
 
-def native_write_outputs(records, output_flags):
+def onlcr_output(data, raw=None, offset=0):
+    """ONLCR expansion, plus at most one repeated CR per newline seen in raw.
+
+    XNU ttyoutput queues the ONLCR CR, and when the NL then misses a full
+    output queue ttwrite retries the whole character, so the PTY shows
+    CR CR NL. Any other difference is left for the raw comparison to reject.
+    """
+    output = bytearray()
+    for byte in data:
+        if byte == 10:
+            at = offset + len(output)
+            tail = raw[at:at + 3] if raw is not None else b''
+            if tail == b'\r\r\n' or (tail == b'\r\r' and at + 2 == len(raw)):
+                output += b'\r'
+            output += b'\r\n'
+        else:
+            output.append(byte)
+    return bytes(output)
+
+
+def native_write_outputs(records, output_flags, raw=None):
     """Transform each successful write using ordered observed kernel modes.
 
     Captured tcsetattr calls do not cover unobserved direct mode ioctls or input
     ownership. An overlapping mode change cannot select a write's transform.
+    With raw, ONLCR output keeps the kernel's repeated CR (see onlcr_output).
     """
     import termios
     require(type(output_flags) is int and 0 <= output_flags < 2 ** 64,
@@ -210,6 +231,7 @@ def native_write_outputs(records, output_flags):
             'Overlapping writes or termios changes lack kernel order')
     outputs = {}
     current = output_flags
+    offset = 0
     for row in effects:
         if row['kind'] == 2:
             require(row['modeBefore']['outputFlags'] == current,
@@ -218,10 +240,11 @@ def native_write_outputs(records, output_flags):
             continue
         if current & termios.OPOST:
             require(current == termios.OPOST | termios.ONLCR, 'Unproved native PTY transformation')
-            output = row['bytes'].replace(b'\n', b'\r\n')
+            output = onlcr_output(row['bytes'], raw, offset)
         else:
             output = row['bytes']
         outputs[row['sequence']] = output
+        offset += len(output)
     return outputs
 
 
@@ -231,7 +254,7 @@ def verify_raw(records, raw, output_flags):
             'Multiple writers lack kernel order')
     require(all(left['return'] <= right['entry'] for left, right in zip(writes, writes[1:])),
             'Overlapping writes lack kernel order')
-    outputs = native_write_outputs(records, output_flags)
+    outputs = native_write_outputs(records, output_flags, raw)
     source = b''.join(outputs[row['sequence']] for row in writes)
     require(source == raw,
             'Unowned, missing, transformed or reordered raw bytes')
@@ -310,7 +333,7 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
     """
     import base64
     verify_raw(records, raw, output_flags)
-    outputs = native_write_outputs(records, output_flags)
+    outputs = native_write_outputs(records, output_flags, raw)
     spans = frame_spans(records, 'ink-post-write-v1')
     require(spans and [span['spanId'] for span in spans] == list(range(1, len(spans) + 1)),
             'Missing native Ink frame identity')
@@ -388,7 +411,7 @@ def ink_live_frame_entries(header, packets, raw, registration, expected_pid, cap
     if not snapshots:
         return []
     complete = records[:snapshots[-1] + 1]
-    outputs = native_write_outputs(complete, output_flags)
+    outputs = native_write_outputs(complete, output_flags, raw)
     physical = b''.join(outputs[row['sequence']] for row in complete if row['kind'] == 1)
     if len(raw) < len(physical):
         require(physical.startswith(raw), 'Native live raw prefix differs from original writes')

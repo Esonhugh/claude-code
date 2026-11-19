@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import { randomUUID } from 'crypto'
 import type {
   SDKPartialAssistantMessage,
@@ -591,7 +592,7 @@ export class CCRClient {
             ...authHeaders,
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01',
-            'User-Agent': getClaudeCodeUserAgent(),
+            'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
           },
           validateStatus: alwaysValidStatus,
           timeout,
@@ -934,7 +935,7 @@ export class CCRClient {
           headers: {
             ...authHeaders,
             'anthropic-version': '2023-06-01',
-            'User-Agent': getClaudeCodeUserAgent(),
+            'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
           },
           validateStatus: alwaysValidStatus,
           timeout: 30_000,

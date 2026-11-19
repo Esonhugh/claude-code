@@ -4,9 +4,10 @@ export const LEGACY_TERMINAL_TOOL_NAME = 'Terminal'
 export const DESCRIPTION =
   'Open and control a persistent terminal session'
 
-export const PROMPT = `Manage persistent terminal sessions (panes). Use it instead of tmux/screen via Bash for REPLs, TUIs, ssh and prompts. Every action except new-session and list-panes needs \`target\`, the pane id returned by new-session or list-panes (e.g. "term-1").
-- new-session: \`command\` is one executable and its arguments go in \`args\` (command="ssh", args=["-o","ConnectTimeout=15","host"]); omit command for the default shell. Optional cwd, env, cols, rows.
-- send-keys: \`text\` is typed literally (no escape parsing); \`key\` sends one special key (ENTER, CTRL_C, ...); \`enter: true\` presses Enter after the text.
-- capture-pane: returns the current screen. \`mode\`: "compact" (default; long output is elided to maxLines=80 / maxBytes=8192), "full" (raw text up to maxBytes), "save_file" (writes the whole screen to a file and returns \`filePath\` plus a short preview; use it when the user wants the output saved).
-- display-message: pane status (isRunning, exitCode, pid, size). resize-pane: cols and rows. send-signal: SIGINT or SIGTERM. kill-pane: closes the pane; you will not get a later notification for it.
-- When the Bash sandbox is enabled, new-session runs inside it; set dangerouslyDisableSandbox=true only when the session must run outside it.`
+export const PROMPT = `Manage persistent terminal panes for REPLs, TUIs, ssh and prompts instead of tmux/screen via Bash. Actions except new-session and list-panes need \`target\` (e.g. "term-1").
+- new-session: \`command\` is one executable, arguments in \`args\`; omit for the default shell. Optional cwd, env, cols, rows.
+- new-session \`inputMode: "interactive"\`: requires human approval even in bypass. All later session input, including shell escapes, skips Bash command deny checks. Grant ends on close; other sessions are unaffected. Omit for shell checks.
+- send-keys: literal \`text\`, special \`key\` (ENTER, CTRL_C, ...), \`enter: true\` submits.
+- capture-pane: current screen; \`mode\` "compact" (default, elided), "full" (raw text), "save_file" (whole screen to \`filePath\` plus preview). maxBytes/maxLines limit output.
+- display-message: isRunning, exitCode, pid, size. resize-pane: cols/rows. send-signal: SIGINT/SIGTERM. kill-pane: close without later notification. list-panes: list sessions.
+- new-session uses the Bash sandbox when enabled; dangerouslyDisableSandbox=true requests running outside it.`

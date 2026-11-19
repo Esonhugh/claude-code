@@ -21,7 +21,6 @@ import type {
 import { isDebugMode, logForDebugging } from '../../utils/debug.js'
 import { isAnt } from '../../utils/userType.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 import {
   getProxyFetchOptions,
   getWebSocketProxyAgent,
@@ -29,7 +28,7 @@ import {
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getClientVersions, getInitialSettings } from '../../utils/settings/settings.js'
 import { HttpResponseError } from '../../utils/errors.js'
 import { DEFERRED_TOOL_PLACEHOLDER_NAME } from '../../tools/ToolSearchTool/constants.js'
 import { APPLY_PATCH_TOOL_NAME, isApplyPatchOnly } from '../../tools/ApplyPatchTool/prompt.js'
@@ -72,7 +71,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin',
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'version': OPENAI_CODEX_CLIENT_VERSION,
+      'version': getClientVersions().CodexVersion,
       ...(auth.accountId && { 'chatgpt-account-id': auth.accountId }),
     })
   }
@@ -378,7 +377,10 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     | 'high'
     | 'xhigh'
     | 'max'
+    | 'ultra'
 } | undefined {
+  // Sent as configured; a server that rejects a level returns the API error
+  // and the user picks another one with /effort.
   if (
     effort === 'none' ||
     effort === 'minimal' ||
@@ -386,12 +388,12 @@ function anthropicEffortToOpenAIReasoning(effort: unknown): {
     effort === 'medium' ||
     effort === 'high' ||
     effort === 'xhigh' ||
-    effort === 'max'
+    effort === 'max' ||
+    effort === 'ultra'
   ) {
     return { effort }
   }
-  // The Responses API rejects 'ultra'; Codex sends xhigh for it and delegates client-side.
-  if (effort === 'ultra' || effort === 'ultracode' || typeof effort === 'number') {
+  if (effort === 'ultracode' || typeof effort === 'number') {
     return { effort: 'xhigh' }
   }
   return undefined
@@ -602,7 +604,8 @@ async function connectResponsesWebSocket(
 
 async function fetchResponsesWithRetry(
   url: string,
-  headers: Record<string, string>,
+  // Called per attempt so a retry picks up settings changed in between.
+  getHeaders: () => Record<string, string>,
   body: string,
   maxRetries: number,
   signal: AbortSignal,
@@ -613,7 +616,7 @@ async function fetchResponsesWithRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const createRequestHeaders = () => ({
-        ...headers,
+        ...getHeaders(),
         'x-client-request-id': randomUUID(),
         ...(turnScope?.getTurnState() && {
           'x-codex-turn-state': turnScope.getTurnState()!,
@@ -677,7 +680,7 @@ async function fetchResponsesWithRetry(
 
 async function connectSSE(
   url: string,
-  headers: Record<string, string>,
+  getHeaders: () => Record<string, string>,
   payload: any,
   maxRetries: number,
   controller: AbortController,
@@ -799,7 +802,7 @@ async function connectSSE(
   try {
     const resp = await fetchResponsesWithRetry(
       url,
-      headers,
+      getHeaders,
       body,
       maxRetries,
       controller.signal,
@@ -1199,7 +1202,8 @@ export function createOpenAICompatClient(options: {
   const responsesURL = `${baseURL}/responses`
   const headers: Record<string, string> = {}
   new Headers(options.defaultHeaders).forEach((value, name) => {
-    headers[name] = value
+    // x-stainless-* identify the Anthropic SDK, which this client is not.
+    if (!name.startsWith('x-stainless-')) headers[name] = value
   })
   for (const [name, value] of Object.entries(
     tunnel
@@ -1216,6 +1220,10 @@ export function createOpenAICompatClient(options: {
     headers['session-id'] = options.promptCacheKey
     headers['thread-id'] = options.promptCacheKey
   }
+  const getRequestHeaders = () => ({
+    ...headers,
+    ...(!tunnel && auth.isChatGPT && { version: getClientVersions().CodexVersion }),
+  })
 
   logForDebugging(
     `[OpenAI Compat] SSE client → ${responsesURL} (chatgpt=${auth.isChatGPT}, tunnel=${tunnel})`,
@@ -1284,7 +1292,7 @@ export function createOpenAICompatClient(options: {
       }
       const response = await fetchResponsesWithRetry(
         responsesURL,
-        headers,
+        getRequestHeaders,
         body,
         options.maxRetries,
         controller.signal,
@@ -1443,7 +1451,7 @@ export function createOpenAICompatClient(options: {
       if (params.stream) {
         const promise = connectSSE(
           responsesURL,
-          headers,
+          getRequestHeaders,
           payload,
           options.maxRetries,
           controller,
@@ -1462,7 +1470,7 @@ export function createOpenAICompatClient(options: {
       const promise = (async () => {
         const adapter = await connectSSE(
           responsesURL,
-          headers,
+          getRequestHeaders,
           payload,
           options.maxRetries,
           controller,

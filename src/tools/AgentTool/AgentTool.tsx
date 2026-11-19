@@ -1312,7 +1312,10 @@ export const AgentTool = buildTool({
         : enhancedSystemPrompt && !worktreeInfo && !cwd
           ? { systemPrompt: asSystemPrompt(enhancedSystemPrompt) }
           : undefined,
-      availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
+      // A fork from a REPL script inherits the REPL call's tools, not the script's.
+      availableTools: isForkPath
+        ? (toolUseContext.replSessionTools ?? toolUseContext.options.tools)
+        : workerTools,
       // Only an explicit spawn mode is fixed; runAgent resolves the
       // definition's mode against the parent's current mode on every read.
       permissionMode: explicitPermissionMode,

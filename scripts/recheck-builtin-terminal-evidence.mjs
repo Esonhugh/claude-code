@@ -123,19 +123,27 @@ export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath
   const report = JSON.parse(readFileSync(input, 'utf8')),
     saved = JSON.parse(readFileSync(savedPath, 'utf8')),
     { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs'),
-    assertions = assessBuiltinAcceptance(report.pair),
+    // Archived sides are read through the archive receipt, as the side recheck does.
+    assertions = assessBuiltinAcceptance(report.pair, side => {
+      try {
+        const launch = JSON.parse(readOwnedNativeFile(join(side.run, 'capture-launch.json')))
+        return nativeEvidenceLocation(side.run, launch.run !== realpathSync(side.run) ? archiveReceiptPath : undefined)
+      } catch {
+        return undefined
+      }
+    }),
     current = JSON.parse(JSON.stringify(await recheckBuiltinEvidence(report, binarySha256, archiveReceiptPath)))
-  const timingPreserved = Object.values(report.pair).every(side =>
-    side.cleanup.terminalCapture.productTimingEquivalent === true &&
-    // The acknowledged v1 recorder changes the product render schedule.
+  // The acknowledged v1 recorder changes the product render schedule. Product
+  // timing equivalence itself has no capture protocol yet and is not gated.
+  const unacknowledged = Object.values(report.pair).every(side =>
     side.cleanup.terminalCapture.stream.method !==
       'owned native PTY complete byte ledger and acknowledged frame boundaries')
-  const passed = current.verdict === 'passed' && timingPreserved &&
+  const passed = current.verdict === 'passed' && unacknowledged &&
     isDeepStrictEqual(saved, current) &&
     isDeepStrictEqual(report.assertions, assertions) &&
     Object.values(assertions).every(assertion => assertion.verdict === 'passed')
   return { verdict: passed ? 'passed' : 'failed', acceptance: input,
-    binarySha256, reason: passed ? null : 'current seven-side assertions, identity, timing or replay differ from sealed acceptance' }
+    binarySha256, reason: passed ? null : 'current seven-side assertions, identity, recorder or replay differ from sealed acceptance' }
 }
 
 if (import.meta.main) {

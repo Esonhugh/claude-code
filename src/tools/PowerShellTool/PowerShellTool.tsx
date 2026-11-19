@@ -23,7 +23,7 @@ import type {
   ToolCallProgress,
   ValidationResult,
 } from '../../Tool.js'
-import { buildTool, type ToolDef } from '../../Tool.js'
+import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import {
   backgroundExistingForegroundTask,
   markTaskNotified,
@@ -280,6 +280,21 @@ const isBackgroundTasksDisabled =
   // eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
   isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
 
+/**
+ * The leading Start-Sleep refusal. Like BashTool's, official 325 skips it
+ * under shellWallCapMs (an async REPL script call).
+ */
+export function sleepBlockMessage(
+  input: Pick<PowerShellToolInput, 'command' | 'run_in_background'>,
+  context: Pick<ToolUseContext, 'shellWallCapMs'>,
+): string | null {
+  if (isBackgroundTasksDisabled || input.run_in_background || context.shellWallCapMs !== undefined) return null
+  const sleepPattern = detectBlockedSleepPattern(input.command)
+  return sleepPattern === null
+    ? null
+    : `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\` — Monitor runs bash). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`
+}
+
 const fullInputSchema = lazySchema(() =>
   z.strictObject({
     command: z.string().describe('The PowerShell command to execute'),
@@ -498,7 +513,7 @@ export const PowerShellTool = buildTool({
     return true
   },
 
-  async validateInput(input: PowerShellToolInput): Promise<ValidationResult> {
+  async validateInput(input: PowerShellToolInput, context): Promise<ValidationResult> {
     // Defense-in-depth: also guarded in call() for direct callers.
     if (isWindowsSandboxPolicyViolation()) {
       return {
@@ -507,19 +522,9 @@ export const PowerShellTool = buildTool({
         errorCode: 11,
       }
     }
-    if (
-      feature('MONITOR_TOOL') &&
-      !isBackgroundTasksDisabled &&
-      !input.run_in_background
-    ) {
-      const sleepPattern = detectBlockedSleepPattern(input.command)
-      if (sleepPattern !== null) {
-        return {
-          result: false,
-          message: `Blocked: ${sleepPattern}. To wait for a condition, use Monitor with an until-loop (e.g. \`until <check>; do sleep 2; done\` — Monitor runs bash). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.`,
-          errorCode: 10,
-        }
-      }
+    const sleepBlock = feature('MONITOR_TOOL') ? sleepBlockMessage(input, context) : null
+    if (sleepBlock !== null) {
+      return { result: false, message: sleepBlock, errorCode: 10 }
     }
     return (
       validateAllowedDomains(input, shouldUseSandbox(input)) ?? { result: true }

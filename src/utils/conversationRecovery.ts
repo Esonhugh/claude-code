@@ -3,7 +3,9 @@ import type { UUID } from 'crypto'
 import { relative } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { addInvokedSkill } from '../bootstrap/state.js'
+import { isCodeModeEnabled } from '../tools/REPLTool/codeModeGate.js'
 import { asSessionId } from '../types/ids.js'
+import { planCodeModeResume } from './codeModeResume.js'
 import type {
   AttributionSnapshotMessage,
   ContextCollapseCommitEntry,
@@ -522,8 +524,9 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
   startedAt?: number
   costState?: SessionCostStateEntry
   permissionMode?: PermissionMode
+  replMode?: boolean
 }> {
-  const { messages: byUuid, leafUuids, sessionStartedAts, costStates, permissionModes } = await loadTranscriptFile(path)
+  const { messages: byUuid, leafUuids, sessionStartedAts, costStates, permissionModes, replModes } = await loadTranscriptFile(path)
   let tip: (typeof byUuid extends Map<UUID, infer T> ? T : never) | null = null
   let tipTs = 0
   for (const m of byUuid.values()) {
@@ -545,6 +548,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
     startedAt: sessionStartedAts.get(tip.sessionId as UUID),
     costState: costStates.get(tip.sessionId as UUID),
     permissionMode: permissionModes.get(tip.sessionId as UUID),
+    replMode: replModes.get(tip.sessionId as UUID),
   }
 }
 
@@ -587,6 +591,8 @@ export async function loadConversationForResume(
   tag?: string
   mode?: 'coordinator' | 'normal'
   permissionMode?: PermissionMode
+  /** Code Mode state to keep: recorded, inferred, or false when this resume took it out. */
+  replMode?: boolean
   worktreeSession?: PersistedWorktreeSession | null
   devModsFolder?: string
   prNumber?: number
@@ -602,6 +608,7 @@ export async function loadConversationForResume(
     let startedAt: number | undefined
     let costState: SessionCostStateEntry | undefined
     let permissionMode: PermissionMode | undefined
+    let replMode: boolean | undefined
 
     if (source === undefined) {
       // --continue: most recent session, skipping live --bg/daemon sessions
@@ -639,6 +646,7 @@ export async function loadConversationForResume(
       startedAt = loaded.startedAt
       costState = loaded.costState
       permissionMode = loaded.permissionMode
+      replMode = loaded.replMode
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -683,6 +691,8 @@ export async function loadConversationForResume(
     const deserialized = deserializeMessagesWithInterruptDetection(messages!)
     messages = deserialized.messages
     messages.push(...createOrphanedAgentNotices(messages))
+    const codeMode = planCodeModeResume(log?.replMode ?? replMode, messages, isCodeModeEnabled())
+    messages.push(...codeMode.messages)
 
     // --fork-session reports 'fork' with the new session's id, like official.
     const hookMessages = await processSessionStartHooks(
@@ -715,6 +725,7 @@ export async function loadConversationForResume(
       tag: log?.tag,
       mode: log?.mode,
       permissionMode: log?.permissionMode ?? permissionMode,
+      replMode: codeMode.replMode,
       worktreeSession: log?.worktreeSession,
       devModsFolder: log?.devModsFolder,
       prNumber: log?.prNumber,

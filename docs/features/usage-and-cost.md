@@ -96,7 +96,7 @@ Usage:                 0 input, 0 output, 0 cache read, 0 cache write
 
 ## 订阅账号额外显示的内容
 
-- **ChatGPT 登录**（OpenAI provider）：启动画面和 `/status` 显示套餐、Codex 用量上限和速率限制重置额度；重置需要二次确认。
+- **ChatGPT 登录**（OpenAI provider）：启动画面和 `/status` 显示套餐、Codex 用量上限和速率限制重置额度；重置需要二次确认。`/usage` 另有一节 Credits，显示 ChatGPT credits 余额和按 25 credits = 1 美元换算的参考金额（如 `Credits: 12,500, USD: $500.00`），不是会话费用；无限额度显示 `Credits: Unlimited, USD: N/A`，没有余额数据时显示 0。
 - **API key / bearer token**：显示 `API Usage Billing`。
 - Fable 模型显示每周额度。
 

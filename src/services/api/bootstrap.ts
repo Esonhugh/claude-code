@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import isEqual from 'lodash-es/isEqual.js'
 import {
@@ -122,7 +123,7 @@ async function fetchBootstrapAPI(): Promise<BootstrapResult | null> {
       const response = await axios.get<unknown>(endpoint, {
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': getClaudeCodeUserAgent(),
+          'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
           ...authHeaders,
         },
         timeout: 5000,

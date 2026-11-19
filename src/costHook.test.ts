@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -66,7 +66,8 @@ const childSource = `
 test.each(['shutdown', 'unmount', 'exit'])(
   'cost summary lifecycle persists through a real child process: %s',
   async scenario => {
-    const root = await mkdtemp(join(tmpdir(), 'cost-hook-lifecycle-'))
+    // The child records its project under process.cwd(), which is the real path.
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'cost-hook-lifecycle-')))
     try {
       const resultPath = join(root, 'result.json')
       const configRoot = join(root, 'config')

@@ -464,11 +464,12 @@ export function useVirtualScroll(
     // both scrollBy (pendingDelta) and scrollTo (direct write). Normal
     // single-PageUp or sticky-break jumps skip this. The clamp
     // (setClampBounds) holds the viewport at the mounted edge during
-    // catch-up. Only caps range GROWTH; shrinking is unbounded.
+    // catch-up. Only caps range GROWTH; shrinking is unbounded. A range
+    // beyond the shortened list (/clear, compaction) cannot constrain it.
     const prev = prevRangeRef.current
     const scrollVelocity =
       Math.abs(scrollTop - lastScrollTopRef.current) + Math.abs(pendingDelta)
-    if (prev && scrollVelocity > viewportH * 2) {
+    if (prev && prev[1] <= n && scrollVelocity > viewportH * 2) {
       const [pS, pE] = prev
       if (start < pS - SLIDE_STEP) start = pS - SLIDE_STEP
       if (end > pE + SLIDE_STEP) end = pE + SLIDE_STEP

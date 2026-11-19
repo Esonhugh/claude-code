@@ -352,6 +352,7 @@ export function getCompactUserSummaryMessage(
   suppressFollowUpQuestions?: boolean,
   transcriptPath?: string,
   recentMessagesPreserved?: boolean,
+  replStateNote?: string,
 ): string {
   const formattedSummary = formatCompactSummary(summary)
 
@@ -365,6 +366,11 @@ ${formattedSummary}`
 
   if (recentMessagesPreserved) {
     baseSummary += `\n\nRecent messages are preserved verbatim.`
+  }
+
+  // Model-only: the UI strips it (withoutReplStateNote).
+  if (replStateNote) {
+    baseSummary += `\n\n${replStateNote}`
   }
 
   if (suppressFollowUpQuestions) {

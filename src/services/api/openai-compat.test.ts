@@ -2,8 +2,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
+import { getSessionSettingsCache, resetSettingsCache, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -445,8 +444,26 @@ try {
     claudeSessionId?: string | null
     contentType?: string | null
     version?: string | null
+    stainless?: string[]
     body: any
   }> = []
+  const stainlessHeaderNames = (headers: Headers | Record<string, string>) => {
+    const names: string[] = []
+    const add = (name: string) => {
+      if (name.toLowerCase().startsWith('x-stainless-')) names.push(name.toLowerCase())
+    }
+    if (headers instanceof Headers) headers.forEach((_value, name) => add(name))
+    else Object.keys(headers).forEach(add)
+    return names
+  }
+  // What getAnthropicClient passes as defaultHeaders for the Anthropic SDK.
+  const anthropicDefaultHeaders = {
+    'x-app': 'cli',
+    'User-Agent': 'claude-cli/2.1.327 (external, cli)',
+    'X-Stainless-Package-Version': '0.128.0',
+    'X-Stainless-Lang': 'js',
+    'X-Stainless-Runtime-Version': 'v26.12.1',
+  }
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers)
     requests.push({
@@ -460,6 +477,7 @@ try {
       claudeSessionId: headers.get('x-claude-code-session-id'),
       contentType: headers.get('content-type'),
       version: headers.get('version'),
+      stainless: stainlessHeaderNames(headers),
       body: init?.body ? JSON.parse(String(init.body)) : null,
     })
     return new Response(
@@ -475,6 +493,7 @@ try {
     apiKey: 'sk-test-api-key',
     maxRetries: 0,
     timeout: 1000,
+    defaultHeaders: anthropicDefaultHeaders,
   })
 
   await client.beta.messages.create({
@@ -482,6 +501,10 @@ try {
     max_tokens: 16,
     messages: [{ role: 'user', content: 'hi' }],
   })
+  // API-key mode (OPENAI_BASE_URL gateway): no Codex version, no Anthropic SDK headers.
+  assert.equal(requests[0]!.version, null)
+  assert.deepEqual(requests[0]!.stainless, [])
+  assert.equal(requests[0]!.appHeader, 'cli')
 
   assert.equal(
     requests[0]!.url,
@@ -690,7 +713,7 @@ try {
     requests[0]!.url,
     'https://chatgpt.com/backend-api/codex/responses',
   )
-  assert.equal(requests[0]!.version, OPENAI_CODEX_CLIENT_VERSION)
+  assert.equal(requests[0]!.version, '0.170.0')
   assert.deepEqual(requests[0]!.body.input, [
     {
       type: 'message',
@@ -704,6 +727,113 @@ try {
       ],
     },
   ])
+
+  const previousVersionSettings = getSessionSettingsCache()
+  setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'codex-dynamic' } }, errors: [] })
+  await oauthClient.beta.messages.create({ model: 'gpt-5.5', max_tokens: 16, messages: [{ role: 'user', content: 'version override' }] })
+  assert.equal(requests.at(-1)!.version, 'codex-dynamic')
+  if (previousVersionSettings) setSessionSettingsCache(previousVersionSettings)
+  else resetSettingsCache()
+
+  // ChatGPT login: every path sends the configured CodexVersion and no Anthropic SDK headers.
+  {
+    const completedSSE = 'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+    const compactionSSE = [
+      'data: {"type":"response.output_item.done","item":{"type":"compaction","id":"cmp_version","encrypted_content":"opaque"}}',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+      '',
+    ].join('\n\n')
+    const seen: Array<{ version: string | null, stainless: string[] }> = []
+    let nextStatuses: number[] = []
+    let sseBody = completedSSE
+    const requestsFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      seen.push({ version: headers.get('version'), stainless: stainlessHeaderNames(headers) })
+      const status = nextStatuses.shift() ?? 200
+      if (status !== 200) {
+        // The retry below happens after the user edits versionNumber.
+        setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'codex-after-edit' } }, errors: [] })
+        return new Response('{"error":{"message":"busy"}}', { status })
+      }
+      return new Response(sseBody, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as unknown as typeof fetch
+    const chatgptClient = (maxRetries: number) => createOpenAICompatClient({
+      apiKey: 'oauth-access-token',
+      maxRetries,
+      timeout: 1000,
+      defaultHeaders: anthropicDefaultHeaders,
+    })
+    const previous = getSessionSettingsCache()
+    try {
+      setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'codex-paths' } }, errors: [] })
+      const streamed = await chatgptClient(0).beta.messages.create({
+        model: 'gpt-5.5', max_tokens: 16, stream: true,
+        messages: [{ role: 'user', content: 'stream version' }],
+      } as any)
+      for await (const _event of streamed as any) { /* drain */ }
+      sseBody = compactionSSE
+      await (chatgptClient(0).beta.messages as any).compact({
+        model: 'gpt-5.5', messages: [{ role: 'user', content: 'compact version' }],
+      })
+      sseBody = completedSSE
+      assert.deepEqual(seen, [
+        { version: 'codex-paths', stainless: [] },
+        { version: 'codex-paths', stainless: [] },
+      ])
+
+      seen.length = 0
+      nextStatuses = [503]
+      await chatgptClient(1).beta.messages.create({
+        model: 'gpt-5.5', max_tokens: 16, messages: [{ role: 'user', content: 'retry version' }],
+      })
+      assert.deepEqual(seen.map(request => request.version), ['codex-paths', 'codex-after-edit'])
+
+      let handshakeHeaders: Record<string, string> | undefined
+      class HandshakeWebSocket extends EventEmitter {
+        constructor(_url: string, options: { headers: Record<string, string> }) {
+          super()
+          handshakeHeaders = options.headers
+          queueMicrotask(() => {
+            this.emit('upgrade', { headers: {} })
+            this.emit('open')
+          })
+        }
+        send() {
+          queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({
+            type: 'response.completed',
+            response: { id: 'resp_handshake', usage: { input_tokens: 1, output_tokens: 1 } },
+          }))))
+        }
+        close() {
+          queueMicrotask(() => this.emit('close', 1000, Buffer.alloc(0)))
+        }
+      }
+      seen.length = 0
+      setSessionSettingsCache({ settings: { versionNumber: { CodexVersion: 'codex-ws' } }, errors: [] })
+      await createOpenAICompatClient({
+        apiKey: 'oauth-access-token',
+        maxRetries: 0,
+        timeout: 1000,
+        defaultHeaders: anthropicDefaultHeaders,
+        turnScope: new OpenAITurnScope(
+          { sessionId: 'handshake-session', threadId: 'handshake-thread', promptCacheKey: 'handshake-cache' },
+          'handshake-turn',
+        ),
+        webSocketFactory: ((url: string, options: { headers: Record<string, string> }) =>
+          new HandshakeWebSocket(url, options)) as never,
+      }).beta.messages.create({
+        model: 'gpt-5.5', max_tokens: 16, messages: [{ role: 'user', content: 'websocket version' }],
+      })
+      assert.equal(seen.length, 0)
+      assert.equal(handshakeHeaders?.version, 'codex-ws')
+      assert.deepEqual(stainlessHeaderNames(handshakeHeaders ?? {}), [])
+    } finally {
+      globalThis.fetch = requestsFetch
+      if (previous) setSessionSettingsCache(previous)
+      else resetSettingsCache()
+    }
+  }
 
   // #1023: ChatGPT keeps `tools` stable; discovered deferred tools travel as
   // client tool_search_output items at the point ToolSearch found them.
@@ -1644,7 +1774,7 @@ try {
     output_config: { effort: 'ultra' },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
 
   const {
     EFFORT_LEVELS,
@@ -1674,7 +1804,7 @@ try {
     output_config: { effort: appliedUltra },
   } as any)
 
-  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'xhigh' })
+  assert.deepEqual(requests[0]!.body.reasoning, { effort: 'ultra' })
   if (originalUseOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
   else process.env.CLAUDE_CODE_USE_OPENAI = originalUseOpenAI
 
@@ -1809,6 +1939,7 @@ try {
       body: init?.body ? JSON.parse(String(init.body)) : null,
       unix: (init as RequestInit & { unix?: string } | undefined)?.unix,
       accountId: headers.get('chatgpt-account-id'),
+      version: headers.get('version'),
     } as never)
     return new Response(
       'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
@@ -1833,6 +1964,7 @@ try {
   assert.equal(requests[0]!.authorization, null)
   assert.equal((requests[0] as never as { unix?: string }).unix, '/tmp/openai.sock')
   assert.equal((requests[0] as never as { accountId?: string | null }).accountId, null)
+  assert.equal(requests[0]!.version, null)
   delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
   delete process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 

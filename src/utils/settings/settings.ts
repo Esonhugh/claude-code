@@ -63,11 +63,13 @@ import { type SettingsJson, SettingsSchema } from './types.js'
 import {
   filterInvalidHooks,
   filterInvalidPermissionRules,
+  filterInvalidVersionNumber,
   formatZodError,
   type SettingsWithErrors,
   type ValidationError,
 } from './validation.js'
 import { isAnt } from 'src/utils/userType.js'
+import { DEFAULT_CLIENT_VERSIONS } from '../../constants/clientVersions.js'
 
 
 /**
@@ -253,13 +255,16 @@ export function readSettingsFile(
       return { settings: {}, errors: [], identity }
     }
 
-    const data = safeParseJSON(content, false)
+    // The filters below edit the object in place; clone it so the shared JSON
+    // parse cache keeps the original and a re-read reports the same warnings.
+    const data = clone(safeParseJSON(content, false))
 
     // Filter invalid permission rules before schema validation so one bad
     // rule doesn't cause the entire settings file to be rejected.
     const ruleWarnings = [
       ...filterInvalidPermissionRules(data, path),
       ...filterInvalidHooks(data, path),
+      ...filterInvalidVersionNumber(data, path),
     ].map(warning => ({ ...warning, severity: 'warning' as const }))
 
     const result = SettingsSchema().safeParse(data)
@@ -1022,6 +1027,16 @@ function loadSettingsFromDisk(): SettingsWithErrors {
 export function getInitialSettings(): SettingsJson {
   const { settings } = getSettingsWithErrors()
   return settings || {}
+}
+
+export function getClientVersions(): typeof DEFAULT_CLIENT_VERSIONS {
+  const configured = getInitialSettings().versionNumber
+  return {
+    ClaudeOAuthClientVersion: configured?.ClaudeOAuthClientVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeOAuthClientVersion,
+    ClaudeApiClientVersion: configured?.ClaudeApiClientVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeApiClientVersion,
+    CodexVersion: configured?.CodexVersion ?? DEFAULT_CLIENT_VERSIONS.CodexVersion,
+    ClaudeSDKVersion: configured?.ClaudeSDKVersion ?? DEFAULT_CLIENT_VERSIONS.ClaudeSDKVersion,
+  }
 }
 
 /**

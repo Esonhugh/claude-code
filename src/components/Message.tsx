@@ -308,6 +308,7 @@ function UserMessage({
           planContent={message.planContent}
           isTranscriptMode={isTranscriptMode}
           timestamp={message.timestamp}
+          origin={message.origin}
         />
       )
     case 'image':
