@@ -12,60 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-11-19 - OpenAI 的 ultra effort 按原样发送、Bash 与 PowerShell 拒绝规则对符号链接本身生效
+## 2026-11-19 - v2.1.298 - Code Mode 与 Advisor（实验性）、客户端版本号可配置、OpenAI ultra effort 原样发送、拒绝规则对符号链接本身生效、Codex 式压缩只保留用户消息、启动输入卡顿与长历史 /clear 修复
 
 ### 版本状态
 
-- 未发布：随 PR #1395 和 `fix/powershell-deny-symlink` 分支合入 `dev` 的修复，尚未归入版本。
+- 发布候选：`dev` 合并到 `master` 后打 tag `v2.1.298`。本条目汇总 `v2.1.297` tag（master `6cb1620`）之后至 PR #1396 的全部变更；`Makefile VERSION`、README 与构建文档的发布版本同步为 `2.1.298`，`package.json` 保持 `0.0.0-dev`。版本号与官方版本号无对应关系（本轮移植对照官方 2.1.325，默认客户端版本号与官方 2.1.327 一致）。
 
 ### 关联提交
 
-- `c6f5ca47` OpenAI 的 `ultra` 按原样发送；`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径；`fix/powershell-deny-symlink` 分支对 PowerShell 工具做同样的修复；`c4ba4756`、`899f2710`、`22283480` 发布门禁。
-
-### 变更内容
-
-- OpenAI provider 下 effort 为 `ultra` 时请求里发 `ultra`，不再改成 `xhigh`（#945 起改成了 `xhigh`）；服务端不接受时显示 API 错误，用 `/effort` 换一档即可。`ultracode` 仍发 `xhigh`。
-- 拒绝规则写的是符号链接本身时（例如 `Read(./.env)`，而 `.env` 链接到项目外的文件），`cat .env`、`tac .env`、`cat < .env` 等 Bash 命令现在会被拒绝。此前只按链接目标匹配，默认模式下会询问，`bypassPermissions` 模式下直接执行。项目目录本身经过符号链接（例如 macOS 的 `/var` 到 `/private/var`）时 `Read(./...)` 拒绝规则同样生效。Windows 上的 PowerShell 工具（`CLAUDE_CODE_USE_POWERSHELL_TOOL=1` 时启用）有同样的问题，`Get-Content`、`gc`、`cat` 等也已修复；路径里带反引号、只能猜测路径时也按写出来的路径检查拒绝规则。`Read` 工具不受影响。允许规则仍只按链接目标匹配。
-
-### 测试覆盖
-
-- 单测：`openai-compat.test.ts` 检查 `ultra` 原样发送、`ultracode` 发 `xhigh`；`bashPermissionHardening.test.ts` 检查指向项目外的符号链接在 `Read(./.env-link)` 和 `Read(**/.env-link)` 下，`cat`、`tac`、`cat <` 在默认和 `bypassPermissions` 模式下都被拒绝；新增 `PowerShellTool/pathValidation.test.ts`，对同样的符号链接检查 `Get-Content`、`gc`、`cat` 和带反引号的路径。
-- 发布门禁：`effort-openai-responses-wire` 按每个模型保存的 effort（`modelSettings.<model>.effortLevel`）检查；`model-discovery-picker` 按选择器里的行选中发现的模型，并确认 “Switch model?” 对话框。
-
-## 2026-11-19 - 客户端版本号可配置（versionNumber）
-
-### 版本状态
-
-- 未发布：PR #1395 合入 `dev` 的变更，尚未归入版本。
-
-### 关联提交
-
-- PR #1395（`feat/settings-version-number` 分支），对应 issue #1394。
-
-### 变更内容
-
-- 新设置 `versionNumber`，可以逐项设置请求里发送的客户端版本号：`ClaudeOAuthClientVersion`、`ClaudeApiClientVersion`、`ClaudeSDKVersion`、`CodexVersion`，没写的字段用默认值，见 [客户端版本号](docs/features/client-version-numbers.md)。
-- 默认版本号改为与官方 Claude Code 2.1.327 和 Codex CLI 0.170.0 一致：用 Claude 账号登录时模型请求的 `User-Agent` 从 `claude-cli/2.1.318` 改为 `claude-cli/2.1.327`，并和官方一样带上 SDK、client app、workload 后缀；API key、自定义网关、Bedrock、Vertex、Foundry 的模型请求和其他请求（`claude-code/<版本>`）从这个构建自己的版本号改为 2.1.327；Claude 一侧模型请求的 `X-Stainless-Package-Version` 统一为 `0.128.0`（之前只有 Claude 账号登录时这样发，其他接入方式发实际 SDK 的 `0.80.0`）；用 ChatGPT 账号登录 OpenAI provider 时的 Codex 版本从 `0.166.0` 改为 `0.170.0`。
-- 设置文件里 `versionNumber` 的某个字段不合法时只忽略这个字段并提示设置错误，同一文件的其他设置照常生效。
-
-### 测试覆盖
-
-- 单测：`versionNumbers.test.ts` 覆盖多层设置合并、不合法字段和非对象 `versionNumber` 只丢弃该项并提示、二次读取仍提示；`cchFetch.test.ts` 覆盖 Claude 账号、API key、自定义网关、Bedrock、Vertex、Foundry 的 `User-Agent` 和 `X-Stainless-Package-Version`，自定义头优先，OpenAI 模式（ChatGPT、API key、`OPENAI_BASE_URL`）不带 `x-stainless-*`，`cc_version` 不变；`openai-compat.test.ts` 覆盖 ChatGPT 的 Responses、压缩、WebSocket 握手和重试时读到新的 `CodexVersion`，API key 网关和 tunnel 不带 `version`；`policyLimits/userAgent.test.ts`、`SSETransport.userAgent.test.ts` 覆盖辅助请求的 `claude-code/<版本>`。
-- 发布门禁新增 `client-version-headers`：默认、全部覆盖、只覆盖 `CodexVersion` 三组设置，分别在 OpenAI API key、Claude 一侧 bootstrap、ChatGPT 登录三种接入方式下对假服务录请求并检查版本号。Claude 账号登录和 Anthropic 模型请求只有单测。
-
-## 2026-11-17 - Code Mode（实验性）、Advisor 顾问模型（实验性）、Codex 式压缩只保留用户消息、ChatGPT Credits、启动输入卡顿与长历史 /clear 修复
-
-### 版本状态
-
-- 未发布：`v2.1.297` tag（master `6cb1620`）之后合入 `dev` 的变更，尚未定版本号；`Makefile VERSION` 仍为 `2.1.297`。
-
-### 关联提交
-
-- PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口。
-- 随本条目一起合入 `dev` 的提交：`c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363）；`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；其余是文档提交。
-- 对应 issue：#1357；#1358（#1360、#1361）；#1369（#1374）、#1370、#1376（#1381）、#1372（#1375）、#1373（#1390）、#1377（#1378）、#1379（#1380）、#1382（#1385）、#1383（#1387）、#1384（#1386）、#1388（#1391）、#1389（#1364）、#1392（#1393）。
-- Advisor 顾问模型（实验性）：PR #1375（`feat/advisor` 分支），对应 issue #1372。
-- 本地 advisor（实验性）：PR #1391（`feat/local-advisor` 分支），对应 issue #1388。
+- PR 合并提交（`git log --first-parent v2.1.297..dev`）：#1362 Codex 式压缩只保留用户消息；#1361 Bun 下设置、主题与 cron 文件改为轮询，启动后输入不再卡顿；#1363 Code Mode（实验性）；#1359 ChatGPT Credits；#1360 长历史 `/clear`、`/new` 后的视口；#1366 上一轮未发布条目、发布验收与门禁 driver 修复；#1367 PTY 证据测试的临时目录；#1368 `query.mods` 测试隔离；#1374 单测 CI 补跑顶层测试文件；#1381 慢 CI 上的时间上限；#1380 子 agent 消息不再显示原始 XML；#1378 Terminal 交互输入授权；#1375 Advisor 顾问模型（实验性）；#1385 自定义主题 watch 测试；#1387 claude web 恢复会话；#1386 Code Mode 测试；#1390 网关模型缓存无法校验；#1391 本地 advisor（实验性）；#1364 Remote Control 失败处理；#1393 Advisor 改为显式开关、失败后退回本地；#1395 客户端版本号可配置，同时带 OpenAI `ultra` 原样发送与 Bash 拒绝规则修复；#1396 PowerShell 拒绝规则修复。
+- 随 PR 合入的其他提交：#1366 的 `c78cf77d` 只有开始时已被中断的一轮才记为中断请求（修正 #1363），`925706fb`、`1c61efff`、`b18d6663`、`b0158ce4`、`ff220c56`、`54044dc5`、`885ee635`、`45d27605`、`fcb3aa8a` 发布门禁；#1395 的 `c6f5ca47` OpenAI 的 `ultra` 原样发送，`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径，`c4ba4756`、`899f2710`、`22283480` 发布门禁；#1396 的 `8587e41f` PowerShell 工具做同样的修复；其余是文档提交。
+- 对应 issue：#1357；#1358（#1360、#1361）；#1369（#1374）、#1370、#1376（#1381）、#1372（#1375）、#1373（#1390）、#1377（#1378）、#1379（#1380）、#1382（#1385）、#1383（#1387）、#1384（#1386）、#1388（#1391）、#1389（#1364）、#1392（#1393）、#1394（#1395）。
 
 ### 变更内容
 
@@ -74,6 +31,8 @@
 - Codex 式压缩（`compact.mode: "codex"`）写摘要时与 Codex 一样只原样保留最近的用户消息：模型回复、工具调用（包括 `Write` 写入的文件内容）和工具结果交给摘要，不再保留；放不下的那条只留开头，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。此前多次大 `Write` 后 `/compact` 几乎不减少上下文，实测压缩后的下一次请求由 1,253,245 字节降到 34,344 字节。OpenAI 服务端压缩与默认的 `claude` 方式不变（#1362）。
 - 在 Bun 下运行时（包括 Bun 构建的 binary），设置文件、自定义主题和 cron 文件改为每 500 ms 轮询一次，外部改动最多晚一个轮询间隔生效（#1361）。
 - Advisor 只在设置了 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` 时使用；不设时请求里没有 advisor 工具和 advisor 相关的 beta 标识，`/advisor` 不出现，`--advisor` 只打印一条警告。设了之后，Claude 模式（Anthropic API，包括自定义 `ANTHROPIC_BASE_URL`）下发给模型的请求都带 `advisor-tool-2026-03-01`，没有选顾问时也带；主模型不是 Claude 3、Opus 4.7 及更早的 Claude 4 系列（含 Haiku 4.5、Sonnet 4.5、Sonnet 4.6）或 Sonnet 5 时（网关自己的模型名算作支持），主对话和子代理的请求还带 `mid-conversation-tool-changes-2026-07-01` 和 `mid-conversation-system-2026-04-07`。网关按 Anthropic 的报错格式拒绝这些标识时，客户端去掉它们重发，本次启动内不再对该地址发送；网关用其他措辞拒绝时每一轮都报 `API Error: 400`，需要设置 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`（只用本地 advisor）或去掉开关。`CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL` 已去掉，设了不起作用（#1372、#1388、#1392、#1393）。
+- OpenAI provider 下 effort 为 `ultra` 时请求里发 `ultra`，不再改成 `xhigh`（v2.1.297 起，#945，改成了 `xhigh`）；ChatGPT 账号、API key 和兼容网关都一样。服务端不接受时显示 API 错误，用 `/effort` 换一档即可。`ultracode` 和数字档位仍发 `xhigh`（#1395、`c6f5ca47`）。
+- 默认客户端版本号改为与官方 Claude Code 2.1.327 和 Codex CLI 0.170.0 一致：用 Claude 账号登录时模型请求的 `User-Agent` 从 `claude-cli/2.1.318` 改为 `claude-cli/2.1.327`，并和官方一样带上 SDK、client app、workload 后缀；API key、自定义网关、Bedrock、Vertex、Foundry 的模型请求和其他请求（`claude-code/<版本>`）从这个构建自己的版本号改为 2.1.327；Claude 一侧模型请求的 `X-Stainless-Package-Version` 统一为 `0.128.0`（之前只有 Claude 账号登录时这样发，其他接入方式发实际 SDK 的 `0.80.0`）；用 ChatGPT 账号登录 OpenAI provider 时的 Codex 版本从 `0.166.0` 改为 `0.170.0`。需要别的版本号时用下面的 `versionNumber` 设置（#1394、#1395）。
 
 #### 新功能
 
@@ -83,6 +42,7 @@
 - 本地 advisor（官方没有）：打开 advisor 后，请求先使用服务端的 `advisor` 工具；接口不能运行它时由客户端代为完成：`advisor` 作为客户端执行的普通工具出现在请求里，主模型调用时，客户端把对话的文字记录单独发给顾问模型，回复作为工具结果交回。用于不运行服务端 advisor 的网关（#1388）。以下情况由本地 advisor 回答：接入方式不是 Anthropic API、设了 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1`、服务端拒绝了顾问（包括 Anthropic 措辞的拒绝和网关自己措辞的 400、422；客户端换上本地 `advisor` 工具把这次请求重发一次，成功后当前对话之后都由本地 advisor 回答），或者对话中途才选顾问而主模型不支持中途开关。开、关、换模型从下一次请求起生效；顾问请求失败后最多重试 2 次；顾问用量记在顾问模型名下。说明见 `docs/features/advisor.md`（#1388、#1391、#1392、#1393）。
 - Remote Control 失败处理（移植自官方 2.1.325）：失败状态带上原因类别，认证失败后同一账号重新登录时自动重连，其他终止性失败不自动重连；对话里显示一行 `Remote Control disconnected — <原因>`，同一行不重复，结尾按类别给下一步：认证失败加 ` — run /login to restore Remote Control`（原因里已提到 `/login` 时不加），会话在别处结束或原因里已说明怎么做时不加，其他情况加 ` — run /remote-control to reconnect`；失败后输入 `/remote-control` 打开失败说明，组织策略拒绝有单独的提示；Code Mode 会话里 Remote Control 拒绝启动（#1364、#1389）。
 - Terminal 工具新增交互输入授权：`new-session` 带 `"inputMode": "interactive"` 时，必须由用户明确批准一次（bypass 和 auto 模式下也要），之后只对返回的那个会话放行输入，会话结束为止，不写全局允许规则；批准后该会话里的输入不再按 Bash 拒绝规则检查。不带这个参数时行为不变；其他 action 带这个参数会被拒绝（#1378、#1377）。
+- 新设置 `versionNumber`，可以逐项设置请求里发送的客户端版本号：`ClaudeOAuthClientVersion`、`ClaudeApiClientVersion`、`ClaudeSDKVersion`、`CodexVersion`，没写的字段用默认值；某个字段不合法时只忽略这个字段并提示设置错误，同一文件的其他设置照常生效。见 [客户端版本号](docs/features/client-version-numbers.md)（#1394、#1395）。
 
 #### 修复
 
@@ -92,6 +52,8 @@
 - 子 agent 用 `SendMessage` 发给主对话的消息显示为 `Agent · <名字>` 加正文，不再带原始 `<agent-message>` XML 和用户的 `❯` 前缀；人为引用的 XML、非后代的 peer 和格式不对的消息不当作可信 agent 消息（#1380、#1379）。
 - claude web：刷新页面或点开会话后马上聚焦输入框或发消息，不再误报 “This chat is open in another tab”，消息也不再退回输入框（#1387、#1383）。
 - 设置了 `ANTHROPIC_BASE_URL` 时，网关模型缓存因为没有凭据等原因无法校验，按没有缓存处理，不再在每一轮抛错；构建出的 binary 不受影响，影响的是从源码运行的测试（#1390、#1373）。
+- 拒绝规则写的是符号链接本身时（例如 `Read(./.env)`，而 `.env` 链接到项目外的文件），`cat .env`、`tac .env`、`cat < .env` 等 Bash 命令现在会被拒绝。此前只按链接目标匹配，默认模式下会询问，`bypassPermissions` 模式下直接执行。项目目录本身经过符号链接（例如 macOS 的 `/var` 到 `/private/var`）时 `Read(./...)` 拒绝规则同样生效。允许规则仍只按链接目标匹配；`Read` 工具不受影响（#1395、`2f57f28a`）。
+- Windows 上的 PowerShell 工具（`CLAUDE_CODE_USE_POWERSHELL_TOOL=1` 时启用）有同样的问题，`Get-Content`、`gc`、`cat` 等也已修复；路径里带反引号、只能猜测路径时，也按写出来的路径检查拒绝规则（#1396、`8587e41f`）。
 
 #### 发布门禁
 
@@ -102,20 +64,30 @@
 - `builtin-mods` 的 telemetry 场景按 #206（`579bb424`）的结果改为期望没有内置 telemetry Mod：开启 `telemetry@builtin` 且隐私开关打开时不发任何 host 调用。最终复验按归档回执（archive receipt）重新评估已归档的各 side；此前复验不带归档位置，所有原生 side 的关闭身份检查都失败。
 - macOS 上 PTY 输出队列满时，内核对 ONLCR 换行会输出 `\r\r\n`；原生帧重放现在每个换行最多接受一个重复的 CR，且只在原始字节里确实有时接受。此前重放把它当成来源不明的字节，产生不了 Ink 帧。
 - 终端 target 的覆盖检查也改用 bounded 校验；此前覆盖检查仍跑完整校验，已通过的终端 target 被列为 invalid。
-- `model-discovery-picker` 按行号选中发现的模型：`/model` 选择框第一行是 Default，driver 此前固定按 `1`，选中的是 Default，之后的 3 项检查都缺证据。
+- `model-discovery-picker` 按选择器里的行选中发现的模型，并确认 “Switch model?” 对话框：`/model` 选择框第一行是 Default，driver 此前固定按 `1`，选中的是 Default，之后的 3 项检查都缺证据（#1395、`899f2710`、`22283480`）。
+- `effort-openai-responses-wire` 按每个模型保存的 effort（`modelSettings.<model>.effortLevel`）检查，期望 `ultra` 原样发送、只有 `ultracode` 发 `xhigh`（#1395、`c4ba4756`）。
+- 新增 target `client-version-headers`：默认、全部覆盖、只覆盖 `CodexVersion` 三组设置，分别在 OpenAI API key、Claude 一侧 bootstrap、ChatGPT 登录三种接入方式下对假服务录请求并检查版本号（#1395、`035f0ce6`）。
 - 门禁 target 分为 7 组（terminal、mods、agents、workflow、openai、models、ssh），可以用 `--group` 或 `--only-target` 单独跑。只跑一部分时结果写 `scope: partial`，通过时 `overall_verdict` 为 `partial_passed`；`--merge-manifests` 合并 HEAD、binary、baseline、driver 的 sha256 和 required targets 都相同的几次结果，同一 target 以较新的一次为准。
 - 发布验收改为增量作废：修复只作废受影响流程上的结果。纯文档修改只重跑 docs 审计（改了 CHANGELOG 或 README 时另跑 release-check 的文档阶段）；产品代码和仓库根 `scripts/` 的修复整体重跑 `make release-check`，feature 测试和 binary target 只重跑受修复 diff 影响的部分；依赖、构建配置和构建打包脚本的改动仍作废全部四路。
-- 除上面列出的改动，这几个 target 原有的检查没有放宽。门禁目前还没有覆盖 Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Codex 式压缩、设置变更检测、虚拟滚动、Advisor、Remote Control 失败处理和 Terminal 交互输入授权（`inputMode`），这些路径的改动不会触发任何 binary target。
+- 除上面列出的改动，这几个 target 原有的检查没有放宽。Code Mode（`REPLTool`、`PollTool`）、`ApplyPatchTool`、Advisor（`src/utils/advisor.ts`）、Remote Control（`src/bridge/`）、虚拟滚动（`useVirtualScroll`）和 Bash、PowerShell 的路径校验（两个 `pathValidation.ts`）的改动不会触发任何 binary target。Codex 式压缩（`codexCompact.ts`）会触发 `openai-remote-compaction`，设置变更检测（`changeDetector.ts`）和 Terminal 工具（`TerminalTool.ts`）会触发 `deferred-tool-discovery`，#1360 的渲染改动会触发 `terminal-interaction` 和 `terminal-canonical-diff`，但这些 target 不检查对应的新行为（压缩只保留用户消息、500 ms 轮询、`inputMode` 授权、`/clear` 后的视口）。
 
 ### 测试覆盖
 
 - #1366 起每个 PR 合并前并入最新 `dev`，PR CI 全绿：单测 5 片、lint 与 tsc、Linux 沙箱、官方对照、macOS/Windows e2e 与 web e2e。#1362、#1361、#1363、#1359、#1360 合并时没有 PR CI（2026-10-30 至 2026-11-17 10:22Z 之间仓库没有 CI 运行），它们的改动从 #1366 起包含在每次 PR CI 里。#1361 并入 `dev` 后单测第 3 片的设置 watcher 用例在负载下失败（轮询器在 chokidar ready 之后才取首个样本），测试改为等首个样本后再写，8 路并行下由 3/24 次失败降为 0/24。
 - #1363：Code Mode 对照场景（tmux + 假 API）20/20 个、333/333 项检查通过（构建 `7c74f63c`，早于 `c78cf77d`，见 `docs/research/code-mode-conformance-20261116.md`）；上一轮发布验收在 `45d27605` 上加入 `c78cf77d` 的等待中按 Esc 场景后重跑，21/21 个、351/351 项通过（见 PR #1366 说明）；转录（Ctrl+O / Ctrl+E）与后台等待画面与官方 2.1.325 对照。#1362：`codexCompact.test.ts` 20 项，新 binary 上 30 次大 `Write` 后 `/compact` 的请求体积对照见上。#1360：新 binary 上 3000 条历史的 `/clear`、`/new`、resize 与 PageUp/PageDown。#1359：新 binary 上 `/usage` 的字符串余额与无余额两种情况。
 - 只改测试和 CI 的 PR：#1367 PTY 证据测试把临时 fixture 目录解析成真实路径；#1368 `query.mods` 的两个测试不再受本机 memory 和 ChatGPT 登录影响；#1374 单测 CI 补跑 `src/`、`web/src/` 顶层的 34 个测试文件（#1369）；#1381 放宽两处在慢 CI 机器上超时的时间上限（#1370、#1376）；#1385 自定义主题的 watch 步骤等轮询器启动后再开始（#1382）；#1386 Code Mode 测试在脚本到达 Waiter 调用后停止（#1384）。
-- 发布验收（四路：单测与交互、`make release-check`、binary 门禁、文档审计）按增量作废进行。`45d27605` 上：`src/` 下全量单测 9171 项通过、67 项失败，失败项在 `v2.1.297` 上同样失败，或是环境相关、偶发；binary 门禁 16 个 required target 加 readiness smoke 全部通过（binary sha256 `7339cf09…`）。之后的 `fcb3aa8a` 只改了 `scripts/mods-test-lab.mjs`：`make release-check` 整体重跑通过，`mods-test-lab` 测试 35 项通过、1 项跳过，`builtin-mods` 和 readiness smoke 在新 binary（`d22712a2…`，与前者只差内嵌的 `CHANGELOG.md`）上重跑通过，其余 15 个 target 保留 `45d27605` 上的结果；其余提交是纯文档，只重跑文档审计。已知旧失败：`scripts/verify-pty-terminal-evidence.test.mjs` 的 sealed proof 用例在 macOS 默认 `TMPDIR`（`/var` 是 `/private/var` 的符号链接）下失败，`v2.1.297` 上相同，不在 `make release-check` 内。门禁没有覆盖的路径见上面发布门禁一节的最后一条。
+- 11-17 的发布验收（四路：单测与交互、`make release-check`、binary 门禁、文档审计）按增量作废进行。`45d27605` 上：`src/` 下全量单测 9171 项通过、67 项失败，失败项在 `v2.1.297` 上同样失败，或是环境相关、偶发；binary 门禁 16 个 required target 加 readiness smoke 全部通过（binary sha256 `7339cf09…`）。之后的 `fcb3aa8a` 只改了 `scripts/mods-test-lab.mjs`：`make release-check` 整体重跑通过，`mods-test-lab` 测试 35 项通过、1 项跳过，`builtin-mods` 和 readiness smoke 在新 binary（`d22712a2…`，与前者只差内嵌的 `CHANGELOG.md`）上重跑通过，其余 15 个 target 保留 `45d27605` 上的结果；其余提交是纯文档，只重跑文档审计。已知旧失败：`scripts/verify-pty-terminal-evidence.test.mjs` 的 sealed proof 用例在 macOS 默认 `TMPDIR`（`/var` 是 `/private/var` 的符号链接）下失败，`v2.1.297` 上相同，不在 `make release-check` 内。门禁没有覆盖的路径见上面发布门禁一节的最后一条。
 - Advisor（#1372，PR #1375，在 `b4d555e6` 上，之后只有文档改动）：9 个 advisor 相关测试文件 67 项通过，`claude-advisor-contract.test.ts` 在子进程里另跑的 24 项通过；`tsc` 通过，改动的 35 个 `src` 文件 eslint 通过，`make build` 通过。PR 的 CI 跑了全部单测分片和 lint，均通过，其中包括 #1374 起 CI 才运行的 `src/`、`web/src/` 顶层 34 个测试文件；此前的 CI 运行里出现过的失败记录在 #1370、#1383、#1384，原因都不在本次改动的代码里，另有一次 Windows 清理临时目录时的 `EBUSY`，重跑通过，原因没有查明。binary 在 tmux 里对假 API 跑了 6 个场景（#1393 之前 advisor 默认打开时的行为）：没有选顾问时请求带的 beta 标识、网关两种拒绝措辞、`/advisor` 对话中途开关、`--advisor` 校验与启动提示和选择框、system turn 被拒后的回退；这 6 个场景是 rebase 到 `dev` `3eeb314e` 之前跑的，rebase 没有改动 advisor 的代码。
 - 本地 advisor（#1388，PR #1391）：新增和扩展的 6 个测试文件 56 项通过，其中 `claude-advisor-contract.test.ts` 在子进程里另跑 28 项，新增的 4 项走真实的请求管线和假客户端；`bun run check:changed`（eslint、`tsc`、改动文件的单测）通过，`make build` 通过。在一个 Anthropic 格式的自定义网关上实测（#1393 之前，用当时的 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` 打开本地 advisor）：主模型 Sonnet 5.5、顾问 Opus 5.5，`-p` 两次、交互界面一次。录下的请求显示：主请求只带普通的 `advisor` 工具，不带 advisor 相关 beta 标识；顾问请求不带工具；`/advisor off` 之后的请求不再带 `advisor` 工具。其他接入方式、子代理里的调用没有实测，顾问请求失败只有假 API 的测试。
 - Advisor 改为显式开关、去掉等级表、失败后退避到本地（#1392、#1393，`feat/advisor-local-fallback` 分支）：提到 advisor 的 13 个测试文件加 `errors.test.ts` 共 126 项通过，`claude-advisor-contract.test.ts` 在子进程里另跑 39 项；测试覆盖不设开关时请求里没有任何 advisor 内容、只设已去掉的 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL` 不起作用、任意主模型和顾问都先发服务端条目、Anthropic 措辞和网关措辞的拒绝之后重发请求换上本地 `advisor` 工具、`/advisor` 的候选取自 `/model`。把开关检查从 `isAdvisorEnabled()` 里去掉时其中 8 项失败（含 contract 子进程）。删除的测试是等级表和配对规则、备用条目、搭配不兼容时显示报错的用例；“没有可去掉的内容时按原样重发”一项的预期从 2 次请求后报错改为第 3 次去掉顾问后得到回复。`tsc`、`bun run check:changed`、`make build` 通过。在一个 Anthropic 格式的自定义网关上实测（主模型 Opus 5.5，`-p`，录下请求）：不设开关时只有一次请求，没有 `advisor` 工具和 advisor 相关 beta 标识，stderr 显示 `--advisor` 被忽略的警告，只设 `CLAUDE_CODE_ENABLE_LOCAL_ADVISOR_TOOL=1` 时相同；设开关、顾问 Fable 5.2 时，带服务端顾问的请求得到网关措辞的 422，重发得到回复，之后的请求带本地 `advisor` 工具，顾问给出建议；顾问是网关没有的模型名时，重发的请求已经带本地工具，顾问请求发了 3 次（503）后主模型收到工具错误并继续回答；再加 `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 时第一次请求就带本地工具，没有 advisor 相关 beta 标识。交互界面里 `/advisor` 选择框列出 `/model` 的模型，`/advisor opus 5.5` 保存为 `Opus 5.5`，网关没有的模型名显示 `Invalid advisor model`。api.anthropic.com 上的服务端顾问、不再预先声明备用条目之后的表现、对话中途先后用到两种 advisor，只有假 API 的测试。
+- OpenAI `ultra`（#1395）：`openai-compat.test.ts` 检查 `ultra` 原样发送、`ultracode` 发 `xhigh`；binary 门禁 `effort-openai-responses-wire` 检查请求里的值。服务端拒绝 `ultra` 后显示 API 错误这一条没有专门测试，走的是通用的 400 错误路径。
+- 拒绝规则（#1395、#1396）：`bashPermissionHardening.test.ts` 检查指向项目外的符号链接在 `Read(./.env-link)` 和 `Read(**/.env-link)` 下，`cat`、`tac`、`cat <` 在默认和 `bypassPermissions` 模式下都被拒绝；新增 `PowerShellTool/pathValidation.test.ts`，对同样的符号链接检查 `Get-Content`、`gc`、`cat` 和带反引号的路径。只有单测：两个 `pathValidation.ts` 不触发 binary target，没有 tmux 交互验证；PowerShell 测试用手写的解析结果直接调用 `checkPathConstraints`，没有经过真实的 pwsh 解析，也没有在 Windows 上运行过（单测 CI 只在 ubuntu 上跑，而这个工具只在 Windows 上启用）；项目目录本身经过符号链接的情况只有 macOS 的 `tmpdir()` 会测到。Edit 类拒绝规则、glob 的基础目录是符号链接、allow 规则写链接本身时不放行项目外的目标，这几种情况没有专门用例。
+- `versionNumber`（#1395）：`versionNumbers.test.ts` 覆盖多层设置合并、不合法字段和非对象 `versionNumber` 只丢弃该项并提示、二次读取仍提示；`cchFetch.test.ts` 覆盖 Claude 账号、API key、自定义网关、Bedrock、Vertex、Foundry 的 `User-Agent` 和 `X-Stainless-Package-Version`，自定义头优先，OpenAI 模式（ChatGPT、API key、`OPENAI_BASE_URL`）不带 `x-stainless-*`，`cc_version` 不变；`openai-compat.test.ts` 覆盖 ChatGPT 的 Responses、压缩、WebSocket 握手和重试时读到新的 `CodexVersion`，API key 网关和 tunnel 不带 `version`；`policyLimits/userAgent.test.ts`、`SSETransport.userAgent.test.ts` 覆盖辅助请求的 `claude-code/<版本>`。binary 门禁 `client-version-headers` 9 个场景通过；Claude 账号登录和 Anthropic 模型请求只有单测，Bedrock、Vertex、Foundry 和自定义网关只断言了默认值。
+- 本轮发布验收（四路，`dev` `5377b047`）：
+  - 单测：release 范围内改动的测试和改动实现的直接、相邻测试共 590 个文件，5138 项通过；按 CI 的方式逐文件跑全量 1238 个文件，9716 项通过、23 项失败（16 个文件）。这 16 个文件在 `v2.1.297` 快照上失败项和报错相同，其中 `refresh.test.ts` 是 macOS `/var` 符号链接导致，把 `TMPDIR` 换成真实路径后通过。
+  - `make release-check` 各阶段通过。
+  - binary 门禁：driver 按 `v2.1.297..HEAD` 算出 21 个 required target，加 readiness smoke 全部通过（binary sha256 `907448d4…`）。`terminal-interaction`、`terminal-canonical-diff` 的 `full_terminal_coverage` 仍为 `not covered`。
+  - 文档审计发现的不符（本条目的门禁覆盖说明、#1396 的归属、`docs/features/permissions.md`、`openai-provider.md`、`effort.md`）已在发布准备提交里修正。
 
 ## 2026-11-11 - v2.1.297 - hooks exec-form 命令注入修复、上下文窗口档位、自动压缩超长恢复、OpenAI apply_patch 工具、claude web 的 Mods 界面与会话设置保留、与官方共用设置、ctrl+Enter 低延迟发送、Teams 与 headless 退出修复
 
