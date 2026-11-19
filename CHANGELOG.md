@@ -12,24 +12,24 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-11-19 - OpenAI 的 ultra effort 按原样发送、Bash 拒绝规则对符号链接本身生效
+## 2026-11-19 - OpenAI 的 ultra effort 按原样发送、Bash 与 PowerShell 拒绝规则对符号链接本身生效
 
 ### 版本状态
 
-- 未发布：`feat/settings-version-number` 分支上的修复，尚未归入版本。
+- 未发布：随 PR #1395 和 `fix/powershell-deny-symlink` 分支合入 `dev` 的修复，尚未归入版本。
 
 ### 关联提交
 
-- `c6f5ca47` OpenAI 的 `ultra` 按原样发送；`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径；`c4ba4756`、`899f2710`、`22283480` 发布门禁。
+- `c6f5ca47` OpenAI 的 `ultra` 按原样发送；`2f57f28a` Bash 路径拒绝规则也匹配写出来的路径；`fix/powershell-deny-symlink` 分支对 PowerShell 工具做同样的修复；`c4ba4756`、`899f2710`、`22283480` 发布门禁。
 
 ### 变更内容
 
 - OpenAI provider 下 effort 为 `ultra` 时请求里发 `ultra`，不再改成 `xhigh`（#945 起改成了 `xhigh`）；服务端不接受时显示 API 错误，用 `/effort` 换一档即可。`ultracode` 仍发 `xhigh`。
-- 拒绝规则写的是符号链接本身时（例如 `Read(./.env)`，而 `.env` 链接到项目外的文件），`cat .env`、`tac .env`、`cat < .env` 等 Bash 命令现在会被拒绝。此前只按链接目标匹配，默认模式下会询问，`bypassPermissions` 模式下直接执行。项目目录本身经过符号链接（例如 macOS 的 `/var` 到 `/private/var`）时 `Read(./...)` 拒绝规则同样生效。`Read` 工具不受影响。允许规则仍只按链接目标匹配。
+- 拒绝规则写的是符号链接本身时（例如 `Read(./.env)`，而 `.env` 链接到项目外的文件），`cat .env`、`tac .env`、`cat < .env` 等 Bash 命令现在会被拒绝。此前只按链接目标匹配，默认模式下会询问，`bypassPermissions` 模式下直接执行。项目目录本身经过符号链接（例如 macOS 的 `/var` 到 `/private/var`）时 `Read(./...)` 拒绝规则同样生效。Windows 上的 PowerShell 工具（`CLAUDE_CODE_USE_POWERSHELL_TOOL=1` 时启用）有同样的问题，`Get-Content`、`gc`、`cat` 等也已修复；路径里带反引号、只能猜测路径时也按写出来的路径检查拒绝规则。`Read` 工具不受影响。允许规则仍只按链接目标匹配。
 
 ### 测试覆盖
 
-- 单测：`openai-compat.test.ts` 检查 `ultra` 原样发送、`ultracode` 发 `xhigh`；`bashPermissionHardening.test.ts` 检查指向项目外的符号链接在 `Read(./.env-link)` 和 `Read(**/.env-link)` 下，`cat`、`tac`、`cat <` 在默认和 `bypassPermissions` 模式下都被拒绝。
+- 单测：`openai-compat.test.ts` 检查 `ultra` 原样发送、`ultracode` 发 `xhigh`；`bashPermissionHardening.test.ts` 检查指向项目外的符号链接在 `Read(./.env-link)` 和 `Read(**/.env-link)` 下，`cat`、`tac`、`cat <` 在默认和 `bypassPermissions` 模式下都被拒绝；新增 `PowerShellTool/pathValidation.test.ts`，对同样的符号链接检查 `Get-Content`、`gc`、`cat` 和带反引号的路径。
 - 发布门禁：`effort-openai-responses-wire` 按每个模型保存的 effort（`modelSettings.<model>.effortLevel`）检查；`model-discovery-picker` 按选择器里的行选中发现的模型，并确认 “Switch model?” 对话框。
 
 ## 2026-11-19 - 客户端版本号可配置（versionNumber）
