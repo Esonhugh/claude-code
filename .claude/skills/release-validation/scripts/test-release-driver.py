@@ -1909,6 +1909,7 @@ def assert_driver_behavior(module, baseline_module):
         'openai-responses-usage-error',
         'model-discovery-picker',
         'prompt-modes-cache-prefix',
+        'client-version-headers',
     }
     assert module.required_targets_for_paths([
         'src/commands/fast/fast.tsx',
@@ -2160,6 +2161,7 @@ def assert_driver_behavior(module, baseline_module):
         'model-discovery-picker',
         'model-discovery-empty-picker',
         'first-party-bootstrap-picker',
+        'client-version-headers',
         'model-internal-update-config-skill',
         'prompt-modes-cache-prefix',
         'team-concurrency',
@@ -3863,14 +3865,22 @@ def assert_driver_behavior(module, baseline_module):
                 'authorization': {'present': True, 'matches_dummy': True},
             }]
             gate.mock_servers = {run_dir.name: SimpleNamespace(snapshot=lambda: requests)}
-            gate.tmux = lambda *args, **kwargs: None
+            keys = []
+            gate.tmux = lambda *args, **kwargs: keys.append(args[-1]) if args[0] == 'send-keys' else None
             def capture_model(_target, path, **_kwargs):
                 text = {
-                    '03-model-picker-pane.txt': 'Select model\nGPT Release Discovered',
+                    # The picker lists Default first, as on the real binary.
+                    '03-model-picker-pane.txt': (
+                        'Select model\n❯ 1. Default (gpt-5.6-sol) ✔  Current model\n'
+                        '  2. GPT Release Discovered   Release validation model'
+                    ),
                     '04-model-selected-pane.txt': 'gpt-release-discovered',
                     '05-model-current-pane.txt': 'Current model: gpt-release-discovered',
                     '06-explicit-model-pane.txt': 'RELEASE_EXPLICIT_MODEL_OK',
-                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra',
+                    # A warm cache asks before switching models.
+                    '07-alias-selected-pane.txt': 'Set model to gpt-5.6-terra' if keys[2:] == ['1'] else (
+                        'Switch model?\n❯ 1. Yes, switch to gpt-5.6-terra\n  2. No, go back'
+                    ),
                     '08-default-model-pane.txt': 'RELEASE_DEFAULT_MODEL_OK',
                 }.get(path.name, '')
                 if faulty == 'missing-pane' and path.name == '08-default-model-pane.txt':
@@ -3909,6 +3919,7 @@ def assert_driver_behavior(module, baseline_module):
             gate.model_discovery_picker()
             assert recorded[0]['validation_verdict'] == ('passed' if faulty is None else 'failed'), faulty
             if faulty is None:
+                assert keys == ['M-p', '2', '1'], keys
                 assert {item['assertion_id'] for item in recorded[0]['assertions']} >= {
                     'openai-default-model-alias', 'openai-explicit-model-preserved',
                 }
@@ -3962,6 +3973,7 @@ def assert_driver_behavior(module, baseline_module):
         requests = [
             {
                 'body': {
+                    'model': 'release-effort-model',
                     'reasoning': {'effort': expected},
                     'prompt_cache_key': 'cache-key',
                 },
@@ -4012,9 +4024,10 @@ def assert_driver_behavior(module, baseline_module):
             if prompt.startswith('Reply with'):
                 visible_requests += 1
             elif prompt == '/effort ultracode':
-                (run_dir / 'config' / 'settings.json').write_text(
-                    json.dumps({'effortLevel': 'ultracode'})
-                )
+                # The product saves effort per model, not at the top level.
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps(
+                    {'modelSettings': {'release-effort-model': {'effortLevel': 'ultracode'}}}
+                ))
 
         effort_gate.send = send_effort
         effort_gate.wait_until = lambda predicate, timeout, interval=0.5: predicate()
@@ -4067,6 +4080,27 @@ def assert_driver_behavior(module, baseline_module):
         }):
             module.BinaryGate.effort_openai_responses_wire(effort_gate)
         assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['settings_effort_level'] == 'ultracode'
+
+        # A top-level effortLevel alone is not the product's per-model save.
+        original_send = effort_gate.send
+
+        def send_top_level(*args):
+            original_send(*args)
+            if str(args[2]) == '/effort ultracode':
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps({'effortLevel': 'ultracode'}))
+
+        effort_gate.send = send_top_level
+        visible_requests = 0
+        transcript_open = False
+        recorded.clear()
+        with patch.object(module, 'analyze_openai_wire_debug', return_value={
+            'matched': True, 'cross_client_append_only': True,
+        }):
+            module.BinaryGate.effort_openai_responses_wire(effort_gate)
+        assert recorded[0]['validation_verdict'] == 'failed'
+        assert recorded[0]['settings_effort_level'] is None
+        effort_gate.send = original_send
 
     with tempfile.TemporaryDirectory(prefix='release-driver-fast-wire-') as root_string:
         run_dir = Path(root_string) / 'fast-openai-responses-wire'
@@ -4732,7 +4766,7 @@ def assert_driver_behavior(module, baseline_module):
     launcher = LAUNCHER_PATH.read_text()
     assert "value = os.environ.get(f'CC_VALIDATION_{name}') or os.environ.get(name)" in driver
     assert "value = merge_no_proxy(value, '127.0.0.1', 'localhost')" in driver
-    assert "uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'" in driver
+    assert "uses_local_mock = label in MOCK_OPENAI_TARGETS or label in FIRST_PARTY_BOOTSTRAP_LABELS" in driver
     assert "if uses_local_mock:\n            mock_server = MockOpenAIServer(run_dir, label)" in driver
     assert "if name == 'NO_PROXY' and uses_local_mock:" in driver
     assert 'set -- env -i' in launcher
@@ -6446,6 +6480,211 @@ def test_retained_builtin_invalid_launch_keeps_failed_originals():
                        for name in module.BUILTIN_SIDE_NAMES), variant
             assert outside.read_text() == '{"foreign":true}'
             assert recorded[0]['assertions'][0]['validation_verdict'] == 'failed'
+
+
+CLIENT_VERSION_PATHS = (
+    'src/constants/clientVersions.ts', 'src/utils/settings/settings.ts',
+    'src/utils/settings/types.ts', 'src/utils/http.ts', 'src/utils/userAgent.ts',
+    'src/services/api/client.ts', 'src/services/api/openai-compat.ts',
+    'src/services/api/bootstrap.ts', 'src/utils/model/openaiModelOptions.ts',
+    'src/ssh/sshAuthProxy.ts',
+)
+
+
+def test_retained_client_version_headers_target_contract():
+    import re
+    module = load_driver()
+    driver = DRIVER_PATH.read_text()
+    for path in CLIENT_VERSION_PATHS:
+        assert 'client-version-headers' in module.required_targets_for_paths([path]), path
+    assert 'client-version-headers' not in module.required_targets_for_paths(['src/utils/settings/constants.ts'])
+    assert 'client-version-headers' in module.TARGET_GROUPS['models']
+    assert "'client-version-headers': self.client_version_headers" in driver
+    # The gate's expected defaults must track the product constants it validates.
+    source = (DRIVER_PATH.parents[4] / 'src/constants/clientVersions.ts').read_text()
+    assert dict(re.findall(r"(\w+): '([^']+)'", source)) == module.CLIENT_VERSION_DEFAULTS
+    overrides = module.CLIENT_VERSION_VARIANTS['override']
+    assert set(overrides) == set(module.CLIENT_VERSION_DEFAULTS)
+    assert len(set(overrides.values())) == len(overrides)
+    assert not set(overrides.values()) & set(module.CLIENT_VERSION_DEFAULTS.values())
+    assert module.CLIENT_VERSION_VARIANTS['default'] is None
+    assert 0 < len(module.CLIENT_VERSION_VARIANTS['partial']) < len(overrides)
+    assert {(variant, mode) for _, variant, mode in module.CLIENT_VERSION_SCENARIOS} == {
+        (variant, mode) for variant in ('default', 'override', 'partial')
+        for mode in ('openai', 'bootstrap', 'chatgpt')}
+
+
+def test_retained_client_version_headers_fixture():
+    module = load_driver()
+    with tempfile.TemporaryDirectory(prefix='client-version-fixture-') as tmp:
+        gate = object.__new__(module.BinaryGate)
+        gate.repo = DRIVER_PATH.parents[4]
+        gate.evidence_root = Path(tmp)
+        gate.auth_source = Path(tmp) / 'must-not-read-real-auth'
+        gate.auth_homes = set()
+        try:
+            for label, variant, mode in module.CLIENT_VERSION_SCENARIOS:
+                run = Path(tmp) / label
+                config, home = gate.make_fixture(run, label)
+                settings = json.loads((config / 'settings.json').read_text())
+                assert settings.get('versionNumber') == module.CLIENT_VERSION_VARIANTS[variant], label
+                auth = json.loads((home / '.codex/auth.json').read_text())
+                assert auth == {
+                    'openai': {'OPENAI_API_KEY': module.DUMMY_OPENAI_API_KEY},
+                    'bootstrap': {},
+                    'chatgpt': {'auth_mode': 'chatgpt',
+                                'tokens': {'access_token': module.OpenAIStatsServer.token}},
+                }[mode], label
+                assert (config / '.claude-local-oauth.json').exists() == (mode == 'bootstrap'), label
+                metadata = json.loads((run / 'auth-source-metadata.json').read_text())
+                assert metadata['uses_dummy_credential'] and metadata['source'] is None, label
+                assert (label in module.MOCK_OPENAI_TARGETS) == (mode == 'openai'), label
+                assert (label in module.FIRST_PARTY_BOOTSTRAP_LABELS) == (mode == 'bootstrap'), label
+                assert (label in module.CHATGPT_FIXTURE_LABELS) == (mode == 'chatgpt'), label
+        finally:
+            assert not gate.remove_auth_homes()['errors']
+    import http.client
+    import ssl
+    with tempfile.TemporaryDirectory(prefix='client-version-stats-') as tmp:
+        root = Path(tmp)
+        server = module.OpenAIStatsServer(root, root)
+        port = int(server.start().rsplit(':', 1)[1])
+        try:
+            connection = http.client.HTTPSConnection(
+                '127.0.0.1', port, context=ssl.create_default_context(cafile=str(server.ca)), timeout=5)
+            try:
+                connection.request('GET', 'https://chatgpt.com/backend-api/codex/models?client_version=9.9.3',
+                                   headers={'Authorization': f'Bearer {server.token}',
+                                            'Cookie': 'session=release-cookie', 'version': '9.9.3',
+                                            'User-Agent': 'claude-code/9.9.2'})
+                assert connection.getresponse().status == 200
+            finally:
+                connection.close()
+            (row,) = server.snapshot()
+            assert row['route'] == 'models' and row['query'] == 'client_version=9.9.3'
+            assert row['headers']['version'] == '9.9.3'
+            assert row['headers']['user-agent'] == 'claude-code/9.9.2'
+            assert 'authorization' not in row['headers'] and 'cookie' not in row['headers']
+            recorded = (root / 'openai-stats-http.json').read_text()
+            assert server.token not in recorded and 'release-cookie' not in recorded
+        finally:
+            assert server.stop()['tls_removed']
+
+
+def _client_version_rows(mode, expected):
+    api, codex = expected['ClaudeApiClientVersion'], expected['CodexVersion']
+    if mode == 'chatgpt':
+        return [{'method': 'GET', 'route': 'models', 'status': 200, 'matches_dummy': True,
+                 'query': f'client_version={codex}',
+                 'headers': {'user-agent': f'claude-code/{api}', 'version': codex}}]
+    if mode == 'bootstrap':
+        return [{'method': 'GET', 'path': '/api/claude_cli/bootstrap',
+                 'headers': {'user-agent': f'claude-code/{api}'}, 'body': None,
+                 'response_kind': 'bootstrap'}]
+    return [
+        {'method': 'GET', 'path': '/v1/models', 'headers': {'user-agent': f'claude-code/{api}'},
+         'body': None, 'response_kind': 'models'},
+        {'method': 'POST', 'path': '/v1/responses',
+         'headers': {'user-agent': f'claude-cli/{api} (external, cli)'},
+         'body': {'model': 'gpt-5.6-terra',
+                  'input': [{'role': 'user', 'content': 'RELEASE_CLIENT_VERSION_REQUEST'}]},
+         'response_kind': 'completed'},
+    ]
+
+
+def test_retained_client_version_headers_verdicts():
+    # Synthetic snapshots exercise driver verdicts only, never product behaviour.
+    module = load_driver()
+
+    def drop_requests(rows):
+        rows.clear()
+
+    def drop_codex_header(rows):
+        del rows[0]['headers']['version']
+
+    def default_agent(rows):
+        rows[0]['headers']['user-agent'] = f"claude-code/{module.CLIENT_VERSION_DEFAULTS['ClaudeApiClientVersion']}"
+
+    def default_codex_query(rows):
+        rows[0]['query'] = f"client_version={module.CLIENT_VERSION_DEFAULTS['CodexVersion']}"
+
+    def stainless(rows):
+        rows[-1]['headers']['x-stainless-package-version'] = '9.9.4'
+
+    def version_header(rows):
+        rows[-1]['headers']['version'] = module.CLIENT_VERSION_DEFAULTS['CodexVersion']
+
+    mutations = {
+        None: (None, None, None),
+        'missing-request': ('client-version-headers-override-chatgpt', drop_requests,
+                            'codex-version-header'),
+        'missing-bootstrap': ('client-version-headers-default-bootstrap', drop_requests,
+                              'bootstrap-user-agent'),
+        'missing-header': ('client-version-headers-override-chatgpt', drop_codex_header,
+                           'codex-version-header'),
+        'override-default-agent': ('client-version-headers-override-openai', default_agent,
+                                   'no-replaced-default'),
+        'partial-default-query': ('client-version-headers-partial-chatgpt', default_codex_query,
+                                  'codex-client-version-query'),
+        'stainless-openai': ('client-version-headers-override-openai', stainless, 'no-stainless'),
+        'stainless-chatgpt': ('client-version-headers-default-chatgpt', stainless, 'no-stainless'),
+        'openai-version-header': ('client-version-headers-default-openai', version_header,
+                                  'no-version-header'),
+    }
+    for mutation, (mutated_label, mutate, failed_check) in mutations.items():
+        with tempfile.TemporaryDirectory(prefix='client-version-verdict-') as tmp:
+            root = Path(tmp)
+            gate = object.__new__(module.BinaryGate)
+            gate.evidence_root = root
+            gate.mock_servers = {}
+            registered = {}
+            recorded = []
+            scenarios = {label: (variant, mode) for label, variant, mode in module.CLIENT_VERSION_SCENARIOS}
+
+            def start(label):
+                variant, mode = scenarios[label]
+                run = root / 'runs' / label
+                run.mkdir(parents=True)
+                (run / 'run-metadata.json').write_text(json.dumps({
+                    'driver_run': 'client-version-unit', 'source_run': run.name,
+                    'label': label, 'evidence_dir': str(run.resolve()),
+                }))
+                registered[str(run.resolve())] = (run / 'run-metadata.json').read_text()
+                (run / 'pane-target.txt').write_text('synthetic-only')
+                expected = {**module.CLIENT_VERSION_DEFAULTS, **(module.CLIENT_VERSION_VARIANTS[variant] or {})}
+                rows = _client_version_rows(mode, expected)
+                if label == mutated_label:
+                    mutate(rows)
+                name = 'openai-stats-http.json' if mode == 'chatgpt' else 'mock-openai-requests.json'
+                (run / name).write_text(json.dumps(rows))
+                gate.mock_servers[run.name] = SimpleNamespace(snapshot=lambda rows=rows: json.loads(json.dumps(rows)))
+                return run, label, label, True
+
+            gate.start = start
+            gate.send = lambda *args, **kwargs: None
+            gate.wait_until = lambda predicate, *args: predicate()
+            gate.close = lambda *args: {'process_remaining': False, 'forced_termination': []}
+            gate.record = lambda result: recorded.append(result)
+            gate.client_version_headers()
+            (result,) = recorded
+            result['driver_run'] = 'client-version-unit'
+            assert result['label'] == 'client-version-headers'
+            assert result['coverage_gaps'] == 'not covered: anthropic-messages, claude-oauth (unit covered)'
+            assert [item['label'] for item in result['scenarios']] == list(scenarios)
+            verdicts = {item['assertion_id']: item for item in result['assertions']}
+            assert list(verdicts) == list(scenarios)
+            assert (result['validation_verdict'] == 'passed') == (mutation is None), mutation
+            for label, assertion in verdicts.items():
+                assert (assertion['validation_verdict'] == 'passed') == (label != mutated_label), (mutation, label)
+                assert assertion['source_run'] == label
+                assert any(path.endswith('client-version-headers.json')
+                           for path in assertion['observed_evidence_paths']), label
+            if mutation is None:
+                assert module.validate_required_target_results(
+                    {'client-version-headers'}, recorded, registered)['passed']
+            else:
+                assert failed_check in verdicts[mutated_label]['reason_if_not_passed'], (
+                    mutation, verdicts[mutated_label]['reason_if_not_passed'])
 
 
 def main():

@@ -251,4 +251,4 @@ fork 的实现：
 - **去掉 standby**：对话开始时没有顾问时不再预先声明延迟加载的条目（官方 m0913 `x()`）。之后选上顾问时，支持中途开关的主模型用 `tool_addition` 加入服务端条目（工具列表变一次，prompt cache 重建一次），其他主模型由本地 advisor 回答。
 - **搭配不兼容**：`cannot be used as an advisor when the request model is` 不再单独显示报错（`errors.ts` 里的提示删除），按对话级拒绝去掉服务端条目重发。
 - **认不出的 400/422**：不再要求单独的本地开关，带服务端条目的请求都适用。
-- **`modelSupportsToolChanges`**：不再依赖等级表的 key，改为不支持的模型列表 `NO_TOOL_CHANGE_MODELS`（haiku-4-5、sonnet-4-6、opus-4-6、sonnet-5、opus-4-7），已知 id 的结果与之前相同，未知模型名仍视为支持。
+- **`modelSupportsToolChanges`**：不再依赖等级表的 key，改为不支持的模型列表 `NO_TOOL_CHANGE_MODELS`（haiku-4-5、sonnet-4-6、opus-4-6、sonnet-5、opus-4-7），已知 id 的结果与之前相同，未知模型名仍视为支持。`modelSupportsSystemTurns` 另外排除早于 claude-opus-4-8 的模型（`isModelOlderThan`，含全部 Claude 3），所以 Sonnet 4.5、Opus 4.5、Opus 4.1 等也不支持。

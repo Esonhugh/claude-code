@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 sys.dont_write_bytecode = True
@@ -40,6 +40,37 @@ AUTH_ENV_VARS = (
     'OPENAI_API_KEY',
     'OPENAI_AUTH_TOKEN',
 )
+# Mirrors src/constants/clientVersions.ts; test-release-driver.py fails on drift.
+CLIENT_VERSION_DEFAULTS = {
+    'ClaudeOAuthClientVersion': '2.1.327',
+    'ClaudeApiClientVersion': '2.1.327',
+    'CodexVersion': '0.170.0',
+    'ClaudeSDKVersion': '0.128.0',
+}
+# Distinct sentinels attribute any leaked default or crossed field to one setting.
+CLIENT_VERSION_VARIANTS = {
+    'default': None,
+    'override': {
+        'ClaudeOAuthClientVersion': '9.9.1',
+        'ClaudeApiClientVersion': '9.9.2',
+        'CodexVersion': '9.9.3',
+        'ClaudeSDKVersion': '9.9.4',
+    },
+    'partial': {'CodexVersion': '9.9.3'},
+}
+CLIENT_VERSION_SCENARIOS = tuple(
+    (f'client-version-headers-{variant}-{mode}', variant, mode)
+    for variant in CLIENT_VERSION_VARIANTS
+    for mode in ('openai', 'bootstrap', 'chatgpt')
+)
+FIRST_PARTY_BOOTSTRAP_LABELS = frozenset({
+    'first-party-bootstrap-picker',
+    *(label for label, _, mode in CLIENT_VERSION_SCENARIOS if mode == 'bootstrap'),
+})
+CHATGPT_FIXTURE_LABELS = frozenset({
+    'openai-stats', 'openai-stats-api-key',
+    *(label for label, _, mode in CLIENT_VERSION_SCENARIOS if mode == 'chatgpt'),
+})
 WORKFLOW_RUNS_ROOT = '.claude/workflow-runs'
 HOST_TMP_ROOT = '/private/tmp' if sys.platform == 'darwin' else '/tmp'
 IGNORED_FILES_EXCLUDED_ROOTS = (
@@ -78,6 +109,7 @@ MOCK_OPENAI_TARGETS = frozenset({
     'code-review',
     'terminal-interaction',
     'terminal-canonical-diff',
+    *(label for label, _, mode in CLIENT_VERSION_SCENARIOS if mode == 'openai'),
 })
 # These scenarios exercise the supported synchronous caller contract. Keep the
 # default fork route for every other target, including Workflow workers.
@@ -376,6 +408,12 @@ TARGET_PATH_RULES += (('mods-process-spawn', (
     'src/services/mods/processSpawn', 'scripts/validate-mods-process-spawn.py',
     'scripts/linux-sandbox-exec.py',
 )),)
+TARGET_PATH_RULES += (('client-version-headers', (
+    'src/constants/clientVersions', 'src/utils/settings/settings', 'src/utils/settings/types',
+    'src/utils/http', 'src/utils/userAgent', 'src/services/api/client',
+    'src/services/api/openai-compat', 'src/services/api/bootstrap',
+    'src/utils/model/openaiModelOptions', 'src/ssh/sshAuthProxy',
+)),)
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',
     'task_id': 'release-ssh-task-0001',
@@ -394,7 +432,7 @@ TARGET_GROUPS = {
                'openai-remote-compaction', 'openai-responses-usage-error', 'openai-stats',
                'prompt-modes-cache-prefix'),
     'models': ('first-party-bootstrap-picker', 'model-discovery-picker', 'model-discovery-empty-picker',
-               'model-internal-update-config-skill', 'deferred-tool-discovery'),
+               'model-internal-update-config-skill', 'deferred-tool-discovery', 'client-version-headers'),
     'ssh': ('ssh-remote-session-lifecycle',),
 }
 ASSERTION_RUNTIME_STATES = {'running', 'done', 'failed', 'stopped'}
@@ -2961,6 +2999,56 @@ def is_title_instructions(instructions):
             and text.endswith(TITLE_GENERATION_INSTRUCTIONS[1]))
 
 
+def client_version_header_checks(mode, expected, requests):
+    """Fail-closed header checks for one client-version scenario's request snapshot."""
+    api, codex = expected['ClaudeApiClientVersion'], expected['CodexVersion']
+
+    def headers(request):
+        value = request.get('headers')
+        return value if isinstance(value, dict) else {}
+
+    def agent_is(product):
+        def check(request):
+            agent = headers(request).get('user-agent')
+            return isinstance(agent, str) and (agent == product or agent.startswith(product + ' '))
+        return check
+
+    def every(items, predicate):
+        return bool(items) and all(predicate(item) for item in items)
+
+    def at(method, path):
+        return [request for request in requests if request.get('method') == method
+                and urlsplit(request.get('path') or '').path == path]
+
+    checks = {'headers-recorded': every(requests, lambda request: isinstance(request.get('headers'), dict))}
+    if mode in ('openai', 'chatgpt'):
+        checks['no-stainless'] = not any(name.lower().startswith('x-stainless-')
+                                         for request in requests for name in headers(request))
+    if mode == 'openai':
+        responses = at('POST', '/v1/responses')
+        checks['models-user-agent'] = every(at('GET', '/v1/models'), agent_is(f'claude-code/{api}'))
+        checks['responses-user-agent'] = any(map(is_main_response_request, responses)) and every(
+            responses, lambda request: str(headers(request).get('user-agent')).startswith(f'claude-cli/{api} ('))
+        checks['no-version-header'] = not any('version' in headers(request) for request in requests)
+    elif mode == 'bootstrap':
+        checks['bootstrap-user-agent'] = every(at('GET', '/api/claude_cli/bootstrap'),
+                                               agent_is(f'claude-code/{api}'))
+    else:
+        models = [request for request in requests if request.get('route') == 'models']
+        checks['codex-version-header'] = every(models, lambda request: headers(request).get('version') == codex)
+        checks['codex-client-version-query'] = every(models, lambda request: parse_qs(
+            request.get('query') or '').get('client_version') == [codex])
+        checks['codex-user-agent'] = every(models, agent_is(f'claude-code/{api}'))
+    # A replaced default must not reach the wire anywhere (headers, path, query).
+    replaced = {value for name, value in CLIENT_VERSION_DEFAULTS.items()
+                if expected[name] != value} - set(expected.values())
+    wire = [str(value) for request in requests
+            for value in (request.get('path'), request.get('query'), *headers(request).values())
+            if value is not None]
+    checks['no-replaced-default'] = not any(version in text for version in replaced for text in wire)
+    return checks
+
+
 class MockOpenAIServer:
     def __init__(self, run_dir, label):
         self.run_dir = run_dir
@@ -3992,9 +4080,13 @@ class OpenAIStatsServer:
                         worker.join(timeout=5)
 
                 def respond(self, status, body, auth, route):
+                    headers = {name.lower(): value for name, value in self.headers.items()
+                               if name.lower() not in ('authorization', 'cookie')}
                     with fixture.lock:
                         fixture.requests.append({'method': self.command, 'route': route,
-                                                 'status': status, 'matches_dummy': auth})
+                                                 'status': status, 'matches_dummy': auth,
+                                                 'query': urlsplit(self.path).query,
+                                                 'headers': headers})
                         (fixture.run_dir / 'openai-stats-http.json').write_text(
                             json.dumps(fixture.requests, indent=2) + '\n')
                     payload = json.dumps(body).encode()
@@ -4737,7 +4829,7 @@ else:
             raise RuntimeError('auth target must be outside the evidence root')
         if is_relative_to(auth_target, self.repo):
             raise RuntimeError('auth target must be outside the repository')
-        if label in {'openai-stats', 'openai-stats-api-key'}:
+        if label in CHATGPT_FIXTURE_LABELS:
             auth_target.write_text(json.dumps({
                 'auth_mode': 'chatgpt',
                 'tokens': {'access_token': OpenAIStatsServer.token},
@@ -4753,7 +4845,7 @@ else:
                 'the local mock server accepts no real credential'
             )
             auth_source = None
-        elif label == 'first-party-bootstrap-picker':
+        elif label in FIRST_PARTY_BOOTSTRAP_LABELS:
             auth_target.write_text('{}\n')
             auth_strategy = (
                 'write an empty Codex auth file and pass a fixed dummy Anthropic '
@@ -4783,14 +4875,14 @@ else:
                 },
             },
         }
-        if label == 'first-party-bootstrap-picker':
+        if label in FIRST_PARTY_BOOTSTRAP_LABELS:
             global_config['customApiKeyResponses'] = {
                 'approved': [DUMMY_ANTHROPIC_API_KEY[-20:]],
                 'rejected': [],
             }
         global_config_path = config / (
             '.claude-local-oauth.json'
-            if label == 'first-party-bootstrap-picker'
+            if label in FIRST_PARTY_BOOTSTRAP_LABELS
             else '.claude.json'
         )
         global_config_path.write_text(json.dumps(global_config, indent=2) + '\n')
@@ -4800,7 +4892,7 @@ else:
             'skipWorkflowUsageWarning': True,
             'skipDangerousModePermissionPrompt': True,
         }
-        if label not in MOCK_OPENAI_TARGETS and label != 'first-party-bootstrap-picker':
+        if label not in MOCK_OPENAI_TARGETS and label not in FIRST_PARTY_BOOTSTRAP_LABELS:
             settings.update({
                 'model': 'gpt-5.6-luna',
                 'effortLevel': 'xhigh',
@@ -4860,6 +4952,10 @@ else:
             settings['model'] = 'gpt-empty-discovery-current'
         if label == 'first-party-bootstrap-picker':
             settings['model'] = 'release-first-party-bootstrap-model'
+        client_versions = next((CLIENT_VERSION_VARIANTS[variant] for name, variant, _ in CLIENT_VERSION_SCENARIOS
+                                if name == label), None)
+        if client_versions:
+            settings['versionNumber'] = dict(client_versions)
         (config / 'settings.json').write_text(
             json.dumps(settings, indent=2) + '\n'
         )
@@ -4887,7 +4983,8 @@ else:
             'source_exists': self.auth_source.exists() if auth_source else None,
             'uses_dummy_credential': (
                 label in MOCK_OPENAI_TARGETS
-                or label in {'first-party-bootstrap-picker', 'openai-stats', 'openai-stats-api-key'}
+                or label in FIRST_PARTY_BOOTSTRAP_LABELS
+                or label in CHATGPT_FIXTURE_LABELS
             ),
             'target_outside_evidence': not is_relative_to(
                 auth_target, self.evidence_root
@@ -4944,7 +5041,7 @@ else:
         (run_dir / 'tmp').mkdir(mode=0o700)
         config, home = self.make_fixture(run_dir, label)
         mock_base_url = None
-        uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'
+        uses_local_mock = label in MOCK_OPENAI_TARGETS or label in FIRST_PARTY_BOOTSTRAP_LABELS
         session = f'cc-release-{label}-{self.stamp}-{self.pid}-{self.session_index}'[:90]
         if self.tmux('has-session', '-t', session).returncode == 0:
             raise RuntimeError(f'tmux session collision: {session}')
@@ -4999,7 +5096,7 @@ else:
                 '-e', 'CC_VALIDATION_DISABLE_NONSTREAMING_FALLBACK=1',
                 '-e', 'CC_VALIDATION_MAX_RETRIES=0',
             ])
-        if label == 'first-party-bootstrap-picker':
+        if label in FIRST_PARTY_BOOTSTRAP_LABELS:
             args.extend([
                 '-e', 'CC_VALIDATION_USE_OPENAI=0',
                 '-e', f'CC_VALIDATION_ANTHROPIC_API_KEY={DUMMY_ANTHROPIC_API_KEY}',
@@ -5053,7 +5150,7 @@ else:
                 '-e', 'CC_VALIDATION_SKIP_PERMISSIONS=1',
                 '-e', 'CC_VALIDATION_SSH_TARGET=release-ssh-host',
             ])
-        if label in {'openai-stats', 'openai-stats-api-key'}:
+        if label in CHATGPT_FIXTURE_LABELS:
             stats_server = OpenAIStatsServer(run_dir, home)
             self.mock_servers[run_key] = stats_server
             proxy = stats_server.start()
@@ -5140,7 +5237,7 @@ else:
             'binary_sha256': self.manifest['binary_sha256'],
             'launcher': (
                 'driver env -i with local TLS fixture'
-                if label in {'openai-stats', 'openai-stats-api-key'} else str(self.launcher)
+                if label in CHATGPT_FIXTURE_LABELS else str(self.launcher)
             ),
             'config': str(config),
             'home': str(home),
@@ -7943,7 +8040,17 @@ else:
             settings = json.loads(settings_path.read_text())
         except (OSError, json.JSONDecodeError):
             settings = {}
-        persisted = settings.get('effortLevel') == 'ultracode'
+        # Effort is saved per model (modelSettings.<model>.effortLevel), keyed by
+        # the model the effort requests went to.
+        effort_models = {request.get('body', {}).get('model') for request in responses
+                         if isinstance(request.get('body'), dict)}
+        model_settings = settings.get('modelSettings') if isinstance(settings.get('modelSettings'), dict) else {}
+        saved_effort = (
+            (model_settings.get(next(iter(effort_models))) or {}).get('effortLevel')
+            if len(effort_models) == 1 and isinstance(model_settings.get(next(iter(effort_models))), dict)
+            else None
+        )
+        persisted = saved_effort == 'ultracode'
         debug_path = run_dir / 'debug.log'
         wire_debug = analyze_openai_wire_debug(
             debug_path.read_text(errors='replace') if debug_path.exists() else '',
@@ -7959,7 +8066,7 @@ else:
             'request_ids_unique': len(set(request_ids)) == len(responses),
             'effort_commands_visible': effort_visible,
             'responses_ready': response_ready,
-            'settings_effort_level': settings.get('effortLevel'),
+            'settings_effort_level': saved_effort,
             'prompt_restored_before_transcript': prompt_restored,
             'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
             'transcript_has_thinking': transcript_has_thinking,
@@ -7999,7 +8106,7 @@ else:
             'reason': None if passed else 'effort matrix UI, persistence, or wire evidence was incomplete',
             'request_count': len(responses),
             'wire_efforts': wire_efforts,
-            'settings_effort_level': settings.get('effortLevel'),
+            'settings_effort_level': saved_effort,
             'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
             'transcript_has_thinking': transcript_has_thinking,
             'assertions': [
@@ -9297,16 +9404,17 @@ else:
                 'M-p (default chat:modelPicker keybinding)\n'
             )
             self.tmux('send-keys', '-t', target, 'M-p', check=True)
-            picker_visible = self.wait_until(
-                lambda: all(
-                    marker in strip_ansi(self.capture(target, picker_path))
-                    for marker in ('Select model', 'GPT Release Discovered')
-                ),
-                30,
-                0.25,
-            )
+
+            # The picker lists Default first; pick the discovered model by its row number.
+            def discovered_row():
+                text = strip_ansi(self.capture(target, picker_path))
+                match = re.search(r'(\d+)\.\s+GPT Release Discovered', text)
+                return match.group(1) if 'Select model' in text and match else None
+
+            picker_visible = self.wait_until(discovered_row, 30, 0.25)
             if picker_visible:
-                self.tmux('send-keys', '-t', target, '1', check=True)
+                result['picker_row'] = row = discovered_row()
+                self.tmux('send-keys', '-t', target, row, check=True)
                 selected = self.wait_until(
                     lambda: (
                         'Select model' not in strip_ansi(
@@ -9342,11 +9450,19 @@ else:
             if current:
                 if case == 'DEFAULT':
                     self.send(target, run_dir, '/model sonnet', 'input-model-alias.txt')
-                    alias_selected = self.wait_until(
-                        lambda: 'Set model to gpt-5.6-terra' in strip_ansi(
-                            self.capture(target, alias_path)
-                        ), 30, 0.25,
-                    )
+
+                    # A warm prompt cache asks before switching models.
+                    def alias_state():
+                        text = strip_ansi(self.capture(target, alias_path))
+                        if 'Set model to gpt-5.6-terra' in text:
+                            return 'set'
+                        match = re.search(r'(\d+)\.\s+Yes, switch to gpt-5\.6-terra', text)
+                        return match.group(1) if 'Switch model?' in text and match else None
+
+                    if self.wait_until(alias_state, 30, 0.25) and (row := alias_state()) not in (None, 'set'):
+                        result['switch_confirm_row'] = row
+                        self.tmux('send-keys', '-t', target, row, check=True)
+                    alias_selected = self.wait_until(lambda: alias_state() == 'set', 30, 0.25)
                 if case == 'EXPLICIT' or alias_selected:
                     self.send(target, run_dir,
                               f'RELEASE_{case}_MODEL_REQUEST: Reply with the validation marker.',
@@ -11334,6 +11450,58 @@ else:
                      'validation_verdict': 'passed' if passed else 'failed',
                      'assertions': assertions})
 
+    def client_version_headers(self):
+        scenarios = []
+        assertions = []
+        for label, variant, mode in CLIENT_VERSION_SCENARIOS:
+            run_dir, session, target, ready = self.start(label)
+            server = getattr(self, 'mock_servers', {}).get(run_dir.name)
+            expected = {**CLIENT_VERSION_DEFAULTS, **(CLIENT_VERSION_VARIANTS[variant] or {})}
+
+            def requests():
+                return list(server.snapshot()) if server else []
+
+            def observed():
+                rows = requests()
+                if mode == 'chatgpt':
+                    return any(row.get('route') == 'models' for row in rows)
+                if mode == 'bootstrap':
+                    return any(urlsplit(row.get('path') or '').path == '/api/claude_cli/bootstrap'
+                               for row in rows)
+                return (any(is_main_response_request(row) and row.get('response_kind') == 'completed'
+                            for row in rows)
+                        and any(urlsplit(row.get('path') or '').path == '/v1/models' for row in rows))
+
+            try:
+                if ready and mode == 'openai':
+                    self.send(target, run_dir, 'RELEASE_CLIENT_VERSION_REQUEST: Reply with the validation marker.',
+                              'input-client-version.txt')
+                ready = ready and self.wait_until(observed, 30, 0.25)
+                snapshot = requests()
+            finally:
+                cleanup = self.close(run_dir, session, target)
+            checks = {'ready': bool(ready), **client_version_header_checks(mode, expected, snapshot),
+                      'cleanup': self.cleanup_passed(cleanup)}
+            analysis = run_dir / 'client-version-headers.json'
+            analysis.write_text(json.dumps({'variant': variant, 'mode': mode, 'expected': expected,
+                                            'checks': checks, 'requests': snapshot}, indent=2) + '\n')
+            failed = [name for name, value in checks.items() if not value]
+            assertions.append(self.required_assertion(
+                run_dir, label, label,
+                'Mock request snapshot carries the configured client versions and no replaced default.',
+                [run_dir / 'pane-target.txt',
+                 run_dir / ('openai-stats-http.json' if mode == 'chatgpt' else 'mock-openai-requests.json'),
+                 analysis], passed=not failed, reason='failed checks: ' + ', '.join(failed)))
+            scenarios.append({'label': label, 'variant': variant, 'mode': mode, 'checks': checks,
+                              'cleanup': cleanup, 'evidence_dir': str(run_dir)})
+        failed = [item['label'] for item in scenarios if not all(item['checks'].values())]
+        self.record({'label': 'client-version-headers', 'scenarios': scenarios,
+                     'evidence_dir': scenarios[0]['evidence_dir'],
+                     'validation_verdict': 'failed' if failed else 'passed',
+                     'reason': 'failed scenarios: ' + ', '.join(failed) if failed else None,
+                     'coverage_gaps': 'not covered: anthropic-messages, claude-oauth (unit covered)',
+                     'assertions': assertions})
+
     def unsupported_required_target(self, label):
         result = {
             'label': label,
@@ -11413,6 +11581,7 @@ else:
             'model-discovery-picker': self.model_discovery_picker,
             'model-discovery-empty-picker': self.model_discovery_empty_picker,
             'first-party-bootstrap-picker': self.first_party_bootstrap_picker,
+            'client-version-headers': self.client_version_headers,
             'model-internal-update-config-skill': self.model_internal_update_config_skill,
             'prompt-modes-cache-prefix': self.prompt_modes_cache_prefix,
             'team-concurrency': self.team_concurrency,

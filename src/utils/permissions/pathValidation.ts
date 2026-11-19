@@ -125,12 +125,16 @@ const getResolvedSandboxConfigPath = memoize(getPathsForPermissionCheck)
  *   syscalls per inner check. Do NOT pass this for non-canonical paths
  *   (nonexistent files, UNC paths, etc.) — parent-directory symlink
  *   resolution is still required for those.
+ * @param asWrittenPath - The absolute path before symlink resolution. Deny
+ *   rules are also matched against it, so a rule naming a symlink holds even
+ *   when the link points outside the project.
  */
 export function isPathAllowed(
   resolvedPath: string,
   context: ToolPermissionContext,
   operationType: FileOperationType,
   precomputedPathsToCheck?: readonly string[],
+  asWrittenPath?: string,
 ): PathCheckResult {
   // Determine which permission type to check based on operation
   const permissionType = operationType === 'read' ? 'read' : 'edit'
@@ -138,6 +142,7 @@ export function isPathAllowed(
   // 1. Check deny rules first (they take precedence), on the path as written
   // and on where its symlinks lead.
   for (const pathToCheck of new Set([
+    ...(asWrittenPath === undefined ? [] : [asWrittenPath]),
     resolvedPath,
     ...(precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)),
   ])) {
@@ -282,6 +287,7 @@ export function validateGlobPattern(
       toolPermissionContext,
       operationType,
       isCanonical ? [resolvedPath] : undefined,
+      absolutePath,
     )
     return {
       allowed: result.allowed,
@@ -303,6 +309,7 @@ export function validateGlobPattern(
     toolPermissionContext,
     operationType,
     isCanonical ? [resolvedPath] : undefined,
+    absoluteBasePath,
   )
   return {
     allowed: result.allowed,
@@ -488,6 +495,7 @@ export function validatePath(
     toolPermissionContext,
     operationType,
     isCanonical ? [resolvedPath] : undefined,
+    absolutePath,
   )
   return {
     allowed: result.allowed,

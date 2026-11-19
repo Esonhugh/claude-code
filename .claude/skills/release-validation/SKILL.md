@@ -51,6 +51,7 @@ Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net �
 | coordinator/PromptInput/background task | `coordinator-selector` | 键盘选择前后 stable target ID、pane 与 `coordinator_selection_changed` marker |
 | viewed agent/in-process transcript | `transcript-retention` | terminal 前后切出/切回 pane、task ID 与 `transcript_retention_decision` marker |
 | 交互式 CLI 入口、PromptInput/keybinding ownership、fullscreen/dialog/pane、ScrollBox、stdin parser、Ink frame/damage、ANSI output、terminal resize | `terminal-interaction` | 根据实际改动生成场景矩阵；使用本轮真实产物、原始输入 bytes、语义状态、逐帧 logical/physical output、ownership、resize/open-close/reopen 和副作用证据 |
+| 客户端版本号（`versionNumber`、UA、`x-stainless-package-version`、Codex `version`） | `client-version-headers` | 每个 label 的请求快照和头断言 |
 
 普通成功路径不能代替受控 fault injection。上表前五个专项 target 已有 scripted binary-side handler：`workflow-retry-partial-failure` 仅在隔离 gate 中注入精确匹配 logical worker/attempt 的 transient fault，`transcript-retention` 使用 in-process teammate terminal lifecycle assertions。`terminal-interaction` 不是固定某个功能的脚本：driver 必须从本轮 diff、调用链和用户可见契约生成可执行场景与 assertions；若没有对应 executable scenario、场景无 assertions，或只有最终 pane 文本，则 verdict 必须为 `not covered` 或 `failed`。任一 handler 缺少同次运行的 pane、debug marker、稳定 ID 或 lifecycle 证据时必须 fail closed；任何 required target 未实际执行并通过时，整体 release gate 不通过。
 

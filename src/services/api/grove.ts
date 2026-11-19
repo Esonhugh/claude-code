@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios from 'axios'
 import memoize from 'lodash-es/memoize.js'
 import {
@@ -66,7 +67,7 @@ export const getGroveSettings = memoize(
           {
             headers: {
               ...authHeaders.headers,
-              'User-Agent': getClaudeCodeUserAgent(),
+              'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
             },
           },
         )
@@ -100,7 +101,7 @@ export async function markGroveNoticeViewed(): Promise<void> {
         {
           headers: {
             ...authHeaders.headers,
-            'User-Agent': getClaudeCodeUserAgent(),
+            'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
           },
         },
       )
@@ -134,7 +135,7 @@ export async function updateGroveSettings(
         {
           headers: {
             ...authHeaders.headers,
-            'User-Agent': getClaudeCodeUserAgent(),
+            'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
           },
         },
       )

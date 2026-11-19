@@ -1,3 +1,4 @@
+import { getClientVersions } from '../../utils/settings/settings.js'
 import axios, { type AxiosError } from 'axios'
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -256,7 +257,7 @@ export class SSETransport implements Transport {
       ...authHeaders,
       Accept: 'text/event-stream',
       'anthropic-version': '2023-06-01',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     }
     if (authHeaders['Cookie']) {
       delete headers['Authorization']
@@ -581,7 +582,7 @@ export class SSETransport implements Transport {
       ...authHeaders,
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     }
 
     logForDebugging(

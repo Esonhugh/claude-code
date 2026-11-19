@@ -1,3 +1,4 @@
+import { getClientVersions } from '../settings/settings.js'
 import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { randomUUID } from 'crypto'
 import { getOauthConfig } from 'src/constants/oauth.js'
@@ -276,7 +277,7 @@ export async function fetchCodeSessionsFromSessionsAPI(): Promise<
  */
 export function getOAuthHeaders(accessToken: string): Record<string, string> {
   return {
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
     'anthropic-version': '2023-06-01',

@@ -412,6 +412,29 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('Read deny rules match a symlink by its own name when it points outside the project', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'cc-bash-hardening-outside-'))
+    try {
+      writeFileSync(join(outside, 'secret'), 's')
+      symlinkSync(join(outside, 'secret'), join(project, '.env-link'))
+      for (const deny of ['Read(./.env-link)', 'Read(**/.env-link)']) {
+        for (const command of [
+          'cat .env-link',
+          'tac .env-link',
+          'cat < .env-link',
+        ]) {
+          for (const mode of ['default', 'bypassPermissions'] as const) {
+            await expectBehavior(command, mode, { deny: [deny] }, 'deny')
+          }
+        }
+        await expectBehavior('rev src/x.ts', 'bypassPermissions', { deny: [deny] }, 'allow')
+      }
+    } finally {
+      rmSync(join(project, '.env-link'), { force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
   test('noglob is a transparent wrapper, as in official', async () => {
     for (const command of ['noglob ls', 'noglob ls *', 'noglob echo hi']) {
       await expectBehavior(command, 'default', {}, 'allow')

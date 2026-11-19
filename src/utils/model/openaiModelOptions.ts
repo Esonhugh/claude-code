@@ -1,10 +1,10 @@
+import { getClientVersions } from '../settings/settings.js'
 import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import axios from 'axios'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getCustomHeaders } from '../../services/api/client.js'
-import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openai-oauth/client.js'
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper,
@@ -254,7 +254,7 @@ function getGatewayHeaders(
     }),
     Accept: 'application/json',
     'anthropic-version': '2023-06-01',
-    'User-Agent': getClaudeCodeUserAgent(),
+    'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
   }
   for (const [name, value] of Object.entries(getCustomHeaders())) {
     for (const existing of Object.keys(headers)) {
@@ -518,17 +518,17 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
     headers: {
       Authorization: `Bearer ${auth.accessToken}`,
       Accept: 'application/json',
-      'User-Agent': getClaudeCodeUserAgent(),
+      'User-Agent': getClaudeCodeUserAgent(getClientVersions().ClaudeApiClientVersion),
       ...(auth.isChatGPT
         ? {
             Referer: 'https://chatgpt.com/',
             Origin: 'https://chatgpt.com',
-            version: OPENAI_CODEX_CLIENT_VERSION,
+            version: getClientVersions().CodexVersion,
             ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),
           }
         : {}),
     },
-    ...(auth.isChatGPT ? { params: { client_version: OPENAI_CODEX_CLIENT_VERSION } } : {}),
+    ...(auth.isChatGPT ? { params: { client_version: getClientVersions().CodexVersion } } : {}),
     parseOptions: {
       includeUnknownModels: !auth.isChatGPT && Boolean(customBaseURL),
     },
