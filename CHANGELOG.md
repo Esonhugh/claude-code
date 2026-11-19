@@ -12,6 +12,27 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-19 - 客户端版本号可配置（versionNumber）
+
+### 版本状态
+
+- 未发布：PR #1395 合入 `dev` 的变更，尚未归入版本。
+
+### 关联提交
+
+- PR #1395（`feat/settings-version-number` 分支），对应 issue #1394。
+
+### 变更内容
+
+- 新设置 `versionNumber`，可以逐项设置请求里发送的客户端版本号：`ClaudeOAuthClientVersion`、`ClaudeApiClientVersion`、`ClaudeSDKVersion`、`CodexVersion`，没写的字段用默认值，见 [客户端版本号](docs/features/client-version-numbers.md)。
+- 默认版本号改为与官方 Claude Code 2.1.327 和 Codex CLI 0.170.0 一致：用 Claude 账号登录时模型请求的 `User-Agent` 从 `claude-cli/2.1.318` 改为 `claude-cli/2.1.327`，并和官方一样带上 SDK、client app、workload 后缀；API key、自定义网关、Bedrock、Vertex、Foundry 的模型请求和其他请求（`claude-code/<版本>`）从这个构建自己的版本号改为 2.1.327；Claude 一侧模型请求的 `X-Stainless-Package-Version` 统一为 `0.128.0`（之前只有 Claude 账号登录时这样发，其他接入方式发实际 SDK 的 `0.80.0`）；用 ChatGPT 账号登录 OpenAI provider 时的 Codex 版本从 `0.166.0` 改为 `0.170.0`。
+- 设置文件里 `versionNumber` 的某个字段不合法时只忽略这个字段并提示设置错误，同一文件的其他设置照常生效。
+
+### 测试覆盖
+
+- 单测：`versionNumbers.test.ts` 覆盖多层设置合并、不合法字段和非对象 `versionNumber` 只丢弃该项并提示、二次读取仍提示；`cchFetch.test.ts` 覆盖 Claude 账号、API key、自定义网关、Bedrock、Vertex、Foundry 的 `User-Agent` 和 `X-Stainless-Package-Version`，自定义头优先，OpenAI 模式（ChatGPT、API key、`OPENAI_BASE_URL`）不带 `x-stainless-*`，`cc_version` 不变；`openai-compat.test.ts` 覆盖 ChatGPT 的 Responses、压缩、WebSocket 握手和重试时读到新的 `CodexVersion`，API key 网关和 tunnel 不带 `version`；`policyLimits/userAgent.test.ts`、`SSETransport.userAgent.test.ts` 覆盖辅助请求的 `claude-code/<版本>`。
+- 发布门禁新增 `client-version-headers`：默认、全部覆盖、只覆盖 `CodexVersion` 三组设置，分别在 OpenAI API key、Claude 一侧 bootstrap、ChatGPT 登录三种接入方式下对假服务录请求并检查版本号。Claude 账号登录和 Anthropic 模型请求只有单测。
+
 ## 2026-11-17 - Code Mode（实验性）、Advisor 顾问模型（实验性）、Codex 式压缩只保留用户消息、ChatGPT Credits、启动输入卡顿与长历史 /clear 修复
 
 ### 版本状态

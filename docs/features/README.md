@@ -46,6 +46,7 @@
 |  | [Effort 档位](effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；可全局设、按会话切，也可给子代理单独指定 |
 |  | [Advisor 顾问模型（实验性）](advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：用 `/advisor` 选顾问，Claude 模式下可用；走自定义网关前请先看文档里的注意事项 |
 |  | [Codex Apps](codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
+|  | [客户端版本号（versionNumber）](client-version-numbers.md) | 请求里带的客户端版本号默认跟官方 Claude Code 2.1.327、Codex CLI 0.170.0 一致；官方发新版时在设置里写 `versionNumber` 就能跟上，不用等新构建 |
 | Agent 与编排 | [Agent 与后台任务](agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
 |  | [Dynamic Workflow](workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
@@ -134,6 +135,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Effort levels](effort.md) | How hard Claude thinks each time: low is fast and cheap, high is slow and careful; set it globally, per session, or per subagent |
 |  | [Advisor (experimental)](advisor.md) | The main model consults a stronger model at key moments (for example Sonnet doing the work and Opus advising): pick one with `/advisor`; Claude mode only; read the gateway note in the doc before using a custom gateway |
 |  | [Codex Apps](codex-apps.md) | With the OpenAI provider on a ChatGPT account, use the apps you connected in ChatGPT (GitHub, Gmail and more) directly: mention them with `@codex-app:` |
+|  | [Client version numbers (versionNumber)](client-version-numbers.md) | Requests carry the same client versions as official Claude Code 2.1.327 and Codex CLI 0.170.0 by default; set `versionNumber` to follow a new official release without waiting for a new build |
 | Agents and orchestration | [Agents and background tasks](agents.md) | Claude hands part of the work to subagents in the background while you keep talking; inspect, stop or resume them, or define your own |
 |  | [Agent Teams](agent-teams.md) | Claude forms a small team: a lead with several teammates working in parallel, messaging each other and sharing a task list |
 |  | [Dynamic Workflow](workflows.md) | Claude writes an orchestration script that dispatches many sub-agents in phases and in parallel; `/workflows` shows progress, and good runs can be saved for reuse |
@@ -223,6 +225,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Effort 檔位](effort.md) | 控制 Claude 每次「想多深」：低檔快而省，高檔慢而仔細；可全域設、按會話切，也可給子代理單獨指定 |
 |  | [Advisor 顧問模型（實驗性）](advisor.md) | 讓主模型在關鍵節點向更強的模型請教（例如 Sonnet 做事、Opus 把關）：用 `/advisor` 選顧問，Claude 模式下可用；走自訂閘道前請先看文件裡的注意事項 |
 |  | [Codex Apps](codex-apps.md) | 用 ChatGPT 帳號登入 OpenAI provider 時，直接使用 ChatGPT 裡連好的 App（GitHub、Gmail 等）：輸入 `@codex-app:` 點名即可 |
+|  | [客戶端版本號（versionNumber）](client-version-numbers.md) | 請求裡帶的客戶端版本號預設跟官方 Claude Code 2.1.327、Codex CLI 0.170.0 一致；官方發新版時在設定裡寫 `versionNumber` 就能跟上，不用等新構建 |
 | Agent 與編排 | [Agent 與後台任務](agents.md) | Claude 把一部分工作交給「子代理」在後台做，你繼續聊；可以檢視、停止、續跑，也可以自己定義專用子代理 |
 |  | [Agent Teams](agent-teams.md) | 讓 Claude 組一個小團隊：一個負責人帶幾個隊友並行幹活，互相發訊息、共享任務清單 |
 |  | [Dynamic Workflow](workflows.md) | 讓 Claude 寫一段編排腳本，一次排程多個子 Agent 分階段、並行地幹活；`/workflows` 看進度、儲存成可複用的流程 |
