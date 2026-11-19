@@ -3964,6 +3964,7 @@ def assert_driver_behavior(module, baseline_module):
         requests = [
             {
                 'body': {
+                    'model': 'release-effort-model',
                     'reasoning': {'effort': expected},
                     'prompt_cache_key': 'cache-key',
                 },
@@ -4014,9 +4015,10 @@ def assert_driver_behavior(module, baseline_module):
             if prompt.startswith('Reply with'):
                 visible_requests += 1
             elif prompt == '/effort ultracode':
-                (run_dir / 'config' / 'settings.json').write_text(
-                    json.dumps({'effortLevel': 'ultracode'})
-                )
+                # The product saves effort per model, not at the top level.
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps(
+                    {'modelSettings': {'release-effort-model': {'effortLevel': 'ultracode'}}}
+                ))
 
         effort_gate.send = send_effort
         effort_gate.wait_until = lambda predicate, timeout, interval=0.5: predicate()
@@ -4069,6 +4071,27 @@ def assert_driver_behavior(module, baseline_module):
         }):
             module.BinaryGate.effort_openai_responses_wire(effort_gate)
         assert recorded[0]['validation_verdict'] == 'passed'
+        assert recorded[0]['settings_effort_level'] == 'ultracode'
+
+        # A top-level effortLevel alone is not the product's per-model save.
+        original_send = effort_gate.send
+
+        def send_top_level(*args):
+            original_send(*args)
+            if str(args[2]) == '/effort ultracode':
+                (run_dir / 'config' / 'settings.json').write_text(json.dumps({'effortLevel': 'ultracode'}))
+
+        effort_gate.send = send_top_level
+        visible_requests = 0
+        transcript_open = False
+        recorded.clear()
+        with patch.object(module, 'analyze_openai_wire_debug', return_value={
+            'matched': True, 'cross_client_append_only': True,
+        }):
+            module.BinaryGate.effort_openai_responses_wire(effort_gate)
+        assert recorded[0]['validation_verdict'] == 'failed'
+        assert recorded[0]['settings_effort_level'] is None
+        effort_gate.send = original_send
 
     with tempfile.TemporaryDirectory(prefix='release-driver-fast-wire-') as root_string:
         run_dir = Path(root_string) / 'fast-openai-responses-wire'

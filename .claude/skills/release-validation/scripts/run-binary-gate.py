@@ -8040,7 +8040,17 @@ else:
             settings = json.loads(settings_path.read_text())
         except (OSError, json.JSONDecodeError):
             settings = {}
-        persisted = settings.get('effortLevel') == 'ultracode'
+        # Effort is saved per model (modelSettings.<model>.effortLevel), keyed by
+        # the model the effort requests went to.
+        effort_models = {request.get('body', {}).get('model') for request in responses
+                         if isinstance(request.get('body'), dict)}
+        model_settings = settings.get('modelSettings') if isinstance(settings.get('modelSettings'), dict) else {}
+        saved_effort = (
+            (model_settings.get(next(iter(effort_models))) or {}).get('effortLevel')
+            if len(effort_models) == 1 and isinstance(model_settings.get(next(iter(effort_models))), dict)
+            else None
+        )
+        persisted = saved_effort == 'ultracode'
         debug_path = run_dir / 'debug.log'
         wire_debug = analyze_openai_wire_debug(
             debug_path.read_text(errors='replace') if debug_path.exists() else '',
@@ -8056,7 +8066,7 @@ else:
             'request_ids_unique': len(set(request_ids)) == len(responses),
             'effort_commands_visible': effort_visible,
             'responses_ready': response_ready,
-            'settings_effort_level': settings.get('effortLevel'),
+            'settings_effort_level': saved_effort,
             'prompt_restored_before_transcript': prompt_restored,
             'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
             'transcript_has_thinking': transcript_has_thinking,
@@ -8096,7 +8106,7 @@ else:
             'reason': None if passed else 'effort matrix UI, persistence, or wire evidence was incomplete',
             'request_count': len(responses),
             'wire_efforts': wire_efforts,
-            'settings_effort_level': settings.get('effortLevel'),
+            'settings_effort_level': saved_effort,
             'thinking_transcript_shows_marker': thinking_transcript_shows_marker,
             'transcript_has_thinking': transcript_has_thinking,
             'assertions': [
