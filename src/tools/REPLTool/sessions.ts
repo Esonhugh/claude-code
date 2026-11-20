@@ -4,7 +4,7 @@ import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { formatDuration } from '../../utils/format.js'
 import { truncateToWidth } from '../../utils/truncate.js'
-import { enqueuePollEvent, REPL_EVAL_EVENT_KIND, REPL_STATUS_EVENT_KIND } from '../../utils/messageQueueManager.js'
+import { enqueuePollEvent, removeByFilter, REPL_EVAL_EVENT_KIND, REPL_STATUS_EVENT_KIND, settlePollEventsDropped } from '../../utils/messageQueueManager.js'
 import { SCRIPT_ASK_DECLINED } from './constants.js'
 import { createReplExecutor, type ReplExecutor } from './executor/host.js'
 import { replScriptLabel } from './scriptLabel.js'
@@ -137,6 +137,16 @@ export function releaseReplSession(key: string): void {
   if (session.agentId === undefined) mainScriptsChanged()
 }
 
+/** Retire the outgoing main context and discard results it already queued. */
+export function resetMainReplSession(): void {
+  releaseReplSession(MAIN_REPL_SESSION)
+  const removed = removeByFilter(cmd =>
+    cmd.agentId === undefined &&
+    (cmd.pollEvent?.kind === REPL_EVAL_EVENT_KIND || cmd.pollEvent?.kind === REPL_STATUS_EVENT_KIND),
+  )
+  settlePollEventsDropped(removed, 'session changed')
+}
+
 /** The context for `key` if one exists in this session id, without making one. */
 export function findReplSession(key: string): ReplSession | undefined {
   const session = sessions.get(key)
@@ -154,7 +164,7 @@ function wake(session: ReplSession): void {
  * counts as delivered once queued.
  */
 export function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): void {
-  if (session.released) return
+  if (session.released || session.epoch !== getSessionId()) return
   session.lateMessages.push(...messages)
   const refused = (error: unknown) =>
     logForDebugging(`async REPL eval #${event.id} outcome not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
@@ -505,6 +515,7 @@ export function formatReplStatusEvent(rows: readonly ReplLedgerRow[], at = new D
  * the session's thread; one the queue refuses is only logged.
  */
 export function enqueueReplStatus(session: ReplSession, rows: readonly ReplLedgerRow[], stillPending = false): void {
+  if (session.released || session.epoch !== getSessionId()) return
   const refused = (error: unknown) =>
     logForDebugging(`async REPL status line not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
   try {

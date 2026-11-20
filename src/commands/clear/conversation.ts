@@ -16,6 +16,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import { resetMainReplSession } from '../../tools/REPLTool/sessions.js'
 import type { AppState } from '../../state/AppState.js'
 import type { ModsRuntime } from '../../services/mods/runtime.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
@@ -225,6 +226,7 @@ export async function clearConversation({
 
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
+  resetMainReplSession()
   regenerateSessionId({ setCurrentAsParent: true })
   notifyTasksUpdated()
   if (mods) await mods.bind({

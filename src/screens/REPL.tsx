@@ -488,6 +488,7 @@ import {
   isMainReplScriptRunning,
   MAIN_REPL_SESSION,
   onMainReplScriptsChange,
+  resetMainReplSession,
 } from '../tools/REPLTool/sessions.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
@@ -3228,6 +3229,7 @@ export function REPL({
         // Switch session (id + project dir atomically). fullPath may point to
         // a different project (cross-worktree, /branch); null derives from
         // current originalCwd.
+        if (sessionId !== getSessionId()) resetMainReplSession()
         switchSession(
           asSessionId(sessionId),
           log.fullPath ? dirname(log.fullPath) : null,
