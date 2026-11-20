@@ -146,6 +146,18 @@ describe('the script source in the transcript (official 2.1.325 chunk-eh1rf8gd.j
   })
 })
 
+test('search indexes visible REPL source in standalone and collapsed rows', async () => {
+  const { renderableSearchText } = await import('../../utils/transcriptSearch.js')
+  const normalized = normalizeMessages(messages())
+  const grouped = collapseReadSearchGroups(normalized as never, tools)
+  const rows = [normalized.find(m => m.type === 'assistant')!, grouped.find(m => m.type === 'collapsed_read_search')!]
+  for (const row of rows) {
+    expect(renderableSearchText(row)).not.toContain('const hits')
+    expect(renderableSearchText(row, true)).toContain('const hits')
+    expect(renderableSearchText(row)).not.toContain('const hits')
+  }
+})
+
 describe('script text escaping (official U)', () => {
   test('line separators break the line and are shown; trailing blank lines go', () => {
     expect(scriptSourceText('a\r\nb\rc\u2028d\n\n  ')).toBe('a\nb\nc\\u{2028}\nd')

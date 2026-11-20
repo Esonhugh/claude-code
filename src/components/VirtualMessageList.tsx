@@ -783,10 +783,10 @@ export function VirtualMessageList({
         return Math.round(workMs)
       },
     }),
-    // Closures over refs + callbacks. scrollRef stable; others are
-    // useCallback([]) or prop-drilled from REPL (stable).
+    // Search text changes when script source visibility changes. Other
+    // callbacks are stable or read their current state through refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scrollRef],
+    [scrollRef, extractSearchText],
   )
 
   // StickyTracker goes AFTER the list content. It returns null (no DOM node)

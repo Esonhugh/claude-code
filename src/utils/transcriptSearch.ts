@@ -1,4 +1,6 @@
 import { withoutReplStateNote } from '../services/compact/replStateNote.js'
+import { REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
+import { scriptCode, scriptSourceText } from '../tools/REPLTool/ScriptSourceRow.js'
 import type { RenderableMessage } from '../types/message.js'
 import {
   INTERRUPT_MESSAGE,
@@ -16,18 +18,41 @@ const RENDERED_AS_SENTINEL = new Set([
 ])
 
 const searchTextCache = new WeakMap<RenderableMessage, string>()
+const expandedSearchTextCache = new WeakMap<RenderableMessage, string>()
 
 /** Flatten a RenderableMessage to lowercased searchable text. WeakMap-
  *  cached — messages are append-only and immutable so a hit is always
  *  valid. Lowercased at cache time: the only caller immediately
  *  .toLowerCase()d the result, re-lowering ~1.5MB on every keystroke
  *  (the backspace hang). Returns '' for non-searchable types. */
-export function renderableSearchText(msg: RenderableMessage): string {
-  const cached = searchTextCache.get(msg)
+export function renderableSearchText(
+  msg: RenderableMessage,
+  showScriptSource = false,
+): string {
+  const cache = showScriptSource ? expandedSearchTextCache : searchTextCache
+  const cached = cache.get(msg)
   if (cached !== undefined) return cached
-  const result = computeSearchText(msg).toLowerCase()
-  searchTextCache.set(msg, result)
+  const base = showScriptSource ? renderableSearchText(msg) : computeSearchText(msg).toLowerCase()
+  const scripts = showScriptSource ? visibleScriptSearchText(msg) : ''
+  const result = scripts ? `${base}\n${scripts.toLowerCase()}` : base
+  cache.set(msg, result)
   return result
+}
+
+function visibleScriptSearchText(msg: RenderableMessage): string {
+  const rows = msg.type === 'collapsed_read_search' ? msg.messages : [msg]
+  const scripts: string[] = []
+  for (const row of rows) {
+    const assistantRows = row.type === 'assistant' ? [row] : row.type === 'grouped_tool_use' ? row.messages : []
+    for (const { message } of assistantRows) {
+      for (const block of message.content) {
+        if (block.type !== 'tool_use' || block.name !== REPL_TOOL_NAME) continue
+        const code = scriptCode(block.input)
+        if (code !== undefined) scripts.push(scriptSourceText(code))
+      }
+    }
+  }
+  return scripts.join('\n')
 }
 
 function computeSearchText(msg: RenderableMessage): string {
