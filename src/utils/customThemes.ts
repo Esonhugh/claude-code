@@ -1,6 +1,6 @@
 import chokidar from 'chokidar'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
-import { basename, extname, join } from 'path'
+import { basename, extname, join, resolve } from 'path'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { createSignal } from './signal.js'
@@ -67,23 +67,42 @@ export function reloadCustomThemes(): CustomTheme[] {
 
 /** Reloads the themes when files in the themes directory change on disk. */
 export function watchCustomThemes(): () => void {
-  const watcher = chokidar.watch(getCustomThemesDir(), {
+  const dir = resolve(getCustomThemesDir())
+  const usePolling = typeof Bun !== 'undefined'
+  const stabilityThreshold = 300
+  const watcher = chokidar.watch(dir, {
     persistent: true,
     ignoreInitial: true,
     depth: 0,
-    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    awaitWriteFinish: { stabilityThreshold, pollInterval: 100 },
     ignorePermissionErrors: true,
-    usePolling: typeof Bun !== 'undefined',
+    usePolling,
     interval: 500,
   })
-  const reload = () => void reloadCustomThemes()
+  let pendingDirectoryReload: ReturnType<typeof setTimeout> | undefined
+  const reload = () => {
+    clearTimeout(pendingDirectoryReload)
+    reloadCustomThemes()
+  }
+  if (usePolling) {
+    // An atomic replacement can leave the file's size and mtime unchanged.
+    // The directory poll still sees the rename, even without a file event.
+    watcher.on('raw', (_event, path) => {
+      if (path !== dir) return
+      clearTimeout(pendingDirectoryReload)
+      pendingDirectoryReload = setTimeout(reload, stabilityThreshold)
+    })
+  }
   watcher.on('add', reload)
   watcher.on('change', reload)
   watcher.on('unlink', reload)
   watcher.on('error', error =>
     logForDebugging(`[theme] watcher error: ${error}`, { level: 'warn' }),
   )
-  return () => void watcher.close().catch(() => {})
+  return () => {
+    clearTimeout(pendingDirectoryReload)
+    void watcher.close().catch(() => {})
+  }
 }
 
 export function saveCustomTheme(theme: CustomTheme): void {

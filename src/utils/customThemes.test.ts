@@ -1,6 +1,15 @@
 import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test'
 import chokidar from 'chokidar'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -89,7 +98,7 @@ test('slugs are file-name safe and unique', () => {
   expect(uniqueCustomThemeSlug('***', themes)).toBe('theme')
 })
 
-test('files added, changed or removed by hand reload the themes', async () => {
+test('files added, edited, atomically replaced or removed reload the themes', async () => {
   mkdirSync(getCustomThemesDir(), { recursive: true })
   reloadCustomThemes()
   const watch = spyOn(chokidar, 'watch')
@@ -120,8 +129,23 @@ test('files added, changed or removed by hand reload the themes', async () => {
     expect(polling).toBe(true)
     writeFileSync(file, JSON.stringify({ name: 'By hand', base: 'light', overrides: {} }))
     await waitFor(() => getCustomThemes().some(theme => theme.name === 'By hand'))
-    writeFileSync(file, JSON.stringify({ name: 'Edited', base: 'light', overrides: {} }))
+    writeFileSync(file, JSON.stringify({ name: 'Edited', base: 'light', overrides: { claude: '#123456' } }))
+    // Use an exactly representable timestamp so the rename does not move mtime.
+    const timestamp = Math.ceil(Date.now() / 1000) + 1
+    utimesSync(file, timestamp, timestamp)
     await waitFor(() => getCustomThemes().some(theme => theme.name === 'Edited'))
+    // Renaming a non-theme staging file over the JSON must invalidate the cached palette.
+    expect(getTheme('custom:by-hand').claude).toBe('#123456')
+    const original = statSync(file)
+    const staging = join(configDir, 'by-hand.tmp')
+    writeFileSync(staging, readFileSync(file, 'utf8').replace('#123456', '#654321'))
+    utimesSync(staging, original.atime, original.mtime)
+    renameSync(staging, file)
+    const replacement = statSync(file)
+    expect(replacement.ino).not.toBe(original.ino)
+    expect(replacement.size).toBe(original.size)
+    expect(replacement.mtimeMs).toBe(original.mtimeMs)
+    await waitFor(() => getTheme('custom:by-hand').claude === '#654321')
     rmSync(file)
     await waitFor(() => !getCustomThemes().some(theme => theme.slug === 'by-hand'))
   } finally {
@@ -129,4 +153,4 @@ test('files added, changed or removed by hand reload the themes', async () => {
     await watcher.close()
     watch.mockRestore()
   }
-})
+}, 30_000)
