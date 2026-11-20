@@ -209,6 +209,7 @@ export type ModDispatchOptions = {
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
 export type ModPromptSection = { result: Promise<{text:string | null}>; signal: AbortSignal }
 export type ModSnapshot = {
+  readonly agentReportWarnings?: Map<string, string>
   readonly toolNotices?: ModToolNotices
   readonly toolOffers?: WeakMap<Tool, Map<string | undefined, Promise<boolean>>>
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
@@ -710,6 +711,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   let activeHostCallbacks = 0
   const toolNotices = createModToolNotices()
+  let agentReportWarnings = new Map<string, string>()
   const tools = createModTools({
     notify,
     pluginOf: owner => (owner as Activation).declaration.name,
@@ -3879,6 +3881,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return {
       toolNotices,
       toolOrigin: tool => toolOrigins.get(tool),
+      agentReportWarnings,
       toolOffers,
       get toolDescriptions() { return descriptions.value },
       get promptSections() { return sections },
@@ -4249,6 +4252,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         next[key as keyof ModBinding] === binding![key as keyof ModBinding],
       )) return
       if (ending || binding?.sessionId !== next.sessionId) {
+        agentReportWarnings = new Map()
         retireTurns()
         theme.clear()
         placed.reset()

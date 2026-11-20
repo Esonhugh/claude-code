@@ -2389,7 +2389,7 @@ export const AgentTool = buildTool({
           )
 
           const reportSnapshot = toolUseContext.modsSnapshot
-          if (!workflowFraming && agentResult.handback === undefined && reportSnapshot?.hasHooks('agent.report')) {
+          if (!workflowFraming && agentResult.handback === undefined && reportSnapshot && (reportSnapshot.hasHooks('agent.report') || reportSnapshot.agentReportWarnings?.has(syncAgentId))) {
             const original = subagentResultText(agentResult)
             const report = await deliverAgentReport(reportSnapshot, {
               agentId:syncAgentId, subagentType:selectedAgent.agentType, provider:providerForAgent(selectedAgent,reportSnapshot),
@@ -2402,9 +2402,11 @@ export const AgentTool = buildTool({
                 subagentType:selectedAgent.agentType, totalToolUseCount:agentResult.totalToolUseCount, onReview:value => {review=value}})
               return {review, ...(warning && {warning})}
             })
-            if ('consumed' in report) agentResult.content = []
-            else if (report.text !== original) agentResult.content = [{type:'text', text:report.text}]
-            if (report.warning) agentResult.content.unshift({type:'text',text:report.warning})
+            if ('consumed' in report) agentResult.content = [{type:'text',text:report.consumed}]
+            else {
+              if (report.text !== original) agentResult.content = [{type:'text', text:report.text}]
+              if (report.warning) agentResult.content.unshift({type:'text',text:report.warning})
+            }
           } else if (
             feature('TRANSCRIPT_CLASSIFIER') &&
             agentResult.handback === undefined
