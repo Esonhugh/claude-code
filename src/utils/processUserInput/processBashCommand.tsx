@@ -46,6 +46,7 @@ export async function processBashCommand(
   logEvent('tengu_input_bash', { powershell: usePowerShell })
 
   const userMessage = createUserMessage({
+    isTerminalCommand: true,
     content: prepareUserContent({
       inputString: `<bash-input>${inputString}</bash-input>`,
       precedingInputBlocks,
@@ -186,6 +187,7 @@ export async function processBashCommand(
         ...(data.stdout || stderr || !data.interrupted
           ? [
               createUserMessage({
+                isTerminalCommand: true,
                 content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`,
               }),
             ]
@@ -207,6 +209,7 @@ export async function processBashCommand(
             ...(e.stdout || e.stderr
               ? [
                   createUserMessage({
+                    isTerminalCommand: true,
                     content: `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`,
                   }),
                 ]
@@ -222,6 +225,7 @@ export async function processBashCommand(
           userMessage,
           ...attachmentMessages,
           createUserMessage({
+            isTerminalCommand: true,
             content: `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`,
           }),
         ],
@@ -234,6 +238,7 @@ export async function processBashCommand(
         userMessage,
         ...attachmentMessages,
         createUserMessage({
+          isTerminalCommand: true,
           content: `<bash-stderr>Command failed: ${escapeXml(errorMessage(e))}</bash-stderr>`,
         }),
       ],

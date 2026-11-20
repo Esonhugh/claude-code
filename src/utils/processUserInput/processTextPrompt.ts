@@ -77,6 +77,7 @@ export function processTextPrompt(
       uuid: uuid,
       imagePasteIds: imagePasteIds.length > 0 ? imagePasteIds : undefined,
       permissionMode,
+      isTerminalCommand: false,
       isMeta: isMeta || undefined,
     })
 
@@ -90,6 +91,7 @@ export function processTextPrompt(
     content: input,
     uuid,
     permissionMode,
+    isTerminalCommand: false,
     isMeta: isMeta || undefined,
   })
 

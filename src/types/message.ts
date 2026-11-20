@@ -164,6 +164,8 @@ export interface UserMessage {
   imagePasteIds?: number[]
   sourceToolAssistantUUID?: UUID
   permissionMode?: unknown
+  /** True for terminal transcript rows, false for submitted text; absent on legacy rows. */
+  isTerminalCommand?: boolean
   origin?: MessageOrigin
   planContent?: string
 }

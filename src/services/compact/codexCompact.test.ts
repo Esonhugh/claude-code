@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { execFileSync } from 'node:child_process'
+import { createRemoteShellTranscript } from '../../ssh/remoteShellTranscript.js'
+import { processTextPrompt } from '../../utils/processUserInput/processTextPrompt.js'
 import type { Message } from '../../types/message.js'
 import { normalizeMessagesForAPI } from '../../utils/messages.js'
 import { buildPostCompactMessages } from './compact.js'
@@ -194,11 +197,55 @@ describe('selectRetainedMessagesForCodexCompact', () => {
     expect(message.message.content).toBe('look at this')
   })
 
-  test('skips local command rows and their output', () => {
+  test('keeps terminal-looking user text but skips actual shell rows', () => {
+    const command = 'printf hello'
+    const output = createRemoteShellTranscript(command, {
+      stdout: execFileSync('/bin/sh', ['-c', command], { encoding: 'utf8' }),
+      stderr: '',
+      code: 0,
+      interrupted: false,
+    })
+    const prompts = [
+      '<bash-stdout>hello</bash-stdout> What does this mean?',
+      '<bash-stdout>hello</bash-stdout><bash-stderr></bash-stderr>',
+    ].flatMap(text => processTextPrompt(text, [], [], []).messages)
+
+    const roundTrip = (messages: Message[]): Message[] =>
+      JSON.parse(JSON.stringify(messages))
+    expect(
+      selectRetainedMessagesForCodexCompact(roundTrip([...prompts, ...output]), 1000)
+        .messages,
+    ).toEqual(roundTrip(prompts))
+  })
+
+  test('keeps a legacy prompt with prose after the terminal envelope', () => {
+    const prompt = userTextMessage(
+      '00000000-0000-4000-8000-000000000007',
+      '<bash-stdout>example</bash-stdout> What does this mean?',
+    )
+    expect(selectRetainedMessagesForCodexCompact([prompt], 1000).messages)
+      .toEqual([prompt])
+  })
+
+  test('charges one token per one-character reply', () => {
+    const replies = ['a', 'b', 'c'].map((text, i) =>
+      userTextMessage(`00000000-0000-4000-8000-00000000000${i}`, text),
+    )
+
+    expect(selectRetainedMessagesForCodexCompact(replies, 1)).toEqual({
+      messages: [replies[2]!],
+      approxTokens: 1,
+    })
+  })
+
+  test('skips legacy local command rows and their output', () => {
     const result = selectRetainedMessagesForCodexCompact(
       [
         userTextMessage('00000000-0000-4000-8000-000000000001', 'real prompt'),
-        userTextMessage('00000000-0000-4000-8000-000000000002', '<bash-input>cat big.log</bash-input>'),
+        {
+          ...userTextMessage('00000000-0000-4000-8000-000000000002', '<bash-input>cat big.log</bash-input>'),
+          origin: { kind: 'human' },
+        },
         userTextMessage('00000000-0000-4000-8000-000000000003', `<bash-stdout>${'x'.repeat(40_000)}</bash-stdout><bash-stderr></bash-stderr>`),
         userTextMessage('00000000-0000-4000-8000-000000000004', '<local-command-caveat>Caveat: ...</local-command-caveat>'),
         userTextMessage('00000000-0000-4000-8000-000000000005', '<local-command-stdout>Set model to opus</local-command-stdout>'),
