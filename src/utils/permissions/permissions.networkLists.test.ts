@@ -46,12 +46,13 @@ if (!process.env[childKey]) {
   // Loaded first: yoloClassifier and permissions import each other.
   const { applyPermissionModeToResult } = await import('./permissions.js')
   let classified = 0
+  let shouldBlock = false
   const yolo = await import('./yoloClassifier.js')
   mock.module('./yoloClassifier.js', () => ({
     ...yolo,
     classifyYoloAction: async () => {
       classified++
-      return { shouldBlock: false, reason: 'reviewed', model: 'test' }
+      return { shouldBlock, reason: 'reviewed', model: 'test' }
     },
   }))
 
@@ -143,6 +144,57 @@ if (!process.env[childKey]) {
       expect(classified).toBe(1)
       expect(seen).toBe(2)
       takeCommandNetworkLists('reviewed', input.command)
+    } finally { snap.release(); await mods.dispose() }
+  })
+
+  test('a hook-authored deny cannot turn into a prompt at the classifier denial limit', async () => {
+    const { createModsRuntime } = await import('../../services/mods/runtime.js')
+    const { DENIAL_LIMITS } = await import('./denialTracking.js')
+    const mods = createModsRuntime()
+    let passThrough = false
+    mods.registerHostCallback({ tier: 'user', registration: { id: 20, event: 'tool.judge', hasCatch: false } }, async (_, e, next) => {
+      const reviewed = await next(e)
+      return passThrough ? reviewed : { decision: 'deny', reason: 'local policy' }
+    })
+    const snap = mods.capture()
+    const ctx = context('auto')
+    ctx.modsSnapshot = snap
+    const check = () => {
+      ctx.localDenialTracking = { consecutiveDenials: DENIAL_LIMITS.maxConsecutive - 1, totalDenials: 2 }
+      return applyPermissionModeToResult(ruleAllow, tool('Bash'), input, ctx, {message:{id:'judge'}} as never, 'guarded')
+    }
+    try {
+      shouldBlock = true
+      expect(await check()).toMatchObject({behavior:'deny', message:'local policy'})
+      passThrough = true
+      expect((await check()).behavior).toBe('ask')
+    } finally { shouldBlock = false; snap.release(); await mods.dispose() }
+  })
+
+  test('tool.judge pins hook authorship against the verdicts actually received from next', async () => {
+    const { createModsRuntime } = await import('../../services/mods/runtime.js')
+    const mods = createModsRuntime()
+    type Verdict = {decision:'deny'; reason?:string; plugin?:string}
+    let core: Verdict = {decision:'deny'}
+    let mode: 'forward' | 'copy' | 'new' | 'no-next' = 'forward'
+    mods.registerHostCallback({tier:'user', registration:{id:21,event:'tool.judge',hasCatch:false}}, async (_, e, next) => {
+      if (mode === 'no-next') return {...core, plugin:'forged'}
+      const received = await next(e)
+      if (mode === 'forward') return received
+      if (mode === 'copy') return {...core, plugin:'forged'}
+      return {decision:'deny',reason:'changed',plugin:'forged'}
+    })
+    const snap = mods.capture()
+    try {
+      for (const reason of [undefined, 'same']) {
+        core = {decision:'deny', ...(reason !== undefined && {reason})}
+        for (mode of ['forward', 'copy', 'new', 'no-next'] as const) {
+          const result = await snap.dispatch('tool.judge', {tool:'Read'}, async () => core)
+          expect(result).toEqual(mode === 'forward' || mode === 'copy' ? core : {
+            ...core, ...(mode === 'new' && {reason:'changed'}), plugin:'claude-code/testing',
+          })
+        }
+      }
     } finally { snap.release(); await mods.dispose() }
   })
 

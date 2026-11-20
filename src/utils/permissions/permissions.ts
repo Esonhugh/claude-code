@@ -987,9 +987,9 @@ export async function applyPermissionModeToResult(
           const verdict = await snapshot.dispatch('tool.judge', event, async () => {
             const receipt = await (review ??= classify())
             return { decision: receipt.unavailable || receipt.unparseable ? 'ask' : receipt.shouldBlock ? 'deny' : 'allow', reason: receipt.reason }
-          }, {signal:context.abortController.signal}) as {decision:'allow'|'deny'|'ask'; reason?:string}
+          }, {signal:context.abortController.signal}) as {decision:'allow'|'deny'|'ask'; reason?:string; plugin?:string}
           // A plugin's own decision cannot stand in for a review of someone else's call.
-          if (verdict.decision === 'deny' && !review) {
+          if (verdict.decision === 'deny' && (verdict.plugin !== undefined || !review)) {
             const message = verdict.reason ?? 'A tool.judge hook refused this call'
             return {behavior:'deny', message, decisionReason:{type:'other', reason:message}}
           }

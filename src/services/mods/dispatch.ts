@@ -531,6 +531,15 @@ export async function dispatchModEvent(options: {
         : { plugin: hook.plugin, results: [] as unknown[] }
       : undefined
     function settleToolResult(value: unknown): unknown {
+      if (options.event === 'tool.judge' && hook && value && typeof value === 'object') {
+        const { decision, reason, plugin } = value as ModInput
+        const matches = nextResults.filter((r): r is ModInput => !!r && typeof r === 'object' &&
+          'decision' in r && r.decision === decision && (r as ModInput).reason === reason)
+        // A matching receipt keeps its host-pinned author even after a Worker round trip.
+        const prior = matches.find(r => r.plugin === plugin) ?? matches[0]
+        const owner = prior && plugin !== '' ? prior.plugin : hook.plugin
+        return { decision, ...(reason !== undefined && {reason}), ...(owner !== undefined && {plugin:owner}) }
+      }
       if (!toolFrame || toolFrame === parentToolFrame) return value
       return restoreToolCallReadOnly(value, toolFrame.results)
     }
