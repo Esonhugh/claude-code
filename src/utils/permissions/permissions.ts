@@ -977,13 +977,30 @@ export async function applyPermissionModeToResult(
       setClassifierChecking(toolUseID)
       let classifierResult
       try {
-        classifierResult = await classifyYoloAction(
-          context.messages,
-          action,
-          context.options.tools,
-          appState.toolPermissionContext,
-          context.abortController.signal,
-        )
+        const classify = () => classifyYoloAction(context.messages, action, context.options.tools,
+          appState.toolPermissionContext, context.abortController.signal)
+        const snapshot = context.modsSnapshot
+        if (snapshot?.hasHooks('tool.judge', { tool: tool.name, agentId: context.agentId })) {
+          let review: ReturnType<typeof classify> | undefined
+          const event = { tool:tool.name, input:structuredClone(input), tool_use_id:toolUseID,
+            ...(context.agentId && {agentId:context.agentId}), ...(tool.isReadOnly?.(input) && {isReadOnly:true}) }
+          const verdict = await snapshot.dispatch('tool.judge', event, async () => {
+            const receipt = await (review ??= classify())
+            return { decision: receipt.unavailable || receipt.unparseable ? 'ask' : receipt.shouldBlock ? 'deny' : 'allow', reason: receipt.reason }
+          }, {signal:context.abortController.signal}) as {decision:'allow'|'deny'|'ask'; reason?:string}
+          // A plugin's own decision cannot stand in for a review of someone else's call.
+          if (verdict.decision === 'deny' && !review) {
+            const message = verdict.reason ?? 'A tool.judge hook refused this call'
+            return {behavior:'deny', message, decisionReason:{type:'other', reason:message}}
+          }
+          classifierResult = await (review ??= classify())
+          if (verdict.decision === 'deny' && (classifierResult.unavailable || classifierResult.unparseable) ||
+              !classifierResult.shouldBlock && verdict.decision !== 'allow') {
+            const message = verdict.reason ?? 'A tool.judge hook requires a decision'
+            const behavior = verdict.decision === 'ask' && !appState.toolPermissionContext.shouldAvoidPermissionPrompts ? 'ask' : 'deny'
+            return {behavior, message, decisionReason:{type:'other', reason:message}}
+          }
+        } else classifierResult = await classify()
       } finally {
         clearClassifierChecking(toolUseID)
       }

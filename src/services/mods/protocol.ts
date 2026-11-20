@@ -215,6 +215,7 @@ export type ModWorkerReply =
   | { type: 'client-phase'; id: number; phase: import('./client.js').ModClientFaultPhase }
   | { type: 'settled'; id: number }
   | { type: 'async-error'; environment: number; error: string }
+  | { type: 'console-error'; environment: number; text: string }
   | {
       type: 'result'
       id: number

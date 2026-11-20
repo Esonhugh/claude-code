@@ -17,7 +17,7 @@ const REMOTE_TEXT_LIMIT = 1_000_000
 export type ModRemoteAnsweringClient = { clientId: string; surface: SDKUIRemoteSurface }
 /** The client's answer, or undefined when it timed out, refused or answered unparsably. */
 export type ModRemoteUiAsk = (
-  request: { subtype: Exclude<SDKUIAnswer, 'ui_prompt_paint'>; surface: SDKUIRemoteSurface; client_id: string } & Record<string, unknown>,
+  request: { subtype: SDKUIAnswer; surface: SDKUIRemoteSurface; client_id: string } & Record<string, unknown>,
 ) => Promise<Record<string, unknown> | undefined>
 
 /**
@@ -32,7 +32,7 @@ export function createModRemoteUiHost({
   clients(answer: SDKUIAnswer, surface?: SDKUIRemoteSurface): readonly ModRemoteAnsweringClient[]
   ask: ModRemoteUiAsk
 }) {
-  const askFirst = (answer: Exclude<SDKUIAnswer, 'ui_prompt_paint'>, fields: Record<string, unknown> = {}, surface?: SDKUIRemoteSurface) => {
+  const askFirst = (answer: SDKUIAnswer, fields: Record<string, unknown> = {}, surface?: SDKUIRemoteSurface) => {
     const client = clients(answer, surface)[0]
     return client
       ? ask({ subtype: answer, surface: client.surface, client_id: client.clientId, ...fields })
@@ -55,6 +55,12 @@ export function createModRemoteUiHost({
         ...(decorations.length ? { decorations } : {}),
       })
       return { isFilled: answer?.filled === true }
+    },
+    async paint(layer, {text, decorations}) {
+      if (text !== undefined && text.length > REMOTE_TEXT_LIMIT) return false
+      const runs = normalizePromptDecorations(decorations, text ?? '')
+      return (await askFirst('ui_prompt_paint', {layer, ...(text === undefined ? {} : {text}),
+        ...(runs.length ? {decorations:runs} : {})}))?.painted === true
     },
     async suggest(text) {
       if (text.length > REMOTE_TEXT_LIMIT) return false

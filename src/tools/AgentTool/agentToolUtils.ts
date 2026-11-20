@@ -90,7 +90,7 @@ import {
 } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
-import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import { getMaxSubagentDepth } from './subagentDepth.js'
 import {
   CODE_MODE_ONLY_TOOLS,
   POLL_TOOL_NAME,
@@ -148,7 +148,7 @@ export function filterToolsForAgent({
   return tools.filter(tool => {
     // An agent at the nesting limit cannot spawn, so it never sees the Agent tool.
     if (
-      agentDepth >= MAX_SUBAGENT_DEPTH &&
+      agentDepth >= getMaxSubagentDepth() &&
       (toolMatchesName(tool, AGENT_TOOL_NAME) ||
         toolMatchesName(tool, LEGACY_AGENT_TOOL_NAME))
     ) {
@@ -769,6 +769,7 @@ export async function classifyHandoffIfNeeded({
   abortSignal,
   subagentType,
   totalToolUseCount,
+  onReview,
 }: {
   agentMessages: MessageType[]
   tools: Tools
@@ -776,6 +777,7 @@ export async function classifyHandoffIfNeeded({
   abortSignal: AbortSignal
   subagentType: string
   totalToolUseCount: number
+  onReview?: (review:'cleared'|'flagged'|'unavailable') => void
 }): Promise<string | null> {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     if (toolPermissionContext.mode !== 'auto') return null
@@ -799,6 +801,7 @@ export async function classifyHandoffIfNeeded({
       abortSignal,
     )
 
+    onReview?.(classifierResult.unavailable ? 'unavailable' : classifierResult.shouldBlock ? 'flagged' : 'cleared')
     const handoffDecision = classifierResult.unavailable
       ? 'unavailable'
       : classifierResult.shouldBlock

@@ -178,6 +178,16 @@ test('mounted PromptInput paints current decorations and never resurrects them a
   }finally{h.dispose()}
 })
 
+test('repainting an existing layer wins overlapping styles',async()=>{
+  const h=await mount('ab')
+  try {
+    for(const [layer,color] of [['A','#ff0000'],['B','#0000ff'],['A','#00ff00']] as const)
+      h.editor!.paintLayer!(layer,'ab',[{start:0,end:2,color}])
+    await h.settle()
+    expect(h.styles().some(n=>n.text==='ab' && n.styles?.color==='#00ff00')).toBe(true)
+  }finally{h.dispose()}
+})
+
 test('mounted PromptInput carries paint only through recorded person edits',async()=>{
   const h=await mount('ab',true)
   try {

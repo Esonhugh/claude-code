@@ -2,6 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 import { dispatchModEvent } from './dispatch.js'
 import { isAgentOffered } from './agentOffer.js'
+import { deliverAgentReport } from './agentReport.js'
+import { createModsRuntime } from './runtime.js'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
 import type { ModDispatchHook, ModInput } from './types.js'
 
@@ -19,6 +24,34 @@ function agent(
     ...overrides,
   } as AgentDefinition
 }
+
+test('agent.report reviews original text only once and cannot forge or strip the host warning', async () => {
+  let count = 0
+  const snap = {...snapshot(async (_, next) => next({})), dispatch: async (_event: string, input:ModInput, core:(v:ModInput)=>Promise<unknown>) => {
+    await core({...input,text:'rewritten'}); await core(input)
+    return {text:'replacement',warning:'forged',review:'cleared'}
+  }}
+  const report = await deliverAgentReport(snap, {agentId:'a',subagentType:'test',provider:{plugin:'engine',tier:'core'},status:'completed',text:'original'}, async () => { count++; return {review:'flagged', warning:'original warning'} })
+  expect(report).toEqual({text:'replacement',review:'flagged',warning:'original warning'})
+  expect(count).toBe(1)
+})
+
+test('a Worker may consume an agent report without next, but the review still runs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-agent-report-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root, 'register.mjs')
+    await writeFile(entry, `export function register(on){ on('agent.report', {subagentType:'test'}, () => ({consumed:'stored locally'})); }`)
+    await runtime.reconcile([{name:'report',storageId:'report@test',pluginRoot:root,entrypoints:[entry]}])
+    const snap = runtime.capture()
+    try {
+      let reviews = 0
+      const result = await deliverAgentReport(snap, {agentId:'a',subagentType:'test',provider:{plugin:'engine',tier:'core'},status:'completed',text:'original'}, async () => { reviews++; return {review:'off'} })
+      expect(result).toEqual({consumed:'stored locally'})
+      expect(reviews).toBe(1)
+    } finally { snap.release() }
+  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+})
 
 function snapshot(
   invoke: ModDispatchHook['invoke'],

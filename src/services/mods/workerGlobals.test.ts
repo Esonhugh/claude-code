@@ -14,7 +14,7 @@ function declaration(source: string): ModDeclaration {
 }
 
 describe('Mods Worker hooks globals', () => {
-  test('provides realm-local Web globals without console or host code generation', async () => {
+  test('provides realm-local Web globals and error console without host code generation', async () => {
     const host = createModEnvironmentHost()
     hosts.push(host)
     const environment = await host.load(declaration(`
@@ -62,7 +62,7 @@ describe('Mods Worker hooks globals', () => {
               const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
               return descriptor && descriptor.writable === false && descriptor.configurable === false;
             }),
-            console: typeof console,
+            console: [Object.keys(console), Object.isFrozen(console), console.error instanceof Function, Object.getPrototypeOf(console) === Object.prototype],
             boundaries: [typeof process, typeof Bun, typeof document, typeof setTimeout, typeof WebAssembly],
             url: {
               href: url.href, origin: url.origin, params: url.searchParams.getAll('x'),
@@ -112,7 +112,7 @@ describe('Mods Worker hooks globals', () => {
       },
       own: true,
       hardened: true,
-      console: 'undefined',
+      console: [['error'], true, true, true],
       boundaries: ['undefined', 'undefined', 'undefined', 'function', 'undefined'],
       url: {
         href: 'https://example.test/after?x=1&x=2', origin: 'https://example.test', params: ['1', '2'],

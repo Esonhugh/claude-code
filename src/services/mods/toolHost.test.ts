@@ -79,6 +79,28 @@ function hook(event: string, invoke: ModDispatchHook['invoke']): ModDispatchHook
 }
 
 describe('author tool host through the real executor', () => {
+  test('agent.call uses the matching live host and its permission callback, never another agent', async () => {
+    const f = fixture()
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({services:{toolHost:()=>f.host}, onDiagnostic: event => diagnostics.push(event.message)})
+    const root = await mkdtemp(join(tmpdir(), 'agent-call-'))
+    try {
+      const entry = join(root, 'entry.mjs')
+      await writeFile(entry, `export function register(on){on('tool.call',{tool:'probe'},async($,e)=>({result:await $.agent.call({tool:'AuthorFixture',input:{value:'ok'},agentId:e.agentId})}))}`)
+      await runtime.reconcile([{name:'probe',storageId:'probe@test',pluginRoot:root,entrypoints:[entry]}])
+      const call = (agentId?:string) => runtime.dispatch('tool.call',{tool:'probe',agentId},async()=>({result:null}))
+      const missing = await call('unknown')
+      expect(diagnostics).toEqual([])
+      expect(missing).toMatchObject({result:{deny:expect.any(String)}})
+      expect(f.permissions).toHaveLength(0)
+      expect(await call()).toMatchObject({result:{result:{value:'ok'}}})
+      expect(f.permissions).toHaveLength(1)
+      const denied = createModToolHost(f.context, async () => ({behavior:'deny', message:'host refused', decisionReason:{type:'other',reason:'test'}}))
+      const refusal = await denied.call({tool:'AuthorFixture',value:'must-not-run'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call')
+      expect(refusal).toMatchObject({deny:expect.stringContaining('host refused')})
+      expect(f.calls).toHaveLength(1)
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
   for (const borrowed of [false, true]) {
     test(`Worker skill.prompt uses invocation tools and permissions with ${borrowed ? 'borrowed' : 'owned'} snapshot`, async () => {
       const f = fixture()

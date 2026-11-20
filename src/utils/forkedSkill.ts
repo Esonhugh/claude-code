@@ -11,7 +11,7 @@ import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
 import { runAgent } from '../tools/AgentTool/runAgent.js'
 import {
   getNextSubagentDepth,
-  MAX_SUBAGENT_DEPTH,
+  getMaxSubagentDepth,
 } from '../tools/AgentTool/subagentDepth.js'
 import type { Command } from '../commands.js'
 import { COMMAND_NAME_TAG } from '../constants/xml.js'
@@ -104,7 +104,7 @@ export async function launchBackgroundForkedSkill({
   }
   checkAbort()
   const spawnDepth = getNextSubagentDepth(context.options)
-  if (spawnDepth > MAX_SUBAGENT_DEPTH || duplicate()) return null
+  if (spawnDepth > getMaxSubagentDepth() || duplicate()) return null
   try {
     await persistForkedSkillScope(agentId, {
       skillName: command.name,

@@ -17,3 +17,11 @@
 | 3. 非渲染接口与既有字段 | 核对 session 信息、hook 环境、Wasm、消息分页、AgentInfo、通知调度及取消。先读各宿主现有实现再确定改动。 | 覆盖可选字段缺失、托管宿主与客户端的区别、取消和卸载；每个公开操作有可达证据或明确记为未覆盖，不用空结果冒充成功。 |
 | 4. 主题和渲染 | 先做 theme set/clear 的会话状态、回执、客户端晚接入，再做 `prompt.paint`、`ui.place`、Backdrop、`ui.pointer` 和 shader。分开验证作者类型、宿主行为与实际绘制。 | 无绘制客户端时不误判设置失败；clear 后晚接入不见旧主题；paint 不改草稿、光标或撤销历史；背景点击只交给拥有该主题的插件。没有图形客户端证据时标记未验收。 |
 | 5. 切换与回归 | 每组先写最小失败测试，再实现并重跑相关 `.303` 回归；切换前执行 `make build`，用同一 fixture 在固定 `.329` 官方与本地 CLI 的 tmux 会话中对照。 | 留下双方版本、制品哈希、场景和输出；明确剩余缺口再决定是否切换默认声明。不把编译通过当运行时对齐，不覆盖旧账本。 |
+
+### `wasm.compile`：声明存在，运行时未支持
+
+`src/services/mods/wasmIsolation329.test.ts` 在 Bun 1.4.4 实测：单独启用 Wasm 的 VM 能编译并实例化模块。`structuredClone` 也能复制已编译模块，但将它交给现行 `codeGeneration.wasm: false` 的 VM 后，连 `WebAssembly.instantiate(module)` 都会得到 `CompileError`。所以只外包编译并不能满足插件拿回标准 Module 并在自己的 realm 实例化的契约。返回字节或 RPC 对象也不等价。
+
+当前所有插件共用一个执行 Worker（`createModEnvironmentHost`）；在其中只给一个 VM 打开 Wasm，仍会让同步 Wasm 导出占住其他插件的事件循环。简单分配第二个 host 同样不可直接用：环境和函数 ID 只在各自 host 内唯一，`prepareUiTables` 从一个 host 的环境表解析发布者/消费者，同步 UI 回调通过同一 Worker 的环境表执行。现有超时恢复也以整个 Worker 为单位。
+
+独立实现须隔离**实际运行 Hook 的插件**，而非仅隔离编译器，解决上述跨 Worker 发布和调用后，再接入仅字面量文件准入（相对调用文件、内容指纹）、字节快照与 64 MiB 限额、shared memory 拒绝、重写/拒绝事件和 worker 卸载。现阶段不要移除共享 VM 的 Wasm 禁令，也不要用宿主 `WebAssembly` 替换插件全局对象。

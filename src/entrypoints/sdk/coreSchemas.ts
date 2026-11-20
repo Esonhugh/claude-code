@@ -1,4 +1,4 @@
-import { SDKUIInvalidateMessageSchema, SDKUIPanesMessageSchema, SDKUIScrollMessageSchema, SDKUIFocusMessageSchema } from './modsControlSchemas.js'
+import { SDKUIInvalidateMessageSchema, SDKUIPlacedMessageSchema, SDKUIPanesMessageSchema, SDKUIScrollMessageSchema, SDKUIFocusMessageSchema } from './modsControlSchemas.js'
 /**
  * SDK Core Schemas - Zod schemas for serializable SDK data types.
  *
@@ -2041,6 +2041,17 @@ export const SDKUILogMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKUINotifyMessageSchema = lazySchema(() => z.object({
+  type: z.literal('system'), subtype: z.literal('ui_notify'), plugin: z.string(), source: z.string(),
+  text: z.string(), title: z.string(), rewritten: z.boolean(), key: z.string().optional(),
+  delay_ms: z.number().int().optional(), at: z.number().int().optional(), until_back: z.boolean().optional(),
+  uuid: UUIDPlaceholder(), session_id: z.string(),
+}))
+export const SDKUINotifyCancelMessageSchema = lazySchema(() => z.object({
+  type: z.literal('system'), subtype: z.literal('ui_notify_cancel'), plugin: z.string(), source: z.string(),
+  key: z.string().optional(), uuid: UUIDPlaceholder(), session_id: z.string(),
+}))
+
 export const SDKUIToastMessageSchema = lazySchema(() =>
   z
     .object({
@@ -2610,11 +2621,14 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKUINotifyMessageSchema(),
+    SDKUINotifyCancelMessageSchema(),
     SDKUIToastMessageSchema(),
     SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),
     SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),
+    SDKUIPlacedMessageSchema(),
     SDKUIScrollMessageSchema(),
     SDKUIFocusMessageSchema(),
     SDKPartialAssistantMessageSchema(),

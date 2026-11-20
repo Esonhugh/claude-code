@@ -25,6 +25,7 @@ import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js'
 import { logError } from '../utils/log.js'
 import type { buildMessageLookups } from '../utils/messages.js'
 import { CompactSummary } from './CompactSummary.js'
+import { ModsRender } from './ModsRender.js'
 import { AdvisorMessage } from './messages/AdvisorMessage.js'
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage.js'
 import { AssistantTextMessage } from './messages/AssistantTextMessage.js'
@@ -185,6 +186,8 @@ function MessageImpl({
       )
     }
     case 'system':
+      if (message.subtype === 'placed') return <ModsRender input={{surface:'terminal',component:'Placed',requestId:message.uuid,
+        props:{plugin:message.plugin,id:message.id}}}>{() => null}</ModsRender>
       if (message.subtype === 'compact_boundary') {
         return <CompactBoundaryMessage />
       }

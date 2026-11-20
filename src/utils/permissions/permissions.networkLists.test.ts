@@ -124,6 +124,28 @@ if (!process.env[childKey]) {
     expect(takeCommandNetworkLists('toolu_default', input.command)).toBeUndefined()
   })
 
+  test('tool.judge can refuse at the classifier boundary but cannot grant an unreviewed network list', async () => {
+    const { createModsRuntime } = await import('../../services/mods/runtime.js')
+    const mods = createModsRuntime()
+    const ctx = context('auto')
+    let verdict = 'deny'
+    let seen = 0
+    mods.registerHostCallback({ tier:'user', registration:{ id:19,event:'tool.judge',hasCatch:false } }, () => { seen++; return {decision: verdict, reason:'guard'} })
+    const snap = mods.capture()
+    try {
+      ctx.modsSnapshot = snap
+      classified = 0
+      const check = (id: string) => applyPermissionModeToResult(ruleAllow, tool('Bash'), input, ctx, {message:{id:'judge'}} as never, id)
+      expect((await check('guarded')).behavior).toBe('deny')
+      expect(classified).toBe(0)
+      verdict = 'allow'
+      expect((await check('reviewed')).behavior).toBe('allow')
+      expect(classified).toBe(1)
+      expect(seen).toBe(2)
+      takeCommandNetworkLists('reviewed', input.command)
+    } finally { snap.release(); await mods.dispose() }
+  })
+
   test('another tool with an allowed_domains field is not affected', async () => {
     classified = 0
     expect(await decide('WebSearch', 'auto', 'toolu_web')).toBe(ruleAllow)

@@ -74,6 +74,17 @@ test('fill carries mode and normalized decorations, omitting an empty list', asy
   ])
 })
 
+test('paint updates one opaque layer without asking for a fill or rewriting text', async () => {
+  const sent: Sent[] = []
+  const host = createModRemoteUiHost({ clients: () => [desktop('a')], ask: async request => { sent.push(request); return {painted:true} } })
+  expect(await host.prompt.paint!('owner', {text:'hi',decorations:[{start:0,end:9,bold:true}]})).toBe(true)
+  expect(await host.prompt.paint!('owner', {decorations:[]})).toBe(true)
+  expect(sent).toEqual([
+    {subtype:'ui_prompt_paint',client_id:'a',surface:'desktop',layer:'owner',text:'hi',decorations:[{start:0,end:2,bold:true}]},
+    {subtype:'ui_prompt_paint',client_id:'a',surface:'desktop',layer:'owner'},
+  ])
+})
+
 test('selection asks every answering client at once and takes the first non-empty answer', async () => {
   const sent: string[] = []
   const host = createModRemoteUiHost({

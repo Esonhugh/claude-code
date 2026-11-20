@@ -15,12 +15,13 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-async function run(body: string, services: ModHostServices, hooks = '') {
+async function run(body: string, services: ModHostServices, hooks = '', remote = false) {
   const entry = join(root, 'register.mjs')
   await writeFile(entry, `export function register(on){${hooks}
     on('tool.call',async $=>{const values=[];${body};return {result:values}});}`)
   runtime = createModsRuntime({ services })
-  await runtime.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'notify' })
+  await runtime.bind({ cwd: root, surface: remote ? null : 'terminal', isInteractive: !remote, sessionId: 'notify' })
+  if (remote) await runtime.remoteClients.attach({clientId:'app',surface:'desktop'})
   await runtime.reconcile([{ name: 'notifier', storageId: 'notifier@fixture', pluginRoot: root, entrypoints: [entry] }])
   return ((await runtime.dispatch('tool.call', {}, async () => ({ result: 'missed' }))) as { result: unknown }).result
 }
@@ -49,6 +50,34 @@ test('$.ui.notify answers no-surface without a host channel and rejects a failed
   expect(await run(`try { await $.ui.notify('hi') } catch (error) { values.push(error.message) }`, {
     uiNotify: async () => 'error',
   })).toEqual(["notifier: $.ui.notify: the channel's write failed"])
+})
+
+test('terminal validates schedule options, sends now, and has no held notification to cancel', async () => {
+  const sent: string[] = []
+  const result = await run(`
+    values.push(await $.ui.notify('ready', {key:'build',delayMs:60000,untilBack:true}));
+    values.push(await $.ui.cancelNotify('build'));
+    for (const options of [{at:0,delayMs:1},{delayMs:604800001},{key:'constructor'},{untilBack:'yes'}]) {
+      try { await $.ui.notify('bad', options); values.push(false) } catch { values.push(true) }
+    }`, {uiNotify: async n => {sent.push(n.message); return 'kitty'}},
+    `on('ui.notify', {key:'build'}, ($,e,next) => next({...e,text:e.text+':'+e.delayMs}));`)
+  expect(sent).toEqual(['ready:60000'])
+  expect(result).toEqual([{isSent:true,channel:'kitty'},{isSent:false},true,true,true,true])
+})
+
+test('attached client gets source-scoped scheduled notification, keyed cancel and unload cleanup', async () => {
+  const frames: unknown[] = []
+  expect(await run(`values.push(await $.ui.notify('ready',{title:'CI',key:'nightly',delayMs:500,untilBack:true}));
+    values.push(await $.ui.cancelNotify('nightly'))`, {
+    uiNotify: async (_, frame) => {frames.push(frame);return 'client'},
+    uiCancelNotify: frame => {frames.push(frame);return true},
+  },'',true)).toEqual([{isSent:true,channel:'client'},{isSent:true}])
+  await runtime!.reconcile([])
+  expect(frames).toEqual([
+    {type:'system',subtype:'ui_notify',source:'notifier@fixture',plugin:'notifier',text:'ready',title:'CI',key:'nightly',delay_ms:500,until_back:true,rewritten:false},
+    {source:'notifier@fixture',plugin:'notifier',key:'nightly'},
+    {source:'notifier@fixture',plugin:'notifier'},
+  ])
 })
 
 test('$.ui.notify checks its arguments and runs ui.notify hooks that rewrite, answer or deny', async () => {

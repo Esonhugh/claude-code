@@ -43,6 +43,7 @@ export type PromptInputHandle = {
   readonly text: string
   readonly cursorOffset: number
   paintDecorations(decorations: PromptDecoration[] | undefined, text: string): void
+  paintLayer?(layer: string, text: string | undefined, decorations: PromptDecoration[]): boolean
   carryDecorations(edit: TextInputEdit): void
 }
 

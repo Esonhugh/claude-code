@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
+import * as debug from '../../utils/debug.js'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -34,6 +35,25 @@ function streamNext(call: (input: Record<string, unknown>) => AsyncGenerator<unk
   frame.event = 'turn.step'
   return frame
 }
+
+test('tool.offer console.error forwards to attributed debug output and continues once', async () => {
+  const log = spyOn(debug, 'logForDebugging').mockImplementation(() => {})
+  try {
+    const spec = declaration(`export function register(on) {
+      on('tool.offer', ($, e, next) => {
+        console.error('offer marker', e.tool);
+        return next(e);
+      });
+    }`)
+    const environment = await host().load({...spec, events: ['tool.offer']})
+    let calls = 0
+    const resume = next(() => { calls++; return {isOffered:true} })
+    resume.event = 'tool.offer'
+    expect(await environment.invoke(environment.registrations[0]!.id, [{}, {tool:'Read'}], resume)).toEqual({isOffered:true})
+    expect(calls).toBe(1)
+    expect(log).toHaveBeenCalledWith('[Mods:fixture] offer marker Read')
+  } finally { log.mockRestore() }
+})
 function emptyStreamNext(): ModStreamNext {
   // eslint-disable-next-line require-yield -- These cases must never enter the unused continuation.
   return streamNext(async function* () { throw new Error('Unexpected stream continuation') })
@@ -1177,7 +1197,7 @@ describe('Mods Worker environment', () => {
       URL: 'function', URLSearchParams: 'function', atob: 'function', btoa: 'function',
       structuredClone: 'function', crypto: 'object', performance: 'object',
     })
-    expect(result.console).toBe('undefined')
+    expect(result.console).toBe('object')
     expect(result.encoded).toEqual([111, 107])
     expect(result.decoded).toBe('ok')
     expect(result.url).toBe('https://example.com/path?q=1')

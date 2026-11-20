@@ -4,7 +4,7 @@ import {
   SDKControlUIRequestSchema,
   SDKControlUIClientFaultRequestSchema,
 } from '../../entrypoints/sdk/controlSchemas.js'
-import type { SDKUIInvalidateMessage, SDKUIPanesMessage, SDKUIScrollMessage, SDKUIFocusMessage, SDKControlUIPanesResponse } from '../../entrypoints/sdk/modsControlTypes.js'
+import type { SDKUIInvalidateMessage, SDKUIPlacedMessage, SDKUIPanesMessage, SDKUIScrollMessage, SDKUIFocusMessage, SDKControlUIPanesResponse } from '../../entrypoints/sdk/modsControlTypes.js'
 import type { ModsRuntime } from './runtime.js'
 import { createModRemoteRenderer } from './remoteUiRender.js'
 
@@ -46,6 +46,7 @@ export function createModRemoteUIControl(options: {
   invalidate?(
     message: Omit<SDKUIInvalidateMessage, 'uuid' | 'session_id'>,
   ): void
+  placed?(message: Omit<SDKUIPlacedMessage, 'uuid' | 'session_id'>): void
   panes?(message: Omit<SDKUIPanesMessage, 'uuid' | 'session_id'>): void
   focus?(message: Omit<SDKUIFocusMessage, 'uuid' | 'session_id'>): void
   scroll?(message: Omit<SDKUIScrollMessage, 'uuid' | 'session_id'>): void
@@ -80,9 +81,14 @@ export function createModRemoteUIControl(options: {
       logForDebugging(`[ModsUIPanes] changed count=${state.panes.length} shown=${state.shown_id} focused=${state.focused_id} requested=${state.focus_requested_id}`)
       publishPanes(runtime, state)
     })
+    const stopPlaced = runtime.placed.subscribe(() => options.placed?.({type:'system',subtype:'ui_placed',rows:[...runtime.placed.rows()]}))
+    const stopTheme = runtime.theme.subscribe(() => {
+      const instances = runtime.theme.drawingSurfaces().flatMap(surface => ['theme','backdrop'].map(instance_id => ({surface,component:'Theme' as const,instance_id})))
+      if (instances.length) options.invalidate?.({type:'system',subtype:'ui_invalidate',event:'ui.render',instances})
+    })
     const stopScroll = runtime.remoteScroll.subscribe(message => options.scroll?.(message))
     const stopFocus = runtime.remoteFocus.subscribe(message => options.focus?.(message))
-    subscriptions.set(runtime, () => { stopPanes(); stopScroll(); stopFocus() })
+    subscriptions.set(runtime, () => { stopPanes(); stopPlaced(); stopTheme(); stopScroll(); stopFocus() })
   }
   const pending = new Set<Promise<void>>()
   const jobs = new Map<string, { cancelled: boolean }>()
@@ -215,8 +221,12 @@ export function createModRemoteUIControl(options: {
               ...(request.answers === undefined
                 ? {}
                 : { answers: request.answers }),
+              ...(request.draws === undefined ? {} : { draws:request.draws }),
             })
             success({ surfaces: result.surfaces })
+            if (runtime.placed.rows().length) options.placed?.({type:'system',subtype:'ui_placed',rows:[...runtime.placed.rows()]})
+            if (request.draws?.includes('Theme') && request.surface !== 'vscode') options.invalidate?.({type:'system',subtype:'ui_invalidate',event:'ui.render',
+              instances:['theme','backdrop'].map(instance_id => ({surface:request.surface,component:'Theme',instance_id}))})
             // A layout client must receive the current roster even when placement did not change it.
             if (runtime.remoteClients.placesPanes(request.client_id) && (panePublications.get(runtime) ?? 0) === before)
               publishPanes(runtime)

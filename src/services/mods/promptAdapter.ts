@@ -40,6 +40,7 @@ export type PromptFilled = PromptBox & PromptFillResult
 
 export type ModPromptHost = {
   read(): PromptBox | Promise<PromptBox>
+  paint?(layer: string, input: PromptPaintArgs): boolean | Promise<boolean>
   /** A remote composer answers a whole result: no attached client may take the fill. */
   fill(input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>): boolean | Promise<PromptFillResult>
   suggest?(text: string, owner: string): boolean | Promise<boolean>
@@ -48,6 +49,14 @@ export type ModPromptHost = {
   isBlocked?(): boolean
   /** The attached clients' composer in a headless session; a headless session without it has none. */
   remote?: true
+}
+
+export type PromptPaintArgs = {text?:string; decorations:PromptDecoration[]}
+export function validatePromptPaint(value: unknown): asserts value is PromptPaintArgs {
+  const args = value as Partial<PromptPaintArgs> | null
+  if (!args || !Array.isArray(args.decorations) || args.text !== undefined && typeof args.text !== 'string' ||
+      args.decorations.length > 0 && args.text === undefined) throw new TypeError('prompt.paint needs {text, decorations}, or an empty decorations list')
+  validatePromptDecorations(args.decorations)
 }
 
 export function emptyPromptBox(): PromptBox {

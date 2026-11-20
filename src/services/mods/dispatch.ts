@@ -407,6 +407,7 @@ export async function dispatchModEvent(options: {
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
   callerChain?: ModCallerChain
+  projectNext?: (plugin:string, result:unknown) => Promise<unknown>
   budgetMs?: number
   catchGraceMs?: number
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
@@ -435,6 +436,8 @@ export async function dispatchModEvent(options: {
   const pinned = (
     options.event === 'tool.call'
       ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'tool.judge'
+        ? ['tool', 'input', 'tool_use_id', 'agentId', 'isReadOnly']
       : options.event === 'tool.check'
         ? ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling']
       : options.event === 'telemetry.log'
@@ -447,6 +450,8 @@ export async function dispatchModEvent(options: {
           ? ['command', 'origin', 'presentation']
           : options.event === 'env.get' || options.event === 'env.set'
             ? ['name']
+            : options.event === 'session.stop'
+              ? ['isTurnRunning']
             : options.event === 'session.end'
               ? ['reason', 'sessionId', 'resume']
               : options.event === 'session.attach'
@@ -835,6 +840,7 @@ export async function dispatchModEvent(options: {
               new Error(`Mod ${hook.plugin} next is no longer active`),
           )
         }
+        if (options.event === 'tool.run' && !catching && inFlight) return Promise.resolve({deny:'This admitted tool call has already run'})
         const result = catching
           ? replay(rewritten, target)
           : below(rewritten, target)
@@ -842,7 +848,7 @@ export async function dispatchModEvent(options: {
           (value) => { nextResults.push(value) },
           () => {},
         )
-        return result
+        return options.projectNext ? result.then(value => options.projectNext!(hook.plugin,value)) : result
       }
       const next = ((rewritten: ModInput) =>
         continueBelow(rewritten)) as ModNext

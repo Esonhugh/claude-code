@@ -4,7 +4,7 @@ import type {
   ContentBlockParam,
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
-import type { Tool, ToolUseContext } from '../../Tool.js'
+import type { Tool, ToolResult, ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { createUserMessage } from '../../utils/messages.js'
@@ -29,11 +29,63 @@ export type ModToolExecutionRecord = {
   messages: MessageUpdateLazy[]
   /** Set immediately before tool.call, using the admitted execution input. */
   isReadOnly?: true
+  runContext?: readonly string[]
 }
 
 export type ToolCallResult =
   | { deny: string; result?: undefined; ref?: undefined; text?: undefined; isError?: undefined; isReadOnly?: undefined; context?: undefined }
   | { result: unknown; deny?: undefined; ref?: number; text?: string; isError?: true; isReadOnly?: true; context?: readonly string[] }
+
+/** Entered only after the host admitted the input. All continuations share one real execution. */
+export async function runAdmittedModTool(snapshot: ModSnapshot, tool: Tool, input: ModInput, toolUseID: string, context: ToolUseContext,
+  record: ModToolExecutionRecord | undefined, run: (controller: AbortController) => Promise<ToolResult<unknown>>): Promise<ToolResult<unknown>> {
+  const event = { ...input, tool: tool.name, tool_use_id: toolUseID, ...(context.agentId && {agentId: context.agentId}) }
+  let execution: Promise<ToolResult<unknown>> | undefined
+  let original: ToolResult<unknown> | undefined
+  let failure: {error: unknown} | undefined
+  const controller = new AbortController()
+  const abort = () => controller.abort(context.abortController.signal.reason)
+  context.abortController.signal.addEventListener('abort', abort, {once:true})
+  if (context.abortController.signal.aborted) abort()
+  try {
+    const result = await snapshot.dispatch('tool.run', event, async (_admitted, signal) => {
+      if (execution) return {deny:'This admitted tool call has already run'}
+      signal?.throwIfAborted()
+      controller.signal.throwIfAborted()
+      const stop = () => controller.abort(signal?.reason)
+      signal?.addEventListener('abort', stop, {once:true})
+      try {
+        execution = run(controller)
+        original = await execution
+        const mapped = tool.mapToolResultToToolResultBlockParam(original.data, toolUseID)
+        const text = typeof mapped.content === 'string' ? mapped.content : mapped.content?.flatMap(item => item.type === 'text' ? [item.text] : []).join('\n') ?? ''
+        return {ref:1, result:original.data, text, ...(mapped.is_error && {isError:true}), ...(record?.isReadOnly && {isReadOnly:true})}
+      } catch (error) {
+        failure = {error}
+        return {ref:1, result:undefined, text: error instanceof Error ? error.message : String(error), isError:true}
+      } finally { signal?.removeEventListener('abort', stop) }
+    }, {
+      signal: context.abortController.signal,
+      validateInput: value => { if (!isEqual(value, event)) throw new Error('tool.run cannot change the admitted call') },
+      validateResult: value => {
+        const reply = value as ToolCallResult
+        if (reply.deny !== undefined) return
+        if (reply.ref !== undefined && (reply.ref !== 1 || !original && !failure)) throw new Error('tool.run returned an unknown execution ref')
+        if (reply.context !== undefined && (!Array.isArray(reply.context) || reply.context.some(s => typeof s !== 'string' || !s))) throw new Error('tool.run context must contain non-empty texts')
+        if (!failure && !(original && isEqual(reply.result, original.data)) && tool.outputSchema && !tool.outputSchema.safeParse(reply.result).success) throw new Error('tool.run returned an invalid tool output')
+      },
+    }) as ToolCallResult
+    if (result.deny !== undefined) throw new Error(original ? `${tool.name} ran, and a plugin withheld its result: ${result.deny}` : result.deny)
+    if (failure) throw failure.error
+    if (record) record.runContext = result.context
+    if (original && result.ref === 1 && isEqual(result.result, original.data)) return original
+    return {data:result.result, ...(original?.contextModifier && {contextModifier:original.contextModifier})}
+  } finally {
+    context.abortController.signal.removeEventListener('abort', abort)
+    if (execution && !original && !failure) controller.abort(new Error('tool.run finished before its execution'))
+    await execution?.catch(() => {})
+  }
+}
 
 export async function runModToolCall({
   snapshot,
@@ -220,6 +272,7 @@ export async function runModToolCall({
             ref: referencedRuns.push(record),
             result: valueOf(record),
             text,
+            ...(record.runContext?.length && {context:record.runContext}),
             ...(failed(record) ? { isError: true } : {}),
             ...(record.isReadOnly ? { isReadOnly: true } : {}),
           }

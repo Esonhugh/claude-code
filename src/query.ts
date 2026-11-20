@@ -9,7 +9,7 @@ import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
 import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
-import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createToolCatalogForContext, projectOfferedTools } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
@@ -403,6 +403,7 @@ export async function* query(
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesAgentOffer = snapshot?.hasHooks('agent.offer') === true
+  const handlesToolOffer = snapshot?.hasHooks('tool.offer') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
   const handlesCompose = promptFacts !== undefined && snapshot?.hasHooks('prompt.compose') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
@@ -417,6 +418,7 @@ export async function* query(
     !handlesMeasure &&
     !handlesCatalog &&
     !handlesAgentOffer &&
+    !handlesToolOffer &&
     !handlesContext &&
     !handlesSections &&
     !handlesCompose &&
@@ -1185,8 +1187,11 @@ async function* queryLoop(
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
+    const modelTools = snapshot?.hasHooks('tool.offer') && (toolUseContext.agentId !== undefined || querySource.startsWith('repl_main_thread') || querySource === 'sdk')
+      ? await projectOfferedTools(toolUseContext.options.tools, snapshot, toolUseContext.agentId, toolUseContext.agentType, toolUseContext.abortController.signal)
+      : toolUseContext.options.tools
     let streamingToolExecutor = new StreamingToolExecutor(
-      toolUseContext.options.tools,
+      modelTools,
       canUseTool,
       toolUseContext,
     )
@@ -1314,7 +1319,7 @@ async function* queryLoop(
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: omitLocalAdvisorTool(
-              toolUseContext.options.tools,
+              modelTools,
               advisorRequest.localAdvisorModel,
             ),
             signal: toolUseContext.abortController.signal,
@@ -1458,7 +1463,7 @@ async function* queryLoop(
               // from being yielded after the fallback response arrives.
               streamingToolExecutor.discard()
               streamingToolExecutor = new StreamingToolExecutor(
-                toolUseContext.options.tools,
+                modelTools,
                 canUseTool,
                 toolUseContext,
               )
@@ -1647,7 +1652,7 @@ async function* queryLoop(
             // tool_use_ids) from leaking into the retry.
             streamingToolExecutor.discard()
             streamingToolExecutor = new StreamingToolExecutor(
-              toolUseContext.options.tools,
+              modelTools,
               canUseTool,
               toolUseContext,
             )

@@ -150,9 +150,10 @@ import {
 import { isAnt } from 'src/utils/userType.js'
 import {
   runModToolCall,
+  runAdmittedModTool,
   type ModToolExecutionRecord,
 } from '../mods/toolAdapter.js'
-import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createToolCatalogForContext, isToolOffered } from '../mods/toolCatalog.js'
 import { createModToolHost } from '../mods/toolHost.js'
 import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
@@ -598,6 +599,10 @@ export async function* runToolUse(
   // Code Mode: a tool hidden from the API answers as missing to a model call.
   if (tool && codeModeRefusesDirectCall(tool, currentTools, toolUseContext)) tool = undefined
 
+  const offerSnapshot = toolUseContext.modsSnapshot
+  if (tool && offerSnapshot?.hasHooks('tool.offer') && !toolUseContext.modToolCallResult && !toolUseContext.replScriptCall &&
+      !(await isToolOffered(tool, offerSnapshot, toolUseContext.agentId, toolUseContext.agentType, toolUseContext.abortController.signal))) tool = undefined
+
   // Check if the tool exists
   if (!tool) {
     const sanitizedToolName = sanitizeToolNameForAnalytics(toolName)
@@ -777,7 +782,7 @@ function streamedCheckPermissionsAndCallTool(
     : toolUseContext
   const closeNotice = snapshot?.toolNotices?.open(toolUseID, toolUseContext.modSpawnedBy)
   const wrapped = snapshot !== undefined &&
-    (snapshot.hasHooks('tool.call') || toolUseContext.modToolCallResult !== undefined)
+    (snapshot.hasHooks('tool.call') || snapshot.hasHooks('tool.run', { tool: tool.name }) || toolUseContext.modToolCallResult !== undefined)
   const managedPass: ManagedPreToolUsePass = {}
   const core = (
     args: Record<string, unknown>,
@@ -1778,34 +1783,41 @@ async function checkPermissionsAndCallTool(
       executionRecord.input = callInput
       if (tool.isReadOnly(callInput)) executionRecord.isReadOnly = true
     }
-    toolUseContext.onReplToolCall?.()
-    const result = await tool.call(
-      callInput,
-      {
-        ...toolUseContext,
-        onReplToolCall: undefined,
-        // ToolSearch consumes description admission and Agent consumes
-        // agent.offer dispatch admission. Other background/nested tools must not
-        // retain an invocation snapshot past the executor's release.
-        ...(toolUseContext.modsSnapshot &&
-        tool.name !== TOOL_SEARCH_TOOL_NAME &&
-        tool.name !== AGENT_TOOL_NAME &&
-        tool.name !== 'SendMessage'
-          ? { modsSnapshot: undefined }
-          : {}),
-        modToolCallResult: undefined,
-        toolUseId: toolUseID,
-        userModified: permissionDecision.userModified ?? false,
-      },
-      canUseTool,
-      assistantMessage,
-      progress => {
-        onToolProgress({
-          toolUseID: progress.toolUseID,
-          data: progress.data,
-        })
-      },
-    )
+    const run = (abortController: AbortController) => {
+      toolUseContext.onReplToolCall?.()
+      return tool.call(
+        callInput,
+        {
+          ...toolUseContext,
+          onReplToolCall: undefined,
+          abortController,
+          // ToolSearch consumes description admission and Agent consumes
+          // agent.offer dispatch admission. Other background/nested tools must not
+          // retain an invocation snapshot past the executor's release.
+          ...(toolUseContext.modsSnapshot &&
+          tool.name !== TOOL_SEARCH_TOOL_NAME &&
+          tool.name !== AGENT_TOOL_NAME &&
+          tool.name !== 'SendMessage'
+            ? { modsSnapshot: undefined }
+            : {}),
+          modToolCallResult: undefined,
+          toolUseId: toolUseID,
+          userModified: permissionDecision.userModified ?? false,
+        },
+        canUseTool,
+        assistantMessage,
+        progress => {
+          onToolProgress({
+            toolUseID: progress.toolUseID,
+            data: progress.data,
+          })
+        },
+      )
+    }
+    const snapshot = toolUseContext.modsSnapshot
+    const result = snapshot?.hasHooks('tool.run', {tool:tool.name})
+      ? await runAdmittedModTool(snapshot, tool, callInput, toolUseID, toolUseContext, executionRecord, run)
+      : await run(toolUseContext.abortController)
     if (executionRecord) {
       executionRecord.hasResult = true
       executionRecord.result = result.data

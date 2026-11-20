@@ -25,6 +25,7 @@ import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { restoreModAgentSpawnInput, validateModAgentSpawnInput } from '../../services/mods/agents.js'
+import { deliverAgentReport } from '../../services/mods/agentReport.js'
 import { isAgentOffered, providerForAgent } from '../../services/mods/agentOffer.js'
 import type { ModInput } from '../../services/mods/types.js'
 import {
@@ -2387,7 +2388,24 @@ export const AgentTool = buildTool({
             metadata,
           )
 
-          if (
+          const reportSnapshot = toolUseContext.modsSnapshot
+          if (!workflowFraming && agentResult.handback === undefined && reportSnapshot?.hasHooks('agent.report')) {
+            const original = subagentResultText(agentResult)
+            const report = await deliverAgentReport(reportSnapshot, {
+              agentId:syncAgentId, subagentType:selectedAgent.agentType, provider:providerForAgent(selectedAgent,reportSnapshot),
+              ...(toolUseContext.agentId && {parentAgentId:toolUseContext.agentId}), status:syncAgentError ? 'failed' : 'completed', text:original,
+            }, async () => {
+              if (!feature('TRANSCRIPT_CLASSIFIER') || toolUseContext.getAppState().toolPermissionContext.mode !== 'auto') return {review:'off'}
+              let review: 'none' | 'flagged' | 'cleared' | 'unavailable' = 'none'
+              const warning = await classifyHandoffIfNeeded({agentMessages, tools:toolUseContext.options.tools,
+                toolPermissionContext:toolUseContext.getAppState().toolPermissionContext, abortSignal:toolUseContext.abortController.signal,
+                subagentType:selectedAgent.agentType, totalToolUseCount:agentResult.totalToolUseCount, onReview:value => {review=value}})
+              return {review, ...(warning && {warning})}
+            })
+            if ('consumed' in report) agentResult.content = []
+            else if (report.text !== original) agentResult.content = [{type:'text', text:report.text}]
+            if (report.warning) agentResult.content.unshift({type:'text',text:report.warning})
+          } else if (
             feature('TRANSCRIPT_CLASSIFIER') &&
             agentResult.handback === undefined
           ) {
