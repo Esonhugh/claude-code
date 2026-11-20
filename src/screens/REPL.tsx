@@ -3750,7 +3750,6 @@ export function REPL({
       proactiveModule?.pauseProactive()
     }
 
-    if (isLoading && focusedInputDialog !== 'tool-permission') void modsSession?.runtime?.notifySessionStop(true)
     if (queryGuard.isActive) recordProgramTurnEnd('stopped')
     queryGuard.forceEnd()
     skipIdleCheckRef.current = false
@@ -3832,7 +3831,12 @@ export function REPL({
   // CancelRequestHandler props - rendered inside KeybindingSetup
   const cancelRequestProps = {
     setToolUseConfirmQueue,
-    onCancel,
+    onCancel: () => {
+      if (isLoading && focusedInputDialog !== 'elicitation' && focusedInputDialog !== 'tool-permission') {
+        void modsSession?.runtime?.notifySessionStop(true)
+      }
+      onCancel()
+    },
     onAgentsKilled: (passiveNotice?: string) =>
       setMessages(prev => [
         ...prev,

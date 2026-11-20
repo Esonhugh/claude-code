@@ -49,6 +49,8 @@ if (process.env[childFlag] !== '1') {
 } else {
   ;(globalThis as typeof globalThis & { MACRO: { VERSION: string } }).MACRO = { VERSION: 'test' }
   const { runHeadless } = await import('./print.js')
+  const { createModsSession } = await import('../services/mods/session.js')
+  const { createModsRuntime } = await import('../services/mods/runtime.js')
   const engine = await import('../QueryEngine.js')
   const { StructuredIO } = await import('./structuredIO.js')
   const { getDefaultAppState } = await import('../state/AppStateStore.js')
@@ -72,6 +74,19 @@ if (process.env[childFlag] !== '1') {
     const receipt = Promise.withResolvers<import('../entrypoints/sdk/controlTypes.js').SDKControlResponse>()
     const release = Promise.withResolvers<void>()
     const received: Parameters<typeof engine.ask>[0][] = []
+    const stops: boolean[] = []
+    const modsSession = phase === 'idle' ? createModsSession({
+      isTrusted: true, bare: true,
+      createRuntime: options => {
+        const runtime = createModsRuntime(options)
+        const notify = runtime.notifySessionStop
+        spyOn(runtime, 'notifySessionStop').mockImplementation(busy => {
+          stops.push(busy)
+          return notify(busy)
+        })
+        return runtime
+      },
+    }) : undefined
     const mocks = [
       spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
       spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
@@ -124,13 +139,16 @@ if (process.env[childFlag] !== '1') {
     }
     let state = getDefaultAppState()
     try {
+      await modsSession?.bind({cwd:process.cwd(), surface:null, isInteractive:false, sessionId:'ready'})
       await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
-        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),
+        outputFormat:'stream-json',verbose:true,sessionStartHooksPromise:Promise.resolve([]),modsSession,
       } as Parameters<typeof runHeadless>[7])
+      if (phase === 'idle') expect(stops).toEqual([false])
       expect(received.map(args => args.prompt)).toEqual(phase === 'busy' ? ['ACTIVE','URGENT','FIRST\nNO_UUID','NOTICE'] : [])
       expect(queue.getCommandQueue().map(c => c.value)).toEqual(phase === 'busy' ? ['OTHER_AGENT'] : [])
     } finally {
       release.resolve()
+      await modsSession?.dispose()
       queue.resetCommandQueue()
       for (const mock of mocks) mock.mockRestore()
     }
