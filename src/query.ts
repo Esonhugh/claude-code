@@ -36,7 +36,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
-import { findToolByName, type ToolUseContext } from './Tool.js'
+import { findToolByName, type Tools, type ToolUseContext } from './Tool.js'
 import {
   asSystemPrompt,
   getSystemPromptSections,
@@ -1158,12 +1158,14 @@ async function* queryLoop(
     }
 
     const assistantMessages: AssistantMessage[] = []
+    const requestCatalog = {agentId: toolUseContext.agentId, names: new Set<string>()}
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
       requestAdvisor: advisorRequest,
       getResponseMessages: () => assistantMessages,
+      modRequestTools: requestCatalog,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1349,6 +1351,9 @@ async function* queryLoop(
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
               modsSnapshot: toolUseContext.modsSnapshot,
+              onRequestToolCatalog: (tools: Tools) => {
+                requestCatalog.names = new Set(tools.map(tool => tool.name))
+              },
               composeSystemPrompt: composeRequest ? async (model, tools, signal) => {
                 try { systemPrompt = await composeRequest(model, tools, signal) }
                 catch (error) {

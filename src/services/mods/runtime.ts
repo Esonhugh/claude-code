@@ -2215,6 +2215,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
             if (ask && (!binding?.isInteractive || !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'AskUserQuestion')))
               throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: no tool named \"AskUserQuestion\" in this session`), {name:'HooksError'})
+            if (!host && op === 'agent.call') return {deny:'No live tool context for the requested agent'}
             if (!host) throw new Error('Tool execution host is unavailable on this host')
             let toolInput = input as ModInput
             if (op === 'session.send') {

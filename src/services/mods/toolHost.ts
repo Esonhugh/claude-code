@@ -12,8 +12,6 @@ import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ToolCallResult } from './toolAdapter.js'
 import type { ModInput } from './types.js'
-import { isDeferredTool } from '../../tools/ToolSearchTool/prompt.js'
-import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import { isToolOffered } from './toolCatalog.js'
 
 const authorCallRefusals = new Map([
@@ -98,11 +96,13 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       const tool = findToolByName(tools, name)
       if (entry === 'agent.call') {
         if (_agent !== context.agentId) return {deny:'No live tool context for the requested agent'}
-        if (!tool || isDeferredTool(tool) && !extractDiscoveredToolNames(context.messages).has(tool.name)) return {deny:`Tool ${name} is not loaded in this agent`}
+        const catalog = context.modRequestTools
+        if (!catalog || catalog.agentId !== _agent || !tool || !catalog.names.has(tool.name)) return {deny:`Tool ${name} is not loaded in this agent`}
         if (!await isToolOffered(tool, snapshot, context.agentId, context.agentType, signal)) return {deny:`Tool ${name} is not offered to this agent`}
       }
       const refusal = authorCallRefusals.get(tool?.name ?? name)
-      if (refusal && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
+      const agentSpawn = entry === 'agent.call' && tool?.name === AGENT_TOOL_NAME && tool === (await import('../../tools/AgentTool/AgentTool.js')).AgentTool
+      if (refusal && !agentSpawn && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
       if (!tool) {
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} operation=call outcome=unavailable`)
         throw Object.assign(new Error(`${spawnedBy === undefined ? '' : spawnedBy + ': '}$.tool.call: no tool named "${name}" in this session`), { name: 'HooksError' })
