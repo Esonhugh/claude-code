@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
+import { getSessionId, regenerateSessionId, switchSession } from '../../bootstrap/state.js'
+import { asSessionId } from '../../types/ids.js'
+import { drainPollEventChunk, enqueuePollEvent, getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import {
+  deliverReplEvent,
+  resetMainReplSession,
   describeMainReplScripts,
   describeRunningReplScripts,
   detachReplEval,
@@ -32,6 +36,32 @@ import { replScriptLabel } from './scriptLabel.js'
 afterEach(() => {
   releaseAllReplSessions()
   resetCommandQueue()
+})
+
+test.each(['clear', 'resume'] as const)('%s isolates queued and late REPL events', async transition => {
+  const original = getSessionId()
+  const old = getReplSession(MAIN_REPL_SESSION)
+  const outcome = (id: number, startsTurn?: false) => ({
+    id, startsTurn, text: `<event kind="repl-eval" eval="${id}">outcome</event>`,
+  })
+  const lost = enqueuePollEvent({
+    kind: 'repl-eval', element: '<event kind="repl-eval">lost</event>', startsTurn: false,
+  })
+  deliverReplEvent(old, outcome(1), [])
+  enqueueReplStatus(old, [])
+  try {
+    resetMainReplSession()
+    if (transition === 'clear') regenerateSessionId()
+    else switchSession(asSessionId(crypto.randomUUID()))
+    deliverReplEvent(old, outcome(2), [])
+    enqueueReplStatus(old, [])
+    expect(getCommandQueueSnapshot()).toHaveLength(0)
+    deliverReplEvent(getReplSession(MAIN_REPL_SESSION), outcome(1, false), [])
+    expect(drainPollEventChunk(undefined).commands).toHaveLength(1)
+  } finally {
+    switchSession(original)
+  }
+  await expect(lost).rejects.toThrow('session changed')
 })
 
 let nextKey = 0
