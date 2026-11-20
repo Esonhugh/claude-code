@@ -809,11 +809,7 @@ function TranscriptModeFooter({
   /** Minimap while navigating a closed-bar search. Shows n/N hints +
    *  right-aligned count instead of scroll hints. */
   searchBadge?: { current: number; count: number }
-  /** Hide the ctrl+e hint. The [ dump path shares this footer with
-   *  env-opted dump (CLAUDE_CODE_NO_FLICKER=0 / DISABLE_VIRTUAL_SCROLL=1),
-   *  but ctrl+e only works in the env case — useGlobalKeybindings.tsx
-   *  gates on !virtualScrollActive which is env-derived, doesn't know
-   *  [ happened. */
+  /** Hide the ctrl+e hint in the one-shot [ dump path. */
   suppressShowAll?: boolean
   /** Transient status (v-for-editor progress). Notifications render inside
    *  PromptInput which isn't mounted in transcript — addNotification queues
@@ -7178,7 +7174,8 @@ export function REPL({
       screen === 'transcript' ? transcriptMessageCount : messages.length,
     onEnterTranscript: handleEnterTranscript,
     onExitTranscript: handleExitTranscript,
-    virtualScrollActive,
+    // Even with an uncapped virtual list, Code Mode uses this key to reveal scripts.
+    canToggleTranscriptDetails: !dumpMode && (!virtualScrollActive || isCodeModeEnabled()),
     // Bar-open is a mode (owns keystrokes — j/k type, Esc cancels).
     // Navigating (query set, bar closed) is NOT — Esc exits transcript,
     // same as less q with highlights still visible. useSearchInput
