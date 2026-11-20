@@ -3,6 +3,7 @@ import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {createModModelComplete} from './modelAdapter.js'
+import {withFirstPartyModel} from './fixtures/firstPartyModel.js'
 import {createModsRuntime} from './runtime.js'
 import {resetSettingsCache, setSessionSettingsCache} from '../../utils/settings/settingsCache.js'
 import type {SideQueryOptions} from '../../utils/sideQuery.js'
@@ -139,13 +140,13 @@ test('Worker completion keeps initial and rewritten shape checks, owner errors, 
 })
 
 
-test.each(['','  ','  Owned-MODEL  '])('complete keeps native thinking allowance for unknown first-party model %j',async model=>{
+test.each(['','  ','  Owned-MODEL  '])('complete keeps native thinking allowance for unknown first-party model %j',model=>withFirstPartyModel(async()=>{
   const calls:SideQueryOptions[]=[]
   const complete=createModModelComplete(async input=>{calls.push(input);return response})
   await complete({model,prompt:'data'})
   expect(calls[0]?.max_tokens).toBe(3072)
   expect(calls[0]).not.toHaveProperty('thinking')
-})
+}))
 
 
 test.each([
@@ -156,7 +157,7 @@ test.each([
   ['claude-sonnet-4-6=rejects_disabled_thinking','claude-sonnet-4-6',false],
   ['claude-opus-5-5=-rejects_disabled_thinking','claude-opus-5-5',false],
   ['rejects_disabled_thinking','',true],
-] as const)('complete applies native thinking capability rules %j to %j',async (capabilities,model,required)=>{
+] as const)('complete applies native thinking capability rules %j to %j',(capabilities,model,required)=>withFirstPartyModel(async()=>{
   const original=process.env.CLAUDE_CODE_MODEL_CAPABILITIES
   process.env.CLAUDE_CODE_MODEL_CAPABILITIES=capabilities
   try{
@@ -170,7 +171,7 @@ test.each([
     if(original===undefined)delete process.env.CLAUDE_CODE_MODEL_CAPABILITIES
     else process.env.CLAUDE_CODE_MODEL_CAPABILITIES=original
   }
-})
+}))
 
 
 test('complete allowlist ignores the context suffix of the resolved model',async()=>{

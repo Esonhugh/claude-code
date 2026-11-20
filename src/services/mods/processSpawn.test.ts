@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -11,7 +11,7 @@ let runtime: ReturnType<typeof createModsRuntime> | undefined
 const keys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_COWORK_PLUGINS']
 let saved: (string | undefined)[]
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mods-spawn-'))
+  root = await realpath(await mkdtemp(join(tmpdir(), 'mods-spawn-')))
   saved = keys.map(key => process.env[key])
   process.env.HOME = root
   process.env.USERPROFILE = root

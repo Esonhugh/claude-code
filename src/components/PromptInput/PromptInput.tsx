@@ -428,6 +428,8 @@ function PromptInput({
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
   type PromptPaint = {text: string; decorations: PromptDecoration[]}
   const [promptPaint, setPromptPaint] = useState<PromptPaint>()
+  const layers = useRef(new Map<string, PromptDecoration[]>())
+  const [layerPaint,setLayerPaint] = useState<PromptPaint>()
   const paintRef = useRef<PromptPaint | undefined>(undefined)
   const previousPaintRef = useRef<PromptPaint | undefined>(undefined)
   const [themeName] = useTheme()
@@ -436,6 +438,8 @@ function PromptInput({
     if (value === lastInternalInputRef.current) return
     previousPaintRef.current = paintRef.current?.text === lastInternalInputRef.current ? paintRef.current : undefined
     paintRef.current = undefined
+    layers.current.clear()
+    setLayerPaint(undefined)
     setPromptPaint(undefined)
   }, [])
   if (input !== lastInternalInputRef.current) {
@@ -477,6 +481,14 @@ function PromptInput({
         const runs = normalizePromptDecorations(decorations, text)
         paintRef.current = runs.length ? {text, decorations: runs} : undefined
         setPromptPaint(paintRef.current)
+      },
+      paintLayer: (layer, text, decorations) => {
+        const draft = lastInternalInputRef.current
+        if (text !== undefined && text !== draft) return false
+        layers.current.delete(layer)
+        if (decorations.length) layers.current.set(layer, normalizePromptDecorations(decorations,draft))
+        setLayerPaint(layers.current.size ? {text:draft,decorations:[...layers.current.values()].flat()} : undefined)
+        return true
       },
       carryDecorations: edit => {
         const previous = previousPaintRef.current
@@ -1219,11 +1231,15 @@ function PromptInput({
     }
 
     return mergePromptDecorations(highlights,
-      !isSearchingHistory && displayedValue === input && promptPaint?.text === displayedValue ? promptPaint.decorations : [],
+      !isSearchingHistory && displayedValue === input ? normalizePromptDecorations([
+        ...(promptPaint?.text === displayedValue ? promptPaint.decorations : []),
+        ...(layerPaint?.text === displayedValue ? layerPaint.decorations : []),
+      ],displayedValue) : [],
       getTheme(themeName), !footerItemSelected && !isSearchingHistory && !cursorAtImageChip
         ? {start: cursorOffset, end: cursorOffset + (firstGrapheme(displayedValue.slice(cursorOffset)).length || 1)} : undefined)
   }, [
     promptPaint,
+    layerPaint,
     themeName,
     footerItemSelected,
     cursorAtImageChip,

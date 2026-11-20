@@ -1,3 +1,4 @@
+import { modNotifyFrame, modSessionInfo, modSessionMachine, modProcessHookEnv, validateNotifyKey, validateNotifySchedule } from './hostInfo329.js'
 import { resolve } from 'node:path'
 import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
 import type { ModCommandRequest } from './commandRunQueue.js'
@@ -8,6 +9,8 @@ import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
+import {createModTheme,validateBackdropTree,validateTheme} from './theme.js'
+import {createModPlacedRows} from './placedRows.js'
 import { officialCoreCalls } from './coreCalls.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
 import { createModRemotePrompt } from './remoteUiPrompt.js'
@@ -70,12 +73,13 @@ import { reconcilePromptContext, validatePromptContext, type PromptContext } fro
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { createModSessionMeasure } from './sessionMeasure.js'
 import type { Message } from '../../types/message.js'
-import { projectModApiMessages, projectModSessionMessages, validateModSessionMessagesArgs, type ModApiMessage, type ModSessionMessage } from './sessionMessages.js'
+import { rangedApiPage, readModSessionPage, projectModApiMessages, projectModSessionMessages, validateModSessionMessagesArgs, type ModApiMessage, type ModSessionMessage } from './sessionMessages.js'
 import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import type { ModSessionIdentity } from './sessionIdentity.js'
+import { getMaxSubagentDepth } from '../../tools/AgentTool/subagentDepth.js'
 import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
@@ -89,6 +93,7 @@ import {
   emptyPromptBox,
   validatePromptBox,
   validatePromptFillInput,
+  validatePromptPaint,
   type ModPromptHost,
   type PromptAttachment,
   type PromptFillInput,
@@ -132,7 +137,7 @@ export type ModRequestServices = {
   toolHost?(): {
     tools?(): readonly Tool[]
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
-    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask', person?: boolean): Promise<unknown>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
@@ -179,7 +184,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiStatus?(plugin: string, text: string | undefined): void
   uiToast?(plugin: string, text: string, timeoutMs: number): void
   /** Sends a native notification through the person's channel; resolves the channel's method word. */
-  uiNotify?(notification: { message: string; title: string; notificationType: 'plugin_notification' }): Promise<string>
+  uiNotify?(notification: { message: string; title: string; notificationType: 'plugin_notification' }, frame?: ReturnType<typeof modNotifyFrame>): Promise<string>
+  uiCancelNotify?(notification: {plugin:string;source:string;key?:string}): boolean
   /** Answers $.session.identity() for a mod managed settings enable and load in place; undefined for any other. */
   sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
@@ -203,7 +209,9 @@ export type ModDispatchOptions = {
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
 export type ModPromptSection = { result: Promise<{text:string | null}>; signal: AbortSignal }
 export type ModSnapshot = {
+  readonly agentReportWarnings?: Map<string, string>
   readonly toolNotices?: ModToolNotices
+  readonly toolOffers?: WeakMap<Tool, Map<string | undefined, Promise<boolean>>>
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
   readonly promptSections?: Map<string, ModPromptSection>
   readonly promptAttachments?: Map<string, ModPromptSection>
@@ -243,6 +251,8 @@ type Activation = {
   uiPublished?: boolean
   uiStatus?: { text: string | undefined }
   uiLogs?: { text: string; to: 'transcript' | 'debug' }[]
+  notifiedClient?: boolean
+  painted?: boolean
   suggestionOwner: string
   suggestionEligible: boolean
   uiRelease?: Promise<void>
@@ -268,6 +278,7 @@ export type ModRemoteClientInput = {
   clientId: string
   viewport?: { columns: number; rows: number; isFullscreen?: boolean }
   answers?: readonly SDKUIAnswer[]
+  draws?: readonly string[]
 }
 type AttachedClient = {
   surface: ModRenderSurface
@@ -276,6 +287,7 @@ type AttachedClient = {
   references: number
   transport: boolean
   answers?: ModRemoteClientInput['answers']
+  draws?: ModRemoteClientInput['draws']
 }
 const tierOrder: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 // Identity-only entries; all calls, including beneath, use engineFor's bridge.
@@ -292,22 +304,23 @@ const coreHost: Nouns = {
   telemetry: { log: hostIdentity, mark: hostIdentity },
   plugin: { name: hostIdentity, root: hostIdentity },
   fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity, ancestors: hostIdentity },
-  process: { run: hostIdentity, spawn: hostIdentity },
+  process: { hookEnv: hostIdentity, run: hostIdentity, spawn: hostIdentity },
   settings: { read: hostIdentity },
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { compact: hostIdentity, send: hostIdentity, append: hostIdentity, identity: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
+  session: { info: hostIdentity, machine: hostIdentity, compact: hostIdentity, send: hostIdentity, append: hostIdentity, identity: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
-  agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
+  agent: { call: hostIdentity, spawn: hostIdentity, register: hostIdentity, list: hostIdentity, limits: hostIdentity },
   command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
+  theme: {set:hostIdentity,clear:hostIdentity},
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
-  prompt: { compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
+  prompt: { paint: hostIdentity, compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notify: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, place: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notify: hostIdentity, cancelNotify: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -358,6 +371,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const hostHooks = new Set<ModDispatchHook>()
   let active: Activation[] = []
   let nouns: Nouns = {}
+  let toolOffers = new WeakMap<Tool, Map<string | undefined, Promise<boolean>>>()
   let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
   let sectionCache = new Map<string, ModPromptSection>()
   let attachmentCache = new Map<string, ModPromptSection>()
@@ -408,7 +422,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (conversations.get(input.agentId) !== entry || !entry.messages) return
       try {
         const messages = entry.messages()
-        entry.rows = projectModSessionMessages(messages, 4096, trackedAgents())
+        entry.rows = projectModSessionMessages(messages, 4096, trackedAgents(), true)
         entry.api = projectModApiMessages(messages, [...(services.tools?.() ?? [])])
       } catch (error) {
         conversations.delete(input.agentId)
@@ -470,6 +484,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     renderHooksVersion++
     for (const listener of renderHooksListeners) notify(listener)
   }
+  const theme = createModTheme<Activation>()
+  const placed = createModPlacedRows()
   const renderHooks = {
     getSnapshot: () => renderHooksVersion,
     subscribe(listener: () => void) {
@@ -579,7 +595,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     onAskedChange: updateOfficialShippedPaneRequest,
     notify,
     clients,
-    validateTree: (tree, input, refs) => { validateModRenderTree(tree, input?.surface, refs) },
+    validateTree: (tree, input, refs) => {
+      validateModRenderTree(tree, input?.surface, refs)
+      if (input?.component === 'Backdrop') validateBackdropTree(tree)
+    },
     attach: attachClient,
     remotePlacement: () => {
       const clients = [...attachedClients.values()].filter(client => client.viewport !== undefined)
@@ -692,6 +711,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   let activeHostCallbacks = 0
   const toolNotices = createModToolNotices()
+  let agentReportWarnings = new Map<string, string>()
   const tools = createModTools({
     notify,
     pluginOf: owner => (owner as Activation).declaration.name,
@@ -896,6 +916,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       existing.transport = true
       if (input.viewport !== undefined) existing.viewport = {...existing.viewport, ...structuredClone(input.viewport)}
       if (input.answers !== undefined) existing.answers = [...input.answers]
+      if (input.draws !== undefined) existing.draws = [...input.draws]
       ui.refreshRemotePlacement()
       return {attached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
     }
@@ -938,6 +959,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (owner.uiRelease) return owner.uiRelease
     owner.uiRelease = Promise.resolve().then(() => runCleanups([
       () => services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner),
+      async () => {if (owner.painted) await services.prompt?.()?.paint?.(owner.suggestionOwner,{decorations:[]})},
+      () => { if (owner.notifiedClient) services.uiCancelNotify?.({plugin:owner.declaration.name,source:owner.declaration.storageId}) },
+      () => theme.release(owner),
       () => ui.releaseCandidate(owner),
       () => {
         if (owner.uiPublished && owner.uiStatus && !active.some(item => item !== owner && item.declaration.name === owner.declaration.name && item.uiStatus))
@@ -1099,6 +1123,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
           throw new TypeError('tool.register takes a tool specification')
         return { ...input, inputSchema: (input as ModInput).inputSchema === undefined ? { type: 'object' } : (input as ModInput).inputSchema }
+      }
+      case 'agent.call': {
+        const value = args[0] as ModInput | undefined
+        if (args.length !== 1 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && typeof value.agentId !== 'string') throw new TypeError('agent.call takes {tool, input, agentId?}; explicit signal options are not supported on this host')
+        return {tool:value.tool, input:value.input, ...(value.agentId !== undefined && {agentId:value.agentId})}
       }
       case 'tool.call': {
         const input = args[0]
@@ -1269,7 +1298,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           throw Object.assign(new Error(`${plugin}: $.ui.notify takes a string text`), {name:'HooksError'})
         if (options !== undefined && (!options || typeof options !== 'object' || options.title !== undefined && typeof options.title !== 'string'))
           throw Object.assign(new Error(`${plugin}: $.ui.notify title is a string, when given`), {name:'HooksError'})
-        return { text: args[0], title: (options?.title as string | undefined) || plugin }
+        validateNotifySchedule(options ?? {})
+        return { text: args[0], title: (options?.title as string | undefined) || plugin, ...Object.fromEntries(['key','at','delayMs','untilBack'].filter(k => options?.[k] !== undefined).map(k => [k,options![k]])) }
       }
       case 'ui.toast': {
         const options = args[1] as ModInput | undefined
@@ -1287,6 +1317,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'ui.invalidate':
         if (!invalidatableEvents.includes(args[0] as string)) throw new TypeError(invalidationError)
         return { event: args[0] }
+      case 'ui.place': return {id:(args[0] as ModInput | undefined)?.id}
+      case 'prompt.paint': validatePromptPaint(args[0]); return args[0]
+      case 'theme.set': validateTheme(args[0]); return args[0]
+      case 'theme.clear': return {}
       case 'ui.selection': case 'ui.panes': return {}
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
       case 'session.messages': {
@@ -1295,9 +1329,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateModSessionMessagesArgs(input)
         return {...input}
       }
+      case 'session.info': case 'session.machine': case 'process.hookEnv':
+        if (args.length) throw new TypeError(`${op} takes no arguments`)
+        return {}
+      case 'ui.cancelNotify': validateNotifyKey(args[0]); return { key: args[0] }
       case 'session.version': return {}
       case 'session.identity': return {}
-      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
+      case 'agent.limits': case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
@@ -1305,7 +1343,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
-  async function hostCall(owner: Activation, op: string, input: ModInput, signal: AbortSignal | undefined = invocationSignal.getStore()): Promise<unknown> {
+  async function hostCall(owner: Activation, op: string, input: ModInput, signal: AbortSignal | undefined = invocationSignal.getStore(), sentInput?: ModInput): Promise<unknown> {
     const { fs, process, store, settings } = owner.operations
     switch (op) {
       case 'settings.read': return settings.read(input)
@@ -1529,17 +1567,33 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'ui.notify': {
         const plugin = owner.declaration.name
         const text = input.text as string
-        const channel = binding && !stopped && !ending && services.uiNotify
-          ? await services.uiNotify({ message: text, title: (input.title as string | undefined) || plugin, notificationType: 'plugin_notification' })
+        const frame = attachedClients.size > 0 && !binding?.surface
+          ? modNotifyFrame(input, plugin, owner.declaration.storageId, sentInput !== undefined && !isDeepStrictEqual(input,sentInput)) : undefined
+        const channel = binding && !stopped && !ending && owner.state === 'active' && services.uiNotify
+          ? await services.uiNotify({ message: text, title: (input.title as string | undefined) || plugin, notificationType: 'plugin_notification' }, frame)
           : 'no_surface'
+        if (channel === 'client') owner.notifiedClient = true
         if (channel === 'error') throw Object.assign(new Error(`${plugin}: $.ui.notify: the channel's write failed`), {name:'HooksError'})
-        const result = ['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(channel)
+        const result = ['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell','client'].includes(channel)
           ? { isSent: true, channel }
           : { isSent: false, reason: channel === 'disabled' ? 'disabled' : channel === 'no_surface' ? 'no-surface' : 'no-channel' }
         logForDebugging(`[Mods] $.ui.notify (${plugin}): ${text.length} chars: ${result.isSent ? `sent by ${channel}` : result.reason}`)
         return result
       }
+      case 'theme.set': {
+        if (owner.state !== 'active') throw new Error('theme.set belongs to a retired activation')
+        const drawn = [...attachedClients.values()].some(c => (c.surface === 'desktop' || c.surface === 'mobile') && c.draws?.includes('Theme'))
+        return theme.set(owner,owner.declaration.name,input,drawn)
+      }
+      case 'theme.clear': return theme.clear()
+      case 'ui.place': {
+        const surfaces = attachedSurfaces()
+        return placed.place(owner.declaration.name,input.id,services.rawMessages?.(),
+          surfaces.some(s => s === 'terminal' || s === 'desktop' || s === 'mobile') ? undefined :
+            surfaces.length ? 'no attached surface draws placed rows yet' : 'no-surface: no surface is attached ($.session.surfaces() is empty)')
+      }
       case 'ui.panes': return ui.panes(owner)
+      case 'agent.limits': return { concurrent: getMaxConcurrentSubagents(), depth: getMaxSubagentDepth(), isBackgroundEnabled: !isEnvTruthy(globalThis.process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) }
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
         return listModAgents(services.tasks(), services.agentNames?.())
@@ -1565,6 +1619,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           ...(plugin === undefined ? {} : { plugin }),
         }
       })
+      case 'session.info': return modSessionInfo()
+      case 'session.machine': return modSessionMachine()
+      case 'process.hookEnv': {
+        if (!binding) throw new Error('process.hookEnv requires a bound session')
+        return modProcessHookEnv(binding, services.root?.() ?? binding.cwd, owner.declaration.pluginRoot, owner.declaration.storageId)
+      }
+      case 'ui.cancelNotify': return { isSent: Boolean(attachedClients.size && !binding?.surface && services.uiCancelNotify?.({plugin:owner.declaration.name,source:owner.declaration.storageId,key:input.key as string})) }
       case 'session.version': {
         const version = typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev'
         // Match analytics' version_base and use the same embedded build stamp.
@@ -1601,6 +1662,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'session.messages': {
         validateModSessionMessagesArgs(input)
+        const read = (rows: readonly Message[]) => readModSessionPage(rows, input, [...(services.tools?.() ?? [])], trackedAgents())
         if (input.agentId !== undefined) {
           const denied = {deny:`No readable conversation for agent ${input.agentId} in this session`}
           const entry = !excludedConversations.has(input.agentId) && conversations.get(input.agentId)
@@ -1609,18 +1671,25 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const current = binding
             const saved = await services.agentMessages?.(input.agentId,current.sessionId)
             if (!saved || binding !== current || ending || stopped) return denied
-            return input.as === 'api'
-              ? projectModApiMessages(saved,[...(services.tools?.() ?? [])])
-              : projectModSessionMessages(saved,4096,trackedAgents())
+            return read(saved)
           }
-          if (entry.messages) return input.as === 'api'
-            ? projectModApiMessages(entry.messages(),[...(services.tools?.() ?? [])])
-            : projectModSessionMessages(entry.messages(),4096,trackedAgents())
-          return structuredClone(input.as === 'api' ? entry.api ?? [] : entry.rows ?? [])
+          if (entry.messages) return read(entry.messages())
+          if (input.last !== undefined || input.after !== undefined) {
+            const current = binding
+            const saved = current && await services.agentMessages?.(input.agentId,current.sessionId)
+            if (binding !== current || conversations.get(input.agentId) !== entry || ending || stopped) return denied
+            if (saved) return read(saved)
+            if (input.as === 'api') return structuredClone(rangedApiPage(entry.api ?? [], input.last!, m =>
+              m.role === 'user' && !m.content.some(b => b.type === 'tool_result')))
+            const rows = entry.rows ?? []
+            const index = input.after === undefined ? -1 : rows.findIndex(row => row.uuid === input.after)
+            if (input.after !== undefined && index < 0) return {deny:`No readable anchor ${input.after} in this conversation`}
+            return structuredClone(input.after === undefined ? rows.slice(-input.last!) : rows.slice(index + 1))
+          }
+          return structuredClone(input.as === 'api' ? entry.api ?? [] : (entry.rows ?? []).map(({uuid: _uuid,...row}) => row))
         }
-        if (services.rawMessages) return input.as === 'api'
-          ? projectModApiMessages(services.rawMessages(),[...(services.tools?.() ?? [])])
-          : projectModSessionMessages(services.rawMessages(),4096,trackedAgents())
+        if (services.rawMessages) return read(services.rawMessages())
+        if (input.last !== undefined || input.after !== undefined) return {deny: `No readable raw conversation for ${input.after ?? 'the requested range'}`}
         if (input.as === 'api') throw new Error('Raw session messages are unavailable on this host')
         const messages = services.messages
         if (!messages) throw new Error('Session messages are unavailable on this host')
@@ -1950,7 +2019,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'command.run') {
             const event = context?.active ? context.next?.event : undefined
             // session.start and plugin.register run inside the load the host awaits before it runs queued input.
-            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
+            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.stop','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
             const prefix = `${owner.declaration.name}: $.command.run`
             if (held) throw Object.assign(new Error(`${owner.declaration.name}: command.run: called from a ${held} hook, it would wait on the turn this hook is holding; ${held === 'command.run' ? 'answer { text } instead, or run it' : 'run it'} from a later event (turn.complete) (host check)`),{name:'HooksError'})
             if (typeof (input as ModInput).args !== 'string') throw Object.assign(new Error(`${prefix} takes { command, args? } (the name without the slash)`),{name:'HooksError'})
@@ -1986,7 +2055,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
                 'prompt.attachment', 'prompt.mention', 'prompt.compose', 'tool.describe', 'command.run',
-                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.start', 'plugin.register'].includes(held) ||
+                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.stop', 'session.start', 'plugin.register'].includes(held) ||
               (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
             ))
             if (holdsTurn) {
@@ -2140,12 +2209,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               combined.cleanup()
             }
           }
-          if (fn === hostIdentity && (op === 'tool.call' || op === 'session.send' || op === 'ui.ask')) {
+          if (fn === hostIdentity && (op === 'agent.call' || op === 'tool.call' || op === 'session.send' || op === 'ui.ask')) {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
               return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
             if (ask && (!binding?.isInteractive || !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'AskUserQuestion')))
               throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: no tool named \"AskUserQuestion\" in this session`), {name:'HooksError'})
+            if (!host && op === 'agent.call') return {deny:'No live tool context for the requested agent'}
             if (!host) throw new Error('Tool execution host is unavailable on this host')
             let toolInput = input as ModInput
             if (op === 'session.send') {
@@ -2183,6 +2253,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             try {
               combined.signal.throwIfAborted()
+              if (op === 'agent.call') {
+                const result = await callSnapshot.dispatch(op, toolInput, async (question, nextSignal) => {
+                  if (typeof question.tool !== 'string' || !question.input || typeof question.input !== 'object' || Array.isArray(question.input)) throw new TypeError('agent.call needs a tool and its input')
+                  return {value:await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call')}
+                }, {signal:combined.signal, validateInput:value => { if (value.agentId !== toolInput.agentId) throw new Error('agent.call cannot rewrite agentId') }}) as {value?:unknown;deny?:string}
+                return capabilityResult(op,result)
+              }
               // Only a call descending from the person's own interaction may speak consent for them.
               const uiOrigin = uiContext.getStore()
               const person = Boolean(uiOrigin?.person && uiOrigin.active !== false)
@@ -2306,6 +2383,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'session.usage' && !usage)
             throw new Error('Session usage is unavailable on this host')
           const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => {
+            if (op === 'prompt.paint' && fn === hostIdentity) {
+              validatePromptPaint(rewritten)
+              const prompt = services.prompt?.()
+              const isPainted = owner.state === 'active' && composerBound() && Boolean(await prompt?.paint?.(owner.suggestionOwner, rewritten))
+              if (isPainted) owner.painted = rewritten.decorations.length > 0
+              return {value:{isPainted, ...emptyPromptBox()}}
+            }
             if (catalog) return { value: await catalog.list() }
             if (usage) {
               validateModSessionUsageArgs(rewritten)
@@ -2335,13 +2419,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const provider = { snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true, callerChain }
             try {
               if (fn === hostIdentity)
-                return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal))) }
+                return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal, input as ModInput))) }
               return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => fn(rewritten))) }
             } finally { provider.active = false }
           }, snapshot, table, {
             origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
             ...(fn === hostIdentity && coreSignal && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal: coreSignal } : {}),
             reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
+            ...(op === 'prompt.paint' ? {projectNext: async (plugin: string, result: unknown) => {
+              const receipt = result as {value?: {isPainted:boolean}; deny?:string}
+              if (!receipt.value) return receipt
+              const recipient = snapshot.find(item => item.declaration.name === plugin)
+              const box = recipient ? await readPromptForCaller(recipient,snapshot,table) : emptyPromptBox()
+              return {value:{isPainted:receipt.value.isPainted,...box}}
+            }} : {}),
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
           if (typeof result.deny === 'string') {
@@ -2349,6 +2440,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               throw Object.assign(new Error(`${owner.declaration.name}: $.${op}: ${result.deny}`), {name:'HooksError'})
             throw new Error(result.deny)
           }
+          if (op === 'prompt.paint') return {isPainted:(result.value as {isPainted:boolean}).isPainted,...await readPromptForCaller(owner,snapshot,table)}
           return result.value
         } finally { modelOwned?.cleanup(); modelInvocation?.cleanup(); modelAbort?.cleanup(); resumeBudget?.() }
       }
@@ -2677,6 +2769,31 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'agent.report') {
+      const answer = result as {text?: unknown; consumed?: unknown} | null
+      if (!answer || !(typeof answer.text === 'string' && answer.consumed === undefined || typeof answer.consumed === 'string' && answer.text === undefined)) throw new TypeError('agent.report must return text or consumed')
+      return
+    }
+    if (event === 'theme.set' || event === 'theme.clear' || event === 'ui.place') {
+      const envelope = result as {value?: ModInput;deny?:unknown} | null
+      if (typeof envelope?.deny === 'string') return
+      const receipt = envelope?.value, key = event === 'ui.place' ? 'isPlaced' : 'isDrawn'
+      if (!receipt || (receipt[key] === true ? typeof receipt.requestId !== 'string' : receipt[key] !== false || typeof receipt.reason !== 'string') ||
+          (receipt.requestId !== undefined && typeof receipt.requestId !== 'string')) throw new TypeError(`${event} requires a ${key} receipt in value or deny`)
+      return
+    }
+    if (event === 'prompt.paint') {
+      const envelope = result as {value?: ModInput;deny?:unknown} | null
+      if (typeof envelope?.deny === 'string') return
+      if (typeof envelope?.value?.isPainted !== 'boolean') throw new TypeError('prompt.paint requires isPainted in value or deny')
+      validatePromptBox(envelope.value)
+      return
+    }
+    if (event === 'tool.judge') {
+      const verdict = result as {decision?: unknown; reason?: unknown} | undefined
+      if (!verdict || !['allow','ask','deny'].includes(String(verdict.decision)) || verdict.reason !== undefined && typeof verdict.reason !== 'string') throw new TypeError('tool.judge must return a decision and optional reason')
+      return
+    }
     if (event === 'telemetry.log' || event === 'telemetry.mark') return validateModTelemetryResult(event, result)
     if (event === 'session.identity') {
       const value = (result as { value?: { kind?: unknown; isVerified?: unknown; deny?: unknown } } | undefined)?.value
@@ -2685,12 +2802,17 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new TypeError('session.identity must return { kind, isVerified, ... } or { deny } in value')
       return
     }
+    if (event === 'ui.cancelNotify') {
+      const reply = result as { value?: { isSent?: unknown }; deny?: unknown } | undefined
+      if (typeof reply?.deny !== 'string' && typeof reply?.value?.isSent !== 'boolean') throw new TypeError('ui.cancelNotify must return { value: { isSent } } or deny')
+      return
+    }
     if (event === 'ui.notify') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.notify must return value or deny')
       if ('deny' in result && typeof result.deny === 'string') return
       const value = (result as { value?: { isSent?: unknown; channel?: unknown; reason?: unknown } }).value
       if (!value || typeof value !== 'object' || (value.isSent === true
-        ? !['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(value.channel as string)
+        ? !['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell', 'client'].includes(value.channel as string)
         : value.isSent !== false || !['disabled', 'no-channel', 'no-surface', 'refused'].includes(value.reason as string)))
         throw new TypeError('ui.notify must return { isSent: true, channel } or { isSent: false, reason } in value, or deny')
       return
@@ -2861,8 +2983,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new Error('tool.describe isDeferred must be boolean')
       return
     }
-    if (event === 'agent.offer') {
-      if (typeof value.isOffered !== 'boolean') throw new Error('agent.offer must return isOffered')
+    if (event === 'tool.offer' || event === 'agent.offer') {
+      if (typeof value.isOffered !== 'boolean') throw new Error(`${event} must return isOffered`)
       return
     }
     if (event === 'agent.spawn') {
@@ -2871,7 +2993,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         : typeof value.model !== 'string') throw new Error('agent.spawn must return model or deny, never both')
       return
     }
-    if (event === 'tool.call') {
+    if (event === 'tool.call' || event === 'tool.run') {
       if (value.deny === undefined) {
         if (!Object.hasOwn(value, 'result')) throw new Error('tool.call must return result or deny')
       } else if (typeof value.deny !== 'string') throw new Error('tool.call deny must be a string')
@@ -2884,6 +3006,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return
     }
     if (event === 'session.start' && typeof value.cwd !== 'string') throw new Error('session.start must return cwd')
+    if (event === 'session.stop') {
+      if (typeof value.isTurnRunning !== 'boolean') throw new Error('session.stop must return isTurnRunning')
+      return
+    }
     if (event === 'session.end') {
       if (typeof value.sessionId !== 'string') throw new Error('session.end must return sessionId')
       return
@@ -2892,7 +3018,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'turn.start' && typeof value.turnId !== 'string') throw new Error('turn.start must return turnId')
     if (event === 'turn.complete' && typeof value.text !== 'string') throw new Error('turn.complete must return text')
     if (event === 'prompt.submit' && typeof value.text !== 'string' && typeof value.drop !== 'string') throw new Error('prompt.submit must return text or drop')
-    if (!['tool.call', 'plugin.register', 'session.start', 'engine.create', 'command.run', 'turn.start', 'turn.complete', 'prompt.submit'].includes(event) && !('value' in value) && typeof value.deny !== 'string') {
+    if (!['tool.call', 'tool.run', 'plugin.register', 'session.start', 'engine.create', 'command.run', 'turn.start', 'turn.complete', 'prompt.submit'].includes(event) && !('value' in value) && typeof value.deny !== 'string') {
       throw new Error(`${event} must return value or deny`)
     }
   }
@@ -3034,7 +3160,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
     snapshot: readonly Activation[] = active,
     table: Nouns = nouns,
-    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
+    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; projectNext?: (plugin:string, result:unknown) => Promise<unknown>; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     // Official 2.1.292 raises filesystem entry paths against the invocation's cwd.
@@ -3046,7 +3172,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const combined = combineModModelSignals(options.signal, controller.signal)
     const callerChain = dispatchCallerChain(options, context, event === 'engine.create')
     const origin = dispatchCallerOrigin(callerChain, snapshot, options.origin)
-    const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
+    const pinsProvider = ['tool.describe', 'command.describe', 'tool.offer', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
     const dispatchServices = requestServices.getStore() ?? {}
@@ -3062,6 +3188,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         // host work (a tool, a subagent) that must not inherit the hook's snapshot.
         core: event.startsWith('state.') ? core : (value, coreSignal) => state.outside(() => core(value, coreSignal)),
         signal: combined.signal, origin, callerChain,
+        projectNext: options.projectNext,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         onHooks: options.onHooks,
@@ -3072,8 +3199,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           options.validateResult?.(result, nextResults)
         },
         validateInput: (value, received) => {
+          if (event === 'theme.set') validateTheme(value)
+          if (event === 'prompt.paint') validatePromptPaint(value)
+          if (event === 'ui.render' && (input.component === 'Backdrop' || input.component === 'Placed') && !isDeepStrictEqual(value,input))
+            throw new TypeError(`${input.component} render facts cannot be changed`)
           if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'ui.copy') validateModUiCopyArgs(value)
+          if (event === 'ui.cancelNotify') validateNotifyKey(value.key)
+          if (event === 'ui.notify') validateNotifySchedule(value)
           if (event === 'ui.notify' && (typeof value.text !== 'string' || value.title !== undefined && typeof value.title !== 'string'))
             throw new TypeError('ui.notify takes { text, title? } as strings')
           if (event === 'prompt.edit') validatePromptEditInput(value, received)
@@ -3291,7 +3424,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   const uiSurfaces: readonly ModRenderSurface[] = ['terminal', 'desktop', 'mobile', 'vscode']
-  const uiComponents: readonly ModRenderComponent[] = ['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane']
+  const uiComponents: readonly ModRenderComponent[] = ['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane', 'AbovePromptList', 'AgentRow', 'ContextMenu', 'Placed', 'Backdrop']
 
   async function composeUiTables(snapshot: readonly Activation[], table: Nouns) {
     const composed = new Map<ModEnvironment, ReadonlyMap<string, object>>()
@@ -3416,6 +3549,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       for (const owner of active) owner.engineScope = { snapshot: active, table: built.table }
       const commandsChanged = nouns !== built.table
       if (nouns !== built.table) {
+        toolOffers = new WeakMap()
         descriptionCache = { value: new WeakMap() }
         sectionCache = new Map()
         attachmentCache = new Map()
@@ -3748,6 +3882,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return {
       toolNotices,
       toolOrigin: tool => toolOrigins.get(tool),
+      agentReportWarnings,
+      toolOffers,
       get toolDescriptions() { return descriptions.value },
       get promptSections() { return sections },
       get promptAttachments() { return attachments },
@@ -3974,12 +4110,37 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     invalidatePromptContext,
     measure,
     endSession,
+    async notifySessionStop(isTurnRunning: boolean): Promise<void> {
+      if (!runtime.hasHooks('session.stop')) return
+      const input = { isTurnRunning }
+      try {
+        await dispatch('session.stop', input, async () => input, active, nouns)
+      } catch (error) {
+        diagnostic('engine', 'session.stop', error)
+      }
+    },
     tools,
     agents,
     commands,
     config,
     isDiffOwned,
     /** Trusted SDK transport roster; not an author capability. */
+    placed,
+    theme: {props:theme.props,subscribe:theme.subscribe,
+      drawingSurfaces:() => [...new Set([...attachedClients.values()].filter(c => c.draws?.includes('Theme')).map(c => c.surface)
+        .filter((s): s is 'desktop' | 'mobile' => s === 'desktop' || s === 'mobile'))],
+      hearsPointer:(plugin:unknown) => active.find(owner => owner.declaration.name === plugin)?.environment.registrations.some(r => matchesModEventPattern(r.event,'ui.pointer')) === true,
+    },
+    async themePointer(plugin:string, surface:string, data:unknown) {
+      const props = theme.props('backdrop'), point = data as ModInput | null
+      const owner = active.find(item => item.declaration.name === plugin)
+      if (!owner || props.plugin !== plugin || !['desktop','mobile'].includes(surface) || point?.type !== 'click' ||
+          ![point.x,point.y].every(v => typeof v === 'number' && v >= 0 && v <= 1)) return false
+      const input = {surface,component:'Backdrop',requestId:'backdrop',scene:props.scene,type:'click',x:Math.round(Number(point.x)*64)/64,y:Math.round(Number(point.y)*64)/64}
+      await dispatch('ui.pointer',input,async () => ({}),active,nouns,{only:owner,
+        origin:{plugin:'client',tier:owner.declaration.tier}, validateInput:value => {if (!isDeepStrictEqual(value,input)) throw new TypeError('ui.pointer fields cannot be changed')}})
+      return true
+    },
     remoteScroll,
     remoteFocus,
     remotePrompt,
@@ -4092,7 +4253,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         next[key as keyof ModBinding] === binding![key as keyof ModBinding],
       )) return
       if (ending || binding?.sessionId !== next.sessionId) {
+        agentReportWarnings = new Map()
         retireTurns()
+        theme.clear()
+        placed.reset()
         conversations.clear()
         excludedConversations.clear()
         forkSnapshot = null
@@ -4102,6 +4266,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           for (const owner of active)
             services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
         }
+        toolOffers = new WeakMap()
         await measurements.reset()
         ending = undefined
         commands.invalidateDescriptions()

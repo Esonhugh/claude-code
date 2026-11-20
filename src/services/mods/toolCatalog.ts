@@ -1,4 +1,5 @@
 import type { Tool, ToolUseContext } from '../../Tool.js'
+import { isDeepStrictEqual } from 'node:util'
 import { isDeferredTool } from '../../tools/ToolSearchTool/prompt.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ModOrigin } from './types.js'
@@ -106,15 +107,7 @@ export function createToolCatalogForContext(
 
 export type ModToolDescription = { description: string; isDeferred?: boolean }
 
-export async function describeModTool(
-  snapshot: ModSnapshot,
-  tool: Tool,
-  description: string,
-  signal?: AbortSignal,
-): Promise<ModToolDescription> {
-  signal?.throwIfAborted()
-  const isDeferred = isDeferredTool(tool)
-  if (!snapshot.hasHooks('tool.describe')) return { description }
+function providerForTool(snapshot: ModSnapshot, tool: Tool): ModOrigin {
   const mcp = tool.mcpInfo
   let provider: ModOrigin
   const registered = snapshot.toolOrigin?.(tool)
@@ -136,6 +129,46 @@ export async function describeModTool(
         ? { plugin: 'mcp', tier: 'user' }
         : { plugin: 'engine', tier: 'core' }
   }
+  return provider
+}
+
+export async function isToolOffered(tool: Tool, snapshot: ModSnapshot, agentId?: string, subagentType?: string, signal?: AbortSignal): Promise<boolean> {
+  if (tool.name === 'StructuredOutput' || tool.name === 'EndConversation' || !snapshot.hasHooks('tool.offer', {tool: tool.name})) return true
+  const input = {tool: tool.name, provider: providerForTool(snapshot, tool), ...(agentId ? {agentId, ...(subagentType && {subagentType})} : {})}
+  const result = await snapshot.dispatch('tool.offer', input, async () => ({isOffered: true}), {
+    signal, validateInput: rewritten => {
+      if (!isDeepStrictEqual(rewritten, input)) throw new Error('tool.offer cannot rewrite the offered tool or its agent')
+    },
+  }) as {isOffered: boolean}
+  return result.isOffered
+}
+
+export async function projectOfferedTools(tools: ToolUseContext['options']['tools'], snapshot: ModSnapshot, agentId?: string, subagentType?: string, signal?: AbortSignal) {
+  if (!snapshot.hasHooks('tool.offer')) return tools
+  const decisions = await Promise.all(tools.map(tool => {
+    const cache = snapshot.toolOffers
+    let agents = cache?.get(tool)
+    if (!agents && cache) { agents = new Map(); cache.set(tool, agents) }
+    const cached = agents?.get(agentId)
+    if (cached) return cached
+    const offered = isToolOffered(tool, snapshot, agentId, subagentType, signal).catch(error => { agents?.delete(agentId); throw error })
+    agents?.set(agentId, offered)
+    return offered
+  }))
+  signal?.throwIfAborted()
+  return tools.filter((_, i) => decisions[i])
+}
+
+export async function describeModTool(
+  snapshot: ModSnapshot,
+  tool: Tool,
+  description: string,
+  signal?: AbortSignal,
+): Promise<ModToolDescription> {
+  signal?.throwIfAborted()
+  const isDeferred = isDeferredTool(tool)
+  if (!snapshot.hasHooks('tool.describe')) return { description }
+  const provider = providerForTool(snapshot, tool)
   // Runtime owns generation/invalidation rotation; absent that contract, do not
   // substitute a TTL or session-global transformed description cache.
   const cache = snapshot.toolDescriptions

@@ -9,7 +9,7 @@ import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
 import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
-import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createToolCatalogForContext, projectOfferedTools } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
@@ -36,7 +36,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
-import { findToolByName, type ToolUseContext } from './Tool.js'
+import { findToolByName, type Tools, type ToolUseContext } from './Tool.js'
 import {
   asSystemPrompt,
   getSystemPromptSections,
@@ -403,6 +403,7 @@ export async function* query(
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
   const handlesAgentOffer = snapshot?.hasHooks('agent.offer') === true
+  const handlesToolOffer = snapshot?.hasHooks('tool.offer') === true
   const handlesContext = snapshot?.hasHooks('prompt.context') === true
   const handlesCompose = promptFacts !== undefined && snapshot?.hasHooks('prompt.compose') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
@@ -417,6 +418,7 @@ export async function* query(
     !handlesMeasure &&
     !handlesCatalog &&
     !handlesAgentOffer &&
+    !handlesToolOffer &&
     !handlesContext &&
     !handlesSections &&
     !handlesCompose &&
@@ -1156,12 +1158,14 @@ async function* queryLoop(
     }
 
     const assistantMessages: AssistantMessage[] = []
+    const requestCatalog = {agentId: toolUseContext.agentId, names: new Set<string>()}
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
       requestAdvisor: advisorRequest,
       getResponseMessages: () => assistantMessages,
+      modRequestTools: requestCatalog,
     }
     updateCatalogContext?.(toolUseContext)
     if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
@@ -1185,8 +1189,11 @@ async function* queryLoop(
     let needsFollowUp = false
 
     queryCheckpoint('query_setup_start')
+    const modelTools = snapshot?.hasHooks('tool.offer') && (toolUseContext.agentId !== undefined || querySource.startsWith('repl_main_thread') || querySource === 'sdk')
+      ? await projectOfferedTools(toolUseContext.options.tools, snapshot, toolUseContext.agentId, toolUseContext.agentType, toolUseContext.abortController.signal)
+      : toolUseContext.options.tools
     let streamingToolExecutor = new StreamingToolExecutor(
-      toolUseContext.options.tools,
+      modelTools,
       canUseTool,
       toolUseContext,
     )
@@ -1314,7 +1321,7 @@ async function* queryLoop(
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: omitLocalAdvisorTool(
-              toolUseContext.options.tools,
+              modelTools,
               advisorRequest.localAdvisorModel,
             ),
             signal: toolUseContext.abortController.signal,
@@ -1344,6 +1351,9 @@ async function* queryLoop(
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
               modsSnapshot: toolUseContext.modsSnapshot,
+              onRequestToolCatalog: (tools: Tools) => {
+                requestCatalog.names = new Set(tools.map(tool => tool.name))
+              },
               composeSystemPrompt: composeRequest ? async (model, tools, signal) => {
                 try { systemPrompt = await composeRequest(model, tools, signal) }
                 catch (error) {
@@ -1458,7 +1468,7 @@ async function* queryLoop(
               // from being yielded after the fallback response arrives.
               streamingToolExecutor.discard()
               streamingToolExecutor = new StreamingToolExecutor(
-                toolUseContext.options.tools,
+                modelTools,
                 canUseTool,
                 toolUseContext,
               )
@@ -1647,7 +1657,7 @@ async function* queryLoop(
             // tool_use_ids) from leaking into the retry.
             streamingToolExecutor.discard()
             streamingToolExecutor = new StreamingToolExecutor(
-              toolUseContext.options.tools,
+              modelTools,
               canUseTool,
               toolUseContext,
             )

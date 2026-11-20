@@ -18,7 +18,7 @@ import { modStateLibrarySource } from './stateLibrary.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation) => {
+const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation, debugLog) => {
   const normalizeStateValue = value => {
     let text;
     try { text = JSON.stringify(value); }
@@ -46,7 +46,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (value && typeof value === 'object') return {type:'object', entries:Object.entries(value).map(([key,item]) => [key,matcherWire(item)])};
     return {type:'value', value};
   };
-  Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
+  Object.defineProperties(globalThis, {
+    h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment},
+    console: {value:Object.freeze({error: (...args) => { debugLog(args.map(String).join(' ')); }})},
+  });
   const drawings = new Map();
   const drawingCallbacks = new WeakMap();
   const keepDrawingCallback = (callback, handles, allocated) => {
@@ -421,13 +424,13 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
     const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
-    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
       'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
-      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.identity', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.info', 'session.machine', 'process.hookEnv', 'ui.cancelNotify', 'session.identity', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.notify', 'ui.selection', 'ui.copy',
-      'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
-      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
-      'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
+      'ui.place', 'prompt.paint', 'theme.set', 'theme.clear', 'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
+      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'tool.judge', 'tool.run', 'tool.offer', 'agent.report', 'agent.offer',
+      'agent.spawn', 'agent.register', 'agent.list', 'agent.limits', 'agent.call', 'tool.register', 'tool.list']);
     if (event === '!*') throw Error(emptyEventPatternError);
     if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
     checkHandler(event, handler);
@@ -861,7 +864,9 @@ function createEnvironment(id: number, plugin: string): Environment {
       const elapsed = started === 0n ? 0 : performance.timeOrigin + performance.now() - Number(started) / 1000
       return Math.max(0, Number(available) / 1000 - elapsed)
     }
-  }, () => invocations.getStore()) as Environment['api']
+  }, () => invocations.getStore(), (text: unknown) => {
+    if (typeof text === 'string') reply({type:'console-error',environment:id,text})
+  }) as Environment['api']
   const dispose = api.dispose
   api.dispose = () => {timerRealm.dispose();dispose()}
   const lifetime = { id, disposed: false }

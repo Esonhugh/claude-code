@@ -7,7 +7,17 @@ import {
 import {
   projectModApiMessages,
   projectModSessionMessages,
+  readModSessionPage,
 } from './sessionMessages.js'
+
+test('a kept cursor never replays the compaction summary, even if the summary follows it', () => {
+  const kept = createUserMessage({content:'retained'})
+  const rows = [createCompactBoundaryMessage('manual',10), kept,
+    createUserMessage({content:'compaction summary',isCompactSummary:true}), createAssistantMessage({content:'new'})]
+  expect(readModSessionPage(rows,{after:kept.uuid},[],new Map())).toEqual([
+    {uuid:rows[3]!.uuid,role:'assistant',text:'new',toolUses:[]},
+  ])
+})
 
 test('projects joined text and structured tool outcomes without mutating the transcript', () => {
   const call = createAssistantMessage({

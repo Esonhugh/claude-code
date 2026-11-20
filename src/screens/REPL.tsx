@@ -448,6 +448,7 @@ import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { sessionAppendEngineMessage } from '../services/mods/sessionAppend.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
+import { withModPlacedRows } from '../services/mods/placedRows.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
 import { ModsPane } from '../components/ModsPane.js'
@@ -774,7 +775,7 @@ function median(values: number[]): number {
  * double-Esc; with nothing pending it returns false and the key falls through.
  * Must be rendered inside KeybindingSetup to access keybinding context.
  */
-function ReplEvalCancelHandler({ isActive }: { isActive: boolean }): null {
+function ReplEvalCancelHandler({ isActive, modsSession }: { isActive: boolean; modsSession?: ModsSession }): null {
   const isOverlayActive = useIsOverlayActive()
   const isViewingTeammate = useAppState(s => s.viewSelectionMode) === 'viewing-agent'
   const stopDispatchedReplEvals = useCallback(() => {
@@ -783,8 +784,9 @@ function ReplEvalCancelHandler({ isActive }: { isActive: boolean }): null {
     logEvent('tengu_cancel', {
       source: 'escape' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+    void modsSession?.runtime?.notifySessionStop(false)
     abortPendingReplEvals(session, 'user-cancel')
-  }, [])
+  }, [modsSession])
   useKeybinding('chat:cancel', stopDispatchedReplEvals, {
     context: 'Chat',
     isActive: isActive && !isOverlayActive && !isViewingTeammate,
@@ -2137,6 +2139,9 @@ export function REPL({
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
   const getModUiSnapshot = useCallback(() => modsSession?.ui.getSnapshot() ?? emptyModPanes, [modsSession, emptyModPanes])
+  const getPlacedRows = useCallback(() => modsSession?.runtime?.placed.rows(), [modsSession])
+  const placedRows = React.useSyncExternalStore(subscribeModUi,getPlacedRows)
+  const paintedMessages = useMemo(() => withModPlacedRows(messages,placedRows),[messages,placedRows])
   const modPanes = React.useSyncExternalStore(subscribeModUi, getModUiSnapshot)
   const subscribeDiffOwnership = useCallback((listener: () => void) => modsSession?.commands.subscribe(listener) ?? (() => {}), [modsSession])
   const getDiffOwnership = useCallback(() => modsSession?.isDiffOwned() ?? false, [modsSession])
@@ -2252,6 +2257,7 @@ export function REPL({
               cursor: insertTextRef.current.cursorOffset,
             }
           : { text: '', cursor: 0 },
+      paint: (layer,{text,decorations}) => insertTextRef.current?.paintLayer?.(layer,text,decorations) ?? false,
       fill: input =>
         insertTextRef.current
           ? fillPromptBox(
@@ -3825,7 +3831,12 @@ export function REPL({
   // CancelRequestHandler props - rendered inside KeybindingSetup
   const cancelRequestProps = {
     setToolUseConfirmQueue,
-    onCancel,
+    onCancel: () => {
+      if (isLoading && focusedInputDialog !== 'elicitation' && focusedInputDialog !== 'tool-permission') {
+        void modsSession?.runtime?.notifySessionStop(true)
+      }
+      onCancel()
+    },
     onAgentsKilled: (passiveNotice?: string) =>
       setMessages(prev => [
         ...prev,
@@ -7227,7 +7238,7 @@ export function REPL({
         : undefined
     const transcriptMessagesElement = (
       <Messages
-        messages={transcriptMessages}
+        messages={transcriptTask ? transcriptMessages : withModPlacedRows(transcriptMessages,placedRows)}
         tools={tools}
         commands={commands}
         verbose={true}
@@ -7548,6 +7559,7 @@ export function REPL({
       ) : null}
       <CancelRequestHandler {...cancelRequestProps} />
       <ReplEvalCancelHandler
+        modsSession={modsSession}
         isActive={
           !isLoading &&
           !inputValue &&
@@ -7606,7 +7618,7 @@ export function REPL({
             <>
               <TeammateViewHeader />
               <Messages
-                messages={displayedMessages}
+                messages={viewedAgentTask ? displayedMessages : usesSyncMessages ? paintedMessages : withModPlacedRows(displayedMessages,placedRows)}
                 tools={tools}
                 commands={commands}
                 verbose={verbose}

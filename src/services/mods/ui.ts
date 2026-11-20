@@ -5,7 +5,7 @@ import type { ModTerminalSize } from './terminalClient.js'
 import type { ModClients, ModClientHandle, ModClientSite } from './client.js'
 
 export type ModRenderSurface = 'terminal' | 'desktop' | 'mobile' | 'vscode'
-export type ModRenderComponent = 'AskUserQuestion' | 'UserMessage' | 'AssistantMessage' | 'ToolUse' | 'ToolResult' | 'ToolGroup' | 'ToolProgress' | 'CommandOutput' | 'Spinner' | 'TurnDuration' | 'InfoNotice' | 'SessionMode' | 'PromptHint' | 'AbovePrompt' | 'Pane'
+export type ModRenderComponent = 'AskUserQuestion' | 'UserMessage' | 'AssistantMessage' | 'ToolUse' | 'ToolResult' | 'ToolGroup' | 'ToolProgress' | 'CommandOutput' | 'Spinner' | 'TurnDuration' | 'InfoNotice' | 'SessionMode' | 'PromptHint' | 'AbovePrompt' | 'Pane' | 'AbovePromptList' | 'AgentRow' | 'ContextMenu' | 'Placed' | 'Backdrop'
 export type ModRenderInput = {
   surface: ModRenderSurface
   component: ModRenderComponent
@@ -1302,7 +1302,7 @@ export function createModUi({
             if (disposed) throw new Error('Mod UI render site is stale')
             if (request.surface !== consumer.surface || !['terminal', 'desktop', 'mobile', 'vscode'].includes(request.surface))
               throw new TypeError('Mod UI render surface must match its consumer')
-            if (!['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane'].includes(request.component))
+            if (!['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane', 'AbovePromptList', 'AgentRow', 'ContextMenu', 'Placed', 'Backdrop'].includes(request.component))
               throw new TypeError('Unknown Mod UI render component')
             if (typeof request.requestId !== 'string' || !request.props || typeof request.props !== 'object' || Array.isArray(request.props))
               throw new TypeError('Mod UI render requires a requestId and props')

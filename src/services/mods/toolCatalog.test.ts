@@ -17,6 +17,8 @@ import type {
 import {
   createToolCatalog,
   createToolCatalogForContext,
+  projectOfferedTools,
+  isToolOffered,
 } from './toolCatalog.js'
 import {
   clearToolSchemaCache,
@@ -180,6 +182,22 @@ async function runtimeWithUser(
   })
   return { runtime, diagnostics }
 }
+
+test('tool.offer is per agent, not the tool pool; a call consults it again', async () => {
+  const { runtime, diagnostics } = await runtimeWithUser(`let calls = 0; export function register(on) {
+    on('tool.offer', {tool:'Read'}, ($, e) => ({isOffered: e.provider.plugin === 'engine' && (e.agentId !== undefined || ++calls === 1)}));
+  }`)
+  const snapshot = runtime.capture()
+  try {
+    const tool = builtin('Read'), pool = [tool]
+    expect(await projectOfferedTools(pool, snapshot)).toEqual(pool)
+    expect(await projectOfferedTools(pool, snapshot)).toEqual(pool)
+    expect(await isToolOffered(tool, snapshot)).toBe(false)
+    expect(await projectOfferedTools(pool, snapshot, 'worker', 'Explore')).toEqual(pool)
+    expect(pool).toEqual([tool])
+    expect(diagnostics).toEqual([])
+  } finally { snapshot.release() }
+})
 
 for (const implementation of ['local', 'official'] as const) {
   const officialAvailable =

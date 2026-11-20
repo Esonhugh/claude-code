@@ -79,6 +79,62 @@ function hook(event: string, invoke: ModDispatchHook['invoke']): ModDispatchHook
 }
 
 describe('author tool host through the real executor', () => {
+  test('agent.call follows the target request catalog, not default deferral', async () => {
+    const f = fixture()
+    const loaded = new Set(['AuthorFixture'])
+    f.context.modRequestTools = {agentId: f.context.agentId, names: loaded}
+    Object.assign(f.tool, {shouldDefer:true})
+    const call = () => f.host.call({tool:'AuthorFixture', value:'ok'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call')
+    expect(await call()).toMatchObject({result:{value:'ok'}})
+    loaded.clear()
+    Object.assign(f.tool, {shouldDefer:false})
+    expect(await call()).toMatchObject({deny:expect.any(String)})
+    expect(f.permissions).toHaveLength(1)
+    expect(f.calls).toHaveLength(1)
+  })
+  test('agent.call uses the matching live host and its permission callback, never another agent', async () => {
+    const f = fixture()
+    f.context.modRequestTools = {agentId: f.context.agentId, names: new Set([f.tool.name])}
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({services:{toolHost:()=>f.host}, onDiagnostic: event => diagnostics.push(event.message)})
+    const root = await mkdtemp(join(tmpdir(), 'agent-call-'))
+    try {
+      const entry = join(root, 'entry.mjs')
+      await writeFile(entry, `export function register(on){on('tool.call',{tool:'probe'},async($,e)=>({result:await $.agent.call({tool:'AuthorFixture',input:{value:'ok'},agentId:e.agentId})}))}`)
+      await runtime.reconcile([{name:'probe',storageId:'probe@test',pluginRoot:root,entrypoints:[entry]}])
+      const call = (agentId?:string) => runtime.dispatch('tool.call',{tool:'probe',agentId},async()=>({result:null}))
+      const missing = await call('unknown')
+      expect(diagnostics).toEqual([])
+      expect(missing).toMatchObject({result:{deny:expect.any(String)}})
+      expect(f.permissions).toHaveLength(0)
+      expect(await call()).toMatchObject({result:{result:{value:'ok'}}})
+      expect(f.permissions).toHaveLength(1)
+      const denied = createModToolHost(f.context, async () => ({behavior:'deny', message:'host refused', decisionReason:{type:'other',reason:'test'}}))
+      const refusal = await denied.call({tool:'AuthorFixture',value:'must-not-run'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call')
+      expect(refusal).toMatchObject({deny:expect.stringContaining('host refused')})
+      expect(f.calls).toHaveLength(1)
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+  test('target-bound Agent call keeps spawn permissions, nesting limit and Workflow refusal', async () => {
+    const f = fixture()
+    const target = 'target' as ToolUseContext['agentId']
+    f.context.agentId = target
+    f.context.options.tools = [AgentTool, {...f.tool, name:'Workflow'}]
+    f.context.options.agentDefinitions = {activeAgents:[GENERAL_PURPOSE_AGENT], allAgents:[GENERAL_PURPOSE_AGENT], allowedAgentTypes:undefined}
+    f.context.options.subagentDepth = Number.MAX_SAFE_INTEGER
+    f.context.getAppState = () => getDefaultAppState()
+    const args = {agentId:target, tool:'Agent', description:'Depth probe', prompt:'Return ok', subagent_type:'general-purpose'}
+    const call = (host = f.host, input = args) => host.call(input, f.snapshot, new AbortController().signal, 'probe', 'agent.call')
+    expect(await call()).toMatchObject({deny:expect.any(String)})
+    expect(f.permissions).toHaveLength(0)
+    f.context.modRequestTools = {agentId:target, names:new Set(['Agent','Workflow'])}
+    const denied = createModToolHost(f.context, async () => ({behavior:'deny', message:'spawn refused', decisionReason:{type:'other',reason:'test'}}))
+    expect(await call(denied)).toMatchObject({deny:expect.stringContaining('spawn refused')})
+    expect(await call()).toMatchObject({isError:true, text:expect.stringContaining('nesting limit')})
+    expect(f.permissions).toHaveLength(1)
+    await expect(call(f.host,{...args,tool:'Workflow'})).rejects.toThrow('runs the Workflow tool')
+    expect(f.permissions).toHaveLength(1)
+  })
   for (const borrowed of [false, true]) {
     test(`Worker skill.prompt uses invocation tools and permissions with ${borrowed ? 'borrowed' : 'owned'} snapshot`, async () => {
       const f = fixture()

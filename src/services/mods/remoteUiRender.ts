@@ -34,6 +34,7 @@ const transcript = new Set([
   'CommandOutput',
   'TurnDuration',
   'InfoNotice',
+  'Placed',
 ])
 export function normalizeModRemoteRender(
   request: SDKControlUIRenderRequest,
@@ -57,7 +58,7 @@ export function normalizeModRemoteRender(
   }
   return {
     surface: request.surface,
-    component: request.component,
+    component: request.component === 'Theme' ? 'Backdrop' : request.component,
     requestId: request.instance_id,
     props,
     ...(request.viewport === undefined
@@ -184,6 +185,22 @@ export function createModRemoteRenderer(
     ): Promise<SDKControlUIRenderResponse> {
       if (disposed) throw new Error('Remote UI renderer is disposed')
       const input = normalizeModRemoteRender(request)
+      if (request.component === 'Theme') {
+        if (request.surface === 'vscode') throw new TypeError('Theme needs a desktop or mobile surface')
+        runtime.remoteClients.attach({surface:request.surface,clientId:request.client_id ?? `${request.surface}:default`})
+        input.props = runtime.theme.props(request.instance_id,request.surface)
+        if (request.instance_id !== 'backdrop' || !input.props.scene) {
+          const key = `${input.surface}\0${input.component}\0${input.requestId}`
+          const stale = sites.get(key)
+          if (stale) await remove(key,stale)
+          return {tree:{type:'engine',ref:0},props:input.props,rewritten:false,hooked:true}
+        }
+      } else if (request.component === 'Placed') {
+        const placed = runtime.placed.rows().find(row => row.request_id === request.instance_id)
+        if (!placed) return {tree:{type:'engine',ref:0},props:{},rewritten:false,hooked:false}
+        input.props = {plugin:placed.plugin,id:placed.id,...(input.props.onScreen !== undefined && {onScreen:input.props.onScreen})}
+      }
+      const pointer = input.component === 'Backdrop' && runtime.theme.hearsPointer(input.props.plugin)
       const clientGeneration =
         input.surface === 'desktop'
           ? clients.begin(
@@ -211,7 +228,7 @@ export function createModRemoteRenderer(
           clients.record(clientGeneration, { type: 'engine', ref: 0 })
         return {
           tree: { type: 'engine', ref: 0 },
-          props: input.props,
+          props: pointer ? {...input.props,isPointerHeard:true} : input.props,
           rewritten: false,
           hooked,
           ...(request.bench === undefined ? {} : { bench: request.bench }),
@@ -295,7 +312,7 @@ export function createModRemoteRenderer(
       )
       return {
         tree,
-        props,
+        props: pointer ? {...props,isPointerHeard:true} : props,
         rewritten,
         hooked,
         ...(Object.keys(modules).length ? { client_modules: modules } : {}),
@@ -419,6 +436,7 @@ export function createModRemoteRenderer(
     async clientMessage(
       request: SDKControlUIMessageRequest,
     ): Promise<SDKControlUIMessageResponse> {
+      if (request.component === 'Theme') return {handled:await runtime.themePointer(request.plugin,request.surface ?? 'desktop',request.data)}
       if (!clients.has(request)) {
         logForDebugging(
           `[ModsUIRemote] ui.message: no desktop Client ${request.plugin}/${request.client} (${request.module}) in ${request.component} ${JSON.stringify(request.instance_id)}`,

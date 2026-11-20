@@ -169,6 +169,16 @@ test('named reads follow an owned live producer and retain its settled conversat
   })
 })
 
+test('ranged API reads preserve the opening user row after a child settles', async () => {
+  const runtime = await reader(() => [], `$.session.messages({agentId:'child',as:'api',last:1})`)
+  const rows = [createUserMessage({content:'question'}),createAssistantMessage({content:'answer'})]
+  const finish = runtime.trackConversation({agentId:'child',sessionId:'owned-session',messages:()=>rows})
+  const live = await invoke(runtime)
+  expect(live).toMatchObject({result:[{role:'user'},{role:'assistant'}]})
+  finish()
+  expect(await invoke(runtime)).toEqual(live)
+})
+
 test('named API reads preserve child blocks and never substitute the main transcript', async () => {
   const runtime = await reader(
     () => [createUserMessage({ content: 'PRIVATE_MAIN_MARKER' })],

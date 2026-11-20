@@ -96,6 +96,8 @@ export function isModEventPattern(value: unknown): value is string {
 }
 
 export function matchesModEventPattern(pattern: string, event: string): boolean {
+  // An observer on '*' must not take ownership of an admitted tool execution.
+  if (event === 'tool.run') return pattern === event
   const valid = (value: string) => value === '*' ||
     /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
     /^[A-Za-z_][A-Za-z0-9_]*\.\*$/.test(value)

@@ -57,6 +57,8 @@ test('matches exact, global, noun glob, and negated event patterns', () => {
   expect(matchesModEventPattern('tool.call', 'tool.call')).toBe(true)
   expect(matchesModEventPattern('*', 'tool.call')).toBe(true)
   expect(matchesModEventPattern('tool.*', 'tool.call')).toBe(true)
+  expect(matchesModEventPattern('tool.run', 'tool.run')).toBe(true)
+  for (const pattern of ['*', 'tool.*', '!tool.call']) expect(matchesModEventPattern(pattern, 'tool.run')).toBe(false)
   expect(matchesModEventPattern('!tool.call', 'session.start')).toBe(true)
   expect(matchesModEventPattern('!tool.*', 'tool.call')).toBe(false)
   expect(isModEventPattern('tool.c*')).toBe(false)

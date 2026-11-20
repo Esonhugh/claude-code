@@ -12,6 +12,7 @@ import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ToolCallResult } from './toolAdapter.js'
 import type { ModInput } from './types.js'
+import { isToolOffered } from './toolCatalog.js'
 
 const authorCallRefusals = new Map([
   [AGENT_TOOL_NAME, 'runs the Agent tool: that is $.agent.spawn'],
@@ -82,7 +83,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       }
     },
     /** `person` marks a call the person raised themselves (a press or answer); only then does `consent` speak for them. */
-    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask', person?: boolean): Promise<ToolCallResult> {
+    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<ToolCallResult> {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
         (input.consent !== undefined && typeof input.consent !== 'string'))
@@ -93,8 +94,15 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} dropped consent: the call did not come from the person`)
       const tools = getTools()
       const tool = findToolByName(tools, name)
+      if (entry === 'agent.call') {
+        if (_agent !== context.agentId) return {deny:'No live tool context for the requested agent'}
+        const catalog = context.modRequestTools
+        if (!catalog || catalog.agentId !== _agent || !tool || !catalog.names.has(tool.name)) return {deny:`Tool ${name} is not loaded in this agent`}
+        if (!await isToolOffered(tool, snapshot, context.agentId, context.agentType, signal)) return {deny:`Tool ${name} is not offered to this agent`}
+      }
       const refusal = authorCallRefusals.get(tool?.name ?? name)
-      if (refusal && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
+      const agentSpawn = entry === 'agent.call' && tool?.name === AGENT_TOOL_NAME && tool === (await import('../../tools/AgentTool/AgentTool.js')).AgentTool
+      if (refusal && !agentSpawn && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
       if (!tool) {
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} operation=call outcome=unavailable`)
         throw Object.assign(new Error(`${spawnedBy === undefined ? '' : spawnedBy + ': '}$.tool.call: no tool named "${name}" in this session`), { name: 'HooksError' })
@@ -124,7 +132,12 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           ...context,
           options: { ...context.options, tools },
           abortController,
-          agentId: undefined,
+          agentId: entry === 'agent.call' ? context.agentId : undefined,
+          ...(entry === 'agent.call' && { requireCanUseTool:true, preserveToolUseResults:true, getAppState: () => {
+            const state = context.getAppState()
+            const {session: _session, command: _command, ...rules} = state.toolPermissionContext.alwaysAllowRules
+            return {...state, toolPermissionContext:{...state.toolPermissionContext, alwaysAllowRules:rules}}
+          } }),
           modSpawnedBy: spawnedBy,
           messages: consent === undefined ? [...context.messages] : [...context.messages, createUserMessage({ content: consent as string })],
           modsSnapshot: snapshot,

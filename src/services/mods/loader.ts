@@ -29,16 +29,16 @@ const coreNouns = new Set([
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
 ])
 const supportedEvents = new Set([
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
+  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'mcp.call',
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn',
   'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
-  'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.identity',
-  'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+  'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.info', 'session.machine', 'process.hookEnv', 'ui.cancelNotify', 'session.identity',
+  'agent.spawn', 'agent.register', 'agent.list', 'agent.limits', 'agent.call', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.notify', 'ui.selection', 'ui.copy',
   'mcp.connect',
-  'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
+  'ui.place', 'prompt.paint', 'theme.set', 'theme.clear', 'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
   'telemetry.log', 'telemetry.mark',
 ])
 const telemetryStreams = ['anthropic', 'collector']
@@ -46,12 +46,12 @@ const telemetryStreamHint = '"to" is a string literal, or a list of them, from "
 
 const scanOnlyEvents = new Set([
   'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text',
-  'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
+  'settings.read', 'tool.describe', 'command.describe', 'tool.judge', 'tool.run', 'tool.offer', 'agent.report', 'agent.offer',
   'tool.register', 'tool.list',
 ])
 const supportedCalls = new Set([...supportedEvents].filter(event => ![
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
-  'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
+  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
+  'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
 ].includes(event)))
 for (const call of OFFICIAL_CORE_CALLS) supportedCalls.add(call)
 supportedCalls.add('config.list')
@@ -504,6 +504,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   }
 
   function recordCall(call: string) {
+    if (call === 'wasm.compile') fail(path, 'wasm.compile requires an isolated execution worker; not supported in this build')
     calls.add(call)
     if (collecting) return
     if (helperName === undefined) directCalls.add(call)

@@ -476,6 +476,11 @@ export function createModEnvironmentHost({
     }
     drawing.onmessage = (event: MessageEvent<ModWorkerReply>) => {
       const message = event.data
+      if (message.type === 'console-error') {
+        if (message.environment === environment && environments.get(environment) === state)
+          logForDebugging(`[Mods:${state.declaration.name}] ${message.text}`)
+        return
+      }
       if (message.type === 'client-turn-complete') {
         if (message.environment === environment && retiring?.id === message.id) stop(stopped!)
         return
@@ -553,6 +558,11 @@ export function createModEnvironmentHost({
   const streamAbortErrors = new WeakSet<Error>()
   worker.onmessage = async (event: MessageEvent<ModWorkerReply>) => {
     const message = event.data
+    if (message.type === 'console-error') {
+      const owner = environments.get(message.environment)
+      if (owner) logForDebugging(`[Mods:${owner.declaration.name}] ${message.text}`)
+      return
+    }
     if (message.type === 'pong') { if (message.n === pingSent?.n) pingSent = undefined; return }
     // Phase updates belong to a dedicated Client Worker, never the hook Worker.
     if (message.type === 'client-phase' || message.type === 'client-fault' || message.type === 'client-turn-complete') return

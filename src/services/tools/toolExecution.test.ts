@@ -69,6 +69,25 @@ test('author result callback runs without tool.call hooks and is not inherited b
   }
 })
 
+test('tool.run sees the admitted input only after permission and cannot execute it twice', async () => {
+  const f = await workerFixture(`export function register(on) {
+    on('tool.call', ($, e, next) => next(e));
+    on('tool.run', async ($, e, next) => {
+      if (e.value !== 'edited') return {deny: 'unexpected input'};
+      const first = await next(e);
+      const second = await next(e);
+      return {result: {value: first.result.value + ':' + (typeof second.deny)}};
+    });
+  }`)
+  try {
+    await Array.fromAsync(runToolUse(f.block, f.assistant, async () => ({behavior: 'deny', message:'no', decisionReason:{type:'other', reason:'fixture'}}), f.context))
+    expect(f.calls).toEqual([])
+    const results = await Array.fromAsync(runToolUse(f.block, f.assistant, async () => ({behavior:'allow',updatedInput:{value:'edited'}}), f.context))
+    expect(f.calls).toEqual([{value:'edited'}])
+    expect(results.some(update => update.message.type === 'user' && (update.message.toolUseResult as {value?: string})?.value === 'edited:string')).toBe(true)
+  } finally { await f.cleanup() }
+})
+
 test('a permission handler updatedInput that fails the tool schema is rejected before the tool runs', async () => {
   const f = fixture(async (event, next) => next(event))
   const updates = await Array.fromAsync(runToolUse(

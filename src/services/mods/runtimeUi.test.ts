@@ -80,9 +80,11 @@ test('ui.resolve composes frozen per-plugin tables once at load and retires old 
   const {value,diagnostics}=fixture()
   await value.bind(binding(root));await value.reconcile([decorator,consumer])
 
-  const expected=4*15
+  const surfaces = ['terminal', 'desktop', 'mobile', 'vscode']
+  const components = ['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane', 'AbovePromptList', 'AgentRow', 'ContextMenu', 'Placed', 'Backdrop']
+  const expected = surfaces.flatMap(surface => components.map(component => `${surface}:${component}`)).sort()
   const decoratorProbe=await value.dispatch('tool.call',{tool:'ResolveProbe',surface:'terminal',component:'Pane'},async()=>({result:null})) as any
-  expect(decoratorProbe.result.calls).toHaveLength(expected)
+  expect(decoratorProbe.result.calls.map((call: {surface: string, component: string}) => `${call.surface}:${call.component}`).sort()).toEqual(expected)
   expect(decoratorProbe.result.calls.every((call:any)=>call.keys.join(',')==='surface,component')).toBe(true)
   expect(decoratorProbe.result.frozen).toBe(true)
   expect(decoratorProbe.result.keys).toContain('Button')
@@ -95,7 +97,7 @@ test('ui.resolve composes frozen per-plugin tables once at load and retires old 
   await writeFile(decorator.entrypoints[0]!,decoratorSource('new'))
   await value.reconcile([decorator,consumer])
   const reloaded=await value.dispatch('tool.call',{tool:'ResolveProbe',surface:'terminal',component:'Pane'},async()=>({result:null})) as any
-  expect(reloaded.result.calls).toHaveLength(expected)
+  expect(reloaded.result.calls.map((call: {surface: string, component: string}) => `${call.surface}:${call.component}`).sort()).toEqual(expected)
   expect(value.ui.getSnapshot()[0]!.tree).toMatchObject({type:'Text',props:{color:'new'},children:['false']})
   expect(diagnostics).toEqual([])
 })
