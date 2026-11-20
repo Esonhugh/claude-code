@@ -1,0 +1,25 @@
+import type { EngineEventOf, OpEventOf, Register, ToolCheckResult } from 'claude-code'
+import { coord, mix, vec2 } from 'claude-code/shader'
+// @ts-expect-error Shader values do not live in the main author namespace.
+import { coord as mainCoord } from 'claude-code'
+
+const events = ['tool.offer', 'tool.judge', 'tool.run', 'agent.report', 'session.stop', 'ui.pointer'] as const satisfies readonly (keyof EngineEventOf)[]
+const calls = ['session.info', 'session.machine', 'agent.call', 'agent.limits', 'prompt.paint', 'ui.place', 'ui.cancelNotify', 'theme.set', 'theme.clear', 'process.hookEnv', 'wasm.compile'] as const satisfies readonly (keyof OpEventOf)[]
+// @ts-expect-error This internal operation is not in the public author table.
+const internal: keyof OpEventOf = 'flag.value'
+const cue = mix(coord, vec2(0), 0.5)
+
+export const register: Register = on => {
+  on('session.stop', ($, e, next) => next(e))
+  on('theme.set', async ($, e, next) => {
+    await $.session.info()
+    return next(e)
+  })
+  on('tool.check', async ($, e, next) => {
+    const receipt: ToolCheckResult = await next(e)
+    const plugin: string | undefined = receipt.plugin
+    // @ts-expect-error ToolCheckResult no longer reports the old decider field.
+    void receipt.decider
+    return receipt
+  })
+}
