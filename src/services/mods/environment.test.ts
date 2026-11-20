@@ -47,7 +47,7 @@ test('tool.offer console.error forwards to attributed debug output and continues
     }`)
     const environment = await host().load({...spec, events: ['tool.offer']})
     let calls = 0
-    const resume = next(() => { calls++; return {isOffered:true} })
+    const resume = next(async () => { calls++; return {isOffered:true} })
     resume.event = 'tool.offer'
     expect(await environment.invoke(environment.registrations[0]!.id, [{}, {tool:'Read'}], resume)).toEqual({isOffered:true})
     expect(calls).toBe(1)
