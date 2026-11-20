@@ -7165,6 +7165,15 @@ export function REPL({
     if (!inTranscript) setPositions(null)
   }, [inTranscript, searchQuery, setHighlight, setPositions])
 
+  const previousShowAll = useRef(showAllInTranscript)
+  useEffect(() => {
+    if (previousShowAll.current === showAllInTranscript) return
+    previousShowAll.current = showAllInTranscript
+    if (inTranscript && !dumpMode && searchQuery) {
+      jumpRef.current?.setSearchQuery(searchQuery)
+    }
+  }, [showAllInTranscript, inTranscript, dumpMode, searchQuery])
+
   const globalKeybindingProps = {
     screen,
     setScreen,
