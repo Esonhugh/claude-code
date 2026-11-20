@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { clearSystemPromptSectionState } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
@@ -58,8 +59,11 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // clear so all compaction paths behave consistently.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
+    clearSystemPromptSections()
+  } else {
+    // Refresh prompt sections without resetting the main thread's beta latches or Advisor.
+    clearSystemPromptSectionState()
   }
-  clearSystemPromptSections()
   clearClassifierApprovals()
   clearSpeculativeChecks()
   clearBetaTracingState()
