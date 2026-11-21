@@ -125,6 +125,8 @@ test('tool search refusal classification follows 2.1.311', () => {
     process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
     expect(getToolSearchRefusal(error(400, 'messages.0: bad content'))).toBe('unattributed')
     expect(getToolSearchRefusal(error(400, 'prompt is too long: 210000 tokens > 200000 maximum'))).toBeNull()
+    // An account without credits is refused whatever the request declares.
+    expect(getToolSearchRefusal(error(400, 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'))).toBeNull()
   } finally {
     if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL
     else process.env.ANTHROPIC_BASE_URL = previous

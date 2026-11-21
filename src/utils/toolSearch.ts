@@ -370,7 +370,11 @@ export function getToolSearchRefusal(error: unknown): ToolSearchRefusal | null {
     getAPIProvider() === 'firstParty' &&
     isFirstPartyAnthropicBaseUrl() &&
     !process.env.ANTHROPIC_UNIX_SOCKET
-  if (directApi || message.toLowerCase().includes('prompt is too long')) {
+  if (
+    directApi ||
+    message.toLowerCase().includes('prompt is too long') ||
+    message.includes('Your credit balance is too low')
+  ) {
     return null
   }
   return 'unattributed'
