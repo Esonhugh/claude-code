@@ -51,6 +51,7 @@ export function singleExchangePromptTooLong(
   const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(
     refused.errorDetails ?? '',
   )
+  // @ts-ignore - recovered code
   const conversationTokens = roughTokenCountEstimationForMessages(exchange)
   const detail =
     actualTokens === undefined || limitTokens === undefined
