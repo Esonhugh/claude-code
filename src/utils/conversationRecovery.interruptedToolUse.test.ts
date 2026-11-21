@@ -81,6 +81,28 @@ test('only the unanswered calls of the last reply get an interrupted result', ()
   ])
 })
 
+test('a call answered before a later part of the same reply streamed in keeps only its real result', () => {
+  const { messages } = deserializeMessagesWithInterruptDetection([
+    createUserMessage({ content: 'run both' }),
+    toolUse('toolu_done', 'msg_1'),
+    toolResult('toolu_done'),
+    toolUse('toolu_cut', 'msg_1'),
+  ])
+
+  expect(
+    blocks(messages).map(b => [
+      b.type,
+      b.type === 'tool_result' ? b.tool_use_id : b.type === 'tool_use' && b.id,
+      b.type === 'tool_result' && b.content,
+    ]),
+  ).toEqual([
+    ['tool_use', 'toolu_done', false],
+    ['tool_result', 'toolu_done', 'done'],
+    ['tool_use', 'toolu_cut', false],
+    ['tool_result', 'toolu_cut', TOOL_CALL_INTERRUPTED_MESSAGE],
+  ])
+})
+
 test('an unanswered call the user already moved past is still left out', () => {
   const stale = toolUse('toolu_stale', 'msg_1')
   const { messages } = deserializeMessagesWithInterruptDetection([

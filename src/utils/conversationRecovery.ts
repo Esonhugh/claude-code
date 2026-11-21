@@ -347,7 +347,6 @@ export function deserializeMessagesWithInterruptDetection(
  * drops those.
  */
 function createInterruptedToolResults(messages: Message[]): Message[] {
-  const answered = new Set<string>()
   let lastReplyId: string | undefined
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!
@@ -358,11 +357,20 @@ function createInterruptedToolResults(messages: Message[]): Message[] {
     if (message.type !== 'user') continue
     const content = message.message.content
     if (!Array.isArray(content)) return []
-    const results = content.filter(block => block.type === 'tool_result')
-    if (results.length === 0) return []
-    for (const block of results) answered.add(block.tool_use_id)
+    if (!content.some(block => block.type === 'tool_result')) return []
   }
   if (lastReplyId === undefined) return []
+
+  // A result can sit between two parts of the same streamed reply.
+  const answered = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      continue
+    }
+    for (const block of message.message.content) {
+      if (block.type === 'tool_result') answered.add(block.tool_use_id)
+    }
+  }
 
   return messages.flatMap(message =>
     message.type === 'assistant' &&
