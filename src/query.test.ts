@@ -622,3 +622,46 @@ describe('query streaming fallback tombstones', () => {
     expect(tombstones.map(t => t.message)).toEqual([partial])
   })
 })
+
+test('a reply cut at the output token limit yields the resume prompt it continues from, like official', async () => {
+  let modelCall = 0
+  const { events } = await drainQuery({
+    messages: [userMessage('write a lot')],
+    systemPrompt: asSystemPrompt([]),
+    userContext: {},
+    systemContext: {},
+    canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+    toolUseContext: createToolUseContext(),
+    querySource: 'sdk' as QuerySource,
+    deps: {
+      uuid: () => `00000000-0000-4000-8000-${String(modelCall).padStart(12, '0')}`,
+      microcompact: async messages => ({ messages }),
+      autocompact: async messages => ({ messages, wasCompacted: false }),
+      callModel: async function* () {
+        if (++modelCall > 1) {
+          yield createAssistantMessage({ content: 'the rest' })
+          return
+        }
+        yield createAssistantMessage({ content: 'PARTIAL' })
+        yield createAssistantAPIErrorMessage({
+          content: 'API Error: output token limit',
+          apiError: 'max_output_tokens',
+          error: 'max_output_tokens',
+        })
+      },
+    },
+  })
+  expect(
+    events
+      .filter(message => message.type === 'user' || message.type === 'assistant')
+      .map(message => [
+        message.type,
+        (message as { isMeta?: boolean }).isMeta === true,
+        JSON.stringify((message as AssistantMessage).message.content).slice(0, 40),
+      ]),
+  ).toEqual([
+    ['assistant', false, '[{"type":"text","text":"PARTIAL"}]'],
+    ['user', true, '"Output token limit hit. Resume directly'],
+    ['assistant', false, '[{"type":"text","text":"the rest"}]'],
+  ])
+})

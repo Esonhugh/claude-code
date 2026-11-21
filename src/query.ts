@@ -1980,6 +1980,7 @@ async function* queryLoop(
               `Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.`,
             isMeta: true,
           })
+          yield recoveryMessage
 
           const next: State = {
             messages: [
