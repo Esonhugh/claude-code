@@ -292,6 +292,11 @@ function notices(result: ReplRunResult, fresh: boolean, context: ToolUseContext)
   return []
 }
 
+/** A dispatched script's notices go in its outcome (the receipt came before the context was known): the first <log>. */
+function withNotices(output: string, lines: string[]): string {
+  return lines.length === 0 ? output : output.replace('<repl-output>\n', () => `<repl-output>\n<log>${lines.join('\n')}</log>\n`)
+}
+
 export const REPLTool = buildTool({
   name: REPL_TOOL_NAME,
   aliases: [REPL_ALIAS],
@@ -464,12 +469,13 @@ export const REPLTool = buildTool({
               session.pending.delete(evalId)
               return
             }
-            const output = withEvalId(late.output, evalId)
+            const settled = withNotices(late.output, late.contextReset ? [REPL_NEW_CONTEXT_NOTICE, REPL_TIMEOUT_RESET_NOTE] : [])
+            const output = withEvalId(settled, evalId)
             const messages = [
               ...host.drainMessages(),
               ...(late.error === undefined ? [] : failurePair(input.code, input.description, output)),
             ]
-            const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, late.output), ...startsTurn() }
+            const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, settled), ...startsTurn() }
             deliverReplEvent(session, event, messages)
             session.pending.delete(evalId)
           },

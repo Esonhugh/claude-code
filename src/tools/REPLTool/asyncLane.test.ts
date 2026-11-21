@@ -25,7 +25,14 @@ import { PollTool, setPollWaitForTesting } from '../PollTool/PollTool.js'
 import { resetToolsUsedForTesting } from '../PollTool/toolsUsed.js'
 import { isCodeModeEnabled, noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './codeModeGate.js'
 import { getReplPrompt } from './prompt.js'
-import { REPL_ASYNC_WALL_CAP_MS, REPL_MAX_PENDING_EVALS, REPLTool, setReplAsyncTimingForTesting } from './REPLTool.js'
+import {
+  REPL_ASYNC_WALL_CAP_MS,
+  REPL_MAX_PENDING_EVALS,
+  REPL_NEW_CONTEXT_NOTICE,
+  REPL_TIMEOUT_RESET_NOTE,
+  REPLTool,
+  setReplAsyncTimingForTesting,
+} from './REPLTool.js'
 import {
   abortPendingReplEvals,
   findReplSession,
@@ -187,6 +194,20 @@ describe('REPL async lane (official NUe)', () => {
     for (let i = 0; i < 3 && (text.match(/<event nonce/g) ?? []).length < 2; i++) text += (await poll(context)).text
     expect(text).toMatch(/eval="2"[^>]*>\n<result>first<\/result>/)
     expect(text).toMatch(/eval="1"[^>]*>\n<result>slow<\/result>/)
+  })
+
+  test('after a timeout took the context, the next outcome opens with the new-context notices', async () => {
+    const context = contextFor()
+    await run('globalThis.before = 41', context)
+    expect((await poll(context)).text).toContain('<result>41</result>')
+    await run('while (true) {}', context, { timeout: 200 })
+    expect((await poll(context)).text).toContain('timed out after 200ms')
+    await run('typeof before', context)
+    expect((await poll(context)).text).toContain(
+      `status="settled">\n<log>${REPL_NEW_CONTEXT_NOTICE}\n${REPL_TIMEOUT_RESET_NOTE}</log>\n<result>undefined</result>\n</event>`,
+    )
+    await run('typeof before', context)
+    expect((await poll(context)).text).toContain('status="settled">\n<result>undefined</result>')
   })
 
   test('a failed script comes back as an error event and a virtual REPL pair', async () => {
