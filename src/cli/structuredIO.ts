@@ -22,7 +22,7 @@ import { type HookCallback, hookJSONOutputSchema } from 'src/types/hooks.js'
 import { getSessionId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
-import { AbortError } from 'src/utils/errors.js'
+import { AbortError, isAbortError } from 'src/utils/errors.js'
 import {
   type Output as PermissionToolOutput,
   permissionPromptToolResultToPermissionDecision,
@@ -843,8 +843,11 @@ export class StructuredIO {
           )
           return result
         } catch (error) {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
-          console.error(`Error in hook callback ${callbackId}:`, error)
+          // Official 2.1.329: a timed-out or cancelled callback is not an error to report.
+          if (!isAbortError(error)) {
+            // biome-ignore lint/suspicious/noConsole:: intentional console output
+            console.error(`Error in hook callback ${callbackId}:`, error)
+          }
           return {}
         }
       },
