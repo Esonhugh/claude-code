@@ -84,6 +84,7 @@ import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
 import {
   createAssistantAPIErrorMessage,
+  createSystemAPIErrorMessage,
   createUserMessage,
   ensureToolResultPairing,
   getAdvisorStrippedMessageIds,
@@ -112,6 +113,7 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import { bytesPerTokenForModel, roughTokenCountEstimation } from '../tokenEstimation.js'
 import { recordMainThreadCacheUsage } from './promptCacheStats.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -122,6 +124,7 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
 import { feature } from 'bun:bundle'
 import type { ClientOptions } from '@anthropic-ai/sdk'
 import {
+  APIConnectionError,
   APIConnectionTimeoutError,
   APIError,
   APIUserAbortError,
@@ -253,6 +256,7 @@ import {
   startSessionActivity,
   stopSessionActivity,
 } from '../../utils/sessionActivity.js'
+import { sleep } from '../../utils/sleep.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   isBetaTracingEnabled,
@@ -295,6 +299,8 @@ import {
 import {
   CannotRetryError,
   FallbackTriggeredError,
+  getDefaultMaxRetries,
+  getRetryDelay,
   is529Error,
   type RetryContext,
   withRetry,
@@ -859,6 +865,8 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Internal: this request retries one whose tool search the endpoint refused. */
   toolSearchRefused?: true
+  /** Internal: how many times this request was sent again after its stream was cut. */
+  streamCutRetries?: number
   /** The request continues a parent's prompt as a fork, so it may keep the parent's advisor. */
   forkAdvisor?: true
   /** Called once when the server refused this conversation's advisor, before the retry. */
@@ -2381,6 +2389,38 @@ async function* queryModelRequest(
   const stoppedBlockIndexes = new Set<number>()
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
+  let usageBilled = false
+  // Like official: a request cut before message_delta (abort, dropped stream)
+  // already read its prompt and wrote what streamed, so it is billed once
+  // with the output estimated from the blocks received.
+  const billCutRequest = () => {
+    if (!partialMessage || usageBilled) return
+    usageBilled = true
+    const streamed = contentBlocks
+      .map(block =>
+        block?.type === 'text'
+          ? block.text
+          : block?.type === 'thinking'
+            ? block.thinking
+            : block?.type === 'tool_use' || block?.type === 'server_tool_use'
+              ? block.name + (typeof block.input === 'string' ? block.input : jsonStringify(block.input))
+              : '',
+      )
+      .join('')
+    const cutUsage = {
+      ...usage,
+      output_tokens: Math.max(
+        usage.output_tokens,
+        roughTokenCountEstimation(streamed, bytesPerTokenForModel(options.model)),
+      ),
+    }
+    costUSD += addToTotalSessionCost(
+      // @ts-ignore - recovered code
+      calculateUSDCost(resolvedModel, cutUsage),
+      cutUsage,
+      options.model,
+    )
+  }
   let stopReason: BetaStopReason | null = null
   let didFallBackToNonStreaming = false
   let fallbackMessage: AssistantMessage | undefined
@@ -2482,6 +2522,7 @@ async function* queryModelRequest(
     contentBlocks.length = 0
     stoppedBlockIndexes.clear()
     usage = EMPTY_USAGE
+    usageBilled = false
     stopReason = null
     isAdvisorInProgress = false
 
@@ -2900,6 +2941,7 @@ async function* queryModelRequest(
             }
 
             // Update cost
+            usageBilled = true
             // @ts-ignore - recovered code
             const costUSDForPart = calculateUSDCost(resolvedModel, usage)
             costUSD += addToTotalSessionCost(
@@ -3071,6 +3113,7 @@ async function* queryModelRequest(
     } catch (streamingError) {
       // Clear the idle timeout watchdog on error path too
       clearStreamIdleTimers()
+      billCutRequest()
 
       // Instrumentation: if the watchdog had already fired and the for-await
       // threw (rather than exiting cleanly), record that the loop DID exit and
@@ -3100,7 +3143,9 @@ async function* queryModelRequest(
 
       // Send-now cuts the reply to deliver a queued message. Like official,
       // keep the text the model already wrote so the next request carries it.
-      const partialText = signal.aborted && signal.reason === 'interrupt' && partialMessage
+      // Headless has no streaming-text row to keep the reply from, so like
+      // official every abort of an sdk request keeps it.
+      const partialText = signal.aborted && (signal.reason === 'interrupt' || options.querySource === 'sdk') && partialMessage
         ? contentBlocks.filter((block, index): block is BetaTextBlock =>
             !stoppedBlockIndexes.has(index) && block?.type === 'text' && block.text.trim() !== '')
         : []
@@ -3189,6 +3234,45 @@ async function* queryModelRequest(
         )
 
       if (disableFallback) {
+        // Like official: a connection that drops before any block finished
+        // left nothing to keep, so the request is streamed again within the
+        // retry budget instead of failing the turn.
+        const retry = (options.streamCutRetries ?? 0) + 1
+        const maxRetries = options.maxRetries ?? getDefaultMaxRetries()
+        if (
+          newMessages.length === 0 &&
+          retry <= maxRetries &&
+          (!(streamingError instanceof APIError) ||
+            streamingError.status === undefined ||
+            streamingError.status >= 500)
+        ) {
+          const delayMs = getRetryDelay(retry)
+          logForDebugging(
+            `Stream connection error — retrying streaming (${retry}/${maxRetries}): ${errorMessage(streamingError)}`,
+            { level: 'warn' },
+          )
+          releaseStreamResources()
+          yield createSystemAPIErrorMessage(
+            streamingError instanceof APIError
+              ? streamingError
+              : new APIConnectionError({
+                  cause: streamingError instanceof Error ? streamingError : undefined,
+                }),
+            delayMs,
+            retry,
+            maxRetries,
+          )
+          await sleep(delayMs, signal, { abortError: () => new APIUserAbortError() })
+          yield* queryModelRequest(
+            messages,
+            systemPrompt,
+            thinkingConfig,
+            tools,
+            signal,
+            { ...options, streamCutRetries: retry },
+          )
+          return
+        }
         logForDebugging(
           `Error streaming (non-streaming fallback disabled): ${errorMessage(streamingError)}`,
           { level: 'error' },
@@ -3590,6 +3674,7 @@ async function* queryModelRequest(
     // Without this, the Response object's native TLS/socket buffers leak
     // until the generator itself is GC'd (see GH #32920).
     releaseStreamResources()
+    billCutRequest()
 
     // Non-streaming fallback cost: the streaming path tracks cost in the
     // message_delta handler before any yield. Fallback pushes to newMessages

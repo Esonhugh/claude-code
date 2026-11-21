@@ -92,6 +92,7 @@ let streamNotFound = false
 let nonStreamingThinkingTokens: number | undefined
 let nonStreamingOmitsUsage = false
 let streamInterrupted = false
+let streamInterruptedOnce = false
 let streamHangsAfterText = false
 let streamCutAfterToolUse = false
 let overflowRequest = 0
@@ -249,7 +250,7 @@ const client = new Anthropic({
           type: 'error',
           error: { type: 'api_error', message: 'controlled cut after tool_use' },
         }]
-      : streamInterrupted
+      : streamInterrupted || (streamInterruptedOnce && requests.length === 1)
       ? [...events.slice(0, 3), {
           type: 'error',
           error: { type: 'api_error', message: 'controlled mid-stream interruption' },
@@ -400,6 +401,7 @@ afterEach(() => {
   nonStreamingThinkingTokens = undefined
   nonStreamingOmitsUsage = false
   streamInterrupted = false
+  streamInterruptedOnce = false
   streamHangsAfterText = false
   streamCutAfterToolUse = false
   overflowRequest = 0
@@ -1955,18 +1957,23 @@ test('a stream cut after a tool_use keeps it instead of re-requesting it without
 })
 
 test.each([
-  ['interrupt', [{ type: 'text', text: 'OK' }]],
-  ['user-cancel', undefined],
-] as const)('an abort with reason %s while text streams keeps the partial reply: %p', async (reason, kept) => {
+  ['interrupt', 'repl_main_thread', [{ type: 'text', text: 'OK' }]],
+  ['user-cancel', 'repl_main_thread', undefined],
+  // Headless has no streaming-text row to keep the reply from, so like
+  // official every abort of an sdk request keeps what was written.
+  [undefined, 'sdk', [{ type: 'text', text: 'OK' }]],
+] as const)('an abort with reason %s of a %s request while text streams keeps the partial reply: %p', async (reason, querySource, kept) => {
   streamHangsAfterText = true
   const controller = new AbortController()
   const assistants: unknown[] = []
+  const { getTotalInputTokens } = await import('../../cost-tracker.js')
+  const inputBefore = getTotalInputTokens()
   for await (const event of queryModelWithStreaming({
     messages: [createUserMessage({ content: 'write a long answer' })],
     systemPrompt: asSystemPrompt(['SYSTEM']),
     thinkingConfig: { type: 'disabled' }, tools: [], signal: controller.signal,
     options: {
-      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      model: 'claude-sonnet-4-6', querySource,
       agents: [], mcpTools: [], hasAppendSystemPrompt: false,
       isNonInteractiveSession: true, enablePromptCaching: true,
       getToolPermissionContext: async () => getEmptyToolPermissionContext(),
@@ -1980,6 +1987,64 @@ test.each([
     expect.objectContaining({ message: expect.objectContaining({ content: kept }) }),
   ])
   expect(requests).toHaveLength(1)
+  // The aborted request read its prompt: it is billed like official does.
+  expect(getTotalInputTokens() - inputBefore).toBe(1)
+})
+
+test('with the non-streaming fallback off a stream cut before any block finished is retried as a stream', async () => {
+  process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = '1'
+  const events: Array<{ type: string; subtype?: string; isApiErrorMessage?: boolean; message?: { content: unknown } }> = []
+  const run = async (maxRetries: number) => {
+    events.length = 0
+    requests.length = 0
+    for await (const event of queryModelWithStreaming({
+      messages: [createUserMessage({ content: 'cut' })],
+      systemPrompt: asSystemPrompt(['SYSTEM']),
+      thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread', maxRetries,
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })) events.push(event as (typeof events)[number])
+    return events.filter(event => event.type === 'assistant')
+  }
+  try {
+    streamInterruptedOnce = true
+    const replies = await run(2)
+    expect(requests.map(request => request.stream === true)).toEqual([true, true])
+    expect(events.filter(event => event.type === 'system' && event.subtype === 'api_error')).toHaveLength(1)
+    expect(replies).toEqual([
+      expect.objectContaining({ message: expect.objectContaining({ content: [{ type: 'text', text: 'OK' }] }) }),
+    ])
+    streamInterruptedOnce = false
+    streamInterrupted = true
+    const failed = await run(1)
+    expect(requests.map(request => request.stream === true)).toEqual([true, true])
+    expect(failed).toEqual([expect.objectContaining({ isApiErrorMessage: true })])
+  } finally {
+    delete process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
+  }
+})
+
+test('a stream cut before message_delta is billed along with its non-streaming fallback', async () => {
+  streamInterrupted = true
+  const { getTotalInputTokens, getTotalOutputTokens } = await import('../../cost-tracker.js')
+  const before = [getTotalInputTokens(), getTotalOutputTokens()]
+  for await (const _ of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'cut' })],
+    systemPrompt: asSystemPrompt(['SYSTEM']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    },
+  })) void _
+  expect(requests.map(request => request.stream === true)).toEqual([true, false])
+  expect([getTotalInputTokens() - before[0]!, getTotalOutputTokens() - before[1]!]).toEqual([2, 2])
 })
 
 test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {
