@@ -7,6 +7,7 @@ import { disposeModsHosts, endModsSessions } from './gracefulShutdown.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import isEqual from 'lodash-es/isEqual.js'
 import ts from 'typescript'
 import { z } from 'zod/v4'
 import type { ToolUseContext } from '../Tool.js'
@@ -186,6 +187,7 @@ function fixture() {
     () => settingsModule,
   )
   const snapshot = evaluate('./hooks/hooksConfigSnapshot.ts', (name) => {
+    if (name === 'lodash-es/isEqual.js') return { default: isEqual }
     if (name.endsWith('state.js')) return bootstrap
     if (name.endsWith('envUtils.js')) return { isSafeMode: () => false }
     if (name.endsWith('pluginOnlyPolicy.js')) return pluginPolicy
@@ -1564,6 +1566,24 @@ describe('source-scoped hook executor', () => {
           .map((result) => result.hookSource),
       ),
     ).toEqual(new Set(['policySettings', 'projectSettings']))
+  })
+
+  test('a managed matcher written with another key order is still the same matcher', async () => {
+    const f = fixture()
+    f.addHook('policySettings', 'PostToolUse', {
+      type: 'command',
+      command: 'same-command',
+      timeout: 5,
+    })
+    f.addHook('userSettings', 'PostToolUse', {
+      timeout: 5,
+      command: 'same-command',
+      type: 'command',
+    })
+    await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
   })
 
   test('the non-managed pass skips a matcher the managed pass already runs', async () => {

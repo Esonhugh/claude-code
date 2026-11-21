@@ -1,3 +1,4 @@
+import isEqual from 'lodash-es/isEqual.js'
 import { resetSdkInitState } from '../../bootstrap/state.js'
 import { isSafeMode } from '../envUtils.js'
 import { isRestrictedToPluginOnly } from '../settings/pluginOnlyPolicy.js'
@@ -57,17 +58,13 @@ function getHooksFromAllowedSources(): HooksConfigSnapshot {
       // A non-managed matcher identical to a managed one is the same hook
       // configured twice: only the managed copy runs.
       const managed =
-        source === 'policySettings'
-          ? undefined
-          : new Set(
-              policySettings?.hooks?.[event]?.map((matcher) =>
-                JSON.stringify(matcher),
-              ),
-            )
+        source === 'policySettings' ? undefined : policySettings?.hooks?.[event]
       snapshot[event] ??= []
       snapshot[event]!.push(
         ...structuredClone(matchers)
-          .filter((matcher) => !managed?.has(JSON.stringify(matcher)))
+          .filter(
+            (matcher) => !managed?.some((other) => isEqual(other, matcher)),
+          )
           .map((matcher) => ({
             ...matcher,
             hookSource: source,
