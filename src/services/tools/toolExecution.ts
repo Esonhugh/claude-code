@@ -129,6 +129,7 @@ import {
 } from '../../utils/toolSearch.js'
 import {
   getConnectionTimeoutMs,
+  getToolListRefresh,
   McpAuthError,
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../mcp/client.js'
@@ -354,7 +355,7 @@ export type McpServerType =
   | 'claudeai-proxy'
   | undefined
 
-function findMcpServerConnection(
+export function findMcpServerConnection(
   toolName: string,
   mcpClients: MCPServerConnection[],
 ): MCPServerConnection | undefined {
@@ -538,6 +539,20 @@ export async function* runToolUse(
       toolName,
       toolUseContext.getAppState().mcp.clients,
     )
+    // The server may have announced this tool a moment ago: its
+    // tools/list_changed refresh is still running, so the pool lacks the tool.
+    const listRefresh = server && getToolListRefresh(server.name)
+    if (listRefresh) {
+      await listRefresh
+      const tools = refreshTools()
+      if (findToolByName(tools, toolName)) {
+        yield* runToolUse(toolUse, assistantMessage, canUseTool, {
+          ...toolUseContext,
+          options: { ...toolUseContext.options, tools },
+        })
+        return
+      }
+    }
     if (isWaitablePendingMcpServer(server)) {
       const wait = await waitForPendingMcpTool(
         toolName,

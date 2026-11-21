@@ -14,7 +14,8 @@ import {
   setCachedSettingsForSource,
 } from '../../utils/settings/settingsCache.js'
 import { runToolUse } from './toolExecution.js'
-import { McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../mcp/client.js'
+import { StreamingToolExecutor } from './StreamingToolExecutor.js'
+import { McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, trackToolListRefresh } from '../mcp/client.js'
 import { dispatchModEvent } from '../mods/dispatch.js'
 import type { ModDispatchHook } from '../mods/types.js'
 import {
@@ -132,6 +133,66 @@ test('an MCP tool error from a tool whose schema was not sent carries the input 
     if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
     else process.env.ENABLE_TOOL_SEARCH = previous
   }
+})
+
+// Official 2.1.329 runs the call; the fork answered "No such tool available".
+test('a call to a tool announced by tools/list_changed waits for the running refresh', async () => {
+  const f = fixture(async (event, next) => next(event), 'mcp__fx__dyn')
+  Object.assign(f.tool, { isMcp: true, mcpInfo: { serverName: 'fx', toolName: 'dyn' } })
+  let pool: Tool[] = []
+  f.context.options.tools = pool
+  f.context.options.refreshTools = () => pool
+  f.context.mods = undefined
+  const appState = f.context.getAppState()
+  f.context.getAppState = () => ({
+    ...appState,
+    mcp: { clients: [{ name: 'fx', type: 'connected' }], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+  }) as unknown as ReturnType<ToolUseContext['getAppState']>
+  const run = async () => {
+    const updates = await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    return updates.flatMap(update => {
+      const content = update.message?.type === 'user' ? update.message.message.content : []
+      return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+    })
+  }
+
+  await trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })().then(() => { pool = [] }))
+  expect(await run()).toEqual([expect.objectContaining({
+    is_error: true,
+    content: '<tool_use_error>Error: No such tool available: mcp__fx__dyn</tool_use_error>',
+  })])
+
+  void trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })())
+  expect(await run()).toEqual([expect.objectContaining({ content: 'original' })])
+  expect(f.calls).toEqual([{ value: 'original' }])
+
+  // The streaming executor holds the tool list taken before the turn.
+  const stream = async () => {
+    const executor = new StreamingToolExecutor([], async () => ({ behavior: 'allow' }), f.context)
+    executor.addTool(f.block, f.assistant)
+    const updates = await Array.fromAsync(executor.getRemainingResults())
+    return updates.flatMap(update => {
+      const content = update.message?.type === 'user' ? update.message.message.content : []
+      return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+    })
+  }
+  expect(await stream()).toEqual([expect.objectContaining({ content: 'original' })])
+  pool = []
+  void trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })())
+  expect(await stream()).toEqual([expect.objectContaining({ content: 'original' })])
+  pool = []
+  expect(await stream()).toEqual([expect.objectContaining({ is_error: true })])
 })
 
 test('an empty permission handler updatedInput keeps the model input', async () => {

@@ -214,6 +214,7 @@ import {
   fetchToolsForClient,
   getMcpToolsCommandsAndResources,
   prefetchAllMcpResources,
+  trackToolListRefresh,
 } from './services/mcp/client.js'
 import {
   VALID_INSTALLABLE_SCOPES,
@@ -4200,28 +4201,32 @@ async function run(): Promise<CommanderCommand> {
               if (client.type === 'connected' && client.capabilities?.tools?.listChanged) {
                 client.client.setNotificationHandler(
                   'notifications/tools/list_changed',
-                  async () => {
-                    try {
-                      clearFetchToolsCache(client.name)
-                      const newTools = await fetchToolsForClient(client)
-                      headlessStore.setState(prev => ({
-                        ...prev,
-                        mcp: {
-                          ...prev.mcp,
-                          tools: [
-                            ...prev.mcp.tools.filter(
-                              t => t.mcpInfo?.serverName !== client.name,
-                            ),
-                            ...newTools,
-                          ],
-                        },
-                      }))
-                    } catch (err) {
-                      logForDebugging(
-                        `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
-                      )
-                    }
-                  },
+                  () =>
+                    trackToolListRefresh(
+                      client.name,
+                      (async () => {
+                        try {
+                          clearFetchToolsCache(client.name)
+                          const newTools = await fetchToolsForClient(client)
+                          headlessStore.setState(prev => ({
+                            ...prev,
+                            mcp: {
+                              ...prev.mcp,
+                              tools: [
+                                ...prev.mcp.tools.filter(
+                                  t => t.mcpInfo?.serverName !== client.name,
+                                ),
+                                ...newTools,
+                              ],
+                            },
+                          }))
+                        } catch (err) {
+                          logForDebugging(
+                            `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
+                          )
+                        }
+                      })(),
+                    ),
                 )
               }
               headlessStore.setState(prev => ({

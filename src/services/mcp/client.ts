@@ -2330,6 +2330,32 @@ export function getFetchToolsCacheKey(client: MCPServerConnection): string {
     : client.name
 }
 
+// tools/list_changed refreshes that have started but not yet reached app state.
+const toolListRefreshes = new Map<string, Promise<void>>()
+
+/**
+ * Remembers a tools/list_changed refresh while it runs, so a call to a tool
+ * the server has just announced can wait for it instead of failing.
+ */
+export function trackToolListRefresh(
+  serverName: string,
+  refresh: Promise<void>,
+): Promise<void> {
+  toolListRefreshes.set(serverName, refresh)
+  void refresh.finally(() => {
+    if (toolListRefreshes.get(serverName) === refresh) {
+      toolListRefreshes.delete(serverName)
+    }
+  })
+  return refresh
+}
+
+export function getToolListRefresh(
+  serverName: string,
+): Promise<void> | undefined {
+  return toolListRefreshes.get(serverName)
+}
+
 export function clearFetchToolsCache(name: string): void {
   fetchToolsForClient.cache.delete(name)
   fetchToolsForClient.cache.delete(
