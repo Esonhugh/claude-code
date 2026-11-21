@@ -5908,12 +5908,19 @@ function runHeadlessStreaming(
 
       const remoteFields = structuredIO instanceof RemoteIO ? extractInboundMessageFields(message) : undefined
       if (structuredIO instanceof RemoteIO && !remoteFields) continue
+      // Official 2.1.329: content that is neither a string nor an array is
+      // dropped, and null or absent content is an empty prompt.
+      // @ts-ignore - recovered code
+      const inboundContent = remoteFields?.content ?? message.message.content ?? ''
+      if (typeof inboundContent !== 'string' && !Array.isArray(inboundContent)) {
+        logForDebugging(`Dropping user message with ${typeof inboundContent} content`, { level: 'warn' })
+        continue
+      }
       const inboundCommand: QueuedCommand = {
         mode: 'prompt',
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
-        // @ts-ignore - recovered code
-        value: await resolveAndPrepend(message, remoteFields?.content ?? message.message.content),
+        value: await resolveAndPrepend(message, inboundContent),
         // @ts-ignore - recovered code
         uuid: message.uuid,
         priority: message.priority,
