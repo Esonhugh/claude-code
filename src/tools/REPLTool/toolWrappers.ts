@@ -55,6 +55,8 @@ export type ReplToolHost = {
   wallClockError(ms: number): string
   /** The script returned or threw: lines its stderr gets about calls it did not await. */
   scriptEnded(failed: boolean): Promise<string[]>
+  /** Official `hh`: what became of the calls the script left running, once they have ended. */
+  lateReport(): string
   readonly callCount: number
   /** Copies of the calls the script started, in order (official `Zu` input). */
   calls(): ReplCallRecord[]
@@ -343,6 +345,7 @@ export function createReplToolHost(opts: {
   let stopped = false
   let afterStop = 0
   let noMoreCalls = false
+  let leftRunning: ReplCallRecord[] = []
   const callSettled = new Set<() => void>()
   // Official phase `executing` starts at tool.call, after hooks and the permission prompt.
   const inTool = new Set<ReplCallRecord>()
@@ -479,10 +482,11 @@ export function createReplToolHost(opts: {
     },
     async scriptEnded(failed) {
       const left = started.filter(call => call.phase === 'start' || call.phase === 'executing')
+      leftRunning = left
       if (asyncLane) {
         return failed || left.length === 0
           ? []
-          : [`\u26a0 ${left.length} tool call(s) still running at script end (${left.map(call => call.toolName).join(', ')}) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.`]
+          : [`\u26a0 ${left.length} tool call(s) still running at script end (${left.map(call => call.toolName).join(', ')}) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await a call whose result the script needs. You will be told when they have ended. A loop left running ends at its next sleep() or timer, or when none of its calls is running.`]
       }
       if (!codeMode) {
         return failed || left.length === 0
@@ -504,6 +508,15 @@ export function createReplToolHost(opts: {
         })
       }
       return leftoverCallLines(queued, running, failed)
+    },
+    lateReport() {
+      const completed = leftRunning.filter(call => call.phase === 'complete')
+      const failed = leftRunning.filter(call => call.phase === 'error')
+      return (
+        'The tool calls that this script left running have ended.' +
+        (completed.length > 0 ? ` Completed since it returned: ${toolList(completed)}.` : '') +
+        (failed.length > 0 ? ` Failed or refused: ${toolList(failed)}.` : '')
+      )
     },
     calls() {
       return started.map(call => ({ ...call }))

@@ -188,6 +188,27 @@ describe('REPL executor', () => {
     expect((await run('await new Promise(r => setTimeout(() => r(7), 10))')).value).toBe('7')
   })
 
+  test('a script that returned with a call still running hears its answer, and what it then logs is late output', async () => {
+    const late: string[] = []
+    const { run } = setup({
+      callTool: async () => {
+        await sleep(60)
+        return 'slow'
+      },
+      onLateLog: text => late.push(text),
+    })
+    const result = await run("void Read({}).then(v => self.log('late:' + v)); 'early'")
+    expect(result.output).toBe('<repl-output>\n<result>early</result>\n</repl-output>')
+    expect(late).toEqual([])
+    await result.leftRunning
+    expect(late).toEqual(['late:slow'])
+    expect((await run("await Read({}); 'awaited'")).leftRunning).toBeUndefined()
+    // A script that failed has no late output.
+    expect((await run("void Read({}); throw new Error('bad')")).leftRunning).toBeUndefined()
+    // Without a place for late output the answer is dropped, as before.
+    expect((await run("void Read({}); 'sync'", { onLateLog: undefined })).leftRunning).toBeUndefined()
+  })
+
   test('a script that ends with timers still waiting is told they were cancelled (official 2.1.329 gh)', async () => {
     const { run } = setup()
     const warning = (n: number) =>

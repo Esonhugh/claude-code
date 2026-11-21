@@ -26,8 +26,10 @@ import {
   deliverReplEvent,
   detachReplEval,
   dispatchReplEval,
+  endLateReplEval,
   finishReplEval,
   formatReplEvalEvent,
+  formatReplLateEvent,
   getReplSession,
   MAIN_REPL_SESSION,
   replCancelledBeforeStartText,
@@ -404,6 +406,7 @@ export const REPLTool = buildTool({
       let began = false
       let stop: ReplStop | undefined
       if (evalId !== undefined) dispatchReplEval(session, evalId, input.code, input.description)
+      const lateLogs: string[] = []
       const running = session.executor.run(input.code, {
         timeoutMs: input.timeout,
         totalCapMs: asyncLane ? asyncTiming.wallCapMs : replTotalCapFor(mode),
@@ -427,6 +430,7 @@ export const REPLTool = buildTool({
         ...(asyncLane && {
           detachAfterMs: asyncTiming.detachMs,
           evalId,
+          onLateLog: text => lateLogs.push(text),
           onDetach: () => detachReplEval(session, evalId!),
           onStart: () => {
             began = true
@@ -436,8 +440,10 @@ export const REPLTool = buildTool({
         }),
       })
       if (evalId !== undefined) {
-        const finish = () => finishReplEval(session, evalId)
-        void running.then(finish, finish)
+        void running.then(
+          done => finishReplEval(session, evalId, { late: done.leftRunning !== undefined }),
+          () => finishReplEval(session, evalId),
+        )
         session.pending.set(evalId, { id: evalId, startedAt, abort: reason => controller.abort(reason) })
         // Official 2.1.325 (chunk-x5qyz3j2.js `registerScriptTask`): in an
         // interactive session the script is a background task until it ends,
@@ -481,6 +487,12 @@ export const REPLTool = buildTool({
             const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, settled), ...startsTurn() }
             deliverReplEvent(session, event, messages)
             session.pending.delete(evalId)
+            // Official late phase: what the script logs once its calls answer goes out as an event of its own.
+            void late.leftRunning?.then(() => {
+              const text = formatReplLateEvent(evalId, [...lateLogs, host.lateReport()].join('\n'))
+              deliverReplEvent(session, { id: evalId, text, ...startsTurn() }, host.drainMessages())
+              endLateReplEval(session, evalId)
+            })
           },
           (error: unknown) => {
             // Official `tr` with its failure flag: the host failed before the script settled.

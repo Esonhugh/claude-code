@@ -576,12 +576,27 @@ describe('calls left running at script end', () => {
   const savedConcurrency = process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
   afterEach(() => restore('CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY', savedConcurrency))
 
-  test('the async lane says they run on', async () => {
+  test('the async lane says they run on, and what they then log comes as a late event (official 2.1.329)', async () => {
     const context = contextFor('bypassPermissions')
-    await run(`Read({file_path: 'slow:150'}); 'ok'`, context)
+    await run(`void Read({file_path: 'slow:150'}).then(text => self.log('late:' + text)); 'ok'`, context)
     expect((await poll(context)).text).toContain(
-      "status=\"settled\">\n<log>[stderr] \u26a0 1 tool call(s) still running at script end (Read) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await next time.</log>\n<result>ok</result>\n</event>",
+      "status=\"settled\">\n<log>[stderr] \u26a0 1 tool call(s) still running at script end (Read) \u2014 they run on and their effects happen; what a .then(self.log) logs arrives as late output, anything else is not in this result. Do not re-issue them; await a call whose result the script needs. You will be told when they have ended. A loop left running ends at its next sleep() or timer, or when none of its calls is running.</log>\n<result>ok</result>\n</event>",
     )
+    const session = findReplSession(context.agentId!)!
+    expect(replLedger(session).map(row => [row.id, row.state])).toEqual([[1, 'late']])
+    expect((await poll(context)).text).toMatch(
+      /\n<event nonce="[^"]+" kind="repl-eval" at="[^"]+" eval="1" status="late">\n<log>\[late output from eval #1 \(settled earlier\) \u2014 delivered below\.\]<\/log>\n<log>late:contents of slow:150\nThe tool calls that this script left running have ended\. Completed since it returned: Read\.<\/log>\n<\/event>$/,
+    )
+    expect(session.ledger.size).toBe(0)
+    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
+  })
+
+  test('a script whose calls had all ended has no late event', async () => {
+    const context = contextFor('bypassPermissions')
+    await run(`await Read({file_path: 'a'}); 'ok'`, context)
+    expect((await poll(context)).text).toContain('<result>ok</result>')
+    expect(findReplSession(context.agentId!)!.ledger.size).toBe(0)
+    expect((await poll(context)).text).toBe(NO_PENDING_EVENTS)
   })
 
   test('the sync lane waits for a running call and does not start one still queued', async () => {

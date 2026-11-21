@@ -174,7 +174,7 @@ Phase 4 已知差异（留给一致性检查）：
 
 - 没有移植：`imagesRefused`、`imagePagesFailed`、`stripForStorage`（transcript 保留完整 base64）、后台结果带图片、`startsTurn:false`、`ranBefore`、`rerunByHook`、等待计数界面 `onStopWaitChange`。
 - 自拟文案：`CONTEXT_LOST` 和 Poll schema 的 `content` 说明，官方没有对应原文。
-- 脚本结束时未 await 的调用（官方 `Ze`/`Da`）：脚本出错时，仍在运行后失败的调用也用逐条文案（官方此时用合并文案，并把错误列在脚本错误下，我们的错误路径不列调用错误）。没有移植 async lane 的迟到日志文案 `Xl`、`is`；脚本结束后 timer 已清掉，只有 promise 链还能发起调用。
+- 脚本结束时未 await 的调用（官方 `Ze`/`Da`）：脚本出错时，仍在运行后失败的调用也用逐条文案（官方此时用合并文案，并把错误列在脚本错误下，我们的错误路径不列调用错误）。async lane 下脚本留下的调用结束后，`.then(self.log)` 记下的内容和官方 `hh` 的结束说明作为 `status="late"` 事件送达；迟到阶段不再受理新的调用，也没有移植被停止、到达上限两种说明文案。脚本结束后 timer 已清掉（成功结束的脚本在 stderr 给出官方 `gh` 警告）。
 - 墙钟文案（官方 `ju`/`Fu`）与内层 watchdog（官方 `dc`）：没有沙箱重试和插件 hook 重跑的两句（`ranBefore`/`rerunByHook`，我们不追踪这两种重跑）；`pp()` 只看 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`。watchdog 触发后官方中止整个调用并以该错误结束脚本，我们同样中止本脚本的全部调用并结束运行，但 worker 随之重建，脚本上下文丢失（见 D2）。
 - resume 时 Code Mode 开着、会话本身不是 Code Mode 会话（官方 `C()` 的 `pin:false` 分支）：没有移植。官方提示 `Code Mode is on, but this session isn't using it, …` 并让这个会话改用普通工具；我们的开关在 main.tsx 建工具池前就按进程定死，会话内切换需要重建工具池，提示和行为只能一起做。
 - 虚拟 tool_result（官方 g61t94xb:6067-6090）：`is_error` 已恒写；`toolDenialAfterRun`、`sandboxViolations`、`sandboxed` 没有移植，要先给 UserMessage 加字段并追踪内层调用的沙箱结果。虚拟消息不发给 API。

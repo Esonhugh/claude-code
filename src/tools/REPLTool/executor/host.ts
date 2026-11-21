@@ -39,6 +39,11 @@ export type ReplRunOptions = {
   /** Awaited once the script returns or throws; its lines follow what the script wrote to stderr. */
   onScriptEnd?: (failed: boolean) => Promise<string[]>
   /**
+   * The async lane's late output: a script that returns with calls still
+   * running keeps hearing their answers, and what it then logs comes here.
+   */
+  onLateLog?: (text: string) => void
+  /**
    * A line put after the error of a script that started and then threw
    * (`stopped` false) or was stopped, unless its error is the stop report.
    */
@@ -63,6 +68,8 @@ export type ReplRunResult = {
   interrupted?: boolean
   /** This run started in a fresh context because the previous one was lost. */
   contextReset?: boolean
+  /** Set when the script left calls running: resolves once they have answered it and its late output is in. */
+  leftRunning?: Promise<void>
 }
 
 export type ReplExecutor = {
@@ -372,6 +379,23 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
   let nextGlobalsId = 1
   const globalsReplies = new Map<number, (names: string[] | undefined) => void>()
 
+  const scriptGlobalNames = (): Promise<string[] | undefined> => {
+    const target = worker
+    if (!target) return Promise.resolve(undefined)
+    return new Promise(resolve => {
+      const id = nextGlobalsId++
+      const timer = setTimeout(() => reply(undefined), GLOBALS_REPLY_MS)
+      ;(timer as { unref?: () => void }).unref?.()
+      const reply = (names: string[] | undefined) => {
+        clearTimeout(timer)
+        globalsReplies.delete(id)
+        resolve(names)
+      }
+      globalsReplies.set(id, reply)
+      target.postMessage({ t: 'globals', id } satisfies ReplHostMessage)
+    })
+  }
+
   const finishAll = (end: RunEnd) => {
     for (const run of [...active.values()]) run.finish(end)
   }
@@ -449,22 +473,40 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
         run.finish({ error: report ?? INTERRUPTED, interrupted: true, ...(report !== undefined && { report: true }) })
       }
 
+      let unanswered = 0
+      // The script returned with calls unanswered (official late phase).
+      let endLate: (() => void) | undefined
       const answer = (callId: number, work: () => unknown) => {
         deadline.onToolStart()
+        unanswered++
         void Promise.resolve()
           .then(work)
           .then(toReplyJson, toErrorJson)
           .then(json => {
-            if (settled || worker !== target) return
-            deadline.onToolEnd()
-            target.postMessage({ t: 'reply', id: callId, json } satisfies ReplHostMessage)
+            unanswered--
+            if (settled && !endLate) return
+            if (worker === target) {
+              if (!settled) deadline.onToolEnd()
+              target.postMessage({ t: 'reply', id: callId, json } satisfies ReplHostMessage)
+            }
+            if (!endLate || unanswered > 0) return
+            const end = endLate
+            endLate = undefined
+            // The context answers in order: what the script logs on this reply comes first.
+            void scriptGlobalNames().then(() => {
+              active.delete(id)
+              end()
+            })
           })
       }
 
       const run: ActiveRun = {
         id,
         onMessage(message) {
-          if (settled) return
+          if (settled) {
+            if (message.t === 'log') o.onLateLog?.(message.stream === 1 ? `[stderr] ${message.text}` : message.text)
+            return
+          }
           if (message.t === 'log') (message.stream === 1 ? stderr : stdout).push(`${message.text}\n`)
           else if (message.t === 'done') {
             const timers = message.timers ? [timersCancelledWarning(message.timers)] : []
@@ -493,7 +535,13 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
           deadline.cancel()
           clearTimeout(capTimer)
           o.signal.removeEventListener('abort', onAbort)
-          active.delete(id)
+          const leftRunning =
+            end.error === undefined && o.onLateLog && unanswered > 0
+              ? new Promise<void>(ended => {
+                  endLate = ended
+                })
+              : undefined
+          if (!leftRunning) active.delete(id)
           // The only way to stop the script; the context goes with it.
           if (end.timedOut || end.interrupted) kill()
           if (end.error !== undefined && !end.report && o.errorNote)
@@ -515,6 +563,7 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
             ...(end.timedOut ? { timedOut: true } : {}),
             ...(end.interrupted ? { interrupted: true } : {}),
             ...(contextReset ? { contextReset: true } : {}),
+            ...(leftRunning && { leftRunning }),
           })
         },
       }
@@ -573,22 +622,7 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
     interrupt() {
       kill({ error: INTERRUPTED, interrupted: true })
     },
-    scriptGlobalNames() {
-      const target = worker
-      if (!target) return Promise.resolve(undefined)
-      return new Promise(resolve => {
-        const id = nextGlobalsId++
-        const timer = setTimeout(() => reply(undefined), GLOBALS_REPLY_MS)
-        ;(timer as { unref?: () => void }).unref?.()
-        const reply = (names: string[] | undefined) => {
-          clearTimeout(timer)
-          globalsReplies.delete(id)
-          resolve(names)
-        }
-        globalsReplies.set(id, reply)
-        target.postMessage({ t: 'globals', id } satisfies ReplHostMessage)
-      })
-    },
+    scriptGlobalNames,
     publishRunning(rows) {
       runningJson = JSON.stringify(rows)
       worker?.postMessage({ t: 'running', json: runningJson } satisfies ReplHostMessage)

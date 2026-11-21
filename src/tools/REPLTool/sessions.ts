@@ -433,6 +433,12 @@ export function formatReplEvalEvent(
   return `${open}\n${body}\n</event>`
 }
 
+/** Official late event (`gc` with `bi`): what a settled eval logged since, under the line that says so. */
+export function formatReplLateEvent(id: number, log: string, at = new Date()): string {
+  const logs = [`[late output from eval #${id} (settled earlier) \u2014 delivered below.]`, log]
+  return `<event kind="repl-eval" at="${attribute(at.toISOString())}" eval="${id}" status="late">\n${logs.map(text => `<log>${escapeContent(text)}</log>`).join('\n')}\n</event>`
+}
+
 /** Official lost event (`p` in 2.1.325 chunk-z3r3ymwt.js, status `Jot`): an eval whose outcome will never come. */
 export function formatReplLostEvent(id: number, text: string, at = new Date()): string {
   return `<event kind="repl-eval" at="${attribute(at.toISOString())}" eval="${id}" status="lost">${escapeContent(text)}</event>`
