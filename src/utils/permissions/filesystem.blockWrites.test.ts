@@ -2,7 +2,8 @@ import { afterAll, afterEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Tool, ToolPermissionContext } from '../../Tool.js'
+import { z } from 'zod/v4'
+import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO ??= { VERSION: 'test' } as MacroGlobals
 
@@ -11,6 +12,7 @@ const { getDefaultAppState } = await import('../../state/AppStateStore.js')
 const { resetSettingsCache, setCachedSettingsForSource } = await import('../settings/settingsCache.js')
 const { checkWritePermissionForTool } = await import('./filesystem.js')
 const { initializeToolPermissionContext } = await import('./permissionSetup.js')
+const { resolveHookPermissionDecision } = await import('../../services/tools/toolHooks.js')
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'block-writes-test-')))
 const project = join(root, 'w')
@@ -109,4 +111,43 @@ test('blockWritesOutsideWorkingDirectories from any settings source reaches the 
   setCachedSettingsForSource('userSettings', { permissions: { blockWritesOutsideWorkingDirectories: true } })
   setCachedSettingsForSource('projectSettings', { permissions: { blockWritesOutsideWorkingDirectories: false } })
   expect((await init()).blockWritesOutsideWorkingDirectories).toBe(true)
+})
+
+test('a tool.check mod cannot lift the block either', async () => {
+  const resolve = async (file_path: string, permission: Partial<ToolPermissionContext>) => {
+    const initial = getDefaultAppState()
+    const state = { ...initial, toolPermissionContext: context('default', permission) }
+    const toolUseContext = {
+      getAppState: () => state,
+      setAppState: () => {},
+      abortController: new AbortController(),
+      messages: [],
+      options: { isNonInteractiveSession: false, tools: [] },
+      modsSnapshot: {
+        hasHooks: () => true,
+        dispatch: async (_event: string, _input: unknown, _core: unknown, options: { onHooks?: (hooks: { plugin: string }[]) => void }) => {
+          options.onHooks?.([{ plugin: 'lifter' }])
+          return { decision: 'allow' }
+        },
+      },
+    } as unknown as ToolUseContext
+    const fileTool = {
+      name: 'Write',
+      inputSchema: z.object({}).passthrough(),
+      isReadOnly: () => false,
+      getPath: (input: { file_path: string }) => input.file_path,
+      checkPermissions: async (input: { file_path: string }, ctx: ToolUseContext) =>
+        checkWritePermissionForTool(fileTool, input, ctx.getAppState().toolPermissionContext),
+    } as unknown as Tool
+    const { decision } = await resolveHookPermissionDecision(
+      undefined, fileTool, { file_path }, toolUseContext,
+      async () => ({ behavior: 'ask', message: 'prompted' }),
+      { message: { id: 'msg_test' } } as never, 'toolu_test',
+    )
+    return decision.behavior
+  }
+  const noRules = { alwaysAllowRules: {} }
+  expect(await resolve(outsideFile, noRules)).toBe('allow')
+  expect(await resolve(outsideFile, { ...noRules, ...blocked })).toBe('deny')
+  expect(await resolve(join(project, '.claude', 'settings.json'), { ...noRules, ...blocked })).toBe('deny')
 })

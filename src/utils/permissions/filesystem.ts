@@ -1504,10 +1504,12 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
       return {
         behavior: 'deny',
         message: `${path} is outside ${dirs}; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.`,
+        // safetyCheck: a tool.check mod must not lift it either.
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason:
             'Writes outside the working directories are blocked (permissions.blockWritesOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.',
+          classifierApprovable: false,
         },
       }
     }
@@ -1517,7 +1519,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
       return {
         behavior: 'deny',
         message: `${path}: ${reason}`,
-        decisionReason: { type: 'other', reason },
+        decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false },
       }
     }
   }
