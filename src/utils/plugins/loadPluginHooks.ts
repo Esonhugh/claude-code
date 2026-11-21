@@ -132,9 +132,16 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
     MessageDisplay: [],
   }
 
-  // Process each enabled plugin
+  // Process each enabled plugin. Plugins the organization enables go first, so
+  // a same-named plugin from another marketplace cannot take over their hooks.
+  const policyEnabled = getSettingsForSource('policySettings')?.enabledPlugins
+  const isPolicyEnabled = (plugin: LoadedPlugin) =>
+    policyEnabled?.[plugin.source] === true
   const registeredNames = new Set<string>()
-  for (const plugin of enabled) {
+  for (const plugin of [
+    ...enabled.filter(isPolicyEnabled),
+    ...enabled.filter((plugin) => !isPolicyEnabled(plugin)),
+  ]) {
     if (!plugin.hooksConfig) {
       continue
     }

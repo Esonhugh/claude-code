@@ -57,15 +57,25 @@ if (!process.env.PLUGIN_HOOKS_DUPLICATE_NAME_TEST_CHILD) {
         plugin('other', 'mkt2'),
         plugin('plain', 'mkt5', false),
         plugin('plain', 'mkt2'),
+        plugin('org', 'mkt5'),
+        plugin('org', 'mkt2'),
       ],
       disabled: [],
       errors: [],
     }),
   }))
+  const settings = await import('../settings/settings.js')
+  mock.module('../settings/settings.js', () => ({
+    ...settings,
+    getSettingsForSource: (source: string) =>
+      source === 'policySettings'
+        ? { enabledPlugins: { 'org@mkt2': true } }
+        : null,
+  }))
   const state = await import('../../bootstrap/state.js')
   const { loadPluginHooks } = await import('./loadPluginHooks.js')
 
-  test('child: the first source of a plugin name keeps its hooks', async () => {
+  test('child: the first source of a plugin name keeps its hooks, managed sources first', async () => {
     await loadPluginHooks()
     expect(
       state
@@ -73,6 +83,6 @@ if (!process.env.PLUGIN_HOOKS_DUPLICATE_NAME_TEST_CHILD) {
         ?.SessionStart?.map((matcher) =>
           'pluginId' in matcher ? matcher.pluginId : undefined,
         ),
-    ).toEqual(['demo@mkt5', 'other@mkt2', 'plain@mkt2'])
+    ).toEqual(['org@mkt2', 'demo@mkt5', 'other@mkt2', 'plain@mkt2'])
   })
 }
