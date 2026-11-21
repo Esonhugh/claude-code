@@ -645,6 +645,7 @@ test('a reply cut at the output token limit yields the resume prompt it continue
         yield createAssistantMessage({ content: 'PARTIAL' })
         yield createAssistantAPIErrorMessage({
           content: 'API Error: output token limit',
+          // @ts-ignore - recovered code
           apiError: 'max_output_tokens',
           error: 'max_output_tokens',
         })
