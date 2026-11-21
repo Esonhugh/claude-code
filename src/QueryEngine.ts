@@ -90,7 +90,7 @@ import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
 import { dequeue, enqueueTracked, remove } from './utils/messageQueueManager.js'
-import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import { countToolCalls, SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './utils/messages.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
@@ -240,6 +240,48 @@ export function toolDenialsIn(
     }
   }
   return denials
+}
+
+type UsageTally = {
+  total: NonNullableUsage
+  /** `total` before the request that is streaming, and that request's usage. */
+  before: NonNullableUsage
+  current: NonNullableUsage
+  messageId: string | null
+}
+
+/**
+ * result.usage after `message`. A streamed request counts from message_start,
+ * so one cut before message_stop is still in the total (official credits it
+ * too). A reply that did not stream (the non-streaming fallback) has no stream
+ * events and counts by its own usage.
+ */
+export function usageAfterMessage(tally: UsageTally, message: Message): UsageTally {
+  if (message.type === 'assistant') {
+    if (message.message.model === SYNTHETIC_MODEL || message.message.id === tally.messageId) return tally
+    return {
+      ...tally,
+      messageId: message.message.id,
+      total: accumulateUsage(tally.total, updateUsage(EMPTY_USAGE, message.message.usage)),
+    }
+  }
+  if (message.type !== 'stream_event') return tally
+  // @ts-ignore - recovered code
+  const event = message.event
+  if (event.type === 'message_start') {
+    const current = updateUsage(EMPTY_USAGE, event.message.usage)
+    return {
+      before: tally.total,
+      current,
+      messageId: event.message.id,
+      total: accumulateUsage(tally.total, current),
+    }
+  }
+  if (event.type === 'message_delta') {
+    const current = updateUsage(tally.current, event.usage)
+    return { ...tally, current, total: accumulateUsage(tally.before, current) }
+  }
+  return tally
 }
 
 /**
@@ -1137,7 +1179,12 @@ export class QueryEngine {
     }
 
     // Track current message usage (reset on each message_start)
-    let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
+    let usageTally: UsageTally = {
+      total: this.totalUsage,
+      before: this.totalUsage,
+      current: EMPTY_USAGE,
+      messageId: null,
+    }
     let turnCount = 1
     let hasAcknowledgedInitialMessages = false
     // Track structured output from StructuredOutput tool calls
@@ -1275,6 +1322,8 @@ export class QueryEngine {
       if (message.type === 'user') {
         turnCount++
       }
+      usageTally = usageAfterMessage(usageTally, message)
+      this.totalUsage = usageTally.total
 
       switch (message.type) {
         case 'tombstone':
@@ -1339,22 +1388,7 @@ export class QueryEngine {
             }
           }
           // @ts-ignore - recovered code
-          if (message.event.type === 'message_start') {
-            // Reset current message usage for new message
-            currentMessageUsage = EMPTY_USAGE
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.message.usage,
-            )
-          }
-          // @ts-ignore - recovered code
           if (message.event.type === 'message_delta') {
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.usage,
-            )
             // Capture stop_reason from message_delta. The assistant message
             // is yielded at content_block_stop with stop_reason=null; the
             // real value only arrives here (see claude.ts message_delta
@@ -1364,14 +1398,6 @@ export class QueryEngine {
               // @ts-ignore - recovered code
               lastStopReason = message.event.delta.stop_reason
             }
-          }
-          // @ts-ignore - recovered code
-          if (message.event.type === 'message_stop') {
-            // Accumulate current message usage into total
-            this.totalUsage = accumulateUsage(
-              this.totalUsage,
-              currentMessageUsage,
-            )
           }
 
           if (includePartialMessages) {
