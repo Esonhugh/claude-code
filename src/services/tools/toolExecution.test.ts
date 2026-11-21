@@ -14,6 +14,8 @@ import {
   setCachedSettingsForSource,
 } from '../../utils/settings/settingsCache.js'
 import { runToolUse } from './toolExecution.js'
+import { StreamingToolExecutor } from './StreamingToolExecutor.js'
+import { McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, trackToolListRefresh } from '../mcp/client.js'
 import { dispatchModEvent } from '../mods/dispatch.js'
 import type { ModDispatchHook } from '../mods/types.js'
 import {
@@ -85,6 +87,112 @@ test('a permission handler updatedInput that fails the tool schema is rejected b
     is_error: true,
     content: '<tool_use_error>The permission handler returned updatedInput for ModFixture that failed schema validation: ModFixture failed due to the following issue:\nThe parameter `value` type is expected as `string` but provided as `number`\nThis is a configuration issue in your canUseTool callback, PermissionRequest hook, or permission-prompt tool — updatedInput must satisfy the tool\'s input schema. The tool input from the model was valid.</tool_use_error>',
   })])
+})
+
+// Official 2.1.329 (FIt).
+test('an MCP tool error from a tool whose schema was not sent carries the input schema', async () => {
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  const loadTool = 'call ToolSearch with query "select:mcp__fx__fail" to load the tool, then call it again.'
+  const run = async (inputJSONSchema: Tool['inputJSONSchema'], messages: unknown[] = []) => {
+    const f = fixture(async (event, next) => next(event), 'mcp__fx__fail')
+    Object.assign(f.tool, { isMcp: true, mcpInfo: { serverName: 'fx', toolName: 'fail' }, inputJSONSchema })
+    f.tool.call = async () => {
+      throw new McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS('FAIL_TEXT', 'MCP tool returned error')
+    }
+    f.context.options.tools = [f.tool, ToolSearchTool]
+    f.context.messages = messages as ToolUseContext['messages']
+    f.context.mods = undefined
+    const updates = await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    return updates.flatMap(update => {
+      const content = update.message?.type === 'user' ? update.message.message.content : []
+      return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+    })
+  }
+  try {
+    const schema = { type: 'object' as const, properties: { why: { type: 'string', description: 'reason' } } }
+    const hinted = 'FAIL_TEXT\n\nThis tool\'s input schema was not in your prompt when you called it. ' +
+      'The input schema is: {"type":"object","properties":{"why":{"type":"string","description":"reason"}}}\n' +
+      `If your input does not match this schema, correct it and call the tool again. If it matches, the error above has another cause. If the corrected call fails the same way, ${loadTool}`
+    expect(await run(schema)).toEqual([expect.objectContaining({ is_error: true, content: hinted })])
+
+    const huge = { type: 'object' as const, properties: { why: { type: 'string', description: 'x'.repeat(10_000) } } }
+    expect(await run(huge)).toEqual([expect.objectContaining({
+      is_error: true,
+      content: `FAIL_TEXT\n\nThis tool's input schema was not in your prompt when you called it. If the error above is about the input, ${loadTool}`,
+    })])
+
+    const hintedBefore = [{ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'earlier', content: hinted }] } }]
+    expect(await run(schema, hintedBefore)).toEqual([expect.objectContaining({ is_error: true, content: 'FAIL_TEXT' })])
+
+    const loaded = [{ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'search', content: [{ type: 'tool_reference', tool_name: 'mcp__fx__fail' }] }] } }]
+    expect(await run(schema, loaded)).toEqual([expect.objectContaining({ is_error: true, content: 'FAIL_TEXT' })])
+  } finally {
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
+
+// Official 2.1.329 runs the call; the fork answered "No such tool available".
+test('a call to a tool announced by tools/list_changed waits for the running refresh', async () => {
+  const f = fixture(async (event, next) => next(event), 'mcp__fx__dyn')
+  Object.assign(f.tool, { isMcp: true, mcpInfo: { serverName: 'fx', toolName: 'dyn' } })
+  let pool: Tool[] = []
+  f.context.options.tools = pool
+  f.context.options.refreshTools = () => pool
+  f.context.mods = undefined
+  const appState = f.context.getAppState()
+  f.context.getAppState = () => ({
+    ...appState,
+    mcp: { clients: [{ name: 'fx', type: 'connected' }], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+  }) as unknown as ReturnType<ToolUseContext['getAppState']>
+  const run = async () => {
+    const updates = await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    return updates.flatMap(update => {
+      const content = update.message?.type === 'user' ? update.message.message.content : []
+      return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+    })
+  }
+
+  await trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })().then(() => { pool = [] }))
+  expect(await run()).toEqual([expect.objectContaining({
+    is_error: true,
+    content: '<tool_use_error>Error: No such tool available: mcp__fx__dyn</tool_use_error>',
+  })])
+
+  void trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })())
+  expect(await run()).toEqual([expect.objectContaining({ content: 'original' })])
+  expect(f.calls).toEqual([{ value: 'original' }])
+
+  // The streaming executor holds the tool list taken before the turn.
+  const stream = async () => {
+    const executor = new StreamingToolExecutor([], async () => ({ behavior: 'allow' }), f.context)
+    executor.addTool(f.block, f.assistant)
+    const updates = await Array.fromAsync(executor.getRemainingResults())
+    return updates.flatMap(update => {
+      const content = update.message?.type === 'user' ? update.message.message.content : []
+      return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+    })
+  }
+  expect(await stream()).toEqual([expect.objectContaining({ content: 'original' })])
+  pool = []
+  void trackToolListRefresh('fx', (async () => {
+    await new Promise(resolve => setTimeout(resolve, 30))
+    pool = [f.tool]
+  })())
+  expect(await stream()).toEqual([expect.objectContaining({ content: 'original' })])
+  pool = []
+  expect(await stream()).toEqual([expect.objectContaining({ is_error: true })])
 })
 
 test('an empty permission handler updatedInput keeps the model input', async () => {

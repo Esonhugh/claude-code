@@ -379,6 +379,21 @@ export function parseHeaders(headerArray: string[]): Record<string, string> {
   return headers
 }
 
+const SENSITIVE_HEADER_NAME =
+  /api[_-]?key|secret|token|password|passwd|credential|bearer|authorization|auth[_-]?header|memory[_-]?request[_-]?mac|cookie|session[_-]?(?:id|key)|connection[_-]?string|(?:private|ssh|encryption|signing|access|deploy|master|license)[_-]?key|client[_-]?secret/i
+
+/** Headers for terminal output: credential-bearing values are not echoed (official 2.1.329). */
+export function redactSensitiveHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      SENSITIVE_HEADER_NAME.test(name) ? '[REDACTED]' : value,
+    ]),
+  )
+}
+
 // A failed or timed-out git check counts as tracked, so it fails closed.
 const isLocalSettingsGitTracked = memoize((projectDir: string): boolean => {
   const result = spawnSync(
