@@ -1858,7 +1858,14 @@ function runHeadlessStreaming(
     // appState instead so tools/list_changed and reconnects replace them.
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools.filter(tool => !isMcpTool(tool)), ...sdkTools, ...dynamicMcpState.tools],
+        [
+          ...tools.filter(tool => !isMcpTool(tool)),
+          // These win over `assembledTools` in the merge, so deny rules apply here too.
+          ...filterToolsByDenyRules(
+            [...sdkTools, ...dynamicMcpState.tools],
+            appState.toolPermissionContext,
+          ),
+        ],
         assembledTools,
         appState.toolPermissionContext.mode,
       ),
