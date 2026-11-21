@@ -48,6 +48,7 @@ import {
   applyPermissionModeToResult,
   checkRuleBasedPermissions,
   createPermissionRequestMessage,
+  denyAskWithoutApprovalSurface,
   hasPermissionsToUseTool,
   planModeHoldsWrite,
   toolAlwaysAllowedRule,
@@ -939,6 +940,8 @@ export async function resolveHookPermissionDecision(
         decision, tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
       )
     }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    decision = await denyAskWithoutApprovalSurface(decision, tool, declarative.input, toolUseContext, toolUseID)
     if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
       (requireCanUseTool || (requiresInteraction &&
         !(hookPermissionResult?.behavior === 'allow' && hookPermissionResult.updatedInput !== undefined))))) {
@@ -1040,6 +1043,13 @@ export async function resolveHookPermissionDecision(
       forceDecision = await hasPermissionsToUseTool(
         tool, askInput, toolUseContext, assistantMessage, toolUseID,
       )
+    }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    const settled = await denyAskWithoutApprovalSurface(
+      forceDecision, tool, askInput, toolUseContext, toolUseID,
+    )
+    if (settled !== forceDecision) {
+      return { decision: settled, input: askInput }
     }
   }
   return {

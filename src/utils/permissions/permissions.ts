@@ -778,13 +778,25 @@ export async function applyPermissionModeToResult(
     assistantMessage,
     toolUseID,
   )
+  return denyAskWithoutApprovalSurface(decision, tool, input, context, toolUseID)
+}
+
+/**
+ * permissions.denyInsteadOfPrompting / --permission-prompts none (official
+ * 2.1.329): whatever would still prompt is denied. PermissionRequest hooks
+ * answer first, except for asks only a person may approve.
+ */
+export async function denyAskWithoutApprovalSurface(
+  decision: PermissionDecision,
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  toolUseID: string,
+): Promise<PermissionDecision> {
   const permission = context.getAppState().toolPermissionContext
   if (decision.behavior !== 'ask' || !permission.denyInsteadOfPrompting) {
     return decision
   }
-  // permissions.denyInsteadOfPrompting / --permission-prompts none (official
-  // 2.1.329): whatever would still prompt is denied. PermissionRequest hooks
-  // answer first, except for asks only a person may approve.
   if (!requiresExplicitUserApproval(decision.decisionReason)) {
     const hookDecision = await runPermissionRequestHooksForHeadlessAgent(
       tool,

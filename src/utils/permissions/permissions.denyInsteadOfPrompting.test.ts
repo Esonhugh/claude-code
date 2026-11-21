@@ -13,7 +13,9 @@ const { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache 
 const { applySettingsChange } = await import('../settings/applySettingsChange.js')
 const { hasPermissionsToUseTool } = await import('./permissions.js')
 const { initializeToolPermissionContext } = await import('./permissionSetup.js')
-const { modToolCheckResult, setModToolCheckPermissionHost } = await import('../../services/tools/toolHooks.js')
+const { modToolCheckResult, resolveHookPermissionDecision, setModToolCheckPermissionHost } = await import(
+  '../../services/tools/toolHooks.js'
+)
 
 afterEach(() => resetSettingsCache())
 
@@ -169,5 +171,46 @@ test('a mod is not told a host decides an ask that denyInsteadOfPrompting will d
     expect(modToolCheckResult(ask, undefined, { mode: 'default', denyInsteadOfPrompting: true }).decider).toBeUndefined()
   } finally {
     setModToolCheckPermissionHost(false)
+  }
+})
+
+test('a PreToolUse hook ask is denied as well, where it used to keep its dialog', async () => {
+  const resolve = async (permission: Partial<ToolPermissionContext>) => {
+    const initial = getDefaultAppState()
+    const state = {
+      ...initial,
+      toolPermissionContext: { ...initial.toolPermissionContext, mode: 'default', ...permission } as ToolPermissionContext,
+    }
+    let prompted = false
+    const { decision } = await resolveHookPermissionDecision(
+      { behavior: 'ask', message: 'hook-ask' },
+      fakeTool(),
+      {},
+      {
+        getAppState: () => state,
+        setAppState: () => {},
+        abortController: new AbortController(),
+        messages: [],
+        options: { isNonInteractiveSession: false, tools: [] },
+      } as unknown as ToolUseContext,
+      async (_tool, _input, _context, _message, _id, forced) => {
+        prompted = true
+        return forced ?? { behavior: 'ask', message: 'unforced' }
+      },
+      { message: { id: 'msg_test' } } as never,
+      'toolu_test',
+    )
+    return { decision: decision as { behavior: string; message?: string }, prompted }
+  }
+  expect(await resolve({})).toMatchObject({ decision: { behavior: 'ask', message: 'hook-ask' }, prompted: true })
+  for (const permission of [
+    { denyInsteadOfPrompting: true },
+    { denyInsteadOfPrompting: true, shouldAvoidPermissionPrompts: true },
+    { denyInsteadOfPrompting: true, alwaysAllowRules: { userSettings: ['NeedsApproval'] } },
+  ]) {
+    expect(await resolve(permission)).toEqual({
+      decision: expect.objectContaining({ behavior: 'deny', message: `${NO_APPROVAL_SURFACE}hook-ask` }),
+      prompted: false,
+    })
   }
 })
