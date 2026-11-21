@@ -76,6 +76,8 @@ type State = {
   isInteractive: boolean
   // --output-format of a print session ('text' when not given); unset when interactive
   printOutputFormat: string | undefined
+  // --input-format stream-json: more input may arrive after the first turn
+  hasStreamingInput: boolean
   kairosActive: boolean
   // When true, ensureToolResultPairing throws on mismatch instead of
   // repairing with synthetic placeholders. HFI opts in at startup so
@@ -325,6 +327,7 @@ function getInitialState(): State {
     modelStrings: null,
     isInteractive: false,
     printOutputFormat: undefined,
+    hasStreamingInput: false,
     kairosActive: false,
     strictToolResultPairing: false,
     sdkAgentProgressSummariesEnabled: false,
@@ -1165,6 +1168,14 @@ export function getPrintOutputFormat(): string | undefined {
 
 export function setPrintOutputFormat(value: string | undefined): void {
   STATE.printOutputFormat = value
+}
+
+export function getHasStreamingInput(): boolean {
+  return STATE.hasStreamingInput
+}
+
+export function setHasStreamingInput(value: boolean): void {
+  STATE.hasStreamingInput = value
 }
 
 export function getClientType(): string {

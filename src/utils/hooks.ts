@@ -30,6 +30,7 @@ import {
   getProjectConfigRoot,
   getProjectRoot,
   getIsNonInteractiveSession,
+  getHasStreamingInput,
   getRegisteredHooks,
   getStatsStore,
   addToTurnHookDuration,
@@ -1161,7 +1162,13 @@ async function execCommandHook(
   // Track whether stdin has already been written (to avoid "write after end" errors)
   let stdinWritten = false
 
-  if ((hook.async || hook.asyncRewake) && !forceSyncExecution) {
+  // A single-shot print session exits after its turn, so nothing would be
+  // left to rewake: an asyncRewake hook runs to completion there.
+  const canRewake = !getIsNonInteractiveSession() || getHasStreamingInput()
+  if (
+    (hook.async || (hook.asyncRewake && canRewake)) &&
+    !forceSyncExecution
+  ) {
     const processId = `async_hook_${child.pid}`
     logForDebugging(
       `Hooks: Config-based async hook, backgrounding process ${processId}`,

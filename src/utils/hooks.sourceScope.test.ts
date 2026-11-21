@@ -109,6 +109,7 @@ function fixture() {
   const controls = {
     trusted: true,
     interactive: true,
+    streamingInput: false,
     allowed: [
       'userSettings',
       'projectSettings',
@@ -127,6 +128,7 @@ function fixture() {
     getPromptId: () => null,
     getSessionCronTasks: () => crons,
     getIsNonInteractiveSession: () => !controls.interactive,
+    getHasStreamingInput: () => controls.streamingInput,
     getRegisteredHooks: () => registered,
     getStatsStore: () => undefined,
     addToTurnHookDuration: noop,
@@ -1627,6 +1629,40 @@ describe('onFailure', () => {
       blocked: true,
       output: 'failed; blocking because onFailure is "block"\naudit down',
     })
+  })
+})
+
+describe('asyncRewake command hooks', () => {
+  const run = (f: ReturnType<typeof fixture>) => {
+    f.addHook('userSettings', 'PostToolUse', {
+      type: 'command',
+      command: 'rewake',
+      asyncRewake: true,
+    })
+    f.exits.set('rewake', { code: 2, stderr: 'REWAKE_MSG' })
+    return collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+  }
+
+  test('a single-shot print session waits for the hook and reports its exit 2', async () => {
+    const f = fixture()
+    f.controls.interactive = false
+    const results = await run(f)
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({ blockingError: '[rewake]: REWAKE_MSG', command: 'rewake' })
+  })
+
+  test.each([
+    ['an interactive session', true, false],
+    ['a print session with streaming input', false, true],
+  ] as const)('%s runs the hook in the background', async (_name, interactive, streamingInput) => {
+    const f = fixture()
+    f.controls.interactive = interactive
+    f.controls.streamingInput = streamingInput
+    const results = await run(f)
+    expect(results.some((result) => result.blockingError)).toBe(false)
+    expect(f.logs.some((log) => log.includes('backgrounding process'))).toBe(true)
   })
 })
 
