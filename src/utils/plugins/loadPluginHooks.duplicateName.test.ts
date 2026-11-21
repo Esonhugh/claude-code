@@ -27,7 +27,7 @@ if (!process.env.PLUGIN_HOOKS_DUPLICATE_NAME_TEST_CHILD) {
       new Response(child.stderr).text(),
     ])
     console.log(stdout, stderr)
-    expect(stderr).toMatch(/(?:^|\n) 1 pass(?:\n|$)/)
+    expect(stderr).toMatch(/(?:^|\n) 2 pass(?:\n|$)/)
     expect(code).toBe(0)
   }, 30000)
 } else {
@@ -64,16 +64,17 @@ if (!process.env.PLUGIN_HOOKS_DUPLICATE_NAME_TEST_CHILD) {
       errors: [],
     }),
   }))
+  const policyEnabled: Record<string, boolean> = { 'org@mkt2': true }
   const settings = await import('../settings/settings.js')
   mock.module('../settings/settings.js', () => ({
     ...settings,
     getSettingsForSource: (source: string) =>
-      source === 'policySettings'
-        ? { enabledPlugins: { 'org@mkt2': true } }
-        : null,
+      source === 'policySettings' ? { enabledPlugins: policyEnabled } : null,
   }))
   const state = await import('../../bootstrap/state.js')
-  const { loadPluginHooks } = await import('./loadPluginHooks.js')
+  const { getPluginAffectingSettingsSnapshot, loadPluginHooks } = await import(
+    './loadPluginHooks.js'
+  )
 
   test('child: the first source of a plugin name keeps its hooks, managed sources first', async () => {
     await loadPluginHooks()
@@ -84,5 +85,11 @@ if (!process.env.PLUGIN_HOOKS_DUPLICATE_NAME_TEST_CHILD) {
           'pluginId' in matcher ? matcher.pluginId : undefined,
         ),
     ).toEqual(['org@mkt2', 'demo@mkt5', 'other@mkt2', 'plain@mkt2'])
+  })
+
+  test('child: the hot reload snapshot changes when the organization enables a plugin a user already enabled', () => {
+    const before = getPluginAffectingSettingsSnapshot()
+    policyEnabled['demo@mkt2'] = true
+    expect(getPluginAffectingSettingsSnapshot()).not.toBe(before)
   })
 }

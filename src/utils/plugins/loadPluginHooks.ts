@@ -269,6 +269,8 @@ export function getPluginAffectingSettingsSnapshot(): string {
     o ? Object.fromEntries(Object.entries(o).sort()) : {}
   return jsonStringify({
     enabledPlugins: sortKeys(merged.enabledPlugins),
+    // Decides which same-named plugin keeps its hooks (see loadPluginHooks).
+    policyEnabledPlugins: sortKeys(policy?.enabledPlugins),
     extraKnownMarketplaces: sortKeys(merged.extraKnownMarketplaces),
     strictKnownMarketplaces: policy?.strictKnownMarketplaces ?? [],
     blockedMarketplaces: policy?.blockedMarketplaces ?? [],
