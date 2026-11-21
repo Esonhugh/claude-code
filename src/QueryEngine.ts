@@ -20,6 +20,7 @@ import type {
   TerminalReason,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
@@ -256,18 +257,22 @@ type UsageTally = {
  * too). A reply that did not stream (the non-streaming fallback) has no stream
  * events and counts by its own usage.
  */
-export function usageAfterMessage(tally: UsageTally, message: Message): UsageTally {
+export function usageAfterMessage(
+  tally: UsageTally,
+  message: { type: string; message?: unknown; event?: unknown },
+): UsageTally {
   if (message.type === 'assistant') {
-    if (message.message.model === SYNTHETIC_MODEL || message.message.id === tally.messageId) return tally
+    const reply = (message as AssistantMessage).message
+    if (reply.model === SYNTHETIC_MODEL || reply.id === tally.messageId) return tally
     return {
       ...tally,
-      messageId: message.message.id,
-      total: accumulateUsage(tally.total, updateUsage(EMPTY_USAGE, message.message.usage)),
+      messageId: reply.id,
+      // @ts-ignore - recovered code
+      total: accumulateUsage(tally.total, updateUsage(EMPTY_USAGE, reply.usage)),
     }
   }
   if (message.type !== 'stream_event') return tally
-  // @ts-ignore - recovered code
-  const event = message.event
+  const event = message.event as BetaRawMessageStreamEvent
   if (event.type === 'message_start') {
     const current = updateUsage(EMPTY_USAGE, event.message.usage)
     return {
