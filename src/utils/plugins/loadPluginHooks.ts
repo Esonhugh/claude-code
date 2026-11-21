@@ -133,10 +133,20 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
   }
 
   // Process each enabled plugin
+  const registeredNames = new Set<string>()
   for (const plugin of enabled) {
     if (!plugin.hooksConfig) {
       continue
     }
+
+    // The same plugin installed from two marketplaces must not fire twice.
+    if (registeredNames.has(plugin.name)) {
+      logForDebugging(
+        `Skipping duplicate hook registration for plugin "${plugin.name}" from ${plugin.source} - already registered from another source`,
+      )
+      continue
+    }
+    registeredNames.add(plugin.name)
 
     logForDebugging(`Loading hooks from plugin: ${plugin.name}`)
     const pluginMatchers = convertPluginHooksToMatchers(plugin)
