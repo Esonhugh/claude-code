@@ -39,16 +39,26 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import type { AppState } from '../state/AppState.js'
+import {
+  CODE_MODE_ENV,
+  getProcessCodeModeState,
+} from '../tools/REPLTool/codeModeGate.js'
 import { quote } from './bash/shellQuote.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getPlatform } from './platform.js'
+import { buildResumeHint } from './resumeHint.js'
 import { flushSessionStorage, sessionIdExists } from './sessionStorage.js'
 import { hasLiveShellCommands, killLiveShellCommands, waitForLiveShellResults } from './ShellCommand.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
 import { validateUuid } from './uuid.js'
+import {
+  getCurrentWorktreeSession,
+  getResumeHintWorktreeName,
+} from './worktree.js'
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -146,6 +156,12 @@ function cleanupTerminalModes(): void {
 }
 
 let resumeHintPrinted = false
+let resumeHintLaunchFlags = ''
+
+/** The launch flags the exit hint repeats; see getResumeHintLaunchFlags. */
+export function setResumeHintLaunchFlags(flags: string): void {
+  resumeHintLaunchFlags = flags
+}
 
 export type SSHResumeHintContext = {
   target: string
@@ -234,10 +250,39 @@ function printResumeHint(): void {
       if (!sessionIdExists(sessionId)) {
         return
       }
+      const codeMode = getProcessCodeModeState().enabled
+      const windows = getPlatform() === 'windows'
+      const worktreeName = getResumeHintWorktreeName()
+      const { advice, command } = buildResumeHint({
+        sessionId,
+        worktree: worktreeName
+          ? {
+              name: worktreeName,
+              recordCleared: getCurrentWorktreeSession() === null,
+            }
+          : undefined,
+        columns: process.stdout.columns,
+        envAssignment: codeMode && !windows ? `${CODE_MODE_ENV}=1` : undefined,
+        launchFlags: resumeHintLaunchFlags,
+        launcherProgram: process.env.CLAUDE_CODE_RESUME_HINT_COMMAND,
+      })
+      const envAdvice =
+        codeMode && windows
+          ? [
+              `This session resumes only with the environment variable ${CODE_MODE_ENV} equal to 1`,
+            ]
+          : []
       writeSync(
         1,
         chalk.dim(
-          `\nResume this session with:\nclaude --resume ${sessionId}\n`,
+          [
+            '',
+            ...envAdvice,
+            ...advice,
+            'Resume this session with:',
+            command,
+            '',
+          ].join('\n'),
         ),
       )
       resumeHintPrinted = true
@@ -469,6 +514,7 @@ export function isShuttingDown(): boolean {
 export function resetShutdownState(): void {
   shutdownInProgress = false
   resumeHintPrinted = false
+  resumeHintLaunchFlags = ''
   sshResumeHintContext = undefined
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
