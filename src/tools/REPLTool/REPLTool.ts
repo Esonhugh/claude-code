@@ -352,7 +352,7 @@ export const REPLTool = buildTool({
     if (asyncLane && session.depth >= REPL_MAX_PENDING_EVALS) {
       const error = pendingCapMessage(session.depth)
       return {
-        data: { code: input.code, stdout: '', stderr: '', error, output: formatReplOutput({ error }), asyncDispatched: true },
+        data: { code: input.code, stdout: '', stderr: '', error, output: `error: ${error}`, asyncDispatched: true },
         newMessages: takeReplLateMessages(session) as never,
       }
     }
@@ -524,8 +524,10 @@ export const REPLTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      // Never is_error: an error is part of the <repl-output>, which resume inference reads from non-error results.
+      // Not is_error for a script that ran: its error is part of the <repl-output>, which resume inference reads from non-error results.
       content: resultBlockContent(resultText(data), data) ?? resultText(data),
+      // Official: a refused dispatch ran nothing, and is a plain error result.
+      ...(data.asyncDispatched && data.error !== undefined && { is_error: true }),
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

@@ -301,6 +301,13 @@ describe('REPL async lane limits', () => {
     )
     expect(refused.data.asyncDispatched).toBe(true)
     expect(findReplSession(context.agentId!)?.pending.size).toBe(REPL_MAX_PENDING_EVALS)
+    // Official 2.1.329: the refusal is a plain error result, not a <repl-output>.
+    expect(REPLTool.mapToolResultToToolResultBlockParam(refused.data, 'toolu_current')).toEqual({
+      tool_use_id: 'toolu_current',
+      type: 'tool_result',
+      content: `error: ${refused.data.error}`,
+      is_error: true,
+    })
   })
 
   test('the wall-clock cap stops a dispatched script', async () => {
