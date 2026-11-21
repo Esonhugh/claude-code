@@ -36,7 +36,7 @@ import {
 } from './sessions.js'
 import { isUserStop, partwayNote, replStopOf, replStopReport, type ReplStop } from './stopReport.js'
 import { createReplToolHost, getReplCallableTools, type ReplToolDescriptor } from './toolWrappers.js'
-import { renderToolUseMessage } from './UI.js'
+import { renderToolUseErrorMessage, renderToolUseMessage, replErrorLine } from './UI.js'
 import { collectResultBlocks, resultBlockContent } from './resultBlocks.js'
 
 export const REPL_ALIAS = 'Eval'
@@ -164,19 +164,22 @@ function pendingCapMessage(depth: number): string {
   return `async REPL dispatch rejected: ${depth} evals already waiting or running \u2014 wait for their settles (Poll) before dispatching more`
 }
 
-function withEvalId(output: string, evalId: number | undefined): string {
-  return evalId === undefined ? output : output.replace('<repl-output>', `<repl-output eval="${evalId}">`)
-}
-
-/** Official: a dispatched script that failed shows as a REPL call of its own (virtual, not sent to the API). */
-function failurePair(code: string, description: string | undefined, output: string): Message[] {
-  const id = `repl_eval_${randomUUID()}`
+/**
+ * Official `tyn`: a script's own failure as a virtual errored call with no
+ * code, which draws one line. `shownOnCall` marks a dispatched script's, whose
+ * Code row its call already drew.
+ */
+function failurePair(result: ReplRunResult, shownOnCall: boolean): Message[] {
+  if (result.error === undefined || result.interrupted) return []
+  const id = `repl-error-${randomUUID()}`
+  const error = replErrorLine(result.error)
   const assistant = createAssistantMessage({
-    content: [{ type: 'tool_use', id, name: REPL_TOOL_NAME, input: { code, ...(description ? { description } : {}) } }] as never,
+    content: [{ type: 'tool_use', id, name: REPL_TOOL_NAME, input: {} }] as never,
     isVirtual: true,
   })
   const user = createUserMessage({
-    content: [{ type: 'tool_result', tool_use_id: id, content: output }],
+    content: [{ type: 'tool_result', tool_use_id: id, content: error, is_error: true }],
+    toolUseResult: { error, ...(shownOnCall && { shownOnCall: true }) },
     isVirtual: true,
     sourceToolAssistantUUID: assistant.uuid,
   })
@@ -348,6 +351,7 @@ export const REPLTool = buildTool({
     return summary ? `Running ${summary}` : 'Running code'
   },
   renderToolUseMessage,
+  renderToolUseErrorMessage,
   async call(input, context, canUseTool, _parentMessage, onProgress) {
     if (isCodeModeEnabled()) saveCodeMode(true)
     const session = getReplSession(context.agentId ?? MAIN_REPL_SESSION)
@@ -470,10 +474,9 @@ export const REPLTool = buildTool({
               return
             }
             const settled = withNotices(late.output, late.contextReset ? [REPL_NEW_CONTEXT_NOTICE, REPL_TIMEOUT_RESET_NOTE] : [])
-            const output = withEvalId(settled, evalId)
             const messages = [
               ...host.drainMessages(),
-              ...(late.error === undefined ? [] : failurePair(input.code, input.description, output)),
+              ...failurePair(late, true),
             ]
             const event = { id: evalId, text: formatReplEvalEvent(evalId, Date.now() - startedAt, settled), ...startsTurn() }
             deliverReplEvent(session, event, messages)
@@ -521,7 +524,7 @@ export const REPLTool = buildTool({
         // Official: only a script that settled without an error carries its calls' images and PDFs.
         ...(done.error === undefined ? collectResultBlocks(host.calls()) : {}),
       }
-      return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages()] as never }
+      return { data, newMessages: [...takeReplLateMessages(session), ...host.drainMessages(), ...failurePair(done, false)] as never }
     } finally {
       if (!dispatched) cleanup()
     }

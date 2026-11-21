@@ -138,15 +138,25 @@ function VerboseToolUse({
   if (tool.isTransparentWrapper?.()) {
     if (!isCodeModeEnabled() || content.name !== REPL_TOOL_NAME) return null
     return (
-      <ScriptSourceRow
-        tool={tool}
-        input={content.input}
-        output={rawToolResult}
-        shouldAnimate={shouldAnimate && isInProgress}
-        isUnresolved={!isResolved}
-        isError={isError}
-        addMargin
-      />
+      <>
+        <ScriptSourceRow
+          tool={tool}
+          input={content.input}
+          output={rawToolResult}
+          shouldAnimate={shouldAnimate && isInProgress}
+          isUnresolved={!isResolved}
+          isError={isError}
+          addMargin
+        />
+        {isResolved && isError && (
+          <ToolUseError
+            content={content}
+            tools={tools}
+            lookups={lookups}
+            verbose
+          />
+        )}
+      </>
     )
   }
   const parsedOutput = tool.outputSchema?.safeParse(rawToolResult)
@@ -371,7 +381,24 @@ export function CollapsedReadSearchContent({
   // Defensive: If all counts are 0, don't render the collapsed group
   // This shouldn't happen in normal operation, but handles edge cases
   if (!hasMemoryOps && !hasTeamMemoryOps && !hasNonMemoryOps) {
-    return null
+    // A group of nothing but Code Mode scripts still shows the ones that failed.
+    const failed = toolUses.filter(content =>
+      lookups.erroredToolUseIDs.has(content.id),
+    )
+    if (failed.length === 0) return null
+    return (
+      <Box flexDirection="column" backgroundColor={bg}>
+        {failed.map(content => (
+          <ToolUseError
+            key={content.id}
+            content={content}
+            tools={tools}
+            lookups={lookups}
+            verbose={false}
+          />
+        ))}
+      </Box>
+    )
   }
 
   // Find the slowest in-progress shell command in this group. BashTool yields

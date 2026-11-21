@@ -224,10 +224,12 @@ describe('REPL async lane (official NUe)', () => {
       ['assistant', true],
       ['user', true],
     ])
-    const use = messages[0]!.message.content[0]!
-    expect(use).toMatchObject({ type: 'tool_use', name: 'REPL' })
-    expect(use.id).toMatch(/^repl_eval_/)
-    expect(messages[1]!.message.content[0]!.content).toContain('<repl-output eval="1">')
+    // Official `tyn`: an errored call with no code, so its one line is all that draws.
+    const use = messages[0]!.message.content[0]! as { id: string }
+    expect(use).toMatchObject({ type: 'tool_use', name: 'REPL', input: {} })
+    expect(use.id).toMatch(/^repl-error-/)
+    expect(messages[1]!.message.content[0]!).toEqual({ type: 'tool_result', tool_use_id: use.id, content: 'Error: boom', is_error: true })
+    expect((messages[1] as { toolUseResult?: unknown }).toolUseResult).toEqual({ error: 'Error: boom', shownOnCall: true })
   })
 
   test('running() lists the session\u2019s evals and marks the caller; abort() cancels one still waiting', async () => {

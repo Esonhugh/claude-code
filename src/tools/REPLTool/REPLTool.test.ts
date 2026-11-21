@@ -105,6 +105,28 @@ async function run(code: string, context: ToolUseContext, o: { timeout?: number;
 }
 
 describe('REPL end to end through the executor', () => {
+  test("a script's own failure adds a virtual errored call that draws its one line (official tyn)", async () => {
+    const line = async (code: string, timeout?: number) => {
+      const added = ((await run(code, contextFor(), { timeout })).newMessages ?? []) as {
+        isVirtual?: boolean
+        toolUseResult?: unknown
+        message: { content: { type: string; id?: string; name?: string; input?: unknown; content?: string; is_error?: boolean }[] }
+      }[]
+      if (added.length === 0) return undefined
+      const [use, result] = added.map(message => message.message.content[0]!)
+      expect(added.map(message => message.isVirtual)).toEqual([true, true])
+      expect(use).toMatchObject({ type: 'tool_use', name: 'REPL', input: {} })
+      expect(use!.id).toMatch(/^repl-error-/)
+      expect(result).toMatchObject({ type: 'tool_result', tool_use_id: use!.id, is_error: true })
+      expect(added[1]!.toolUseResult).toEqual({ error: result!.content })
+      return result!.content
+    }
+    expect(await line("const z = 1\nthrow new TypeError('boom-21')")).toBe('TypeError: boom-21')
+    expect(await line('while (true) {}', 200)).toBe('Timed out after 0.2s, not counting time spent in tool calls')
+    expect(await line('const = 1')).toBe('Syntax error, so nothing ran')
+    expect(await line('1 + 1')).toBeUndefined()
+  })
+
   test('a script calls Read and Bash and returns their values', async () => {
     const { text, data, newMessages } = await run(
       'const r = await Read({file_path: "a.txt"}); const b = await Bash({command: "ls"}); self.log(b.stdout); r.file.content',
