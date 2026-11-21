@@ -75,9 +75,10 @@ export function setModToolCheckPermissionHost(isHosted: boolean): void {
 }
 
 // Core's ask goes to the host only where a host would be asked: not under dontAsk or no-prompt loops.
-function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): { decider?: 'host' } {
+function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): { decider?: 'host' } {
   return behavior === 'ask' && permissionHost && permission !== undefined &&
-    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true ? { decider: 'host' } : {}
+    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true &&
+    permission.denyInsteadOfPrompting !== true ? { decider: 'host' } : {}
 }
 
 /** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
@@ -124,7 +125,7 @@ function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior:
   return undefined
 }
 
-export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): ModToolCheckResult {
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): ModToolCheckResult {
   const why = decision.decisionReason
   const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
   const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??

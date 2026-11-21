@@ -29,6 +29,7 @@ import {
   getSettingsForSource,
   getUseAutoModeDuringPlan,
   isAutoModeClassifyAllShellEnabled,
+  isDenyInsteadOfPromptingEnabled,
 } from '../settings/settings.js'
 import { getGlobalConfig } from '../config.js'
 import {
@@ -1624,14 +1625,21 @@ export function shouldShowAutoModeEntryWarning(): boolean {
 }
 
 /**
- * permissions.blockWritesOutsideWorkingDirectories as session state (official
- * 2.1.329). It only tightens, so true in any source wins.
+ * permissions.blockWritesOutsideWorkingDirectories and
+ * permissions.denyInsteadOfPrompting as session state (official 2.1.329).
+ * Both only tighten, so true in any source that may set them wins.
  */
 export function applyRestrictivePermissionSettings(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
   return {
     ...context,
+    // --permission-prompts none sets both flags on the print-mode context; a
+    // settings change must not take that away.
+    denyInsteadOfPrompting:
+      isDenyInsteadOfPromptingEnabled() ||
+      (context.shouldAvoidPermissionPrompts === true &&
+        context.denyInsteadOfPrompting === true),
     blockWritesOutsideWorkingDirectories: getEnabledSettingSources().some(
       source =>
         getSettingsForSource(source)?.permissions

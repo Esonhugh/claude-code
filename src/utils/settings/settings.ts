@@ -488,6 +488,7 @@ const RESTRICTIVE_SETTING_PATHS: {
   { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
   { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
   { path: ['permissions', 'blockWritesOutsideWorkingDirectories'], restrictive: true },
+  { path: ['permissions', 'denyInsteadOfPrompting'], restrictive: true },
   { path: ['autoMode', 'classifyAllShell'], restrictive: true },
   { path: ['enableWorkflows'], restrictive: false },
   { path: ['useAutoModeDuringPlan'], restrictive: false },
@@ -832,6 +833,7 @@ export function getManagedSettingsKeysForLogging(
       ...(feature('TRANSCRIPT_CLASSIFIER') ? ['disableAutoMode'] : []),
       'additionalDirectories',
       'blockWritesOutsideWorkingDirectories',
+      'denyInsteadOfPrompting',
     ]),
     sandbox: new Set([
       'enabled',
@@ -1112,6 +1114,21 @@ export function hasSkipDangerousModePermissionPrompt(): boolean {
     getSettingsForSource('localSettings')?.skipDangerousModePermissionPrompt ||
     getSettingsForSource('flagSettings')?.skipDangerousModePermissionPrompt ||
     getSettingsForSource('policySettings')?.skipDangerousModePermissionPrompt
+  )
+}
+
+/**
+ * permissions.denyInsteadOfPrompting (official 2.1.329). projectSettings and
+ * localSettings are excluded: a project must not be able to take the
+ * permission prompt away.
+ */
+export function isDenyInsteadOfPromptingEnabled(): boolean {
+  return getEnabledSettingSources().some(
+    source =>
+      source !== 'projectSettings' &&
+      source !== 'localSettings' &&
+      getSettingsForSource(source)?.permissions?.denyInsteadOfPrompting ===
+        true,
   )
 }
 
