@@ -32,8 +32,13 @@ export function toolsUsedNames(): string[] {
   return [...used]
 }
 
-export function resetToolsUsedForTesting(): void {
+/** /clear starts a new conversation, which has used no tools yet. */
+export function clearToolsUsed(): void {
   used.clear()
+}
+
+export function resetToolsUsedForTesting(): void {
+  clearToolsUsed()
 }
 
 /** Official `_`: the names of one tools-used line. */

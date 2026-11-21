@@ -24,6 +24,7 @@ import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup
 import { resetAllLSPDiagnosticState } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { clearTrackedMagicDocs } from '../../services/MagicDocs/magicDocs.js'
 import { clearDynamicSkills } from '../../skills/loadSkillsDir.js'
+import { clearToolsUsed } from '../../tools/PollTool/toolsUsed.js'
 import { resetSentSkillNames } from '../../utils/attachments.js'
 import { clearCommandPrefixCaches } from '../../utils/bash/commands.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
@@ -133,6 +134,8 @@ export function clearSessionCaches(
   clearTrackedMagicDocs()
   // Clear session environment variables
   clearSessionEnvVars()
+  // Clear the tools-used latch that Poll deliveries report (Code Mode)
+  clearToolsUsed()
   // Clear WebFetch URL cache (up to 50MB of cached page content)
   void import('../../tools/WebFetchTool/utils.js').then(
     ({ clearWebFetchCache }) => clearWebFetchCache(),
