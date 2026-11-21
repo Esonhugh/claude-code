@@ -36,6 +36,7 @@ import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, M
 import { createModAgents, listModAgents, restoreModAgentSpawnInput, validateModAgentSpawnInput } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
+import { engineEventNouns } from './loader.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { isDeepStrictEqual } from 'node:util'
 import { isProxy } from 'node:util/types'
@@ -3279,6 +3280,28 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             diagnostic(plugin, 'engine.create', error)
           },
         }) as Nouns
+        // Official 2.1.329 unloads a module that registers an event the built $ does not have.
+        for (const owner of failed ? [] : modules) {
+          if (owner.declaration.isNative) continue
+          let reason: string | undefined
+          for (const { event } of owner.environment.registrations) {
+            const negated = event.startsWith('!')
+            const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
+            if (method === undefined || engineEventNouns.has(noun)) continue
+            const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
+            if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
+            reason = negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
+              : methods ? `registered ${event}, but $.${noun} (${state.owners.get(noun)}) has no method ${method}`
+              : `registered ${event}, but no loaded plugin provides $.${noun}`
+            break
+          }
+          if (!reason) continue
+          failed = owner
+          if (!hostDead && !controller.signal.aborted)
+            unloadedSteps.set(owner.declaration.storageId, { declaration: owner.declaration, order: [...order] })
+          diagnostic(owner.declaration.name, 'load', `hooks module did not load: the $ build failed (${reason})`)
+          break
+        }
         if (!failed) {
           for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
           return { modules, table }
