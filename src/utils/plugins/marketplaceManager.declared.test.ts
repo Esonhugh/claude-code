@@ -73,3 +73,42 @@ test('an untrusted workspace declares marketplaces from user settings only', asy
   expect(await declaredInProject(false)).toEqual(['user-mkt'])
   expect(await declaredInProject(true)).toEqual(['local-mkt', 'project-mkt', 'user-mkt'])
 }, 60000)
+
+// Sources that stay in force are merged the way settings are: a later source
+// naming the same repository without a ref keeps the ref pinned by the user.
+async function pinnedInProject(trusted: boolean) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'mkt-declared-')))
+  try {
+    const project = join(home, 'project')
+    mkdirSync(join(home, 'config'), { recursive: true })
+    mkdirSync(project, { recursive: true })
+    writeFileSync(join(home, 'config', 'settings.json'), JSON.stringify({
+      extraKnownMarketplaces: { 'pin-mkt': { source: { source: 'github', repo: 'owner/repo', ref: 'pinned' } } },
+    }))
+    writeFileSync(join(home, 'config', '.claude.json'), JSON.stringify(trusted ? { projects: { [project]: { hasTrustDialogAccepted: true } } } : {}))
+    const child = Bun.spawn([process.execPath, '-e', `
+      globalThis.MACRO = { VERSION: 'test' }
+      const { enableConfigs } = await import(${JSON.stringify(join(import.meta.dir, '../config.ts'))})
+      enableConfigs()
+      const state = await import(${JSON.stringify(join(import.meta.dir, '../../bootstrap/state.ts'))})
+      state.setFlagSettingsInline({ extraKnownMarketplaces: { 'pin-mkt': { source: { source: 'github', repo: 'owner/repo' } } } })
+      const { getDeclaredMarketplaces } = await import(${JSON.stringify(join(import.meta.dir, 'marketplaceManager.ts'))})
+      console.log(JSON.stringify(getDeclaredMarketplaces()['pin-mkt']))
+    `], {
+      cwd: project,
+      env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, CLAUDE_CONFIG_DIR: join(home, 'config'), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+      stdout: 'pipe', stderr: 'pipe',
+    })
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    if (code !== 0) throw new Error(stderr)
+    return JSON.parse(stdout.trim().split('\n').at(-1)!) as unknown
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+test('an untrusted workspace merges the remaining declarations like settings do', async () => {
+  const pinned = { source: { source: 'github', repo: 'owner/repo', ref: 'pinned' } }
+  expect(await pinnedInProject(true)).toEqual(pinned)
+  expect(await pinnedInProject(false)).toEqual(pinned)
+}, 60000)

@@ -22,6 +22,7 @@ import axios from 'axios'
 import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
+import mergeWith from 'lodash-es/mergeWith.js'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logForDebugging } from '../debug.js'
@@ -48,6 +49,7 @@ import {
 import {
   getInitialSettings,
   getSettingsForSource,
+  settingsMergeCustomizer,
   updateSettingsForSource,
 } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
@@ -221,13 +223,18 @@ export function getTrustedExtraKnownMarketplaces(): SettingsJson['extraKnownMark
   if (checkHasTrustDialogAccepted()) {
     return getInitialSettings().extraKnownMarketplaces
   }
-  return Object.assign(
+  // Merged like settings are, so an entry keeps fields a later source omits.
+  return SETTING_SOURCES.filter(
+    source =>
+      isSettingSourceEnabled(source) && isSettingSourceWorkspaceTrusted(source),
+  ).reduce<NonNullable<SettingsJson['extraKnownMarketplaces']>>(
+    (merged, source) =>
+      mergeWith(
+        merged,
+        getSettingsForSource(source)?.extraKnownMarketplaces,
+        settingsMergeCustomizer,
+      ),
     {},
-    ...SETTING_SOURCES.filter(
-      source =>
-        isSettingSourceEnabled(source) &&
-        isSettingSourceWorkspaceTrusted(source),
-    ).map(source => getSettingsForSource(source)?.extraKnownMarketplaces),
   )
 }
 
