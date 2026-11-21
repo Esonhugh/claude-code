@@ -575,10 +575,14 @@ describe.serial('ModsPane terminal Image consumer', () => {
   })
   let ttyDescriptor: PropertyDescriptor | undefined
   let termProgram: string | undefined
+  const multiplexer = { TMUX: process.env.TMUX, STY: process.env.STY }
 
   beforeEach(() => {
     ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
     termProgram = process.env.TERM_PROGRAM
+    // Not the multiplexer of the shell running the tests: it wraps the Kitty sequences.
+    delete process.env.TMUX
+    delete process.env.STY
   })
 
   afterEach(() => {
@@ -586,6 +590,10 @@ describe.serial('ModsPane terminal Image consumer', () => {
     else delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY
     if (termProgram === undefined) delete process.env.TERM_PROGRAM
     else process.env.TERM_PROGRAM = termProgram
+    for (const [name, value] of Object.entries(multiplexer)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
   })
 
   test('keeps the alt fallback on unsupported and non-TTY terminals without leaking image bytes', async () => {
