@@ -1729,14 +1729,30 @@ function isInternalHook(matched: MatchedHook): boolean {
   return matched.hook.type === 'callback' && matched.hook.internal === true
 }
 
+const NON_MANAGED_SETTINGS_SOURCES = new Set([
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'flagSettings',
+])
+
 /**
  * Build a dedup key for a matched hook, namespaced by source context.
  *
- * Each settings source retains its own commands. Plugin/skill roots also
- * distinguish identical templates that expand to different files.
+ * User/project/local/--settings hooks share one namespace, so a command
+ * configured in several of them runs once. Managed hooks keep their own
+ * (identical managed matchers are dropped from the other sources when the
+ * snapshot is captured). Plugin/skill roots distinguish identical templates
+ * that expand to different files.
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
-  const source = m.pluginRoot ? 'plugin' : m.skillRoot ? 'skill' : m.hookSource
+  const source = m.pluginRoot
+    ? 'plugin'
+    : m.skillRoot
+      ? 'skill'
+      : m.hookSource && NON_MANAGED_SETTINGS_SOURCES.has(m.hookSource)
+        ? 'settings'
+        : m.hookSource
   return `${source ?? ''}\0${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
 }
 
@@ -2022,11 +2038,11 @@ export async function getMatchingHooks(
     })
 
     // Deduplicate hooks by command/prompt/url within the same source context.
-    // Key includes the settings source and plugin/skill root, so
-    // cross-plugin template collisions don't drop hooks (gh-29724).
+    // Key includes the plugin/skill root, so cross-plugin template collisions
+    // don't drop hooks (gh-29724).
     //
     // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-    // Within each source, the last matching definition still wins.
+    // Across settings files the highest-precedence definition therefore wins.
     // Fast-path: callback/function hooks don't need dedup (each is unique).
     // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
     // callback/function — the common case for internal hooks like

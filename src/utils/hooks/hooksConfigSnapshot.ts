@@ -49,17 +49,29 @@ function getHooksFromAllowedSources(): HooksConfigSnapshot {
         : settingsModule.getSettingsForSource(source)
     )?.hooks
     if (!hooks) continue
-    // Capture before merging: equal commands in distinct sources must not lose
-    // provenance, and later settings mutations must not change this snapshot.
+    // Capture before merging: each matcher keeps its provenance, and later
+    // settings mutations must not change this snapshot.
     for (const event of Object.keys(hooks) as (keyof HooksSettings)[]) {
       const matchers = hooks[event]
       if (!matchers) continue
+      // A non-managed matcher identical to a managed one is the same hook
+      // configured twice: only the managed copy runs.
+      const managed =
+        source === 'policySettings'
+          ? undefined
+          : new Set(
+              policySettings?.hooks?.[event]?.map((matcher) =>
+                JSON.stringify(matcher),
+              ),
+            )
       snapshot[event] ??= []
       snapshot[event]!.push(
-        ...structuredClone(matchers).map((matcher) => ({
-          ...matcher,
-          hookSource: source,
-        })),
+        ...structuredClone(matchers)
+          .filter((matcher) => !managed?.has(JSON.stringify(matcher)))
+          .map((matcher) => ({
+            ...matcher,
+            hookSource: source,
+          })),
       )
     }
   }
