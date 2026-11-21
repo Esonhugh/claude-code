@@ -406,7 +406,7 @@ export async function mcpGetHandler(name: string): Promise<void> {
     console.log(`  Command: ${server.command}`)
     const args = Array.isArray(server.args) ? server.args : []
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Args: ${args.join(' ')}`)
+    console.log(['  Args:', ...args].join(' '))
     if (server.env) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('  Environment:')

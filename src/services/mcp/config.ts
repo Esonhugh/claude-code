@@ -1062,7 +1062,10 @@ export function getMcpConfigByName(
 ): ScopedMcpServerConfig | null {
   const config = doesEnterpriseMcpConfigExist()
     ? (getMcpConfigsByScope('enterprise').servers[name] ?? null)
-    : findMcpConfigByName(name, includeUnapprovedProjectServers)
+    : findMcpConfigByName(
+        name,
+        includeUnapprovedProjectServers ? 'display' : 'approved',
+      )
   return config && isMcpServerAllowedByPolicy(name, config) ? config : null
 }
 
@@ -1073,12 +1076,12 @@ export function getMcpConfigByName(
 export function getConfiguredMcpConfigByName(
   name: string,
 ): ScopedMcpServerConfig | null {
-  return findMcpConfigByName(name, true)
+  return findMcpConfigByName(name, 'raw')
 }
 
 function findMcpConfigByName(
   name: string,
-  includeUnapprovedProjectServers: boolean,
+  projectServers: 'approved' | 'display' | 'raw',
 ): ScopedMcpServerConfig | null {
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
 
@@ -1089,7 +1092,7 @@ function findMcpConfigByName(
   }
 
   const { servers: userServers } = getMcpConfigsByScope('user')
-  const { servers: projectServers } = getMcpConfigsByScope('project')
+  const projectServer = getMcpConfigsByScope('project').servers[name]
   const { servers: localServers } = getMcpConfigsByScope('local')
 
   if (enterpriseServers[name]) {
@@ -1099,14 +1102,21 @@ function findMcpConfigByName(
     return localServers[name]
   }
   if (
-    projectServers[name] &&
-    (includeUnapprovedProjectServers ||
-      getProjectMcpServerStatus(name) === 'approved')
+    projectServer &&
+    (projectServers === 'raw' ||
+      getProjectMcpServerStatus(name, {
+        settingsOnly: projectServers === 'display',
+      }) === 'approved')
   ) {
-    return projectServers[name]
+    return projectServer
   }
   if (userServers[name]) {
     return userServers[name]
+  }
+  // Shown for status only, so it must not hide a usable server of that name
+  // (official 2.1.329).
+  if (projectServer && projectServers === 'display') {
+    return projectServer
   }
 
   return null
@@ -1227,7 +1237,11 @@ export async function getClaudeCodeMcpConfigs(
   const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
   const pendingProjectServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(projectServers)) {
-    const status = getProjectMcpServerStatus(name)
+    // Status display decides from settings alone, like its callers: the
+    // non-interactive auto-approve would put a pending server above the user's.
+    const status = getProjectMcpServerStatus(name, {
+      settingsOnly: includePendingProjectServers,
+    })
     if (status === 'approved') {
       approvedProjectServers[name] = config
     } else if (includePendingProjectServers && status === 'pending') {
@@ -1355,7 +1369,8 @@ export async function getAllMcpConfigs({
         Object.entries(claudeCodeServers).filter(
           ([name, config]) =>
             config.scope !== 'project' ||
-            getProjectMcpServerStatus(name) === 'approved',
+            getProjectMcpServerStatus(name, { settingsOnly: true }) ===
+              'approved',
         ),
       )
     : claudeCodeServers
