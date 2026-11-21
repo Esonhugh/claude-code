@@ -48,6 +48,7 @@ import {
   applyPermissionModeToResult,
   checkRuleBasedPermissions,
   createPermissionRequestMessage,
+  denyAskWithoutApprovalSurface,
   hasPermissionsToUseTool,
   planModeHoldsWrite,
   toolAlwaysAllowedRule,
@@ -75,9 +76,10 @@ export function setModToolCheckPermissionHost(isHosted: boolean): void {
 }
 
 // Core's ask goes to the host only where a host would be asked: not under dontAsk or no-prompt loops.
-function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): { decider?: 'host' } {
+function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): { decider?: 'host' } {
   return behavior === 'ask' && permissionHost && permission !== undefined &&
-    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true ? { decider: 'host' } : {}
+    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true &&
+    permission.denyInsteadOfPrompting !== true ? { decider: 'host' } : {}
 }
 
 /** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
@@ -124,7 +126,7 @@ function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior:
   return undefined
 }
 
-export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): ModToolCheckResult {
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): ModToolCheckResult {
   const why = decision.decisionReason
   const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
   const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??
@@ -833,6 +835,9 @@ export async function resolveHookPermissionDecision(
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
   toolUseID: string,
+  // False for the pass that feeds tool.check: it keeps the hook's ask and its
+  // source, and the caller settles it after the plugin verdict.
+  settleHookAsk = true,
 ): Promise<{
   decision: PermissionDecision
   input: Record<string, unknown>
@@ -848,7 +853,7 @@ export async function resolveHookPermissionDecision(
       { ...toolUseContext, modsSnapshot: undefined },
       async (checkedTool, args, context, _assistant, _id, forced) =>
         forced ?? checkModToolPermission(checkedTool, args, context),
-      assistantMessage, toolUseID,
+      assistantMessage, toolUseID, false,
     )
     const core = declarative.decision
     const why = core.decisionReason
@@ -938,6 +943,8 @@ export async function resolveHookPermissionDecision(
         decision, tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
       )
     }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    decision = await denyAskWithoutApprovalSurface(decision, tool, declarative.input, toolUseContext, toolUseID)
     if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
       (requireCanUseTool || (requiresInteraction &&
         !(hookPermissionResult?.behavior === 'allow' && hookPermissionResult.updatedInput !== undefined))))) {
@@ -1039,6 +1046,13 @@ export async function resolveHookPermissionDecision(
       forceDecision = await hasPermissionsToUseTool(
         tool, askInput, toolUseContext, assistantMessage, toolUseID,
       )
+    }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    const settled = settleHookAsk
+      ? await denyAskWithoutApprovalSurface(forceDecision, tool, askInput, toolUseContext, toolUseID)
+      : forceDecision
+    if (settled !== forceDecision) {
+      return { decision: settled, input: askInput }
     }
   }
   return {

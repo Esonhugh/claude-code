@@ -188,6 +188,23 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 
 组织托管设置开启 `allowManagedPermissionRulesOnly` 后，skill 和命令里声明的 `allowed-tools` 不再自动放行。
 
+## 只让文件工具写工作目录：`blockWritesOutsideWorkingDirectories`
+
+```json
+{ "permissions": { "blockWritesOutsideWorkingDirectories": true } }
+```
+
+开启后，Write、Edit、NotebookEdit 写工作目录以外的路径一律拒绝，任何权限模式（包括 Bypass）和 allow 规则都不能解除；模型收到：
+
+```text
+<path> is outside <cwd>; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.
+```
+
+- 任一设置来源（user、project、local、`--settings`、托管）为 `true` 即生效。
+- `/add-dir`、`--add-dir`、`permissions.additionalDirectories` 加入的目录仍可写。
+- 开启期间不能写 Claude Code 的 settings 文件（它能解除这个限制）。
+- 只限制文件工具，Bash 等 shell 命令不受影响。
+
 ## 排查坏配置：Safe mode
 
 `claude --safe-mode`（或 `CLAUDE_CODE_SAFE_MODE=1`）启动一个「干净」的会话：不加载 CLAUDE.md、插件、MCP、非托管 hooks、自定义 agents / skills 等定制，组织托管的设置仍然生效。怀疑是某个配置把 Claude 搞坏了时，先用它确认问题是否消失。
@@ -197,10 +214,23 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 `claude -p` 没有界面可以弹确认框。加 `--permission-prompts none` 时，所有需要确认的操作直接拒绝，模型收到：
 
 ```text
-Permission to use Bash has been denied. ...
+Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. ...
 ```
 
 默认 `--permission-prompts host` 则交给 SDK 的宿主程序决定。
+
+## 任何会话都不等人确认：`denyInsteadOfPrompting`
+
+```json
+{ "permissions": { "denyInsteadOfPrompting": true } }
+```
+
+把 `--permission-prompts none` 的行为用到所有会话（交互会话、子代理、agent team 成员）：本来要弹确认框的调用立即拒绝，模型收到上面那句话后继续这一轮。
+
+- 只会拒绝：allow 规则、权限模式（如 Accept edits）、自动模式分类器和 PermissionRequest hook 先决定。
+- 只从 user 设置、`--settings` 和托管设置读取；项目级和本地设置里写了会被忽略。
+- 开启后不向模型提供 AskUserQuestion 和 Plan 模式工具（EnterPlanMode / ExitPlanMode）。
+- 尚未实现官方的另外三项：连续拒绝后结束这一轮、取消 MCP elicitation、沙箱网络询问直接拒绝。
 
 ## 已知问题
 
