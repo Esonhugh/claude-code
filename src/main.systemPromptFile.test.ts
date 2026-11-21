@@ -32,6 +32,7 @@ test('--system-prompt-file with --system-prompt puts the file first, like 2.1.32
   expect(resolveSystemPrompt('A', 'SPF\n\n\n')).toBe('SPF\n\n\n\nA')
   expect(resolveSystemPrompt(' A ', '  SPF  ')).toBe('  SPF  \n\n A ')
   expect(resolveSystemPrompt('A', '\n\n')).toBe('\n\n\nA')
+  expect(resolveSystemPrompt('A', 'SPF\r\n')).toBe('SPF\n\nA')
 })
 
 test('an empty side leaves the other one unchanged', () => {
@@ -39,4 +40,8 @@ test('an empty side leaves the other one unchanged', () => {
   expect(resolveSystemPrompt('', 'SPF\n')).toBe('SPF\n')
   expect(resolveSystemPrompt(undefined, 'SPF\n')).toBe('SPF\n')
   expect(resolveSystemPrompt('A', undefined)).toBe('A')
+})
+
+test('an empty file alone is still an empty custom prompt, not the default one', () => {
+  expect(resolveSystemPrompt(undefined, '')).toBe('')
 })

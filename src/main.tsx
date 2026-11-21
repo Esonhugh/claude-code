@@ -2354,10 +2354,11 @@ async function run(): Promise<CommanderCommand> {
           const filePath = resolve(options.systemPromptFile)
           const fromFile = readFileSync(filePath, 'utf8')
           // Both given: the file comes first, then --system-prompt.
-          systemPrompt =
-            fromFile && options.systemPrompt
-              ? `${fromFile}${fromFile.endsWith('\n') ? '\n' : '\n\n'}${options.systemPrompt}`
-              : fromFile || options.systemPrompt
+          systemPrompt = !options.systemPrompt
+            ? fromFile
+            : fromFile
+              ? `${fromFile.replace(/\r?\n$/, '')}\n\n${options.systemPrompt}`
+              : options.systemPrompt
         } catch (error) {
           const code = getErrnoCode(error)
           if (code === 'ENOENT') {
