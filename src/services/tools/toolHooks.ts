@@ -835,6 +835,9 @@ export async function resolveHookPermissionDecision(
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
   toolUseID: string,
+  // False for the pass that feeds tool.check: it keeps the hook's ask and its
+  // source, and the caller settles it after the plugin verdict.
+  settleHookAsk = true,
 ): Promise<{
   decision: PermissionDecision
   input: Record<string, unknown>
@@ -850,7 +853,7 @@ export async function resolveHookPermissionDecision(
       { ...toolUseContext, modsSnapshot: undefined },
       async (checkedTool, args, context, _assistant, _id, forced) =>
         forced ?? checkModToolPermission(checkedTool, args, context),
-      assistantMessage, toolUseID,
+      assistantMessage, toolUseID, false,
     )
     const core = declarative.decision
     const why = core.decisionReason
@@ -1045,9 +1048,9 @@ export async function resolveHookPermissionDecision(
       )
     }
     // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
-    const settled = await denyAskWithoutApprovalSurface(
-      forceDecision, tool, askInput, toolUseContext, toolUseID,
-    )
+    const settled = settleHookAsk
+      ? await denyAskWithoutApprovalSurface(forceDecision, tool, askInput, toolUseContext, toolUseID)
+      : forceDecision
     if (settled !== forceDecision) {
       return { decision: settled, input: askInput }
     }

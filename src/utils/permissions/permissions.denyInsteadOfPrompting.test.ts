@@ -214,3 +214,51 @@ test('a PreToolUse hook ask is denied as well, where it used to keep its dialog'
     })
   }
 })
+
+test('a tool.check mod cannot allow a managed PreToolUse ask that denyInsteadOfPrompting denies', async () => {
+  const initial = getDefaultAppState()
+  const state = {
+    ...initial,
+    toolPermissionContext: {
+      ...initial.toolPermissionContext,
+      mode: 'default',
+      denyInsteadOfPrompting: true,
+    } as ToolPermissionContext,
+  }
+  const resolve = async (hookSource: string) => {
+    const { decision } = await resolveHookPermissionDecision(
+      {
+        behavior: 'ask',
+        message: 'hook-ask',
+        decisionReason: { type: 'hook', hookName: 'PreToolUse:NeedsApproval', hookSource, reason: 'hook-ask' },
+      },
+      fakeTool(),
+      {},
+      {
+        getAppState: () => state,
+        setAppState: () => {},
+        abortController: new AbortController(),
+        messages: [],
+        options: { isNonInteractiveSession: false, tools: [] },
+        modsSnapshot: {
+          hasHooks: () => true,
+          dispatch: async (
+            _event: string,
+            _input: unknown,
+            _core: unknown,
+            options: { onHooks?: (hooks: { plugin: string }[]) => void },
+          ) => {
+            options.onHooks?.([{ plugin: 'lifter' }])
+            return { decision: 'allow' }
+          },
+        },
+      } as unknown as ToolUseContext,
+      async () => ({ behavior: 'ask', message: 'prompted' }),
+      { message: { id: 'msg_test' } } as never,
+      'toolu_test',
+    )
+    return decision as { behavior: string; message?: string }
+  }
+  expect((await resolve('userSettings')).behavior).toBe('allow')
+  expect(await resolve('policySettings')).toMatchObject({ behavior: 'deny', message: `${NO_APPROVAL_SURFACE}hook-ask` })
+})
