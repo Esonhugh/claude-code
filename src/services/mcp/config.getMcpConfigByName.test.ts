@@ -109,6 +109,8 @@ async function runChild(scenario: string): Promise<void> {
   state.setCwdState(process.cwd())
   // Interactive session: .mcp.json servers are not auto-approved.
   state.setIsInteractive(true)
+  // It got past the trust dialog; before that settings.local.json approves nothing.
+  state.setSessionTrustAccepted(true)
   const { enableConfigs, saveGlobalConfig } = await import(
     '../../utils/config.js'
   )
