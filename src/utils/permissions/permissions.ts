@@ -2026,19 +2026,15 @@ export function syncPermissionRulesFromDisk(
   // would leave the old rule in the context because convertRulesToUpdates
   // only generates replaceRules for source:behavior pairs that have rules —
   // an empty group produces no update, so stale rules persist.
-  const diskSources: Array<PermissionUpdateDestination | 'sshOverlay'> = [
-    'userSettings',
-    'projectSettings',
-    'localSettings',
-    'sshOverlay',
-  ]
-  for (const diskSource of diskSources) {
+  // flagSettings and policySettings are included: apply_flag_settings and
+  // managed settings can drop their rules mid-session too (official 2.1.329).
+  for (const diskSource of [...SETTING_SOURCES, 'sshOverlay'] as const) {
     for (const behavior of ['allow', 'deny', 'ask'] as PermissionBehavior[]) {
       context = applyPermissionUpdate(context, {
         type: 'replaceRules',
         rules: [],
         behavior,
-        destination: diskSource,
+        destination: diskSource as PermissionUpdateDestination | 'sshOverlay',
       })
     }
   }
