@@ -32,6 +32,7 @@ import {
   clearCommandQueue,
   enqueuePendingNotification,
   hasCommandsInQueue,
+  isQueuedCommandEditable,
 } from '../utils/messageQueueManager.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 
@@ -81,7 +82,9 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   } = props
   const store = useAppStateStore()
   const setAppState = useSetAppState()
-  const queuedCommandsLength = useCommandQueue().length
+  // Official `Rsi`: only commands Esc can pull back count; a queued event
+  // (an eval's outcome, a task notification) must not claim the keys.
+  const hasQueuedCommands = useCommandQueue().some(isQueuedCommandEditable)
   const { addNotification, removeNotification } = useNotifications()
   const lastKillAgentsPressRef = useRef<number>(0)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
@@ -130,7 +133,6 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // Local JSX commands (like /model, /btw) handle their own input
   const isOverlayActive = useIsOverlayActive()
   const canCancelRunningTask = abortSignal !== undefined && !abortSignal.aborted
-  const hasQueuedCommands = queuedCommandsLength > 0
   // When in bash/background mode with empty input, escape should exit the mode
   // rather than cancel the request. Let PromptInput handle mode exit.
   // This only applies to Escape, not Ctrl+C which should always cancel.
