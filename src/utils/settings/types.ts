@@ -88,6 +88,12 @@ export const PermissionsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe('Additional directories to include in the permission scope'),
+      blockWritesOutsideWorkingDirectories: z
+        .boolean()
+        .optional()
+        .describe(
+          'Make the file tools refuse writes outside the working directories in every permission mode; allow rules do not lift it. True in any settings source wins. Shell commands are not restricted.',
+        ),
     })
     .passthrough(),
 )

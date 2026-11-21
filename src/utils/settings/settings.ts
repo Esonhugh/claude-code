@@ -487,6 +487,7 @@ const RESTRICTIVE_SETTING_PATHS: {
   { path: ['disableDeepLinkRegistration'], restrictive: 'disable' },
   { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
   { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
+  { path: ['permissions', 'blockWritesOutsideWorkingDirectories'], restrictive: true },
   { path: ['autoMode', 'classifyAllShell'], restrictive: true },
   { path: ['enableWorkflows'], restrictive: false },
   { path: ['useAutoModeDuringPlan'], restrictive: false },
@@ -830,6 +831,7 @@ export function getManagedSettingsKeysForLogging(
       'disableBypassPermissionsMode',
       ...(feature('TRANSCRIPT_CLASSIFIER') ? ['disableAutoMode'] : []),
       'additionalDirectories',
+      'blockWritesOutsideWorkingDirectories',
     ]),
     sandbox: new Set([
       'enabled',
