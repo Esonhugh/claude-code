@@ -2123,7 +2123,15 @@ export const connectToServer = memoize(
       if (inProcessServer) {
         inProcessServer.close().catch(() => {})
       }
-      const message = errorMessage(error)
+      let message = errorMessage(error)
+      if (error instanceof SdkHttpError) {
+        // Official 2.1.329 wording for these two answers to the first POST.
+        if (serverRef.type === 'http' && error.status === 404) {
+          message = `MCP endpoint not found at ${new URL(serverRef.url).origin}. Check the URL in your MCP config.`
+        } else if (error.code === SdkErrorCode.EraNegotiationFailed) {
+          message = `HTTP ${error.status}: ${POST_ERROR_PREFIX}${error.data.text ?? ''}`
+        }
+      }
       return {
         name,
         type: 'failed' as const,
