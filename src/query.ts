@@ -1678,7 +1678,9 @@ async function* queryLoop(
             // Yield system message about fallback — use 'warning' level so
             // users see the notification without needing verbose mode
             yield createSystemMessage(
-              `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
+              innerError.reason === 'model_not_found'
+                ? `Switched to ${renderModelName(innerError.fallbackModel)} because ${renderModelName(innerError.originalModel)} is not available`
+                : `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
               'warning',
             )
 

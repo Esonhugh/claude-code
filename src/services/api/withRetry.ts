@@ -214,6 +214,10 @@ export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
     public readonly fallbackModel: string,
+    public readonly reason:
+      | 'overloaded'
+      | 'server_error'
+      | 'model_not_found' = 'overloaded',
   ) {
     super(`Model fallback triggered: ${originalModel} -> ${fallbackModel}`)
     this.name = 'FallbackTriggeredError'
@@ -391,6 +395,35 @@ export async function* withRetry<T>(
         options.fallbackModel && options.fallbackModel !== options.model
           ? options.fallbackModel
           : undefined
+      // Like official: the fallback model takes over at once when the endpoint
+      // does not have the primary model, or answers it with a 5xx other than 529.
+      if (fallbackModel && error instanceof APIError) {
+        const reason =
+          error.status === 404 &&
+          error.message.includes('not_found_error') &&
+          error.message.includes('model:')
+            ? 'model_not_found'
+            : error.status !== undefined &&
+                error.status >= 500 &&
+                error.status < 600 &&
+                !is529Error(error) &&
+                !wasFastModeActive &&
+                !isPersistentRetryEnabled()
+              ? 'server_error'
+              : undefined
+        if (reason) {
+          logEvent('tengu_api_model_not_found_fallback_triggered', {
+            original_model:
+              options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            fallback_model:
+              fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            provider: getAPIProviderForStatsig(),
+            reason:
+              reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+          throw new FallbackTriggeredError(options.model, fallbackModel, reason)
+        }
+      }
       if (
         is529Error(error) &&
         (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
