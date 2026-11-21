@@ -85,12 +85,34 @@ export function watchCustomThemes(): () => void {
     reloadCustomThemes()
   }
   if (usePolling) {
+    const themeFileStats = () => {
+      try {
+        return readdirSync(dir)
+          .filter(file => extname(file) === '.json')
+          .map(file => {
+            const stats = statSync(join(dir, file), { throwIfNoEntry: false })
+            return `${file}:${stats?.size}:${stats?.mtimeMs}`
+          })
+          .join('\n')
+      } catch {
+        return ''
+      }
+    }
+    // chokidar reports the directory before it starts waiting for the write to
+    // finish. Wait longer than it does, so that a file event cancels this
+    // reload, and start over while the theme files are still changing.
+    const scheduleDirectoryReload = () => {
+      clearTimeout(pendingDirectoryReload)
+      const before = themeFileStats()
+      pendingDirectoryReload = setTimeout(() => {
+        if (themeFileStats() === before) reload()
+        else scheduleDirectoryReload()
+      }, stabilityThreshold + 200)
+    }
     // An atomic replacement can leave the file's size and mtime unchanged.
     // The directory poll still sees the rename, even without a file event.
     watcher.on('raw', (_event, path) => {
-      if (path !== dir) return
-      clearTimeout(pendingDirectoryReload)
-      pendingDirectoryReload = setTimeout(reload, stabilityThreshold)
+      if (path === dir) scheduleDirectoryReload()
     })
   }
   watcher.on('add', reload)
