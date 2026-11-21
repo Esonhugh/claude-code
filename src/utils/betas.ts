@@ -326,7 +326,11 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   ) {
     betaHeaders.push(REDACT_THINKING_BETA_HEADER)
   }
-  if (provider === 'firstParty' && modelSupportsISP(model)) {
+  if (
+    provider === 'firstParty' &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS) &&
+    modelSupportsISP(model)
+  ) {
     betaHeaders.push(THINKING_TOKEN_COUNT_BETA_HEADER)
   }
 
