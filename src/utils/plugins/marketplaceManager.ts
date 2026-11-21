@@ -40,12 +40,18 @@ import { gitExe } from '../git.js'
 import { lock } from '../lockfile.js'
 import { logError } from '../log.js'
 import { sequential } from '../sequential.js'
+import { checkHasTrustDialogAccepted } from '../config.js'
+import {
+  isSettingSourceEnabled,
+  SETTING_SOURCES,
+} from '../settings/constants.js'
 import {
   getInitialSettings,
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
+import { isSettingSourceWorkspaceTrusted } from '../settings/workspaceTrust.js'
 import {
   jsonParse,
   jsonStringify,
@@ -201,9 +207,28 @@ export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
   // @ts-ignore - recovered code
   return {
     ...implicit,
-    ...getAddDirExtraMarketplaces(),
-    ...(getInitialSettings().extraKnownMarketplaces ?? {}),
+    ...(checkHasTrustDialogAccepted() ? getAddDirExtraMarketplaces() : {}),
+    ...(getTrustedExtraKnownMarketplaces() ?? {}),
   }
+}
+
+/**
+ * extraKnownMarketplaces that may get a marketplace registered or loaded. -p
+ * and SDK sessions never show the trust dialog: until the folder is trusted,
+ * its own settings (and --add-dir ones) declare nothing (official 2.1.329).
+ */
+export function getTrustedExtraKnownMarketplaces(): SettingsJson['extraKnownMarketplaces'] {
+  if (checkHasTrustDialogAccepted()) {
+    return getInitialSettings().extraKnownMarketplaces
+  }
+  return Object.assign(
+    {},
+    ...SETTING_SOURCES.filter(
+      source =>
+        isSettingSourceEnabled(source) &&
+        isSettingSourceWorkspaceTrusted(source),
+    ).map(source => getSettingsForSource(source)?.extraKnownMarketplaces),
+  )
 }
 
 /**
