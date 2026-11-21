@@ -1,9 +1,15 @@
 import type { QuerySource } from '../../constants/querySource.js'
-import type { Message } from '../../types/message.js'
+import type { AssistantMessage, Message } from '../../types/message.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import { isPromptTooLongMessage } from '../api/errors.js'
+import {
+  isPromptTooLongMessage,
+  parsePromptTooLongTokenCounts,
+  PROMPT_TOO_LONG_ERROR_MESSAGE,
+} from '../api/errors.js'
+import { roughTokenCountEstimationForMessages } from '../tokenEstimation.js'
 import { autoCompactIfNeeded, isAutoCompactEnabled } from './autoCompact.js'
 import type { CompactionResult } from './compact.js'
+import { groupMessagesByApiRound } from './grouping.js'
 
 /**
  * Official 2.1.319: when the API rejects a request as too long, compact the
@@ -29,6 +35,38 @@ export function isWithheldPromptTooLong(message: unknown): boolean {
 
 export function isWithheldMediaSizeError(_message: unknown): boolean {
   return false
+}
+
+/**
+ * Official: a conversation of a single API round has nothing to summarize, so
+ * its prompt-too-long is reported with where the tokens are instead of being
+ * compacted and refused again. Null when there is a round to compact.
+ */
+export function singleExchangePromptTooLong(
+  refused: AssistantMessage,
+  messages: Message[],
+): AssistantMessage | null {
+  const exchange = messages.filter(message => message.type !== 'progress')
+  if (groupMessagesByApiRound(exchange).length >= 2) return null
+  const { actualTokens, limitTokens } = parsePromptTooLongTokenCounts(
+    refused.errorDetails ?? '',
+  )
+  const conversationTokens = roughTokenCountEstimationForMessages(exchange)
+  const detail =
+    actualTokens === undefined || limitTokens === undefined
+      ? 'this conversation is a single exchange and cannot be compacted — the request size comes mostly from system prompt, tool definitions, or attachments.'
+      : conversationTokens >= actualTokens * 0.8
+        ? `the request is ~${actualTokens} tokens (limit ${limitTokens}) and this conversation's own content is most of it. A single-exchange conversation cannot be compacted; start with less content (smaller files or pasted text).`
+        : `the request is ~${actualTokens} tokens (limit ${limitTokens}) but this conversation is only ~${conversationTokens} tokens — the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.`
+  return {
+    ...refused,
+    message: {
+      ...refused.message,
+      content: [
+        { type: 'text', text: `${PROMPT_TOO_LONG_ERROR_MESSAGE} · ${detail}` },
+      ],
+    },
+  } as AssistantMessage
 }
 
 export async function tryReactiveCompact(input: {

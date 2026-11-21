@@ -1855,6 +1855,18 @@ async function* queryLoop(
         isWithheld413 &&
         (reactiveCompact?.isWithheldPromptTooLong(lastMessage) ?? false)
       if ((reactiveWithheld413 || isWithheldMedia) && reactiveCompact) {
+        const uncompactable =
+          reactiveWithheld413 && !hasAttemptedReactiveCompact
+            ? reactiveCompact.singleExchangePromptTooLong(
+                lastMessage!,
+                messagesForQuery,
+              )
+            : null
+        if (uncompactable) {
+          yield uncompactable
+          void executeStopFailureHooks(uncompactable, toolUseContext)
+          return { reason: 'prompt_too_long' }
+        }
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,
