@@ -5962,11 +5962,7 @@ async function run(): Promise<CommanderCommand> {
     .command('serve')
     .description(`Start the Claude Code MCP server`)
     .option('-d, --debug', 'Enable debug mode', () => true)
-    .option(
-      '--verbose',
-      'Override verbose mode setting from config',
-      () => true,
-    )
+    .option('--verbose', 'Override the verbose setting', () => true)
     .action(
       async ({ debug, verbose }: { debug?: boolean; verbose?: boolean }) => {
         const { mcpServeHandler } = await import('./cli/handlers/mcp.js')
@@ -5986,7 +5982,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Remove an MCP server')
     .option(
       '-s, --scope <scope>',
-      'Configuration scope (local, user, or project) - if not specified, removes from whichever scope it exists in',
+      'Configuration scope (local, user, or project); if not set, removes it from whichever scope has it',
     )
     .action(async (name: string, options: { scope?: string }) => {
       const { mcpRemoveHandler } = await import('./cli/handlers/mcp.js')
@@ -6018,7 +6014,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)')
     .option(
       '--no-browser',
-      'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
+      'Print the authorization URL instead of opening a browser (for SSH or no-browser sessions — paste the redirect URL back when prompted)',
     )
     .action(async (name: string, options: { browser?: boolean }) => {
       const { mcpLoginHandler } = await import('./cli/handlers/mcp.js')
