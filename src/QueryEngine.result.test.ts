@@ -39,7 +39,7 @@ const finish = [
   streamEvent({ type: 'message_stop' }),
 ]
 const usageOf = (messages: never[]) => {
-  let tally = { total: EMPTY_USAGE, before: EMPTY_USAGE, current: EMPTY_USAGE, messageId: null as string | null }
+  let tally = { total: EMPTY_USAGE, current: EMPTY_USAGE, messageId: null as string | null, open: false }
   for (const message of messages) tally = engine.usageAfterMessage(tally, message)
   return [tally.total.input_tokens, tally.total.output_tokens]
 }
@@ -47,6 +47,13 @@ const usageOf = (messages: never[]) => {
 test('result.usage counts a request whose stream was cut before message_stop', () => {
   expect(usageOf([start('msg_ok'), ...finish])).toEqual([10, 5])
   expect(usageOf([start('msg_cut'), start('msg_ok'), ...finish])).toEqual([20, 6])
+})
+
+// Official: the request a turn is interrupted in, or gives up on, is in the
+// cost and modelUsage but not in result.usage.
+test('result.usage leaves out a cut request that nothing followed', () => {
+  expect(usageOf([start('msg_cut')])).toEqual([0, 0])
+  expect(usageOf([start('msg_cut'), start('msg_cut_again')])).toEqual([10, 1])
 })
 
 // A non-streaming fallback reply has no stream events, only its own usage.

@@ -245,47 +245,51 @@ export function toolDenialsIn(
 
 type UsageTally = {
   total: NonNullableUsage
-  /** `total` before the request that is streaming, and that request's usage. */
-  before: NonNullableUsage
+  /** The request that is streaming: its usage, and whether it is not in `total` yet. */
   current: NonNullableUsage
   messageId: string | null
+  open: boolean
 }
 
 /**
- * result.usage after `message`. A streamed request counts from message_start,
- * so one cut before message_stop is still in the total (official credits it
- * too). A reply that did not stream (the non-streaming fallback) has no stream
- * events and counts by its own usage.
+ * result.usage after `message`. A streamed request counts at message_stop, or
+ * once a later request shows its stream was cut (official counts a cut request
+ * that was retried, not the one a turn is interrupted in or gives up on). A
+ * reply that did not stream (the non-streaming fallback) has no stream events
+ * and counts by its own usage.
  */
 export function usageAfterMessage(
   tally: UsageTally,
   message: { type: string; message?: unknown; event?: unknown },
 ): UsageTally {
+  const total = tally.open
+    ? accumulateUsage(tally.total, tally.current)
+    : tally.total
   if (message.type === 'assistant') {
     const reply = (message as AssistantMessage).message
     if (reply.model === SYNTHETIC_MODEL || reply.id === tally.messageId) return tally
     return {
       ...tally,
       messageId: reply.id,
+      open: false,
       // @ts-ignore - recovered code
-      total: accumulateUsage(tally.total, updateUsage(EMPTY_USAGE, reply.usage)),
+      total: accumulateUsage(total, updateUsage(EMPTY_USAGE, reply.usage)),
     }
   }
   if (message.type !== 'stream_event') return tally
   const event = message.event as BetaRawMessageStreamEvent
   if (event.type === 'message_start') {
-    const current = updateUsage(EMPTY_USAGE, event.message.usage)
     return {
-      before: tally.total,
-      current,
+      total,
+      current: updateUsage(EMPTY_USAGE, event.message.usage),
       messageId: event.message.id,
-      total: accumulateUsage(tally.total, current),
+      open: true,
     }
   }
   if (event.type === 'message_delta') {
-    const current = updateUsage(tally.current, event.usage)
-    return { ...tally, current, total: accumulateUsage(tally.before, current) }
+    return { ...tally, current: updateUsage(tally.current, event.usage) }
   }
+  if (event.type === 'message_stop') return { ...tally, total, open: false }
   return tally
 }
 
@@ -1186,9 +1190,9 @@ export class QueryEngine {
     // Track current message usage (reset on each message_start)
     let usageTally: UsageTally = {
       total: this.totalUsage,
-      before: this.totalUsage,
       current: EMPTY_USAGE,
       messageId: null,
+      open: false,
     }
     let turnCount = 1
     let hasAcknowledgedInitialMessages = false
