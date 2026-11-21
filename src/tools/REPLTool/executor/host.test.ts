@@ -188,6 +188,19 @@ describe('REPL executor', () => {
     expect((await run('await new Promise(r => setTimeout(() => r(7), 10))')).value).toBe('7')
   })
 
+  test('a script that ends with timers still waiting is told they were cancelled (official 2.1.329 gh)', async () => {
+    const { run } = setup()
+    const warning = (n: number) =>
+      `\u26a0 ${n} sleep() or timer(s) were still waiting at script end and were cancelled. Ignore this if they were only timeouts. A loop that waited on one goes no further: to run it, await it inside one script (set the timeout parameter if it is long).`
+    const left = await run("setInterval(() => {}, 500); setTimeout(() => {}, 500); 'set'")
+    expect(left.stderr).toBe(warning(2))
+    expect(left.output).toBe(`<repl-output>\n<log>[stderr] ${warning(2)}</log>\n<result>set</result>\n</repl-output>`)
+    // Timers that fired or were cleared are not waiting; a failed script gets no warning.
+    const clean = await run("const t = setInterval(() => {}, 5); await new Promise(r => setTimeout(r, 20)); clearInterval(t); 'clean'")
+    expect(clean.output).toBe('<repl-output>\n<result>clean</result>\n</repl-output>')
+    expect((await run("setInterval(() => {}, 500); throw new Error('bad')")).stderr).toBe('')
+  })
+
   test('self.log output is escaped and uncaught timer errors go to stderr', async () => {
     const { run } = setup()
     const result = await run('self.log("<b>&</b>", {x: 1})\nsetTimeout(() => { throw new Error("bad") }, 0)\nawait new Promise(r => setTimeout(r, 10))\n"<ok>"')

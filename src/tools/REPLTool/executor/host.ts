@@ -152,6 +152,11 @@ export function replTimeoutMessage(ms: number): string {
   return `Error: REPL execution timed out after ${ms}ms of script time (inner tool calls excluded). Script may still be running \u2014 avoid unbounded awaits.`
 }
 
+/** Official `gh` (2.1.329): the last stderr line of a script that ended with timers still waiting. */
+function timersCancelledWarning(count: number): string {
+  return `\u26a0 ${count} sleep() or timer(s) were still waiting at script end and were cancelled. Ignore this if they were only timeouts. A loop that waited on one goes no further: to run it, await it inside one script (set the timeout parameter if it is long).`
+}
+
 export function replTotalCapMessage(ms: number): string {
   return `REPL execution exceeded hard wall-clock limit of ${ms}ms. An inner tool call may be hung \u2014 try a shorter timeout on the tool itself, or split the work.`
 }
@@ -462,11 +467,12 @@ export function createReplExecutor({ onAbortEval }: { onAbortEval?: (id: number)
           if (settled) return
           if (message.t === 'log') (message.stream === 1 ? stderr : stdout).push(`${message.text}\n`)
           else if (message.t === 'done') {
-            const end = { value: message.value, error: message.error }
+            const timers = message.timers ? [timersCancelledWarning(message.timers)] : []
+            const end = { value: message.value, error: message.error, notes: timers }
             if (!o.onScriptEnd) run.finish(end)
             else
               void o.onScriptEnd(end.error !== undefined).then(
-                notes => run.finish({ ...end, notes }),
+                notes => run.finish({ ...end, notes: [...notes, ...timers] }),
                 () => run.finish(end),
               )
           }

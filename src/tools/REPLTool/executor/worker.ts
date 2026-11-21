@@ -40,7 +40,7 @@ export type ReplRunningRow = { id: number; snippet: string; startedAt: number | 
 export type ReplWorkerMessage =
   | { t: 'call'; runId: number; id: number; kind: 'tool' | 'search'; name: string; input?: string }
   | { t: 'log'; runId: number; stream: 0 | 1; text: string }
-  | { t: 'done'; runId: number; value?: string; error?: string }
+  | { t: 'done'; runId: number; value?: string; error?: string; /** Timers still waiting when the script ended, now cancelled. */ timers?: number }
   | { t: 'globals'; id: number; names: string[] }
   /** A script called abort() on a running() row. */
   | { t: 'abort'; id: number }
@@ -359,12 +359,15 @@ export function replWorkerMain(): void {
   const rejectImport = () => throwInContext('Module loading (import) is not available in REPL \u2014 the vm context is sealed.')
 
   // A script's timers end with it; another script's keep running.
-  const clearRunTimers = (runId: number) => {
+  const clearRunTimers = (runId: number): number => {
+    let cleared = 0
     for (const [id, entry] of handles)
       if (entry.runId === runId) {
         clearHandle(id)
         kernel.forget(id)
+        cleared++
       }
+    return cleared
   }
 
   async function run(message: Extract<ReplHostMessage, { t: 'run' }>) {
@@ -390,7 +393,8 @@ export function replWorkerMain(): void {
       })
       const completion = (await script.runInContext(context)) as { value?: unknown } | undefined
       const value = await kernel.settle(completion?.value)
-      post({ t: 'done', runId: message.runId, ...(value === undefined ? {} : { value: inspect(value) }) })
+      const timers = clearRunTimers(message.runId)
+      post({ t: 'done', runId: message.runId, ...(value === undefined ? {} : { value: inspect(value) }), ...(timers > 0 && { timers }) })
     } catch (error) {
       post({ t: 'done', runId: message.runId, error: kernel.describeError(error) })
     } finally {
