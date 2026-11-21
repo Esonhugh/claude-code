@@ -1349,8 +1349,13 @@ async function checkPermissionsAndCallTool(
         )
         resultingMessages.push({
           message: createUserMessage({
-            content: [createToolResultStopMessage(toolUseID)],
-            toolUseResult: `Error: ${stopReason}`,
+            content: [
+              {
+                ...createToolResultStopMessage(toolUseID),
+                ...(result.stopReason && { content: result.stopReason }),
+              },
+            ],
+            toolUseResult: `Error: ${result.stopReason ?? stopReason}`,
             sourceToolAssistantUUID: assistantMessage.uuid,
           }),
         })

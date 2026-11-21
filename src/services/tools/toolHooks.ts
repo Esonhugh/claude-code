@@ -1054,6 +1054,9 @@ export async function resolveHookPermissionDecision(
   }
 }
 
+export const PRE_TOOL_HOOK_TIMEOUT_MESSAGE =
+  'PreToolUse hook did not respond before its timeout (host client may be unreachable). The tool call was not executed; other configured hooks may not have completed.'
+
 export async function* runPreToolUseHooks(
   toolUseContext: ToolUseContext,
   tool: Tool,
@@ -1080,13 +1083,17 @@ export async function* runPreToolUseHooks(
       type: 'additionalContext'
       message: MessageUpdateLazy<AttachmentMessage>
     }
+  // the call is left open for `-p --resume`
+  | { type: 'defer'; hookName: string }
   // stop execution
-  | { type: 'stop' }
+  | { type: 'stop'; stopReason?: string }
 > {
   const hookStartTime = Date.now()
   // A rewrite that fails validation denies the call; later hook results in
   // the same run must not replace that deny with their allow/ask.
   let rewriteDeny: PermissionResult | undefined
+  let deferHook: string | undefined
+  let hookDeny: PermissionResult | undefined
   try {
     const appState = toolUseContext.getAppState()
 
@@ -1131,18 +1138,16 @@ export async function* runPreToolUseHooks(
             `PreToolUse:${tool.name}`,
             result.blockingError,
           )
-          yield {
-            type: 'hookPermissionResult',
-            hookPermissionResult: {
-              behavior: 'deny',
-              message: denialMessage,
-              decisionReason: {
-                type: 'hook',
-                hookName: `PreToolUse:${tool.name}`,
-                reason: denialMessage,
-              },
+          hookDeny = {
+            behavior: 'deny',
+            message: denialMessage,
+            decisionReason: {
+              type: 'hook',
+              hookName: `PreToolUse:${tool.name}`,
+              reason: denialMessage,
             },
           }
+          yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
         }
         let updatedInput = result.updatedInput
         if (
@@ -1157,6 +1162,7 @@ export async function* runPreToolUseHooks(
           })
           if (checked.deny) {
             rewriteDeny = checked.deny
+            hookDeny = rewriteDeny
             yield { type: 'hookPermissionResult', hookPermissionResult: rewriteDeny }
             continue
           }
@@ -1206,16 +1212,14 @@ export async function* runPreToolUseHooks(
             }
           } else {
             // deny - updatedInput is irrelevant since tool won't run
-            yield {
-              type: 'hookPermissionResult',
-              hookPermissionResult: {
-                behavior: result.permissionBehavior,
-                message:
-                  result.hookPermissionDecisionReason ||
-                  `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
-                decisionReason,
-              },
+            hookDeny = {
+              behavior: result.permissionBehavior,
+              message:
+                result.hookPermissionDecisionReason ||
+                `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
+              decisionReason,
             }
+            yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
           }
         }
 
@@ -1309,8 +1313,23 @@ export async function* runPreToolUseHooks(
       }
     }
   } catch (error) {
-    logError(error)
+    // The turn was not interrupted, so the abort is a hook's own timeout: an
+    // SDK callback its host never answered. The call must not go ahead.
+    if (isAbortError(error) && !toolUseContext.abortController.signal.aborted) {
+      logForDebugging('PreToolUse hook timed out (per-hook abort)')
+      if (hookDeny) {
+        yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
+      } else {
+        yield { type: 'stop', stopReason: PRE_TOOL_HOOK_TIMEOUT_MESSAGE }
+      }
+      return
+    }
+    // An interrupt aborts the hooks too; that is not a hook failure.
+    if (!isAbortError(error)) logError(error)
     yield { type: 'stop' }
     return
+  }
+  if (deferHook && !hookDeny) {
+    yield { type: 'defer', hookName: deferHook }
   }
 }

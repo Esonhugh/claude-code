@@ -266,6 +266,8 @@ export type HookCallback = {
   ) => Promise<HookJSONOutput>
   /** Timeout in seconds for this hook */
   timeout?: number
+  /** 'block' turns a failed callback into a blocking error */
+  onFailure?: 'continue' | 'block'
   /** Internal hooks (e.g. session file access analytics) are excluded from tengu_run_hook metrics */
   internal?: boolean
 }

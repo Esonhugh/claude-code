@@ -6343,7 +6343,11 @@ async function handleInitializeRequest(
       // @ts-ignore - recovered code
       hooks[event as HookEvent] = matchers.map(matcher => {
         const callbacks = matcher.hookCallbackIds.map(callbackId => {
-          return structuredIO.createHookCallback(callbackId, matcher.timeout)
+          return structuredIO.createHookCallback(
+            callbackId,
+            matcher.timeout,
+            matcher.onFailure,
+          )
         })
         return {
           matcher: matcher.matcher,
@@ -6363,6 +6367,7 @@ async function handleInitializeRequest(
   const initResponse: SDKControlInitializeResponse = {
     ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
+    hook_on_failure_supported: true,
     // Mods' own commands join the list once they have loaded, as official 2.1.318 lists them.
     commands: toSdkSlashCommands(describeCommands ? await describeCommands(commands) : commands),
     agents: [...agents]

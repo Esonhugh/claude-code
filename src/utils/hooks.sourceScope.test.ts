@@ -387,7 +387,13 @@ function fixture() {
       isEnvTruthy: (value: string) => value === '1' || value === 'true',
       isSSHLocalUI: () => false,
     },
-    './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
+    './errors.js': {
+      errorMessage: (error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      getErrnoCode: () => undefined,
+      isAbortError: (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+    },
     './messages.js': { getLastAssistantMessage: () => undefined },
   }
   // Tracks concurrent evaluator calls; set `gate` to hold them.
@@ -1629,6 +1635,87 @@ describe('onFailure', () => {
       blocked: true,
       output: 'failed; blocking because onFailure is "block"\naudit down',
     })
+  })
+})
+
+describe('SDK callback hooks that fail or time out', () => {
+  const failure =
+    'Hook callback cb1 failed: the SDK host replied with an error or an invalid answer.'
+  const failing = (onFailure?: 'block'): HookCallback => ({
+    type: 'callback',
+    ...(onFailure && { onFailure }),
+    callback: async () => {
+      throw new Error(failure)
+    },
+  })
+  // Like StructuredIO.sendRequest: rejects once the hook's signal aborts.
+  const unanswered: HookCallback = {
+    type: 'callback',
+    timeout: 0.05,
+    callback: (_input, _toolUseID, abort) =>
+      new Promise((_resolve, reject) => {
+        abort!.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+        )
+      }),
+  }
+
+  test('onFailure block turns a failed callback into a blocking error', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(pre(f))
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: `[callback]: failed; blocking because onFailure is "block"\n${failure}`,
+        command: 'callback',
+      })
+  })
+
+  test('onFailure block on a failed Stop callback is ignored', async () => {
+    const f = fixture()
+    f.registered.Stop = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+
+  test('an unanswered PreToolUse callback rejects instead of counting as no opinion', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [unanswered] }]
+    await expect(collect(pre(f))).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('an unanswered UserPromptSubmit callback blocks the prompt', async () => {
+    const f = fixture()
+    f.registered.UserPromptSubmit = [{ matcher: '', hooks: [unanswered] }]
+    const results = await collect(
+      f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context),
+    )
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: 'UserPromptSubmit hook callback timed out after 50ms',
+        command: 'callback',
+      })
+  })
+
+  test('an unanswered PostToolUse callback still lets the turn go on', async () => {
+    const f = fixture()
+    f.registered.PostToolUse = [
+      { matcher: '', hooks: [{ ...unanswered, onFailure: 'block' }] },
+    ]
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
   })
 })
 

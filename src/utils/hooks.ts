@@ -184,7 +184,7 @@ import {
   resolveAppliedEffort,
 } from './effort.js'
 import { getMainLoopModel } from './model/model.js'
-import { errorMessage, getErrnoCode } from './errors.js'
+import { errorMessage, getErrnoCode, isAbortError } from './errors.js'
 
 export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
@@ -2284,7 +2284,10 @@ function hookBlocksOnFailure(hook: HookResult['hook']): boolean {
   if (hook.type === 'command') {
     return hook.onFailure === 'block' && !hook.async && !hook.asyncRewake
   }
-  return hook.type === 'http' && hook.onFailure === 'block'
+  return (
+    (hook.type === 'http' || hook.type === 'callback') &&
+    hook.onFailure === 'block'
+  )
 }
 
 /**
@@ -2298,7 +2301,10 @@ function applyHookOnFailure(
 ): HookResult {
   if (!hookBlocksOnFailure(result.hook)) return result
   const failure =
-    result.outcome === 'cancelled' && !signal?.aborted
+    // An SDK callback left unanswered is not a failure of the hook.
+    result.outcome === 'cancelled' &&
+    !signal?.aborted &&
+    result.hook.type !== 'callback'
       ? 'timed out'
       : result.outcome === 'non_blocking_error'
         ? 'failed'
@@ -2311,8 +2317,15 @@ function applyHookOnFailure(
     )
     return result
   }
-  const hook = result.hook as HookCommand & { type: 'command' | 'http' }
-  const command = hook.type === 'http' ? hook.url : hook.command
+  const hook = result.hook as
+    | (HookCommand & { type: 'command' | 'http' })
+    | HookCallback
+  const command =
+    hook.type === 'http'
+      ? hook.url
+      : hook.type === 'command'
+        ? hook.command
+        : getHookDisplayText(hook)
   const message = result.message as
     | { type: string; attachment?: { type: string; stderr?: string } }
     | undefined
@@ -2576,15 +2589,55 @@ async function* executeHooks({
         signal,
         { timeoutMs: callbackTimeoutMs },
       )
-      yield executeHookCallback({
-        toolUseID,
-        hook,
-        hookEvent,
-        hookInput,
-        signal: abortSignal,
-        hookIndex,
-        toolUseContext,
-      }).finally(cleanup)
+      try {
+        yield await executeHookCallback({
+          toolUseID,
+          hook,
+          hookEvent,
+          hookInput,
+          signal: abortSignal,
+          hookIndex,
+          toolUseContext,
+        }).finally(cleanup)
+      } catch (error) {
+        if (hookBlocksOnFailure(hook) && !isAbortError(error)) {
+          yield {
+            // @ts-ignore - recovered code
+            message: createAttachmentMessage({
+              type: 'hook_non_blocking_error',
+              hookName,
+              toolUseID,
+              hookEvent,
+              stderr: errorMessage(error),
+              stdout: '',
+              exitCode: 1,
+              command: getHookDisplayText(hook),
+            }),
+            outcome: 'non_blocking_error',
+            hook,
+          }
+          return
+        }
+        // PreToolUse rethrows so that its caller refuses the tool call.
+        if (!isAbortError(error) || hookEvent === 'PreToolUse') throw error
+        // Only the hook's own timeout counts as unanswered, not an interrupt.
+        const timedOut = abortSignal.aborted && !signal?.aborted
+        if (!timedOut || hookEvent !== 'UserPromptSubmit') {
+          logForDebugging(
+            `${hookName} callback hook ${timedOut ? `timed out after ${callbackTimeoutMs}ms` : 'cancelled'}; continuing without its answer`,
+          )
+          yield { outcome: 'cancelled', hook }
+          return
+        }
+        yield {
+          blockingError: {
+            blockingError: `${hookName} hook callback timed out after ${callbackTimeoutMs}ms`,
+            command: getHookDisplayText(hook),
+          },
+          outcome: 'blocking',
+          hook,
+        }
+      }
       return
     }
 
