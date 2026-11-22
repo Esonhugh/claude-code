@@ -406,7 +406,7 @@ export async function mcpGetHandler(name: string): Promise<void> {
     console.log(`  Command: ${server.command}`)
     const args = Array.isArray(server.args) ? server.args : []
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Args: ${args.join(' ')}`)
+    console.log(['  Args:', ...args].join(' '))
     if (server.env) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('  Environment:')
@@ -747,7 +747,14 @@ export async function mcpResetChoicesHandler(): Promise<void> {
       )
     }
   }
+  const willPrompt = Object.keys(getMcpConfigsByScope('project').servers).some(
+    name =>
+      getProjectMcpServerStatus(name, { settingsOnly: true }) === 'pending',
+  )
   cliOk(
-    'Project-scoped (.mcp.json) server approvals and rejections stored for this project have been reset.',
+    'Project-scoped (.mcp.json) server approvals and rejections stored for this project have been reset.' +
+      (willPrompt
+        ? '\nYou will be prompted for approval next time you start Claude Code.'
+        : ''),
   )
 }

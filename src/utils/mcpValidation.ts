@@ -168,12 +168,12 @@ export async function mcpContentNeedsTruncation(
         ? [{ role: 'user' as const, content }]
         : [{ role: 'user' as const, content }]
 
+    // No count (the request failed) must not lift the cap: use the estimate.
     const tokenCount = await countMessagesTokensWithAPI(messages, [])
-    return !!(tokenCount && tokenCount > getMaxMcpOutputTokens())
+    return (tokenCount ?? contentSizeEstimate) > getMaxMcpOutputTokens()
   } catch (error) {
     logError(error)
-    // Assume no truncation needed on error
-    return false
+    return contentSizeEstimate > getMaxMcpOutputTokens()
   }
 }
 
