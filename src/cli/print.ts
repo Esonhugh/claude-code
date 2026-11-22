@@ -1099,6 +1099,7 @@ export async function runHeadless(
       toolPermissionContext: {
         ...prev.toolPermissionContext,
         shouldAvoidPermissionPrompts: true,
+        denyInsteadOfPrompting: true,
       },
     }))
   }

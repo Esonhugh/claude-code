@@ -4,6 +4,7 @@ import type { ToolPermissionContext } from '../../Tool.js'
 import { logForDebugging } from '../debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import {
+  applyRestrictivePermissionSettings,
   createDisabledBypassPermissionsContext,
   findOverlyBroadBashPermissions,
   isBypassPermissionsModeDisabled,
@@ -53,9 +54,8 @@ export function applySettingsChange(
 
   let syncedState: Pick<AppState, 'toolPermissionContext' | 'fastMode'> | undefined
   setAppState(prev => {
-    let newContext = syncPermissionRulesFromDisk(
-      prev.toolPermissionContext,
-      updatedRules,
+    let newContext = applyRestrictivePermissionSettings(
+      syncPermissionRulesFromDisk(prev.toolPermissionContext, updatedRules),
     )
 
     // Ant-only: re-strip overly broad Bash allow rules after settings sync

@@ -260,6 +260,9 @@ export function SUBAGENT_NO_PROMPT_REJECT_MESSAGE(
 ): string {
   return `Permission to use ${toolName} has been denied: the ${agentType} agent cannot ask for approval because this session has no permission dialog (non-interactive -p or SDK run). ${DENIAL_WORKAROUND_GUIDANCE}`
 }
+export function NO_APPROVAL_SURFACE_REJECT_MESSAGE(askMessage: string): string {
+  return `Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was denied automatically. The action was NOT performed; do not claim it succeeded, and do not retry it: this action, and anything else that requires approval, will be denied the same way for the rest of this session. Tell the user what was blocked and why you needed it, then continue with the parts of the task that do not require approval. What required approval: ${askMessage}`
+}
 export function DONT_ASK_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied because Claude Code is running in don't ask mode. ${DENIAL_WORKAROUND_GUIDANCE}`
 }

@@ -15,6 +15,7 @@ import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
+import { isDenyInsteadOfPromptingEnabled } from '../../utils/settings/settings.js'
 import {
   ASK_USER_QUESTION_TOOL_CHIP_WIDTH,
   ASK_USER_QUESTION_TOOL_NAME,
@@ -247,6 +248,7 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
     if (getIsNonInteractiveSession() && !getPermissionPromptToolName()) {
       return false
     }
+    if (isDenyInsteadOfPromptingEnabled()) return false
     return true
   },
   isConcurrencySafe() {
