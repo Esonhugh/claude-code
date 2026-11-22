@@ -6042,7 +6042,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('add-json <name> <json>')
-    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string')
+    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string, or - to read it from stdin')
     .option(
       '-s, --scope <scope>',
       'Configuration scope (local, user, or project)',

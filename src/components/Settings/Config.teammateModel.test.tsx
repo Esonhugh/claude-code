@@ -44,7 +44,7 @@ try {
   const memory = Promise.resolve([])
   mocks.push(
     spyOn(configModule, 'getGlobalConfig').mockImplementation(() => config),
-    spyOn(configModule, 'saveGlobalConfig').mockImplementation(update => { writes++; config = update(config) as typeof config }),
+    spyOn(configModule, 'saveGlobalConfig').mockImplementation(update => { writes++; config = update(config) as typeof config; return true }),
     spyOn(settingsModule, 'getInitialSettings').mockReturnValue({}),
     spyOn(settingsModule, 'getSettingsForSource').mockReturnValue({}),
     spyOn(settingsModule, 'updateSettingsForSource').mockImplementation(() => { throw new Error('Unexpected settings write') }),

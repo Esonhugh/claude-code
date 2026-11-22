@@ -8,11 +8,13 @@ import type { PluginError } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 import {
+  getConfigReadError,
   getCurrentProjectConfig,
   getGlobalConfig,
   saveCurrentProjectConfig,
   saveGlobalConfig,
 } from '../../utils/config.js'
+import { getGlobalClaudeFile } from '../../utils/env.js'
 import { getProjectConfigRoot } from '../../bootstrap/state.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isSafeMode } from '../../utils/envUtils.js'
@@ -826,24 +828,26 @@ export async function addMcpConfig(
     }
 
     case 'user': {
-      saveGlobalConfig(current => ({
+      const saved = saveGlobalConfig(current => ({
         ...current,
         mcpServers: {
           ...current.mcpServers,
           [name]: validatedConfig,
         },
       }))
+      if (!saved) throw unsavedError(name, scope, 'saved')
       break
     }
 
     case 'local': {
-      saveCurrentProjectConfig(current => ({
+      const saved = saveCurrentProjectConfig(current => ({
         ...current,
         mcpServers: {
           ...current.mcpServers,
           [name]: validatedConfig,
         },
       }))
+      if (!saved) throw unsavedError(name, scope, 'saved')
       break
     }
 
@@ -883,13 +887,14 @@ export async function removeMcpConfig(
       if (!config.mcpServers?.[name]) {
         throw new Error(`No MCP server named "${name}" in user scope`)
       }
-      saveGlobalConfig(current => {
+      const saved = saveGlobalConfig(current => {
         const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
         return {
           ...current,
           mcpServers: restMcpServers,
         }
       })
+      if (!saved) throw unsavedError(name, scope, 'removed')
       break
     }
 
@@ -899,19 +904,37 @@ export async function removeMcpConfig(
       if (!config.mcpServers?.[name]) {
         throw new Error(`No MCP server named "${name}" in local scope`)
       }
-      saveCurrentProjectConfig(current => {
+      const saved = saveCurrentProjectConfig(current => {
         const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
         return {
           ...current,
           mcpServers: restMcpServers,
         }
       })
+      if (!saved) throw unsavedError(name, scope, 'removed')
       break
     }
 
     default:
       throw new Error(`Cannot remove MCP server from scope: ${scope}`)
   }
+}
+
+function unsavedError(
+  name: string,
+  scope: 'user' | 'local',
+  change: 'saved' | 'removed',
+): Error {
+  const reason = getConfigReadError()
+  const local = scope === 'local'
+  return new Error(
+    `MCP server "${name}" may not have been ${change}${local ? ` (local scope for ${getCwd()})` : ''}: ` +
+      `${getGlobalClaudeFile()} could not be read to confirm the change${reason ? ` (${reason})` : ''}. ` +
+      `Run \`claude mcp get ${name}\`${local ? ` from ${getCwd()}` : ''} to check, then ` +
+      (change === 'saved'
+        ? 'add the server again if it is missing.'
+        : 'remove the server again if it is still listed.'),
+  )
 }
 
 /**

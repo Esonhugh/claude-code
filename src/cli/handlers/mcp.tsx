@@ -611,6 +611,37 @@ export async function mcpLogoutHandler(name: string): Promise<void> {
   cliOk(`Signed out of "${name}".${loginHint}`)
 }
 
+const MAX_STDIN_JSON_BYTES = 1024 * 1024
+
+/** The JSON of `claude mcp add-json <name> -`. */
+export async function readMcpJsonFromStdin(
+  stdin: AsyncIterable<Buffer> & { isTTY?: boolean } = process.stdin,
+): Promise<string> {
+  if (process.env.CLAUDE_CODE_CHILD_SESSION) {
+    throw new Error(
+      'Reading the JSON from stdin is refused inside a Claude Code session, because its permission prompt would not show the server. Run the command outside the session.',
+    )
+  }
+  const chunks: Buffer[] = []
+  let bytes = 0
+  if (!stdin.isTTY) {
+    for await (const chunk of stdin) {
+      bytes += chunk.length
+      if (bytes > MAX_STDIN_JSON_BYTES) {
+        throw new Error('The JSON on stdin is over the limit of 1 MiB.')
+      }
+      chunks.push(chunk)
+    }
+  }
+  const json = Buffer.concat(chunks).toString('utf8')
+  if (json.trim() === '') {
+    throw new Error(
+      'There is no JSON on stdin. Pipe it in, or pass it as the argument.',
+    )
+  }
+  return json
+}
+
 // mcp add-json (lines 4801–4870)
 export async function mcpAddJsonHandler(
   name: string,
@@ -619,7 +650,9 @@ export async function mcpAddJsonHandler(
 ): Promise<void> {
   try {
     const scope = ensureConfigScope(options.scope)
-    const parsedJson = safeParseJSON(json)
+    const parsedJson = safeParseJSON(
+      json === '-' ? await readMcpJsonFromStdin() : json,
+    )
 
     // Read secret before writing config so cancellation doesn't leave partial state
     const needsSecret =
