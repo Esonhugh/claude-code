@@ -30,7 +30,7 @@ import {
   isNonCustomOpusModel,
 } from 'src/utils/model/model.js'
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from 'src/utils/model/providers.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
@@ -590,15 +590,12 @@ function formatAssistantMessageFromError(
         error: 'rate_limit',
       })
     }
-    // SDK's APIError.makeMessage prepends "429 " and JSON-stringifies the body
-    // when there's no top-level .message — extract the inner error.message.
-    const stripped = error.message.replace(/^429\s+/, '')
-    const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
-    const detail = innerMessage || stripped
-    return createAssistantAPIErrorMessage({
-      content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
-      error: 'rate_limit',
-    })
+    return createRequestRejectedMessage(error)
+  }
+
+  // Official 2.1.329: a 429 outside subscription limits reads the same way.
+  if (error instanceof APIError && error.status === 429) {
+    return createRequestRejectedMessage(error)
   }
 
   // Handle prompt too long errors (Vertex returns 413, direct API returns 400)
@@ -922,8 +919,8 @@ function formatAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
       content: getIsNonInteractiveSession()
-        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
-        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`
+        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
     })
   }
 
@@ -966,8 +963,22 @@ function formatAssistantMessageFromError(
     })
   }
 
-  // Connection errors (non-timeout) — use formatAPIError for detailed messages
-  if (error instanceof APIConnectionError) {
+  // Official 2.1.329: a 5xx names the API's message and says where to look next.
+  if (
+    error instanceof APIError &&
+    typeof error.status === 'number' &&
+    error.status >= 500
+  ) {
+    const detail = formatAPIError(error).replace(/[.!?…]+$/, '')
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: ${detail}. This is a server-side issue, usually temporary — try again in a moment.${getServerErrorHint()}`,
+      error: 'server_error',
+    })
+  }
+
+  // Connection errors (non-timeout) and API errors whose message the SDK built
+  // from the JSON body — use formatAPIError for detailed messages
+  if (error instanceof APIError) {
     return createAssistantAPIErrorMessage({
       content: `${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
       error: 'unknown',
@@ -984,6 +995,27 @@ function formatAssistantMessageFromError(
     content: API_ERROR_MESSAGE_PREFIX,
     error: 'unknown',
   })
+}
+
+function createRequestRejectedMessage(error: APIError): AssistantMessage {
+  // SDK's APIError.makeMessage prepends "429 " and JSON-stringifies the body
+  // when there's no top-level .message — extract the inner error.message.
+  const stripped = error.message.replace(/^429\s+/, '')
+  const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
+  const detail = innerMessage || stripped
+  return createAssistantAPIErrorMessage({
+    content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
+    error: 'rate_limit',
+  })
+}
+
+function getServerErrorHint(): string {
+  if (getAPIProvider() !== 'firstParty') return ''
+  if (isFirstPartyAnthropicBaseUrl()) {
+    return ' If it persists, check https://status.claude.com.'
+  }
+  const baseUrl = process.env.ANTHROPIC_BASE_URL ?? ''
+  return ` If it persists, check your inference gateway (${URL.parse(baseUrl)?.host || baseUrl}).`
 }
 
 /**
@@ -1220,7 +1252,7 @@ export function categorizeRetryableAPIError(
     error.status === 529 ||
     error.message?.includes('"type":"overloaded_error"')
   ) {
-    return 'rate_limit'
+    return 'overloaded'
   }
   if (error.status === 429) {
     return 'rate_limit'
