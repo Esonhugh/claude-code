@@ -443,48 +443,50 @@ export function createModsSession(options: ModsSessionOptions) {
     timer.unref?.()
   }
 
-  /** undefined: every hooks config of the plugin still parses; '': one is gone; otherwise why one is invalid. */
-  async function hooksConfigFailure(plugin: LoadedPlugin): Promise<string | undefined> {
-    for (const { configPath } of plugin.hookModules ?? []) {
-      try {
-        PluginHooksSchema().parse(jsonParse(stripBOM(await readFile(configPath, 'utf8'))))
-      } catch (error) {
-        return isENOENT(error) ? '' : errorMessage(error)
-      }
+  /** undefined: the hooks config still parses; '': it is gone; otherwise why it is invalid. */
+  async function hooksConfigFailure(configPath: string): Promise<string | undefined> {
+    try {
+      PluginHooksSchema().parse(jsonParse(stripBOM(await readFile(configPath, 'utf8'))))
+      return undefined
+    } catch (error) {
+      return isENOENT(error) ? '' : errorMessage(error)
     }
-    return undefined
   }
 
   /**
-   * Between explicit reloads a watched plugin keeps its last good modules while
-   * its hooks config is missing or invalid, or while its --plugin-dir directory
-   * is gone; only a valid config that names no module unloads them.
+   * Between explicit reloads a watched plugin keeps the modules of a hooks config
+   * that is missing or invalid, and all of them while its --plugin-dir directory
+   * is gone; only a valid config that names no module unloads them. `failed` maps
+   * the roots whose config is invalid, which stay on the version already loaded.
    */
   async function holdWatchedPlugins(found: readonly LoadedPlugin[]) {
     const configured = [...found]
-    const held: ModDiagnostic[] = []
+    const failed = new Map<string, string>()
     for (const [root, previous] of watchedPlugins) {
+      if (!previous) continue
       const index = configured.findIndex(plugin => plugin.path === root)
       const current = configured[index]
-      if (!previous || current?.hookModules?.some(group => group.paths.length)) continue
       if (!current) {
         if (previous.source.endsWith('@inline') && !(await pathExists(root))) configured.push(previous)
         else watchedPlugins.delete(root)
         continue
       }
-      const failure = await hooksConfigFailure(previous)
-      if (failure === undefined) {
-        watchedPlugins.set(root, undefined)
-        continue
+      const groups = [...(current.hookModules ?? [])]
+      for (const group of previous.hookModules ?? []) {
+        if (!group.paths.length || groups.some(other => other.configPath === group.configPath && other.paths.length)) continue
+        const failure = await hooksConfigFailure(group.configPath)
+        if (failure === undefined) continue
+        groups.push(group)
+        if (failure) failed.set(root, failure)
       }
-      configured[index] = { ...current, hookModules: previous.hookModules }
-      if (failure) held.push({ plugin: current.name, stage: 'reload', message: `The previous version stays loaded: Hook load failed: ${failure}` })
+      if (groups.length !== (current.hookModules?.length ?? 0)) configured[index] = { ...current, hookModules: groups }
+      if (!groups.some(group => group.paths.length)) watchedPlugins.set(root, undefined)
     }
     for (const plugin of configured) {
       if (plugin.isBuiltin !== true && !authoringOwns(plugin.path) && plugin.hookModules?.some(group => group.paths.length))
         watchedPlugins.set(plugin.path, plugin)
     }
-    return { configured, held }
+    return { configured, failed }
   }
 
   async function watchPlugins() {
@@ -626,7 +628,7 @@ export function createModsSession(options: ModsSessionOptions) {
     settingsKey = relevantSettings(settings)
     const disabled = options.getDisabledReason?.()
     if (plugins) watchedPlugins.clear()
-    const { configured, held } = await holdWatchedPlugins(options.bare ? [] : plugins ?? (await loadPlugins()))
+    const { configured, failed } = await holdWatchedPlugins(options.bare ? [] : plugins ?? (await loadPlugins()))
     const authoringErrors = deferAuthoring || options.bare
       ? []
       : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
@@ -640,6 +642,8 @@ export function createModsSession(options: ModsSessionOptions) {
     configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
     for (const input of prepared.inputs) {
+      const failure = failed.get(input.pluginRoot)
+      if (failure) input.loadError = `Hook load failed: ${failure}`
       const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
       for (const [key, field] of Object.entries(schema ?? {})) {
         if (!field.sensitive) continue
@@ -657,7 +661,7 @@ export function createModsSession(options: ModsSessionOptions) {
     services.sessionIdentity = storageId => managed.has(storageId) ? modSessionIdentity() : undefined
     diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
-    for (const error of [...prepared.errors, ...held]) diagnostic(error)
+    for (const error of prepared.errors) diagnostic(error)
     if (
       disabled &&
       loaded.some(plugin =>
