@@ -1616,14 +1616,23 @@ function getConfig<A>(
 /**
  * The config a save builds on. A read that failed says nothing about what is
  * stored, so the defaults it returns must not be written back: the save builds
- * on what this process read earlier, and without that there is nothing to build on.
+ * on what this process read earlier, unless the file has changed since (another
+ * process wrote it). Without either there is nothing to build on.
  */
 function getConfigForSave(): GlobalConfig | undefined {
-  const config = getConfig(getGlobalClaudeFile(), createDefaultGlobalConfig)
+  const file = getGlobalClaudeFile()
+  const config = getConfig(file, createDefaultGlobalConfig)
   if (lastConfigReadError === undefined) return config
-  return globalConfigCacheIsUnread
-    ? undefined
-    : (globalConfigCache.config ?? undefined)
+  if (globalConfigCacheIsUnread || !globalConfigCache.config) return undefined
+  try {
+    // Same test as the freshness watcher: a later mtime is someone else's write.
+    if (getFsImplementation().statSync(file).mtimeMs > globalConfigCache.mtime) {
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return globalConfigCache.config
 }
 
 // Memoized function to get the project path for config lookup

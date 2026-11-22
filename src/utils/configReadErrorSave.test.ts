@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,6 +34,10 @@ if (!process.env.CONFIG_READ_FAILURES) {
     expect(await save('after-load')).toMatchObject({ saved: 'true', disk: { ...stored, numStartups: 38 } })
   }, 60000)
 
+  test('a save whose re-read fails does not build on a config another process has since changed', async () => {
+    expect(await save('after-other-write')).toEqual({ saved: 'false', disk: { ...stored, other: 'process' } })
+  }, 60000)
+
   test('a config that was never readable is not written, and the save says so', async () => {
     expect(await save('always')).toEqual({ saved: 'false', disk: stored })
   }, 60000)
@@ -44,7 +48,7 @@ if (!process.env.CONFIG_READ_FAILURES) {
   const { getFsImplementation, setFsImplementation } = await import('./fsOperations.js')
   enableConfigs()
   const fs = getFsImplementation()
-  let failures = { once: 1, 'after-load': Infinity, always: Infinity }[process.env.CONFIG_READ_FAILURES!]!
+  let failures = { once: 1, 'after-load': Infinity, 'after-other-write': Infinity, always: Infinity }[process.env.CONFIG_READ_FAILURES!]!
   const failReads = () => setFsImplementation({
     ...fs,
     readFileSync: ((path: string, options: { encoding: BufferEncoding }) => {
@@ -54,6 +58,11 @@ if (!process.env.CONFIG_READ_FAILURES) {
   })
   if (process.env.CONFIG_READ_FAILURES === 'always') failReads()
   getGlobalConfig()
+  if (process.env.CONFIG_READ_FAILURES === 'after-other-write') {
+    writeFileSync(getGlobalClaudeFile(), JSON.stringify({ ...stored, other: 'process' }))
+    const later = new Date(Date.now() + 5000)
+    utimesSync(getGlobalClaudeFile(), later, later)
+  }
   failReads()
   const saved = saveGlobalConfig(current => ({ ...current, numStartups: current.numStartups + 1 }))
   process.stdout.write(String(saved))
