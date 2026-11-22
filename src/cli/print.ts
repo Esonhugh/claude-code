@@ -5346,14 +5346,13 @@ function runHeadlessStreaming(
             )
         } else if (message.request.subtype === 'background_tasks') {
           const toolUseId = (message.request as { tool_use_id?: unknown }).tool_use_id
-          if (typeof toolUseId === 'string') {
-            sendControlResponseSuccess(message, {
-              backgrounded: backgroundTaskForToolUse(toolUseId, getAppState, setAppState),
-            })
-          } else {
-            backgroundAll(getAppState, setAppState)
-            sendControlResponseSuccess(message, {})
-          }
+          const backgrounded =
+            typeof toolUseId === 'string'
+              ? backgroundTaskForToolUse(toolUseId, getAppState, setAppState)
+              : (backgroundAll(getAppState, setAppState), undefined)
+          // Like official 2.1.329, what the request changed is reported ahead of its response.
+          for (const event of drainSdkOutput()) output.enqueue(event)
+          sendControlResponseSuccess(message, backgrounded === undefined ? {} : { backgrounded })
         } else if (message.request.subtype === 'message_rated') {
           const request = message.request as {
             messageUuid?: unknown

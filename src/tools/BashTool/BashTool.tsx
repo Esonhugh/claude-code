@@ -15,7 +15,7 @@ import * as React from 'react'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import type { AppState } from 'src/state/AppState.js'
 import { z } from 'zod/v4'
-import { getKairosActive } from '../../bootstrap/state.js'
+import { getIsNonInteractiveSession, getKairosActive } from '../../bootstrap/state.js'
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1457,12 +1457,26 @@ async function* runShellCommand({
     }
   }
 
+  const registerAsForeground = () => {
+    foregroundTaskId ??= registerForeground(
+      { command, description: description || command, shellCommand, agentId },
+      setAppState,
+      toolUseId,
+    )
+  }
+  // Like official 2.1.329, a headless run registers the task too, as soon as
+  // the command has run this long, so SDK hosts are told of it.
+  if (!isBackgroundTasksDisabled && !agentId && getIsNonInteractiveSession()) {
+    registerAsForeground()
+  }
+
   // Start polling the output file for progress. The poller's #tick calls
   // onProgress every second, which resolves progressSignal below.
   TaskOutput.startPolling(shellCommand.taskOutput.taskId)
 
   // Progress loop: wake is driven by the shared poller calling onProgress,
   // which resolves the progressSignal.
+  let finished: ExecResult | undefined
   try {
     while (true) {
       const progressSignal = createProgressSignal()
@@ -1497,9 +1511,7 @@ async function* runShellCommand({
         }
         // Command has completed - return the actual result
         // If we registered as a foreground task, unregister it
-        if (foregroundTaskId) {
-          unregisterForeground(foregroundTaskId, setAppState)
-        }
+        finished = result
         // Clean up stream resources for foreground commands
         // (backgrounded commands are cleaned up by LocalShellTask)
         shellCommand.cleanup()
@@ -1547,18 +1559,7 @@ async function* runShellCommand({
         setToolJSX
       ) {
         // Register this command as a foreground task so it can be backgrounded via Ctrl+B
-        if (!foregroundTaskId) {
-          foregroundTaskId = registerForeground(
-            {
-              command,
-              description: description || command,
-              shellCommand,
-              agentId,
-            },
-            setAppState,
-            toolUseId,
-          )
-        }
+        registerAsForeground()
 
         setToolJSX({
           jsx: <BackgroundHint />,
@@ -1581,5 +1582,18 @@ async function* runShellCommand({
   } finally {
     stopBackgroundRequest?.()
     TaskOutput.stopPolling(shellCommand.taskOutput.taskId)
+    // Like official 2.1.329, a task still in the foreground ends with its
+    // command, however this loop is left.
+    if (foregroundTaskId && backgroundShellId === undefined && shellCommand.status !== 'backgrounded') {
+      unregisterForeground(
+        foregroundTaskId,
+        setAppState,
+        !finished || finished.interrupted
+          ? 'stopped'
+          : interpretCommandResult(command, finished.code, finished.stdout, finished.stderr).isError
+            ? 'failed'
+            : 'completed',
+      )
+    }
   }
 }
