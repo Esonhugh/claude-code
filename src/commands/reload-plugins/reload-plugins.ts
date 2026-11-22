@@ -3,6 +3,9 @@ import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { redownloadUserSettings } from '../../services/settingsSync/index.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { formatDependencyCountSuffix } from '../../utils/plugins/dependencyResolver.js'
+import { installMissingDependencies } from '../../utils/plugins/pluginInstallationHelpers.js'
+import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
 import { refreshActivePlugins } from '../../utils/plugins/refresh.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -34,7 +37,15 @@ export const call: LocalCommandCall = async (_args, context) => {
     }
   }
 
-  const r = await refreshActivePlugins(context.setAppState)
+  let r = await refreshActivePlugins(context.setAppState)
+
+  // Enabled plugins whose dependencies are not installed get them back here.
+  const installed = await installMissingDependencies(
+    (await loadAllPluginsCacheOnly()).errors,
+  )
+  if (installed.length > 0) {
+    r = await refreshActivePlugins(context.setAppState)
+  }
 
   const parts = [
     n(r.enabled_count, 'plugin'),
@@ -49,6 +60,9 @@ export const call: LocalCommandCall = async (_args, context) => {
     n(r.lsp_count, 'plugin LSP server'),
   ]
   let msg = `Reloaded: ${parts.join(' · ')}`
+  if (installed.length > 0) {
+    msg += `${formatDependencyCountSuffix(installed)} resolved`
+  }
 
   if (r.error_count > 0) {
     msg += `\n${n(r.error_count, 'error')} during load. Run /doctor for details.`
