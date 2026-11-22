@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
+import { rm } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
@@ -237,7 +238,7 @@ const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
 const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -595,8 +596,10 @@ export function startWebServer(
       return Response.json({ files })
     }
     if (req.method === 'POST' && !pdf) {
-      const length = Number(req.headers.get('content-length'))
-      if (!Number.isFinite(length) || length <= 0) {
+      // An empty file is a valid upload: only a missing or malformed length is refused.
+      const header = req.headers.get('content-length')
+      const length = header === null ? NaN : Number(header)
+      if (!Number.isInteger(length) || length < 0) {
         return errorResponse(411, 'Content-Length required')
       }
       if (length > uploadLimits.fileBytes) {
@@ -841,18 +844,20 @@ export function startWebServer(
   }
 
   /**
-   *   GET    /api/projects                  → projects, newest change first
+   *   GET    /api/projects                  → projects, newest change first; ?archived=1 adds the archived ones
    *   POST   /api/projects                  → create; 409 { needs_trust } for an untrusted folder
    *   PATCH  /api/projects/:id              → name, instructions, worker_model, worker_effort, permission_mode
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   *   POST   /api/projects/:id/unarchive    → the archived project, listed again
    */
   async function handleProjects(req: Request, pathname: string): Promise<Response> {
     if (pathname === '/api/projects') {
       if (req.method === 'GET') {
         const counts = tasks().counts()
-        return Response.json(projects().list().map(p => projectJson(p, counts)))
+        const archived = new URL(req.url).searchParams.get('archived') === '1'
+        return Response.json(projects().list(archived).map(p => projectJson(p, counts)))
       }
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       const parsed = createProjectBodySchema().safeParse(await readJson(req))
@@ -875,6 +880,11 @@ export function startWebServer(
     const match = PROJECT_PATH.exec(pathname)
     const id = match && decodeURIComponent(match[1]!)
     if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
+    if (match![2] === 'unarchive') {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      const restored = projects().unarchive(id)
+      return restored ? Response.json(projectJson(restored)) : errorResponse(404, 'Project not found')
+    }
     const project = projects().get(id)
     if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
     if (match![2] === 'coordinator') {
@@ -1268,6 +1278,8 @@ export function startWebServer(
       if (url.searchParams.get('transcript') === '1') {
         if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
         await sessionManager.destroy(id)
+        // Its uploads go too, also for a session that never wrote a transcript.
+        await rm(join(config.uploadsDir, id), { recursive: true, force: true })
         if (!(await deleteTranscript(id))) return errorResponse(404, 'Session not found')
         deleteSessionMeta(db(), id)
         return new Response(null, { status: 204 })
@@ -1301,7 +1313,7 @@ export function startWebServer(
         // Same-origin GETs and page loads may omit Origin; anything that can
         // change state (and every WebSocket handshake) must carry it.
         const requireOrigin =
-          req.method !== 'GET' ||
+          (req.method !== 'GET' && req.method !== 'HEAD') ||
           req.headers.get('upgrade')?.toLowerCase() === 'websocket'
         const reason = untrustedReason(req, hosts, { requireOrigin })
         if (reason) {
