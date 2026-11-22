@@ -110,6 +110,10 @@ import {
   subscribeToCommandQueue,
   takePollEventChunk,
 } from './utils/messageQueueManager.js'
+import {
+  enqueueSdkEvent,
+  taskNotificationSdkEvent,
+} from './utils/sdkEventQueue.js'
 import { pollEventsAttachment } from './tools/PollTool/delivery.js'
 import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
 import { findReplSession, MAIN_REPL_SESSION, takeReplLateMessages } from './tools/REPLTool/sessions.js'
@@ -1677,10 +1681,17 @@ async function* queryLoop(
 
             // Yield system message about fallback — use 'warning' level so
             // users see the notification without needing verbose mode
-            yield createSystemMessage(
-              `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
-              'warning',
-            )
+            yield {
+              ...createSystemMessage(
+                `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
+                'warning',
+              ),
+              modelFallback: {
+                trigger: 'overloaded',
+                originalModel: innerError.originalModel,
+                fallbackModel: innerError.fallbackModel,
+              },
+            }
 
             const chain = getSessionFallbackModels()
             const chainIndex = chain.indexOf(fallbackModel)
@@ -2001,7 +2012,7 @@ async function* queryLoop(
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
         void executeStopFailureHooks(lastMessage, toolUseContext)
-        return { reason: 'completed' }
+        return { reason: 'api_error' }
       }
 
       const stopHookResult = yield* handleStopHooks(
@@ -2608,6 +2619,16 @@ async function* queryLoop(
         if (cmd.uuid) {
           consumedCommandUuids.push(cmd.uuid)
           notifyCommandLifecycle(cmd.uuid, 'started')
+        }
+        // print.ts sends this event when it takes the notification off the
+        // queue; one folded into the turn here never reaches it.
+        if (
+          cmd.mode === 'task-notification' &&
+          cmd.agentId === undefined &&
+          !cmd.sdkTaskNotificationSent
+        ) {
+          const event = taskNotificationSdkEvent(cmd.value)
+          if (event) enqueueSdkEvent(event)
         }
       }
       removeFromQueue(consumedCommands)

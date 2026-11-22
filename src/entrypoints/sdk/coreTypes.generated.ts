@@ -249,7 +249,7 @@ export type SdkPluginConfig = { type: 'local'; path: string }
 export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number; skippedLinks?: number }
 
 // SDK Error type
-export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
+export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'overloaded' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
 export type SDKStatus = 'compacting' | 'requesting' | null
 
 // Rate Limit
@@ -368,6 +368,53 @@ export type SDKUILogMessage = {
   subtype: 'ui_log'
   plugin: string
   text: string
+  uuid: string
+  session_id: string
+}
+export type SDKInformationalMessage = {
+  type: 'system'
+  subtype: 'informational'
+  content: string
+  level?: 'info' | 'notice' | 'warning' | 'error' | 'suggestion'
+  tool_use_id?: string
+  prevent_continuation?: boolean
+  prompt_submit_outcome?: {
+    kind: 'blocked_by_hook'
+    prompt_kept: boolean
+    reason?: string
+  }
+  tag?: 'hook_no_verdict'
+  hook_no_verdict?: {
+    hook_event: 'PreToolUse'
+    tool_use_id: string
+    timed_out: boolean
+  }
+  uuid: string
+  session_id: string
+}
+export type SDKModelFallbackMessage = {
+  type: 'system'
+  subtype: 'model_fallback'
+  trigger: 'overloaded'
+  original_model: string
+  fallback_model: string
+  content?: string
+  uuid: string
+  session_id: string
+}
+export type SDKNotificationMessage = {
+  type: 'system'
+  subtype: 'notification'
+  key: string
+  text: string
+  priority: 'immediate'
+  uuid: string
+  session_id: string
+}
+export type SDKSessionTitleChangedMessage = {
+  type: 'system'
+  subtype: 'session_title_changed'
+  title: string
   uuid: string
   session_id: string
 }
@@ -742,6 +789,10 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKInformationalMessage
+  | SDKModelFallbackMessage
+  | SDKNotificationMessage
+  | SDKSessionTitleChangedMessage
   | SDKUIToastMessage
   | SDKUIStatusMessage
   | SDKScheduledTaskFireMessage

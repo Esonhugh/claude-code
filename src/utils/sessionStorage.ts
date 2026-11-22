@@ -100,6 +100,7 @@ import {
   readTranscriptForLoad,
   SKIP_PRECOMPACT_THRESHOLD,
 } from './sessionStoragePortable.js'
+import { enqueueSdkEvent } from './sdkEventQueue.js'
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
@@ -2837,6 +2838,11 @@ export async function saveCustomTitle(
   // Cache for current session only (for immediate visibility)
   if (sessionId === getSessionId()) {
     getProject().currentSessionTitle = customTitle
+    enqueueSdkEvent({
+      type: 'system',
+      subtype: 'session_title_changed',
+      title: customTitle,
+    })
   }
   logEvent('tengu_session_renamed', {
     source:

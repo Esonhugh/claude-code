@@ -121,8 +121,10 @@ const messageSelector =
     require('src/components/MessageSelector.js')
 
 import {
+  hookSystemMessageToSDK,
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
+  toSDKSystemNotice,
 } from './utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
@@ -1081,6 +1083,10 @@ export class QueryEngine {
             compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
           } as SDKCompactBoundaryMessage
         }
+
+        if (msg.type === 'system' && msg.subtype === 'informational') {
+          yield toSDKSystemNotice(msg)
+        }
       }
 
       if (persistSession) {
@@ -1443,6 +1449,9 @@ export class QueryEngine {
           else if (replayUserMessages && message.attachment.type === 'teammate_mailbox') {
             yield* teammateMailboxReplays(message)
           }
+          else if (message.attachment.type === 'hook_system_message') {
+            yield hookSystemMessageToSDK(message.attachment, message.uuid)
+          }
           // Yield queued_command attachments as SDK user message replays
           else if (
             replayUserMessages &&
@@ -1543,6 +1552,9 @@ export class QueryEngine {
               session_id: getSessionId(),
               uuid: message.uuid,
             }
+          }
+          if (message.subtype === 'informational') {
+            yield toSDKSystemNotice(message)
           }
           // Don't yield other system messages in headless mode
           break

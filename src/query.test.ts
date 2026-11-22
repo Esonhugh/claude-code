@@ -5,12 +5,15 @@ import type { ToolUseContext } from './Tool.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { query, type QueryParams } from './query.js'
 import type { QueryDeps } from './query/deps.js'
+import { FallbackTriggeredError } from './services/api/withRetry.js'
 import { autoCompactIfNeeded, getAutoCompactThreshold } from './services/compact/autoCompact.js'
 import * as config from './utils/config.js'
 import * as tokens from './utils/tokens.js'
 import * as compactMode from './services/compact/compactMode.js'
 import * as sessionMemory from './services/compact/sessionMemoryCompact.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
+import { enqueue, resetCommandQueue } from './utils/messageQueueManager.js'
+import { drainSdkEvents } from './utils/sdkEventQueue.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { createAssistantAPIErrorMessage, createAssistantMessage } from './utils/messages.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
@@ -301,6 +304,113 @@ describe('query Stop hook continuation state', () => {
       } else {
         process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = previousCap
       }
+    }
+  })
+})
+
+describe('query API error ending', () => {
+  test('a turn that ends on an API error reports api_error, not completed (official 2.1.329)', async () => {
+    const { terminal } = await drainQuery({
+      messages: [userMessage('hello')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread' as QuerySource,
+      deps: {
+        uuid: () => '00000000-0000-4000-8000-000000000097',
+        microcompact: async messages => ({ messages }),
+        autocompact: async messages => ({ messages, wasCompacted: false }),
+        callModel: async function* () {
+          yield createAssistantAPIErrorMessage({ content: 'API Error: 500 Internal server error', error: 'server_error' })
+        },
+      },
+    })
+    expect(terminal).toEqual({ reason: 'api_error' })
+  })
+})
+
+describe('query model fallback', () => {
+  test('the switch to the fallback model carries what SDK hosts read as system/model_fallback (official 2.1.329)', async () => {
+    let calls = 0
+    const { events } = await drainQuery({
+      messages: [userMessage('hello')],
+      systemPrompt: asSystemPrompt([]),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext: createToolUseContext(),
+      querySource: 'repl_main_thread' as QuerySource,
+      fallbackModel: 'claude-sonnet-5-5',
+      deps: {
+        uuid: () => '00000000-0000-4000-8000-000000000096',
+        microcompact: async messages => ({ messages }),
+        autocompact: async messages => ({ messages, wasCompacted: false }),
+        callModel: async function* () {
+          if (++calls === 1) throw new FallbackTriggeredError('claude-opus-5-5', 'claude-sonnet-5-5')
+          yield createAssistantMessage({ content: 'FAKE_OK' })
+        },
+      },
+    })
+    expect(events.find(event => event.type === 'system')).toMatchObject({
+      subtype: 'informational',
+      level: 'warning',
+      modelFallback: { trigger: 'overloaded', originalModel: 'claude-opus-5-5', fallbackModel: 'claude-sonnet-5-5' },
+    })
+  })
+})
+
+describe('query background task notifications', () => {
+  test('a task that finishes during the turn still sends SDK hosts its task_notification (official 2.1.329)', async () => {
+    let calls = 0
+    drainSdkEvents()
+    try {
+      await drainQuery({
+        messages: [userMessage('run both')],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        toolUseContext: createToolUseContext(),
+        querySource: 'repl_main_thread' as QuerySource,
+        deps: {
+          uuid: () => '00000000-0000-4000-8000-000000000097',
+          microcompact: async messages => ({ messages }),
+          autocompact: async messages => ({ messages, wasCompacted: false }),
+          callModel: async function* () {
+            if (++calls > 1) {
+              yield createAssistantMessage({ content: 'FAKE_OK' })
+              return
+            }
+            // The background task ends while this round's tool runs.
+            enqueue({
+              mode: 'task-notification',
+              priority: 'next',
+              value:
+                '<task-notification>\n<task-id>bg1</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<output-file>/tmp/bg1.output</output-file>\n<status>completed</status>\n<summary>Background command "sleep 2" completed (exit code 0)</summary>\n</task-notification>',
+            })
+            yield createAssistantMessage({
+              content: [{ type: 'tool_use', id: 'toolu_fg', name: 'missing_test_tool', input: {} }],
+            })
+          },
+        },
+      })
+      expect(drainSdkEvents()).toEqual([
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'bg1',
+          tool_use_id: 'toolu_bg',
+          status: 'completed',
+          output_file: '/tmp/bg1.output',
+          summary: 'Background command "sleep 2" completed (exit code 0)',
+          uuid: expect.any(String),
+          session_id: expect.any(String),
+        },
+      ])
+    } finally {
+      resetCommandQueue()
     }
   })
 })

@@ -381,4 +381,14 @@ if (process.env[childFlag] !== '1') {
     expect(badCleared).toMatchObject({ subtype: 'error', error: expect.stringContaining('and cleared a boolean') })
     expect(feedback.response).toMatchObject({ feedback_id: null, unavailable_reason: expect.any(String) })
   })
+
+  test('a control request this build does not know is refused as unsupported_request (official 2.1.329)', async () => {
+    const [unknown] = await run([{ subtype: 'bogus_subtype_x' }])
+    expect(unknown).toEqual({
+      subtype: 'error',
+      request_id: '0',
+      error: 'Unsupported control request subtype: bogus_subtype_x',
+      error_code: 'unsupported_request',
+    })
+  })
 }
