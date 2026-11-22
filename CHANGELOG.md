@@ -12,6 +12,26 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-22 - 桌面应用（Electron，实验性）
+
+### 变更内容
+
+#### 新功能
+
+- 新增 `desktop/` 子项目：用 Electron 和 electron-builder 把 claude web 打包成 Windows（NSIS）、macOS（dmg、zip）和 Linux（AppImage、deb）桌面应用。应用内带一份 `claude` binary，启动时运行 `claude web --stdio`，窗口里就是 claude web 的界面。安装包未签名，macOS 首次打开需要右键选“打开”。用法见 `desktop/README.md`。
+- 新增隐藏参数 `claude web --stdio`：不监听端口，HTTP 请求和会话 WebSocket 以 JSON 行的形式走 stdin/stdout，stdin 关闭时退出。只有启动它的进程能通过管道访问，因此不检查登录 cookie，Host 和 Origin 仍然检查；不写 `server.json`，也不检查是否已有 claude web 在运行。
+- 网页界面在桌面应用里通过 preload 暴露的 `window.claudeDesktop` 打开会话连接，在浏览器里仍用 WebSocket。Chromium 转给自定义协议的请求不带 Origin，应用按发起请求的 frame 补上：页面自己的 fetch 带 `claude-app://app`，预览页面等其他 frame 带它们自己的 Origin，表单提交等导航不带，服务端照常拒绝后两种的写请求。
+
+#### CI
+
+- 新增 `.github/workflows/desktop.yml`：手动触发，或 PR 改动 `desktop/**` 时运行；在 Linux x64、Linux arm64、macOS、Windows 上构建 binary、跑 `desktop/` 的测试、用 electron-builder 打包，安装包作为 artifact 上传，不创建 Release。
+
+### 测试覆盖
+
+- `src/web/webServer.test.ts` 新增 `claude web over stdio`：页面不需要 cookie、非帧输出被忽略、`/api/info` 返回 `local: true`；错误的 Host、缺少或外来的 Origin 返回 403；外来 Origin 的会话连接被拒绝，同一会话的第二个连接被拒绝，应用关闭连接后可以重新连接。
+- `desktop/sidecar.test.js` 用真实的 `stdioTransport` 跑一个假服务端：帧前缀和 Host 与服务端一致；请求、请求体、查询串和 204 响应的转发；页面 Origin 换成服务端的 Origin，其他 Origin 原样转发；会话连接双向收发和两端关闭；停止时关闭管道，未完成的连接以 1006 关闭，之后的请求失败。
+- macOS 上手动验证（Electron 45.4.1，`make build` 的 binary）：页面加载，控制台没有 CSP 报错；新建会话发消息收到回复；sidecar 不监听任何 TCP 端口；从预览 iframe 发出的 no-cors fetch 和表单 POST 被服务端以 403 拒绝。
+
 ## 2026-11-19 - v2.1.298 - Code Mode 与 Advisor（实验性）、客户端版本号可配置、OpenAI ultra effort 原样发送、拒绝规则对符号链接本身生效、Codex 式压缩只保留用户消息、启动输入卡顿与长历史 /clear 修复
 
 ### 版本状态
