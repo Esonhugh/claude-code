@@ -92,7 +92,10 @@ let streamNotFound = false
 let nonStreamingThinkingTokens: number | undefined
 let nonStreamingOmitsUsage = false
 let streamInterrupted = false
+let streamInterruptedOnce = false
 let streamHangsAfterText = false
+// Requests whose connection drops while text streams, as a socket error with a code.
+let streamSocketCuts = 0
 let streamCutAfterToolUse = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
@@ -113,7 +116,8 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
-    if (toolSearchRefusal) {
+    // A request whose stream is about to be cut is cut before the gateway objects to it.
+    if (toolSearchRefusal && !(request.stream === true && streamSocketCuts > 0)) {
       const deferred = (request.tools ?? []).some(t => 'defer_loading' in t)
       const message =
         toolSearchRefusal === 'beta' && headers.get('anthropic-beta')?.includes('advanced-tool-use-2025-11-20')
@@ -225,6 +229,21 @@ const client = new Anthropic({
       },
       { type: 'message_stop' },
     ]
+    if (request.stream === true && streamSocketCuts > 0) {
+      streamSocketCuts--
+      const encoder = new TextEncoder()
+      const sent = events.slice(0, 3)
+      return new Response(new ReadableStream({
+        pull(controller) {
+          const event = sent.shift()
+          if (event) {
+            controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`))
+          } else {
+            controller.error(Object.assign(new Error('The socket connection was closed unexpectedly'), { code: 'ECONNRESET' }))
+          }
+        },
+      }), { headers: { 'content-type': 'text/event-stream', 'request-id': 'req_test' } })
+    }
     if (streamHangsAfterText) {
       // Text has started streaming and the model is still writing when the user aborts.
       const encoder = new TextEncoder()
@@ -249,7 +268,7 @@ const client = new Anthropic({
           type: 'error',
           error: { type: 'api_error', message: 'controlled cut after tool_use' },
         }]
-      : streamInterrupted
+      : streamInterrupted || (streamInterruptedOnce && requests.length === 1)
       ? [...events.slice(0, 3), {
           type: 'error',
           error: { type: 'api_error', message: 'controlled mid-stream interruption' },
@@ -400,7 +419,9 @@ afterEach(() => {
   nonStreamingThinkingTokens = undefined
   nonStreamingOmitsUsage = false
   streamInterrupted = false
+  streamInterruptedOnce = false
   streamHangsAfterText = false
+  streamSocketCuts = 0
   streamCutAfterToolUse = false
   overflowRequest = 0
   overloadedModel = undefined
@@ -975,6 +996,53 @@ test.each(['beta', 'unnamed', 'always'] as const)(
     }
   },
 )
+
+test('a tool search refusal of a request streamed again after a cut still retries without deferred tools', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } = await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } = await import('../../utils/toolSchemaCache.js')
+  const { resetToolSearchRefusedForTesting } = await import('../../utils/toolSearch.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  delete process.env.ENABLE_TOOL_SEARCH
+  clearToolSchemaCache()
+  resetToolSearchRefusedForTesting()
+  const deferred = {
+    name: 'mcp__corp__lookup',
+    isMcp: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  try {
+    toolSearchRefusal = 'unnamed'
+    streamSocketCuts = 1
+    const reply = await queryModelWithoutStreaming({
+      messages: [createUserMessage({ content: 'test' })],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools: [ToolSearchTool, deferred],
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [deferred],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    // Cut, refused when streamed again, then sent without the deferred tools.
+    expect(requests.map(request => (request.tools ?? []).some(t => 'defer_loading' in t))).toEqual([true, true, false])
+    expect(reply.isApiErrorMessage).toBeFalsy()
+  } finally {
+    resetToolSearchRefusedForTesting()
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
 
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')
@@ -1955,18 +2023,23 @@ test('a stream cut after a tool_use keeps it instead of re-requesting it without
 })
 
 test.each([
-  ['interrupt', [{ type: 'text', text: 'OK' }]],
-  ['user-cancel', undefined],
-] as const)('an abort with reason %s while text streams keeps the partial reply: %p', async (reason, kept) => {
+  ['interrupt', 'repl_main_thread', [{ type: 'text', text: 'OK' }]],
+  ['user-cancel', 'repl_main_thread', undefined],
+  // Headless has no streaming-text row to keep the reply from, so like
+  // official every abort of an sdk request keeps what was written.
+  [undefined, 'sdk', [{ type: 'text', text: 'OK' }]],
+] as const)('an abort with reason %s of a %s request while text streams keeps the partial reply: %p', async (reason, querySource, kept) => {
   streamHangsAfterText = true
   const controller = new AbortController()
   const assistants: unknown[] = []
+  const { getTotalInputTokens } = await import('../../cost-tracker.js')
+  const inputBefore = getTotalInputTokens()
   for await (const event of queryModelWithStreaming({
     messages: [createUserMessage({ content: 'write a long answer' })],
     systemPrompt: asSystemPrompt(['SYSTEM']),
     thinkingConfig: { type: 'disabled' }, tools: [], signal: controller.signal,
     options: {
-      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      model: 'claude-sonnet-4-6', querySource,
       agents: [], mcpTools: [], hasAppendSystemPrompt: false,
       isNonInteractiveSession: true, enablePromptCaching: true,
       getToolPermissionContext: async () => getEmptyToolPermissionContext(),
@@ -1980,6 +2053,87 @@ test.each([
     expect.objectContaining({ message: expect.objectContaining({ content: kept }) }),
   ])
   expect(requests).toHaveLength(1)
+  // The aborted request read its prompt: it is billed like official does.
+  expect(getTotalInputTokens() - inputBefore).toBe(1)
+})
+
+test('a connection dropped before any block finished is streamed again while attempts remain, like 2.1.329', async () => {
+  const events: Array<{ type: string; subtype?: string; isApiErrorMessage?: boolean; message?: { content: unknown } }> = []
+  const run = async (maxRetries: number) => {
+    events.length = 0
+    requests.length = 0
+    for await (const event of queryModelWithStreaming({
+      messages: [createUserMessage({ content: 'cut' })],
+      systemPrompt: asSystemPrompt(['SYSTEM']),
+      thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread', maxRetries,
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })) events.push(event as (typeof events)[number])
+    return {
+      streamed: requests.map(request => request.stream === true),
+      retries: events.filter(event => event.type === 'system' && event.subtype === 'api_error')
+        .map(event => (event as { retryAttempt?: number }).retryAttempt),
+      replies: events.filter(event => event.type === 'assistant'),
+    }
+  }
+  const ok = [expect.objectContaining({ message: expect.objectContaining({ content: [{ type: 'text', text: 'OK' }] }) })]
+
+  const { getTotalAPIDuration } = await import('../../bootstrap/state.js')
+  const apiDuration = getTotalAPIDuration()
+  streamSocketCuts = 1
+  expect(await run(2)).toEqual({ streamed: [true, true], retries: [1], replies: ok })
+  // The cut request and the wait before streaming again are API time too.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(getTotalAPIDuration() - apiDuration).toBeGreaterThanOrEqual(300)
+  // Out of attempts, the request is sent once more without streaming.
+  streamSocketCuts = 3
+  expect(await run(2)).toEqual({ streamed: [true, true, true, false], retries: [1, 2], replies: ok })
+
+  process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = '1'
+  try {
+    streamSocketCuts = 1
+    expect(await run(2)).toEqual({ streamed: [true, true], retries: [1], replies: ok })
+    streamSocketCuts = 2
+    expect(await run(1)).toEqual({
+      streamed: [true, true], retries: [1], replies: [expect.objectContaining({ isApiErrorMessage: true })],
+    })
+    // An error the API sent down the stream is not a dropped connection: it fails at once.
+    streamInterrupted = true
+    expect(await run(2)).toEqual({
+      streamed: [true], retries: [], replies: [expect.objectContaining({ isApiErrorMessage: true })],
+    })
+  } finally {
+    delete process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
+  }
+})
+
+test('a stream cut before message_delta is billed along with its non-streaming fallback, an error the API sent is not (2.1.329)', async () => {
+  const { getTotalInputTokens, getTotalOutputTokens } = await import('../../cost-tracker.js')
+  const billed = async () => {
+    requests.length = 0
+    const before = [getTotalInputTokens(), getTotalOutputTokens()]
+    for await (const _ of queryModelWithStreaming({
+      messages: [createUserMessage({ content: 'cut' })],
+      systemPrompt: asSystemPrompt(['SYSTEM']),
+      thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread', maxRetries: 0,
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })) void _
+    expect(requests.map(request => request.stream === true)).toEqual([true, false])
+    return [getTotalInputTokens() - before[0]!, getTotalOutputTokens() - before[1]!]
+  }
+  streamSocketCuts = 1
+  expect(await billed()).toEqual([2, 2])
+  streamInterrupted = true
+  expect(await billed()).toEqual([1, 1])
 })
 
 test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {

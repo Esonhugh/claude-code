@@ -259,6 +259,12 @@ export function formatAPIError(error: APIError): string {
     if (nested) return `${error.status} ${nested}`
   }
 
+  // An error event sent down the stream has no status; its message is the event's JSON.
+  if (error.status === undefined && error.message.startsWith('{"')) {
+    const nested = extractNestedErrorMessage(error)
+    if (nested) return nested
+  }
+
   const sanitizedMessage = sanitizeAPIError(error)
   // Use sanitized message if it's different from the original (i.e., HTML was sanitized)
   return sanitizedMessage !== error.message && sanitizedMessage.length > 0

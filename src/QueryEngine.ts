@@ -21,6 +21,7 @@ import type {
   TerminalReason,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
@@ -97,7 +98,7 @@ import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
 import { dequeue, enqueueTracked, remove } from './utils/messageQueueManager.js'
-import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import { countToolCalls, SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './utils/messages.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
@@ -250,6 +251,64 @@ export function toolDenialsIn(
     }
   }
   return denials
+}
+
+type UsageTally = {
+  total: NonNullableUsage
+  /** The request that is streaming: its usage, and whether it is not in `total` yet. */
+  current: NonNullableUsage
+  messageId: string | null
+  open: boolean
+}
+
+/**
+ * result.usage after `message`. A streamed request counts at message_stop, or
+ * once a retry notice or a later request shows its stream was cut (official
+ * counts a cut request that was retried, not the one a turn is interrupted in
+ * or gives up on). A
+ * reply that did not stream (the non-streaming fallback) has no stream events
+ * and counts by its own usage.
+ */
+export function usageAfterMessage(
+  tally: UsageTally,
+  message: { type: string; message?: unknown; event?: unknown },
+): UsageTally {
+  const total = tally.open
+    ? accumulateUsage(tally.total, tally.current)
+    : tally.total
+  if (message.type === 'assistant') {
+    const reply = (message as AssistantMessage).message
+    if (reply.model === SYNTHETIC_MODEL || reply.id === tally.messageId) return tally
+    return {
+      ...tally,
+      messageId: reply.id,
+      open: false,
+      // @ts-ignore - recovered code
+      total: accumulateUsage(total, updateUsage(EMPTY_USAGE, reply.usage)),
+    }
+  }
+  // The notice that a request is sent again: the one it replaces was cut.
+  if (
+    message.type === 'system' &&
+    (message as { subtype?: string }).subtype === 'api_error'
+  ) {
+    return tally.open ? { ...tally, total, open: false } : tally
+  }
+  if (message.type !== 'stream_event') return tally
+  const event = message.event as BetaRawMessageStreamEvent
+  if (event.type === 'message_start') {
+    return {
+      total,
+      current: updateUsage(EMPTY_USAGE, event.message.usage),
+      messageId: event.message.id,
+      open: true,
+    }
+  }
+  if (event.type === 'message_delta') {
+    return { ...tally, current: updateUsage(tally.current, event.usage) }
+  }
+  if (event.type === 'message_stop') return { ...tally, total, open: false }
+  return tally
 }
 
 /**
@@ -1220,7 +1279,12 @@ export class QueryEngine {
     }
 
     // Track current message usage (reset on each message_start)
-    let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
+    let usageTally: UsageTally = {
+      total: this.totalUsage,
+      current: EMPTY_USAGE,
+      messageId: null,
+      open: false,
+    }
     let turnCount = 1
     let hasAcknowledgedInitialMessages = false
     // Track structured output from StructuredOutput tool calls
@@ -1366,6 +1430,8 @@ export class QueryEngine {
       if (message.type === 'user') {
         turnCount++
       }
+      usageTally = usageAfterMessage(usageTally, message)
+      this.totalUsage = usageTally.total
 
       switch (message.type) {
         case 'tombstone':
@@ -1436,21 +1502,9 @@ export class QueryEngine {
           if (message.event.type === 'message_start') {
             // @ts-ignore - recovered code
             apiMessageId = message.event.message.id
-            // Reset current message usage for new message
-            currentMessageUsage = EMPTY_USAGE
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.message.usage,
-            )
           }
           // @ts-ignore - recovered code
           if (message.event.type === 'message_delta') {
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.usage,
-            )
             // Capture stop_reason from message_delta. The assistant message
             // is yielded at content_block_stop with stop_reason=null; the
             // real value only arrives here (see claude.ts message_delta
@@ -1460,14 +1514,6 @@ export class QueryEngine {
               // @ts-ignore - recovered code
               lastStopReason = message.event.delta.stop_reason
             }
-          }
-          // @ts-ignore - recovered code
-          if (message.event.type === 'message_stop') {
-            // Accumulate current message usage into total
-            this.totalUsage = accumulateUsage(
-              this.totalUsage,
-              currentMessageUsage,
-            )
           }
 
           if (includePartialMessages) {

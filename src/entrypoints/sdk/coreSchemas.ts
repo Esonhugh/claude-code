@@ -1675,6 +1675,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
     'rate_limit',
     'overloaded',
     'invalid_request',
+    'model_not_found',
     'server_error',
     'unknown',
     'max_output_tokens',
@@ -2096,7 +2097,7 @@ export const SDKModelFallbackMessageSchema = lazySchema(() =>
     .object({
       type: z.literal('system'),
       subtype: z.literal('model_fallback'),
-      trigger: z.literal('overloaded'),
+      trigger: z.enum(['overloaded', 'server_error', 'model_not_found', 'last_resort']),
       original_model: z.string(),
       fallback_model: z.string(),
       content: z.string().optional(),

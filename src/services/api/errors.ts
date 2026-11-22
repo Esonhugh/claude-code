@@ -145,6 +145,26 @@ export function isMediaSizeError(raw: string): boolean {
 }
 
 /**
+ * A rejection of the conversation or the account. 2.1.329 neither resends
+ * such a request without tool search nor hands it to the fallback model.
+ */
+export function isRequestOrAccountRejection(error: APIError): boolean {
+  const message = error.message.toLowerCase()
+  return (
+    message.includes('"type":"billing_error"') ||
+    message.includes('prompt is too long') ||
+    message.includes('credit balance is too low') ||
+    message.includes('organization has been disabled') ||
+    message.includes('output blocked by content filtering policy') ||
+    (error.status === 400 &&
+      (message.includes('exceed context limit') ||
+        message.includes('fast mode is not enabled') ||
+        message.includes('"type":"policy_blocked"') ||
+        isMediaSizeError(error.message)))
+  )
+}
+
+/**
  * Message-level predicate: is this assistant message a media-size rejection?
  * Parallel to isPromptTooLongMessage. Checks errorDetails (the raw API error
  * string populated by the getAssistantMessageFromError branches at ~L523/560/573)
@@ -436,6 +456,28 @@ function isProviderContextOverflow(message: string): boolean {
     message,
   )
 }
+
+const CONNECTION_LOST_CODES = new Set([
+  'ECONNREFUSED',
+  'ConnectionRefused',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EHOSTUNREACH',
+  'EHOSTDOWN',
+  'FailedToOpenSocket',
+  'ERR_PROXY_TUNNEL',
+  'ECONNRESET',
+  'EPIPE',
+  'ConnectionClosed',
+  'ERR_SOCKET_CLOSED',
+  'UND_ERR_SOCKET',
+  'ETIMEDOUT',
+  'ECONNABORTED',
+  'StreamSuspended',
+  'StreamTruncated',
+])
 
 export function getAssistantMessageFromError(
   ...args: Parameters<typeof formatAssistantMessageFromError>
@@ -948,7 +990,7 @@ function formatAssistantMessageFromError(
       content: fallbackSuggestion
         ? `${API_ERROR_MESSAGE_PREFIX} (${model}): ${error.message}. Try ${switchCmd} to switch to ${fallbackSuggestion}.`
         : `${API_ERROR_MESSAGE_PREFIX} (${model}): ${error.message}. Run ${switchCmd} to pick a different model.`,
-      error: 'invalid_request',
+      error: 'model_not_found',
     })
   }
 
@@ -962,7 +1004,7 @@ function formatAssistantMessageFromError(
       content: fallbackSuggestion
         ? `The model ${model} is not available on your ${getAPIProvider()} deployment. Try ${switchCmd} to switch to ${fallbackSuggestion}, or ask your admin to enable this model.`
         : `There's an issue with the selected model (${model}). It may not exist or you may not have access to it. Run ${switchCmd} to pick a different model.`,
-      error: 'invalid_request',
+      error: 'model_not_found',
     })
   }
 
@@ -993,6 +1035,16 @@ function formatAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       content: `${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
       error: 'unknown',
+    })
+  }
+
+  // Official 2.1.329: a connection lost outside the SDK's request, such as a
+  // stream cut mid-response, names its code.
+  const connection = extractConnectionErrorDetails(error)
+  if (connection && CONNECTION_LOST_CODES.has(connection.code)) {
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: Connection to the API was lost (${connection.code}). This is usually temporary — try again.`,
+      error: 'server_error',
     })
   }
 

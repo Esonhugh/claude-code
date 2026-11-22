@@ -273,7 +273,7 @@ export interface SystemInformationalMessage extends SystemBase {
   toolUseID?: string
   preventContinuation?: boolean
   /** Set on the line that reports a switch to the fallback model. */
-  modelFallback?: { trigger: 'overloaded'; originalModel: string; fallbackModel: string }
+  modelFallback?: { trigger: 'overloaded' | 'server_error' | 'model_not_found' | 'last_resort'; originalModel: string; fallbackModel: string }
   /** Set on the contentless line that precedes a refusal no model is tried after. */
   modelRefusalNoFallback?: {
     originalModel: string

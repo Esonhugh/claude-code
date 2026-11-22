@@ -78,6 +78,33 @@ describe('API error text names the message, not the JSON body (official 2.1.329)
   })
 })
 
+test('an error sent down the stream shows its own message, not the event JSON (official 2.1.329)', () => {
+  const body = { type: 'error', error: { type: 'api_error', message: 'fake mid-stream error' } }
+  const message = getAssistantMessageFromError(
+    new APIError(undefined, body, undefined, new Headers()),
+    'claude-opus-5-5',
+  )
+  expect(message.error).toBe('unknown')
+  expect((message.message.content as Array<{ text: string }>)[0]!.text).toBe('API Error: fake mid-stream error')
+})
+
+test('a 404 is reported as model_not_found (official 2.1.329)', () => {
+  const message = getAssistantMessageFromError(apiError(404, 'not_found_error', 'model: claude-opus-5-5'), 'claude-opus-5-5')
+  expect(message.error).toBe('model_not_found')
+})
+
+test('a connection lost mid-response names its code (official 2.1.329)', () => {
+  const cut = Object.assign(new Error('The socket connection was closed unexpectedly'), { code: 'ECONNRESET' })
+  const message = getAssistantMessageFromError(cut, 'claude-opus-5-5')
+  expect(message.error).toBe('server_error')
+  expect((message.message.content as Array<{ text: string }>)[0]!.text).toBe(
+    'API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.',
+  )
+  const other = getAssistantMessageFromError(Object.assign(new Error('boom'), { code: 'EOTHER' }), 'claude-opus-5-5')
+  expect(other.error).toBe('unknown')
+  expect((other.message.content as Array<{ text: string }>)[0]!.text).toBe('API Error: boom')
+})
+
 test('api_retry calls a 529 overloaded, and a 429 rate_limit (official 2.1.329)', () => {
   expect(categorizeRetryableAPIError(apiError(529, 'overloaded_error', 'Overloaded'))).toBe('overloaded')
   expect(categorizeRetryableAPIError(apiError(429, 'rate_limit_error', 'slow down'))).toBe('rate_limit')
