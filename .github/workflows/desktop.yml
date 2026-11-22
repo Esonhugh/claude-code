@@ -101,6 +101,11 @@ jobs:
       - name: End-to-end
         working-directory: desktop
         shell: bash
+        timeout-minutes: 10
+        env:
+          # With CI set, claude refuses to start without an API key in the
+          # environment; the app is checked as a signed-out user runs it.
+          CI: ''
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             xvfb-run -a bun run e2e
