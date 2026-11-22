@@ -667,6 +667,17 @@ describe('store', () => {
     expect(await host.store.keys()).toEqual(['n', 'other'])
   })
 
+  // Indentation makes deep data far larger on disk than the compact JSON the limit counts.
+  test('a store within the limit stays readable however large its indented file is', async () => {
+    let deep: unknown = 1
+    for (let depth = 0; depth < 3000; depth++) deep = [deep]
+    await host.store.set('deep', deep)
+    expect((await stat(await storedFile())).size).toBeGreaterThan(16 * 1024 * 1024)
+    expect(JSON.stringify(await host.store.get('deep'))).toBe(JSON.stringify(deep))
+    await host.store.delete('deep')
+    expect(await host.store.keys()).toEqual([])
+  })
+
   test('requires nonempty keys of at most 256 UTF-16 code units without changing existing data', async () => {
     await host.store.set('original', 1)
     const path = await storedFile()

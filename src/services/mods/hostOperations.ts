@@ -342,11 +342,10 @@ export function createModHostOperations({
   const storeError = (message: string, code?: string) =>
     Object.assign(new Error(message), { name: 'HooksError', ...(code !== undefined && { code }) })
 
-  /** The text of a store file, or undefined when there is none. */
+  /** The text of a store file, or undefined when there is none. Official reads it whole: indentation can make a store within the limit many times larger on disk. */
   async function readStoreFile(path: string): Promise<string | undefined> {
     try {
-      // Allow UTF-8 expansion and the indentation of the file format.
-      return await readText(path, signal, 4 * MAX_STORE_CHARACTERS)
+      return await readText(path, signal, Infinity)
     } catch (error) {
       signal.throwIfAborted()
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
