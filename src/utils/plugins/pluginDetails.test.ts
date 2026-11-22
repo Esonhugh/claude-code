@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LoadedPlugin } from '../../types/plugin.js'
@@ -127,4 +134,35 @@ Component inventory
 
 Projected token cost
   Always-on:   ~0 tok   added to every session`)
+})
+
+test('a plugin loaded in place does not list files that resolve outside its marketplace', async () => {
+  file('outside/secret/SKILL.md', '---\ndescription: secret\n---\nsecret body')
+  file('outside/mcp.json', '{"mcpServers":{"leaked-mcp":{}}}')
+  file('outside/lsp.json', '{"leaked-lsp":{}}')
+  file('mk/p/skills/kept/SKILL.md', '---\ndescription: kept\n---\nkept body')
+  const path = join(root, 'mk/p')
+  symlinkSync(join(root, 'outside/secret'), join(path, 'skills/linked'))
+  mkdirSync(join(path, 'skills/file'))
+  symlinkSync(
+    join(root, 'outside/secret/SKILL.md'),
+    join(path, 'skills/file/SKILL.md'),
+  )
+  symlinkSync(join(root, 'outside/mcp.json'), join(path, '.mcp.json'))
+  symlinkSync(join(root, 'outside/mcp.json'), join(path, 'more.json'))
+  symlinkSync(join(root, 'outside/lsp.json'), join(path, '.lsp.json'))
+
+  const inventory = await getPluginInventory({
+    name: 'p',
+    manifest: { name: 'p', mcpServers: './more.json' },
+    path,
+    source: 'p@inline',
+    repository: 'p@inline',
+    skillsPath: join(path, 'skills'),
+    containmentRoot: realpathSync(join(root, 'mk')),
+  })
+
+  expect(inventory.skills.map(skill => skill.name)).toEqual(['kept'])
+  expect(inventory.mcpServers).toEqual([])
+  expect(inventory.lspServers).toEqual([])
 })
