@@ -364,6 +364,58 @@ export async function pluginConfigureHandler(
   cliOk(lines.join('\n'))
 }
 
+// plugin details
+export async function pluginDetailsHandler(name: string): Promise<void> {
+  logEvent('tengu_plugin_details_command', {})
+  const { enabled, disabled } = await loadAllPlugins()
+  const wanted = name.toLowerCase()
+  const plugin = [...enabled, ...disabled].find(
+    p => (name.includes('@') ? p.source : p.name).toLowerCase() === wanted,
+  )
+  if (!plugin) {
+    cliError(
+      `Plugin "${printable(name)}" not found. Run \`claude plugin list\` to see installed plugins, or pass --plugin-dir <path> to load one from disk.`,
+    )
+  }
+  const {
+    formatPluginDetails,
+    getPluginInventory,
+    measurePluginComponents,
+  } = await import('../../utils/plugins/pluginDetails.js')
+  let inventory: Awaited<ReturnType<typeof measurePluginComponents>>
+  try {
+    inventory = await measurePluginComponents(
+      await getPluginInventory(plugin),
+      plugin.name,
+    )
+  } catch (error) {
+    logError(error)
+    cliError(
+      `Could not load details for "${printable(plugin.name)}": ${errorMessage(error)}`,
+    )
+  }
+  // Without a count from the API the sizes on disk give the estimate.
+  let tokens: { always_on: number; on_invoke: number } | undefined
+  const { validateForceLoginOrg } = await import('../../utils/auth.js')
+  if ((await validateForceLoginOrg()).valid) {
+    const { countMessagesTokensWithAPI } = await import(
+      '../../services/tokenEstimation.js'
+    )
+    const count = (text: string) =>
+      text
+        ? countMessagesTokensWithAPI([{ role: 'user', content: text }], [])
+        : 0
+    const [alwaysOn, onInvoke] = await Promise.all([
+      count(inventory.alwaysOnText),
+      count(inventory.onInvokeText),
+    ])
+    if (alwaysOn !== null && onInvoke !== null) {
+      tokens = { always_on: alwaysOn, on_invoke: onInvoke }
+    }
+  }
+  cliOk(formatPluginDetails(plugin, inventory, tokens))
+}
+
 // plugin validate
 export async function pluginValidateHandler(
   manifestPath: string,
