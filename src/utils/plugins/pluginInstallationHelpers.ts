@@ -970,7 +970,7 @@ export async function installPluginFromMarketplace({
     return {
       success: true,
       // @ts-ignore - recovered code
-      message: `✓ Installed ${entry.name}${result.depNote}. Run /reload-plugins to activate.`,
+      message: `✓ Installed ${entry.name}${result.depNote}.`,
     }
   } catch (err) {
     if (err instanceof PluginFolderCollisionError) {

@@ -104,6 +104,8 @@ type LocalCommand = {
 export type LocalJSXCommandContext = ToolUseContext & {
   modCommand?: Pick<ModCommandInvocation, 'origin' | 'presentation'>
   canUseTool?: CanUseToolFn
+  /** Set when the command was opened over a running main query. */
+  isMainQueryRunning?: () => boolean
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   options: {
     dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
