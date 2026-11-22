@@ -1,0 +1,119 @@
+name: Desktop app
+
+# Unsigned installers of the Electron app in desktop/, as workflow artifacts.
+# Nothing is released from here.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Resolve version
+        shell: bash
+        run: echo "CLAUDE_CODE_VERSION=$(sed -n 's/^VERSION := //p' Makefile)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        if: runner.os != 'Linux'
+        run: bun install --frozen-lockfile
+
+      - name: Install glibc and musl dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bun install --frozen-lockfile --os=linux --cpu="$(bun -e 'process.stdout.write(process.arch)')"
+
+      - name: Build bfs and ugrep
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y musl-tools
+          else
+            brew list pkgconf >/dev/null 2>&1 || brew install pkgconf
+          fi
+          bun ./scripts/build-search-tools.mjs
+
+      - name: Package binary
+        run: bun run package:binary
+
+      - name: Stage the binary in the app
+        shell: bash
+        run: |
+          shopt -s nullglob
+          BINARIES=(dist/release/claude-code-v"$CLAUDE_CODE_VERSION"-*)
+          if [ "${#BINARIES[@]}" -ne 1 ]; then
+            echo "Expected one binary in dist/release, found: ${BINARIES[*]}" >&2
+            exit 1
+          fi
+          "${BINARIES[0]}" --version
+          cd desktop
+          bun ./stage-sidecar.mjs "../${BINARIES[0]}"
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Test desktop
+        working-directory: desktop
+        run: bun test
+
+      # electron-builder's bundled fpm (for .deb) is x64 only.
+      - name: Install fpm
+        if: runner.os == 'Linux' && runner.arch == 'ARM64'
+        run: |
+          sudo apt-get install -y ruby ruby-dev rpm
+          sudo gem install --no-document fpm
+          echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
+
+      - name: Package app
+        working-directory: desktop
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bunx electron-builder --publish never -c.extraMetadata.version="$CLAUDE_CODE_VERSION"
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-code-desktop-${{ runner.os }}-${{ runner.arch }}
+          if-no-files-found: error
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.AppImage
+            desktop/release/*.deb
