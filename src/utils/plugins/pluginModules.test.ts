@@ -141,7 +141,7 @@ describe('plugin module declarations', () => {
     const empty = PluginHooksSchema().safeParse({ modules: [] })
     expect(empty.success).toBe(false)
     expect(empty.error?.issues[0]?.message).toBe(
-      'hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both',
+      "hooks.json must have 'hooks' (the hook matchers) or 'modules' (hooks modules), or both",
     )
     expect(PluginHooksSchema().safeParse({ hooks: {}, modules: [] }).success).toBe(true)
   })

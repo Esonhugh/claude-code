@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { disposeModsHosts } from '../../utils/gracefulShutdown.js'
@@ -440,6 +440,67 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:1})
   })
 
+  // Wording of official 2.1.329.
+  test('a watched plugin is told what a change to its source or hooks config did', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Read' }, () => ({ result: 'mod' })); on('tool.call', { tool: 'Bash' }, () => ({ result: 'mod' })); on('turn.start', (_$, input, next) => next(input)) }`)
+    const config = declaration.hookModules![0]!.configPath
+    const source = join(declaration.path, 'register.ts')
+    const module = 'register.ts'
+    await writeFile(config, '{"modules":["./register.ts"]}')
+    let current: LoadedPlugin[] = [declaration]
+    const watchers: EventEmitter[] = []
+    const watch = spyOn(chokidar, 'watch').mockImplementation(() => {
+      watchers.push(Object.assign(new EventEmitter(), { close: async () => {} }))
+      return watchers.at(-1) as unknown as FSWatcher
+    })
+    cleanups.push(() => watch.mockRestore())
+    const told: string[] = []
+    const host = session({ loadPlugins: async () => current })
+    await host.bind(binding, undefined, {
+      uiLog: (name, text) => { told.push(`${name}: ${text}`) },
+      uiDiagnostic: (name, text) => { told.push(`${name}! ${text}`) },
+    })
+    const change = async (...paths: string[]) => {
+      told.length = 0
+      for (const path of paths) watchers.at(-1)!.emit('all', 'change', path)
+      await host.refresh()
+      return told
+    }
+    const hooks = '2 hooks: tool.call, turn.start'
+
+    expect(await change(source)).toEqual([`fixture: reloaded (${hooks})`])
+    expect(await change(config)).toEqual([`fixture: ${basename(config)} changed \u2014 reloaded (modules: ${module} unchanged; ${hooks})`])
+    // The manifest is the cause whichever of the two changed last.
+    expect(await change(config, source)).toEqual([`fixture: ${basename(config)} changed \u2014 reloaded (modules: ${module} unchanged; ${hooks})`])
+    expect(await change()).toEqual([])
+    // A file the loaded module does not import is no reason to load again.
+    expect(await change(join(declaration.path, 'other.ts'))).toEqual([])
+    // Nor is a file that went away, or one that came back as it was.
+    const text = await readFile(source, 'utf8')
+    await rm(source)
+    told.length = 0
+    watchers.at(-1)!.emit('all', 'unlink', source)
+    watchers.at(-1)!.emit('all', 'unlink', join(declaration.path, '.claude-plugin', 'plugin.json'))
+    await host.refresh()
+    await writeFile(source, text)
+    watchers.at(-1)!.emit('all', 'add', source)
+    await host.refresh()
+    expect(told).toEqual([])
+    expect(await host.runtime!.dispatch('tool.call', { ...input, tool: 'Read' }, core)).toEqual({ result: 'mod' })
+
+    await writeFile(config, '{')
+    current = [{ ...declaration, hookModules: undefined }]
+    expect(await change(config)).toEqual([expect.stringMatching(/^fixture! reload failed, the previous version stays loaded: Hook load failed: /)])
+
+    await writeFile(config, '{"hooks":{}}')
+    expect(await change(config)).toEqual([`fixture: ${basename(config)} changed \u2014 names no hooks module now; ${module} unloaded`])
+    expect(await change(config)).toEqual([`fixture: ${basename(config)} changed \u2014 names no hooks module now; nothing to unload`])
+
+    await writeFile(config, '{"modules":["./register.ts"]}')
+    current = [declaration]
+    expect(await change(config)).toEqual([`fixture: ${basename(config)} changed \u2014 reloaded (modules: none \u2192 ${module}; ${hooks})`])
+  })
+
   test('a watched plugin keeps its modules while its hooks config is missing or invalid, and stays watched once a valid config unloads them', async () => {
     const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'mod' })) }`)
     const config = declaration.hookModules![0]!.configPath
@@ -464,7 +525,7 @@ describe('Mods CLI session host', () => {
     expect(await result()).toBe('mod')
     expect(diagnostics.at(-1)).toMatchObject({ plugin: 'fixture', stage: 'reload' })
     expect(diagnostics.at(-1)!.message).toStartWith('The previous version stays loaded: Hook load failed: ')
-    expect(diagnostics.at(-1)!.message).toContain('hooks.json must have `hooks`')
+    expect(diagnostics.at(-1)!.message).toContain('hooks.json must have \u2019hooks\u2019')
 
     // An invalid config freezes the loaded version; a missing one still follows the source.
     await writeFile(join(declaration.path, 'register.ts'), `export function register(on) { on('tool.call', () => ({ result: 'edited' })) }`)
@@ -571,18 +632,27 @@ describe('Mods CLI session host', () => {
     await writeFile(declaration.hookModules![0]!.configPath, '{"modules":["./register.ts"]}')
     let current: LoadedPlugin[] = [declaration]
     const watched: { paths: string[]; ignored: (path: string) => boolean }[] = []
+    const emitters: EventEmitter[] = []
+    const told: string[] = []
     const watch = spyOn(chokidar, 'watch').mockImplementation((paths, options) => {
       watched.push({ paths: [...(paths as string[])], ignored: options!.ignored as (path: string) => boolean })
-      return Object.assign(new EventEmitter(), { close: async () => {} }) as unknown as FSWatcher
+      emitters.push(Object.assign(new EventEmitter(), { close: async () => {} }))
+      return emitters.at(-1) as unknown as FSWatcher
     })
     cleanups.push(() => watch.mockRestore())
     const host = session({ loadPlugins: async () => current })
-    await host.bind(binding)
+    await host.bind(binding, undefined, {
+      uiLog: (name, text) => { told.push(`${name}: ${text}`) },
+      uiDiagnostic: (name, text) => { told.push(`${name}! ${text}`) },
+    })
     expect(watched.map(entry => entry.paths)).toEqual([[declaration.path]])
 
     current = []
     await rm(declaration.path, { recursive: true })
+    emitters.at(-1)!.emit('all', 'unlinkDir', declaration.path)
     await host.refresh()
+    // Official 2.1.329 says nothing while the directory is gone.
+    expect(told).toEqual([])
     const parent = dirname(declaration.path)
     expect(watched.at(-1)!.paths).toEqual([parent])
     expect(watched.at(-1)!.ignored(parent)).toBe(false)
@@ -592,7 +662,9 @@ describe('Mods CLI session host', () => {
     current = [declaration]
     await mkdir(declaration.path)
     await writeFile(join(declaration.path, 'register.ts'), `export function register(on) { on('tool.call', () => ({ result: 'again' })) }`)
+    emitters.at(-1)!.emit('all', 'addDir', declaration.path)
     await host.refresh()
+    expect(told).toEqual(['fixture: hooks.json changed \u2014 reloaded (modules: register.ts unchanged; 1 hook: tool.call)'])
     expect(watched.at(-1)!.paths).toEqual([declaration.path])
     expect((await host.runtime!.dispatch('tool.call', input, core) as { result: unknown }).result).toBe('again')
   })
