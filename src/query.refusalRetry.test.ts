@@ -19,14 +19,15 @@ afterEach(() => {
   delete process.env.CLAUDE_CODE_DISABLE_REFUSAL_RETRY
 })
 
-type Event = { type: string; content?: unknown; message?: { content: unknown } }
+type Event = { type: string; content?: unknown; message?: { content: unknown }; modelRefusalNoFallback?: { refusedUserMessageUuid?: string } }
 
 const refusal = () => getErrorMessageIfRefusal('refusal', 'claude-sonnet-4-6', 'msg_refused')!
 
 // Each entry is what one model request streams.
-async function run(responses: AssistantMessage[][], querySource = 'sdk') {
+async function run(responses: AssistantMessage[][], querySource = 'sdk', toolFinishes = false) {
   let calls = 0
   const release = Promise.withResolvers<void>()
+  if (toolFinishes) release.resolve()
   const tool = {
     name: 'Fixture',
     inputSchema: z.object({ value: z.string() }),
@@ -134,6 +135,13 @@ test('a second refusal in the same query ends it with the error', async () => {
     content: '',
     modelRefusalNoFallback: { originalModel: 'claude-sonnet-4-6', requestId: null, category: null, explanation: null },
   })
+})
+
+test('the announcement names the prompt, not a tool result that came after it', async () => {
+  const toolUse = createAssistantMessage({ content: [{ type: 'tool_use', id: 'toolu_1', name: 'Fixture', input: { value: 'x' } }] })
+  const { events } = await run([[toolUse], [refusal()], [refusal()]], 'sdk', true)
+  const notice = events.findLast(event => event.type === 'system')
+  expect(notice?.modelRefusalNoFallback).toMatchObject({ refusedUserMessageUuid: '00000000-0000-4000-8000-000000000001' })
 })
 
 test('a tool call the stopped response had started gets an Interrupted result, and the note says so', async () => {

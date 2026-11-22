@@ -64,6 +64,7 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
   TombstoneMessage,
+  SystemInformationalMessage,
 } from './types/message.js'
 import { logError } from './utils/log.js'
 import {
@@ -292,6 +293,24 @@ const REFUSAL_RETRY_NOTE_INTERRUPTED =
 
 function isRefusalMessage(message: Message | StreamEvent | RequestStartEvent | TombstoneMessage | ToolUseSummaryMessage): message is AssistantMessage {
   return message.type === 'assistant' && message.isApiErrorMessage === true && message.message.stop_reason === 'refusal'
+}
+
+/** Official 2.1.329 announces a refusal nothing is tried after; SDK hosts get it as system/model_refusal_no_fallback. */
+function refusalNoFallbackNotice(refusal: AssistantMessage, messages: readonly Message[], model: string): SystemInformationalMessage {
+  const details = refusal.message.stop_details as { category?: string | null; explanation?: string | null } | null | undefined
+  const prompt = messages.findLast(message =>
+    message.type === 'user' && !message.isMeta &&
+    !(Array.isArray(message.message.content) && message.message.content.some(block => block.type === 'tool_result')))
+  return {
+    ...createSystemMessage('', 'info'),
+    modelRefusalNoFallback: {
+      originalModel: refusal.refusingModel ?? model,
+      requestId: refusal.requestId ?? null,
+      category: details?.category ?? null,
+      explanation: details?.explanation?.trimEnd() ?? null,
+      refusedUserMessageUuid: prompt?.uuid,
+    },
+  }
 }
 
 // -- query loop state
@@ -1585,19 +1604,7 @@ async function* queryLoop(
               withheld = true
               withheldRefusal = message
             } else if (isRefusalMessage(message)) {
-              // Official 2.1.329 announces a refusal nothing is tried after.
-              const details = message.message.stop_details as { category?: string | null; explanation?: string | null } | null | undefined
-              yield {
-                ...createSystemMessage('', 'info'),
-                modelRefusalNoFallback: {
-                  originalModel: message.refusingModel ?? currentModel,
-                  requestId: message.requestId ?? null,
-                  category: details?.category ?? null,
-                  explanation: details?.explanation?.trimEnd() ?? null,
-                  refusedUserMessageUuid: messagesForQuery.findLast(message =>
-                    message.type === 'user' && !message.isMeta && message.toolUseResult === undefined)?.uuid,
-                },
-              }
+              yield refusalNoFallbackNotice(message, messagesForQuery, currentModel)
             }
             if (message.type === 'assistant')
               updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })
@@ -1851,6 +1858,7 @@ async function* queryLoop(
         toolResults.push(...normalizeMessagesForAPI([update.message], toolUseContext.options.tools).filter(_ => _.type === 'user'))
       }
       if (toolWasDeferred) {
+        yield refusalNoFallbackNotice(withheldRefusal, messagesForQuery, currentModel)
         yield withheldRefusal
       } else {
         const started = new Set(streamingToolExecutor.getStartedToolUseIds())
