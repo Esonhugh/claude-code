@@ -3510,7 +3510,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
       try {
-        if (input.loadError) throw new Error(input.loadError)
+        if (input.loadError && !recoveringOwners) throw new Error(input.loadError)
         const declaration = recoveringOwners
           ? knownArgs.get(input.storageId)
           : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
