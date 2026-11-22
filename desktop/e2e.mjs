@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 
 const home = mkdtempSync(join(tmpdir(), 'claude-desktop-e2e-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, 'config')
@@ -22,6 +22,11 @@ const consoleErrors = []
 dialog.showErrorBox = (_title, message) => {
   log(`FAIL ${message}`)
   app.exit(1)
+}
+// Links and sign-in pages the app hands to the browser, recorded instead.
+const opened = []
+shell.openExternal = async url => {
+  opened.push(url)
 }
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', event => {
@@ -63,9 +68,83 @@ document.body.appendChild(form)
 form.submit()
 </script>`
 
+// A Mod Client with a stand-in surface runtime: it draws one string from its Worker.
+const MOD_BUNDLE = {
+  files: [
+    {
+      key: 'claude:surface-runtime',
+      source: `export const h = () => null
+export const Fragment = null
+export function install() {
+  let draw
+  globalThis.__surface__ = { run: () => JSON.stringify({ text: draw() }) }
+  return { mount(_id, d) { draw = d }, resize() {}, stage() {}, dropHeld() {}, unmount() {}, setProps() {} }
+}`,
+    },
+    { key: 'surface:///panel.js', source: `export function Panel() { return 'drawn in a Worker' }` },
+  ],
+  modules: [{ module: 'panel', entry: 'surface:///panel.js', component: 'Panel' }],
+  limits: {},
+}
+const MOD_CLIENT = `new Promise(resolve => {
+  const frame = Object.assign(document.createElement('iframe'), { src: '/mods-frame', hidden: true })
+  frame.setAttribute('sandbox', 'allow-scripts')
+  frame.onload = () => {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = e => {
+      if (e.data.op !== 'tree' && e.data.op !== 'fault') return
+      frame.remove()
+      resolve(e.data)
+    }
+    frame.contentWindow.postMessage('claude-mods-frame', '*', [channel.port2])
+    channel.port1.postMessage({ op: 'load', bundle: ${JSON.stringify(MOD_BUNDLE)} })
+    channel.port1.postMessage({ op: 'mount', id: 1, module: 'panel', props: {}, columns: 80, rows: 24 })
+  }
+  document.body.appendChild(frame)
+  setTimeout(() => resolve({ op: 'timeout' }), 20000)
+})`
+
+// Runs an MCP App's HTML in its frame the way McpApp.tsx does; the app reports with `parent.postMessage({ type: 'e2e', ... })`.
+const mcpApp = html => `new Promise(resolve => {
+  const frame = Object.assign(document.createElement('iframe'), { src: '/mcp-app-frame', hidden: true })
+  frame.setAttribute('sandbox', 'allow-scripts allow-forms')
+  addEventListener('message', function listen(e) {
+    if (e.source !== frame.contentWindow || !e.data) return
+    if (e.data.type === 'claude-mcp-app-ready') frame.contentWindow.postMessage({ type: 'claude-mcp-app', html: ${JSON.stringify(html)} }, '*')
+    if (e.data.type !== 'e2e') return
+    removeEventListener('message', listen)
+    frame.remove()
+    resolve(e.data)
+  })
+  document.body.appendChild(frame)
+  setTimeout(() => resolve({ type: 'timeout' }), 20000)
+})`
+const MCP_APP = `<p id="text">hello</p><script>
+parent.postMessage({ type: 'e2e', origin, text: document.getElementById('text').textContent }, '*')
+</script>`
+const HOSTILE_MCP_APP = `<script>
+Promise.all([
+  fetch('claude-app://app/api/account').then(res => 'reached ' + res.status, () => 'blocked'),
+  new Promise(resolve => { try { resolve('reached ' + parent.location.href) } catch { resolve('blocked') } }),
+  typeof window.claudeDesktop === 'undefined' ? 'blocked' : 'reached',
+]).then(results => parent.postMessage({ type: 'e2e', results }, '*'))
+</script>`
+
+// The sign-in in Account.tsx: a blank tab opened on the click, pointed at the provider afterwards.
+const SIGN_IN = `(async () => {
+  const tab = window.open('', '_blank')
+  const res = await fetch('/api/account/oauth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"provider":"anthropic"}' })
+  const body = await res.json()
+  if (tab) {
+    tab.opener = null
+    tab.location.href = body.url
+  }
+  return { status: res.status, body, tab: Boolean(tab) }
+})()`
+
 async function run() {
   const win = await until('the window', () => BrowserWindow.getAllWindows()[0], 60_000)
-  const page = script => win.webContents.executeJavaScript(script)
+  const page = (script, gesture = false) => win.webContents.executeJavaScript(script, gesture)
   await until('the page to render', () => page('document.getElementById("root")?.childElementCount > 0'))
   log('ok   page rendered')
   if ((await page('typeof window.claudeDesktop?.socket')) !== 'function') throw new Error('no window.claudeDesktop bridge')
@@ -87,8 +166,43 @@ async function run() {
   if (events[0] !== 'open' || events.at(-1) !== 'close 1000') throw new Error(`session socket: ${events.join(', ')}`)
   log('ok   session socket opens and closes')
 
+  const mod = await page(MOD_CLIENT)
+  if (mod.op !== 'tree' || mod.text !== JSON.stringify({ text: 'drawn in a Worker' })) throw new Error(`mods frame: ${JSON.stringify(mod)}`)
+  log('ok   mods frame runs a Client in its Worker')
+
+  const shown = await page(mcpApp(MCP_APP))
+  if (shown.text !== 'hello' || shown.origin !== 'null') throw new Error(`MCP App frame: ${JSON.stringify(shown)}`)
+  log('ok   MCP App frame runs the app at an opaque origin')
+
   if (consoleErrors.length) throw new Error(`console errors:\n${consoleErrors.join('\n')}`)
   log('ok   no console errors')
+
+  const handedOff = async (what, url) => {
+    await until(`${what} to open in the browser`, () => opened.includes(url), 10_000)
+    await until(`${what} to leave no window behind`, () => BrowserWindow.getAllWindows().length === 1, 10_000)
+  }
+  const signIn = await page(SIGN_IN, true)
+  if (signIn.status !== 200 || !signIn.tab || !/^https:\/\//.test(signIn.body.url)) throw new Error(`sign-in: ${JSON.stringify(signIn)}`)
+  await handedOff('the sign-in page', signIn.body.url)
+  const post = (path, body, method = 'POST') =>
+    page(`fetch('${path}', { method: '${method}', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(body)} }).then(res => res.status)`)
+  const statuses = [
+    await post('/api/account/oauth/code', '{"code":"no-state"}'),
+    await post('/api/account/oauth', '', 'DELETE'),
+    await post('/api/account/oauth/code', '{"code":"a#b"}'),
+  ]
+  if (statuses.join() !== '400,204,409') throw new Error(`sign-in code and cancel: ${statuses.join()}`)
+  log('ok   sign-in opens in the browser; a bad code and cancel are handled')
+
+  await page(`window.open('about:blank', '_blank').location.href = 'https://example.com/mcp-auth', 0`, true)
+  await handedOff('an MCP server sign-in', 'https://example.com/mcp-auth')
+  await page(`window.open('https://example.com/link', '_blank', 'noopener,noreferrer'), 0`, true)
+  await handedOff('a link from an MCP App', 'https://example.com/link')
+  log('ok   MCP sign-in and links open in the browser')
+
+  const probed = await page(mcpApp(HOSTILE_MCP_APP))
+  if (probed.results?.join() !== 'blocked,blocked,blocked') throw new Error(`MCP App reached the app: ${JSON.stringify(probed)}`)
+  log('ok   MCP App cannot reach the app API, the page or the bridge')
 
   const hostile = createServer((_req, res) => res.setHeader('content-type', 'text/html').end(HOSTILE_PAGE))
   await new Promise(resolve => hostile.listen(0, '127.0.0.1', resolve))
