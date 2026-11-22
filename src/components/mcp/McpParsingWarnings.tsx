@@ -1,6 +1,12 @@
 import React, { useMemo } from 'react'
-import { getMcpConfigsByScope } from 'src/services/mcp/config.js'
-import type { ConfigScope } from 'src/services/mcp/types.js'
+import {
+  getMcpConfigsByScope,
+  getMcpServerSignature,
+} from 'src/services/mcp/config.js'
+import type {
+  ConfigScope,
+  ScopedMcpServerConfig,
+} from 'src/services/mcp/types.js'
 import {
   describeMcpConfigFilePath,
   getScopeLabel,
@@ -93,7 +99,10 @@ export function McpParsingWarnings(): React.ReactNode {
         { scope: 'enterprise', config: getMcpConfigsByScope('enterprise') },
       ] satisfies Array<{
         scope: ConfigScope
-        config: { errors: ValidationError[] }
+        config: {
+          servers: Record<string, ScopedMcpServerConfig>
+          errors: ValidationError[]
+        }
       }>,
     [],
   )
@@ -105,7 +114,9 @@ export function McpParsingWarnings(): React.ReactNode {
     ({ config }) => filterErrors(config.errors, 'warning').length > 0,
   )
 
-  if (!hasParsingErrors && !hasWarnings) {
+  const conflicts = getScopeConflicts(scopes)
+
+  if (!hasParsingErrors && !hasWarnings && conflicts.length === 0) {
     return null
   }
 
@@ -128,15 +139,61 @@ export function McpParsingWarnings(): React.ReactNode {
           warnings={filterErrors(config.errors, 'warning')}
         />
       ))}
-      {/* TODO: Add additional diagnostic sections:
-       * - Duplicate Server Names (check for servers with same name across scopes)
-       * This section should include:
-       * - File paths where each server is defined
-       * - More detailed location info for user/local scopes
-       * - Approved / disabled status of servers
-       */}
+      {conflicts.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color="warning">[Conflicting scopes]</Text>
+          {conflicts.map(({ name, message, suggestion }) => (
+            <Box key={name} flexDirection="column">
+              <Text>
+                <Text dimColor>├ </Text>
+                {message}
+              </Text>
+              <Text dimColor>└ {suggestion}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
     </Box>
   )
+}
+
+// Same name in several scopes with different endpoints (official 2.1.329).
+function getScopeConflicts(
+  scopes: Array<{
+    scope: ConfigScope
+    config: { servers: Record<string, ScopedMcpServerConfig> }
+  }>,
+): Array<{ name: string; message: string; suggestion: string }> {
+  const byName = new Map<
+    string,
+    Array<{ scope: ConfigScope; signature: string; endpoint: string }>
+  >()
+  for (const { scope, config } of scopes) {
+    for (const [name, server] of Object.entries(config.servers)) {
+      const signature = getMcpServerSignature(server)
+      if (!signature) continue
+      const endpoint =
+        'url' in server
+          ? server.url
+          : 'command' in server
+            ? [server.command, ...(server.args ?? [])].join(' ')
+            : signature
+      const definitions = byName.get(name) ?? []
+      definitions.push({ scope, signature, endpoint })
+      byName.set(name, definitions)
+    }
+  }
+  return [...byName].flatMap(([name, definitions]) => {
+    if (new Set(definitions.map(d => d.signature)).size < 2) return []
+    const removable = /^\w[\w.@-]*$/.test(name)
+    return {
+      name,
+      message: `Server "${name}" is defined in multiple scopes with different endpoints: ${definitions.map(d => `${d.scope} (${d.endpoint})`).join(', ')}. OAuth tokens are stored per endpoint, so authenticating in one context will not carry over.`,
+      suggestion: removable
+        ? `Keep the correct endpoint and remove the others: ${definitions.map(d => `\`claude mcp remove ${name} -s ${d.scope}\``).join(' or ')}`
+        : 'Keep the correct endpoint and remove the others from the scopes listed above.',
+    }
+  })
 }
 
 function filterErrors(

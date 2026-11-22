@@ -24,6 +24,7 @@ if (process.env[childEnv] === '1') {
           JSON.stringify({
             mcpServers: {
               pending: stdio('pending'),
+              dup: stdio('project-dup'),
               rejected: stdio('rejected'),
               disabled: stdio('disabled'),
               denied: stdio('denied'),
@@ -106,10 +107,16 @@ async function runChild(): Promise<void> {
   state.setIsInteractive(false)
   // The folder is trusted; before that settings.local.json approves nothing.
   state.setSessionTrustAccepted(true)
-  const { enableConfigs, saveCurrentProjectConfig } = await import(
-    '../../utils/config.js'
-  )
+  const { enableConfigs, saveCurrentProjectConfig, saveGlobalConfig } =
+    await import('../../utils/config.js')
   enableConfigs()
+  saveGlobalConfig(current => ({
+    ...current,
+    mcpServers: {
+      dup: { type: 'stdio', ...stdio('user-dup') },
+      bare: { type: 'stdio', command: 'echo', args: [] },
+    },
+  }))
   saveCurrentProjectConfig(current => ({
     ...current,
     disabledMcpServers: ['disabled'],
@@ -145,6 +152,21 @@ async function runChild(): Promise<void> {
     const rejected = await get('rejected')
     expect(rejected.output).toContain(`Status: ${figures.cross} Rejected`)
     expect(connected).toEqual([])
+  })
+
+  // Official 2.1.329.
+  test('a pending .mcp.json server does not hide the user server of that name', async () => {
+    const dup = await get('dup')
+    expect(dup.output).toContain('Scope: User config')
+    expect(dup.output).toContain('Args: user-dup')
+    expect(dup.output).not.toContain('Pending approval')
+    expect(connected.splice(0)).toEqual(['dup'])
+  })
+
+  test('an empty argument list leaves no trailing space, like 2.1.329', async () => {
+    const bare = await get('bare')
+    expect(bare.output.split('\n')).toContain('  Args:')
+    connected.length = 0
   })
 
   test('servers disabled for the project are not connected', async () => {

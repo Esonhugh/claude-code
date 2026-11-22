@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer'
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client'
 import { z } from 'zod/v4'
 import { getHostOwnedCodexAppsKind } from '../../services/apps/trust.js'
 import { ensureConnectedClient } from '../../services/mcp/client.js'
+import { serverDeclaresDirectoryRead } from '../../services/mcp/directoryRead.js'
 import { hashMcpSkillContent } from '../../skills/mcpSkillDiskCache.js'
 import { readMcpSkillResourceRules } from '../../skills/mcpSkillResourceGrant.js'
 import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
@@ -12,6 +14,8 @@ import {
 } from '../../utils/mcpOutputStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
+import { LIST_MCP_RESOURCES_TOOL_NAME } from '../ListMcpResourcesTool/prompt.js'
+import { READ_MCP_RESOURCE_DIR_TOOL_NAME } from '../ReadMcpResourceDirTool/prompt.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
   renderToolResultMessage,
@@ -40,6 +44,10 @@ export const outputSchema = lazySchema(() =>
           .describe('Path where binary blob content was saved'),
       }),
     ),
+    error: z
+      .string()
+      .optional()
+      .describe('Why the resource could not be read'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -195,10 +203,33 @@ export const ReadMcpResourceTool = buildTool({
     }
 
     const connectedClient = await ensureConnectedClient(client)
-    const result = await connectedClient.client.request({
-      method: 'resources/read',
-      params: { uri },
-    })
+    let result
+    try {
+      result = await connectedClient.client.request({
+        method: 'resources/read',
+        params: { uri },
+      })
+    } catch (error) {
+      // A stale URI is something the model can recover from, so it is a result
+      // with a next step rather than a tool error (official 2.1.329).
+      if (
+        manifest.scoped ||
+        !(error instanceof ProtocolError) ||
+        (error.code !== ProtocolErrorCode.ResourceNotFound &&
+          error.code !== ProtocolErrorCode.InvalidParams)
+      ) {
+        throw error
+      }
+      const directoryHint = serverDeclaresDirectoryRead(client.capabilities)
+        ? ` If the URI is a directory resource, use ${READ_MCP_RESOURCE_DIR_TOOL_NAME} instead.`
+        : ''
+      return {
+        data: {
+          contents: [],
+          error: `Resource not found: ${uri} — it may have been deleted or the URI is stale. Re-run ${LIST_MCP_RESOURCES_TOOL_NAME} to refresh.${directoryHint}`,
+        },
+      }
+    }
 
     const verifiedBlobBytes = new Map<number, Buffer>()
     if (manifest.scoped) {
@@ -269,7 +300,7 @@ export const ReadMcpResourceTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: jsonStringify(content),
+      content: content.error ?? jsonStringify(content),
     }
   },
 } satisfies ToolDef<InputSchema, Output>)

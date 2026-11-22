@@ -5,6 +5,9 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import type { MCPResultType } from '../services/mcp/client.js'
+import { getDefaultFileReadingLimits } from '../tools/FileReadTool/limits.js'
+import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
+import { quote } from './bash/shellQuote.js'
 import { toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
@@ -34,6 +37,7 @@ export function getFormatDescription(
  * @param contentLength - Length of the content in characters
  * @param formatDescription - Description of the content format
  * @param maxReadLength - Optional max chars for Read tool (for Bash output context)
+ * @param lines - Line count and longest line of a plain-text file; omit for JSON
  * @returns Instruction text to include in the tool result
  */
 export function getLargeOutputInstructions(
@@ -41,19 +45,43 @@ export function getLargeOutputInstructions(
   contentLength: number,
   formatDescription: string,
   maxReadLength?: number,
+  lines?: { count: number; maxLen: number },
 ): string {
+  const size = lines
+    ? `${contentLength.toLocaleString()} characters across ${lines.count.toLocaleString()} ${lines.count === 1 ? 'line' : 'lines'}`
+    : `${contentLength.toLocaleString()} characters`
+  // Read pages by line, so it can only chunk a file whose lines fit one read.
+  const maxLineLength = Math.floor(
+    getDefaultFileReadingLimits().maxTokens * 4 * 0.8,
+  )
+  let howToRead: string
+  let lineNote: string
+  if (!lines) {
+    howToRead = `Use jq to make structured queries (find a value, filter by field).\n`
+    lineNote = `- Note: this file is JSON, so a long value (or the whole file) is a single line. ${FILE_READ_TOOL_NAME}'s offset/limit cannot split a line, so reading in chunks works only if every line is short. If a shell tool is available, first probe the structure (e.g., jq 'type, length, keys?' ${quote([rawOutputPath])}), then extract slices with jq or python.\n`
+  } else if (lines.count === 1 || lines.maxLen > maxLineLength) {
+    howToRead = `Search within the file for specific content, and use jq if the content is JSON.\n`
+    lineNote = `- Note: this file's lines are too long for ${FILE_READ_TOOL_NAME}'s offset/limit chunking. If a shell tool is available, slice by character range (e.g. python read()[A:B], dd, or cut -c) instead.\n`
+  } else {
+    howToRead = `Use offset and limit parameters to read specific portions of the file, search within it for specific content, and jq to make structured queries.\n`
+    lineNote = ''
+  }
+
   const baseInstructions =
-    `Error: result (${contentLength.toLocaleString()} characters) exceeds maximum allowed tokens. Output has been saved to ${rawOutputPath}.\n` +
+    `Error: result (${size}) exceeds maximum allowed tokens. Output has been saved to ${rawOutputPath}.\n` +
     `Format: ${formatDescription}\n` +
-    `Use offset and limit parameters to read specific portions of the file, search within it for specific content, and jq to make structured queries.\n` +
+    howToRead +
     `REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:\n` +
-    `- You MUST read the content from the file at ${rawOutputPath} in sequential chunks until 100% of the content has been read.\n`
+    `- You MUST read the content from the file at ${rawOutputPath} in sequential chunks until 100% of the content has been read.\n` +
+    lineNote
 
   const truncationWarning = maxReadLength
     ? `- If you receive truncation warnings when reading the file ("[N lines truncated]"), reduce the chunk size until you have read 100% of the content without truncation ***DO NOT PROCEED UNTIL YOU HAVE DONE THIS***. Bash output is limited to ${maxReadLength.toLocaleString()} chars.\n`
     : `- If you receive truncation warnings when reading the file, reduce the chunk size until you have read 100% of the content without truncation.\n`
 
-  const completionRequirement = `- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***\n`
+  const completionRequirement =
+    `- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***\n` +
+    `- If after a few attempts you cannot read the file (file not found, lines too long for ${FILE_READ_TOOL_NAME}'s offset/limit, no shell access), STOP retrying. Summarize what you were able to read, explicitly state which portion you could not read and why, and proceed.\n`
 
   return baseInstructions + truncationWarning + completionRequirement
 }
