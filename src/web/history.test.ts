@@ -459,6 +459,24 @@ describe('web history', () => {
     expect(await forkSession(ID, 'msg_missing')).toBeUndefined()
   })
 
+  it('gives a fork its own copy of the uploads, so deleting the original leaves them', async () => {
+    const uploads = join(root, 'uploads')
+    mkdirSync(join(uploads, ID), { recursive: true })
+    writeFileSync(join(uploads, ID, 'note.txt'), 'NOTE')
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    const mention = `first question @${join(uploads, ID, 'note.txt')}`
+    writeFileSync(file, readFileSync(file, 'utf8').replace('"first question"', JSON.stringify(mention)))
+    const forkId = (await forkSession(ID, 'msg_1', uploads))!
+    rmSync(join(uploads, ID), { recursive: true })
+    const copy = join(uploads, forkId, 'note.txt')
+    expect(readFileSync(copy, 'utf8')).toBe('NOTE')
+    const fork = JSON.stringify((await readTranscript(forkId, undefined, 50))!.messages)
+    expect(fork).toContain(JSON.stringify(`first question @${copy}`).slice(1, -1))
+    expect(fork).not.toContain(JSON.stringify(join(uploads, ID, 'note.txt')).slice(1, -1))
+    // The original still names its own.
+    expect(readFileSync(file, 'utf8')).toContain(JSON.stringify(mention))
+  })
+
   it('renames by appending a custom title', async () => {
     expect(await renameSession(ID, 'My chat')).toBe(true)
     const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)

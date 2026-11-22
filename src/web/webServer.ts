@@ -1228,7 +1228,7 @@ export function startWebServer(
       if (!SESSION_ID.test(id) || typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId)) {
         return errorResponse(400, 'Invalid id')
       }
-      const forkId = await forkSession(id, messageId)
+      const forkId = await forkSession(id, messageId, config.uploadsDir)
       return forkId ? Response.json({ session_id: forkId }) : errorResponse(404, 'Message not found')
     }
     const historyMatch = HISTORY_PATH.exec(pathname)

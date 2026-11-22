@@ -1,6 +1,6 @@
 import { randomUUID, type UUID } from 'crypto'
-import { readdir, readFile, writeFile } from 'fs/promises'
-import { dirname, join } from 'path'
+import { cp, readdir, readFile, writeFile } from 'fs/promises'
+import { dirname, join, sep } from 'path'
 import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
 import type { Message } from '../types/message.js'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
@@ -362,8 +362,9 @@ export async function findAgentIssuers(
  * A new session holding the conversation up to and including the assistant
  * message `messageId` (an API `msg_` id), like `/branch`: same folder, new
  * session id, each entry marked with where it came from. Resume it to continue.
+ * It gets its own copy of the session's uploads, which go when the original is deleted.
  */
-export async function forkSession(id: string, messageId: string): Promise<string | undefined> {
+export async function forkSession(id: string, messageId: string, uploadsDir?: string): Promise<string | undefined> {
   const found = await resolveSessionFilePath(id)
   if (!found) return undefined
   const log = await loadTranscriptFile(found.filePath)
@@ -377,6 +378,11 @@ export async function forkSession(id: string, messageId: string): Promise<string
     .slice(0, end + 1)
     .filter(m => !m.isSidechain)
     .map(m => JSON.stringify({ ...m, sessionId: forkId, forkedFrom: { sessionId: id, messageUuid: m.uuid } }))
+  if (uploadsDir !== undefined && (await cp(join(uploadsDir, id), join(uploadsDir, forkId), { recursive: true }).then(() => true, () => false))) {
+    const from = JSON.stringify(join(uploadsDir, id) + sep).slice(1, -1)
+    const to = JSON.stringify(join(uploadsDir, forkId) + sep).slice(1, -1)
+    for (const [i, line] of lines.entries()) lines[i] = line.replaceAll(from, to)
+  }
   await writeFile(join(dirname(found.filePath), `${forkId}.jsonl`), lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' })
   return forkId
 }
