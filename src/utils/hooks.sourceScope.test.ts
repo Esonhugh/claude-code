@@ -7,6 +7,7 @@ import { disposeModsHosts, endModsSessions } from './gracefulShutdown.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import isEqual from 'lodash-es/isEqual.js'
 import ts from 'typescript'
 import { z } from 'zod/v4'
 import type { ToolUseContext } from '../Tool.js'
@@ -186,6 +187,7 @@ function fixture() {
     () => settingsModule,
   )
   const snapshot = evaluate('./hooks/hooksConfigSnapshot.ts', (name) => {
+    if (name === 'lodash-es/isEqual.js') return { default: isEqual }
     if (name.endsWith('state.js')) return bootstrap
     if (name.endsWith('envUtils.js')) return { isSafeMode: () => false }
     if (name.endsWith('pluginOnlyPolicy.js')) return pluginPolicy
@@ -827,7 +829,7 @@ describe('source-scoped hook executor', () => {
     ).toBe(true)
   })
 
-  test('equal command text stays distinct across settings, plugins and skill/session sources', async () => {
+  test('equal command text collapses across settings sources but stays distinct across plugins and skill/session sources', async () => {
     const f = fixture()
     f.add('policySettings', 'PreToolUse', 'same')
     f.add('userSettings', 'PreToolUse', 'same')
@@ -856,7 +858,7 @@ describe('source-scoped hook executor', () => {
       )
     }
     await collect(pre(f))
-    expect(f.calls).toHaveLength(6)
+    expect(f.calls).toHaveLength(5)
     expect(successes.sort()).toEqual(['one', 'two'])
   })
 
@@ -1217,7 +1219,11 @@ describe('source-scoped hook executor', () => {
 
   test('snapshot captures provenance and nested content until explicit update', async () => {
     const f = fixture()
-    f.add('userSettings', 'PreToolUse', 'same')
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'same',
+      timeout: 5,
+    })
     f.add('policySettings', 'PreToolUse', 'same')
     f.snapshot.captureHooksConfigSnapshot()
     const captured = f.snapshot.getHooksConfigFromSnapshot()
@@ -1481,14 +1487,14 @@ describe('source-scoped hook executor', () => {
       hook: { type: 'command', command: 'deny' },
     })
   })
-  test('equal commands execute once per source, while same-source duplicates still collapse', async () => {
+  test('equal commands execute once across settings sources and the managed copy wins (official 2.1.329)', async () => {
     const f = fixture()
     for (const source of [
+      'policySettings',
+      'flagSettings',
       'userSettings',
       'projectSettings',
       'localSettings',
-      'flagSettings',
-      'policySettings',
     ] as const) {
       f.add(source, 'PostToolUse', 'same-command')
       f.add(source, 'PostToolUse', 'same-command')
@@ -1496,15 +1502,104 @@ describe('source-scoped hook executor', () => {
     const results = await collect(
       f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
     )
-    expect(f.calls.map((call) => call.command)).toEqual(
-      Array(5).fill('same-command'),
-    )
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
     expect(
-      results
-        .filter((result) => result.message)
-        .map((result) => result.hookSource),
-    ).toContain('policySettings')
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['policySettings']))
   })
+
+  test('without a managed copy the --settings copy wins over file settings', async () => {
+    const f = fixture()
+    for (const source of [
+      'flagSettings',
+      'userSettings',
+      'projectSettings',
+    ] as const) {
+      f.add(source, 'PostToolUse', 'same-command')
+    }
+    f.add('userSettings', 'PostToolUse', 'user-only')
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command).sort()).toEqual([
+      'same-command',
+      'user-only',
+    ])
+    expect(
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['flagSettings', 'userSettings']))
+  })
+
+  test('a managed matcher that differs from the non-managed one keeps both (official 2.1.329)', async () => {
+    const f = fixture()
+    f.add('policySettings', 'PostToolUse', 'same-command')
+    f.addHook('userSettings', 'PostToolUse', {
+      type: 'command',
+      command: 'same-command',
+      timeout: 5,
+    })
+    f.addHook(
+      'projectSettings',
+      'PostToolUse',
+      { type: 'command', command: 'same-command' },
+      'Read',
+    )
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command)).toEqual([
+      'same-command',
+      'same-command',
+    ])
+    expect(
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['policySettings', 'projectSettings']))
+  })
+
+  test('a managed matcher written with another key order is still the same matcher', async () => {
+    const f = fixture()
+    f.addHook('policySettings', 'PostToolUse', {
+      type: 'command',
+      command: 'same-command',
+      timeout: 5,
+    })
+    f.addHook('userSettings', 'PostToolUse', {
+      timeout: 5,
+      command: 'same-command',
+      type: 'command',
+    })
+    await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
+  })
+
+  test('the non-managed pass skips a matcher the managed pass already runs', async () => {
+    const f = fixture()
+    f.add('policySettings', 'PreToolUse', 'same-command')
+    f.add('userSettings', 'PreToolUse', 'same-command')
+    f.add('userSettings', 'PreToolUse', 'user-only')
+    await collect(pre(f, 'managed'))
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
+    await collect(pre(f, 'non-managed'))
+    expect(f.calls.map((call) => call.command)).toEqual([
+      'same-command',
+      'user-only',
+    ])
+  })
+
   test('managed executes only policy settings, not user settings or SDK callbacks', async () => {
     const f = fixture()
     f.add('policySettings', 'PostToolUse', 'policy')
