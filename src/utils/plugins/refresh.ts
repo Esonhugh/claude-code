@@ -35,6 +35,7 @@ import { loadPluginHooks } from './loadPluginHooks.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { loadPluginMcpServers } from './mcpPluginIntegration.js'
 import { clearPluginCacheExclusions } from './orphanedPluginFilter.js'
+import { resolveMissingDependencies } from './pluginInstallationHelpers.js'
 import { loadAllPlugins, loadAllPluginsCacheOnly } from './pluginLoader.js'
 
 type SetAppState = (updater: (prev: AppState) => AppState) => void
@@ -57,6 +58,8 @@ export type RefreshActivePluginsResult = {
   agentDefinitions: AgentDefinitionsResult
   /** The refreshed plugin commands, same rationale as agentDefinitions. */
   pluginCommands: Command[]
+  /** Load errors, for /reload-plugins to install missing dependencies. */
+  errors: PluginError[]
 }
 
 /**
@@ -201,6 +204,7 @@ export async function refreshActivePlugins(
     error_count: errors.length + (hook_load_failed ? 1 : 0),
     agentDefinitions,
     pluginCommands: [...pluginCommands, ...pluginSkills],
+    errors,
   }
 }
 
@@ -226,4 +230,33 @@ function errorKey(e: PluginError): string {
   return e.type === 'generic-error'
     ? `generic-error:${e.source}:${e.error}`
     : `${e.type}:${e.source}`
+}
+
+export type InstallActivation = 'activated' | 'load-failed' | 'reload-required'
+
+/**
+ * Official 2.1.329: /plugin activates what it just installed, so the plugin
+ * works without a manual /reload-plugins.
+ */
+export async function activateInstalledPlugins(
+  setAppState: SetAppState,
+  pluginIds: string[],
+): Promise<InstallActivation> {
+  try {
+    let r = await refreshActivePlugins(setAppState)
+    const resolved = await resolveMissingDependencies(r.errors)
+    if (resolved.length > 0) r = await refreshActivePlugins(setAppState)
+    const installed = [...pluginIds, ...resolved]
+    return r.errors.some(error => installed.includes(error.source))
+      ? 'load-failed'
+      : 'activated'
+  } catch (error) {
+    logError(error)
+    setAppState(prev =>
+      prev.plugins.needsRefresh
+        ? prev
+        : { ...prev, plugins: { ...prev.plugins, needsRefresh: true } },
+    )
+    return 'reload-required'
+  }
 }

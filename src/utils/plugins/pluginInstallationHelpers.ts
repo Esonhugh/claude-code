@@ -8,6 +8,7 @@
 import { rename, rm } from 'fs/promises'
 import { resolve, sep } from 'path'
 import { getOriginalCwd } from '../../bootstrap/state.js'
+import type { PluginError } from '../../types/plugin.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
@@ -44,7 +45,12 @@ import {
 } from './installedPluginsManager.js'
 import { findPluginFolderCollision, PluginFolderCollisionError } from './pluginFolderCollision.js'
 import { getManagedPluginNames } from './managedPlugins.js'
-import { getMarketplaceCacheOnly, getPluginById } from './marketplaceManager.js'
+import { isSourceAllowedByPolicy } from './marketplaceHelpers.js'
+import {
+  getMarketplaceCacheOnly,
+  getPluginById,
+  loadKnownMarketplacesConfigSafe,
+} from './marketplaceManager.js'
 import {
   isOfficialMarketplaceName,
   parsePluginIdentifier,
@@ -470,6 +476,7 @@ export async function installResolvedPlugin({
           ?.allowCrossMarketplaceDependenciesOn
       : undefined) ?? [],
   )
+  const alreadyEnabled = getEnabledPluginIdsForScope(settingSource)
   const resolution = await resolveDependencyClosure(
     pluginId,
     async id => {
@@ -479,7 +486,7 @@ export async function installResolvedPlugin({
       if (info) depInfo.set(id, info)
       return info?.entry ?? null
     },
-    getEnabledPluginIdsForScope(settingSource),
+    alreadyEnabled,
     allowedCrossMarketplaces,
   )
   if (!resolution.ok) {
@@ -512,17 +519,10 @@ export async function installResolvedPlugin({
     entry: PluginMarketplaceEntry
     localSourcePath?: string
   }> = []
-  for (const id of resolution.closure) {
-    let info = depInfo.get(id)
-    // Root wasn't pre-seeded (caller didn't pass marketplaceInstallLocation
-    // for a non-local source). Fetch now; it's needed for the cache write.
-    if (!info && id === pluginId) {
-      const mktLocation = (await getPluginById(id))?.marketplaceInstallLocation
-      info = { entry, marketplaceInstallLocation: mktLocation ?? '' }
-    }
-    if (!info)
-      throw new Error(`Plugin ${id} is no longer available for installation`)
-
+  const addMember = (
+    id: string,
+    info: { entry: PluginMarketplaceEntry; marketplaceInstallLocation: string },
+  ): void => {
     let localSourcePath: string | undefined
     const { source } = info.entry
     if (isLocalPluginSource(source)) {
@@ -544,10 +544,25 @@ export async function installResolvedPlugin({
     }
     members.push({ id, entry: info.entry, localSourcePath })
   }
+  for (const id of resolution.closure) {
+    let info = depInfo.get(id)
+    // Root wasn't pre-seeded (caller didn't pass marketplaceInstallLocation
+    // for a non-local source). Fetch now; it's needed for the cache write.
+    if (!info && id === pluginId) {
+      const mktLocation = (await getPluginById(id))?.marketplaceInstallLocation
+      info = { entry, marketplaceInstallLocation: mktLocation ?? '' }
+    }
+    if (!info)
+      throw new Error(`Plugin ${id} is no longer available for installation`)
+    addMember(id, info)
+  }
 
   // Same project key that uninstall, update and relevance checks match on.
   const projectPath = scope !== 'user' ? getOriginalCwd() : undefined
   const manifests = new Map<string, PluginManifest>()
+  const closure = [...resolution.closure]
+  // `members` grows while it is walked: plugin.json may declare dependencies
+  // the marketplace entry omits, and they are only known once it is cached.
   for (const member of members) {
     const { manifest } = await cacheAndRegisterPlugin(
       member.id,
@@ -562,10 +577,55 @@ export async function installResolvedPlugin({
         : undefined,
     )
     manifests.set(member.id, manifest)
+    for (const rawDep of [
+      ...(member.entry.dependencies ?? []),
+      ...(manifest.dependencies ?? []),
+    ]) {
+      const dep = qualifyDependency(rawDep, member.id)
+      if (closure.includes(dep) || alreadyEnabled.has(dep)) continue
+      const depMarketplace = parsePluginIdentifier(dep).marketplace
+      if (
+        depMarketplace !== rootMarketplace &&
+        !(depMarketplace && allowedCrossMarketplaces.has(depMarketplace))
+      ) {
+        logForDebugging(
+          `${member.id} declares dependency "${dep}" in a different marketplace; not auto-installing — install it manually`,
+          { level: 'warn' },
+        )
+        continue
+      }
+      if (isPluginBlockedByPolicy(dep)) {
+        return {
+          ok: false,
+          reason: 'dependency-blocked-by-policy',
+          pluginName: entry.name,
+          blockedDependency: dep,
+        }
+      }
+      const info = await getPluginById(dep)
+      if (!info) {
+        logForDebugging(
+          `${member.id} declares dependency "${dep}" not found in any known marketplace; not auto-installing`,
+          { level: 'warn' },
+        )
+        continue
+      }
+      const depCollision = findPluginFolderCollision([...closure, dep], installedPlugins)
+      if (depCollision) {
+        throw new PluginFolderCollisionError(
+          depCollision,
+          pluginId,
+          collisionSurface,
+          (installedPlugins[pluginId]?.length ?? 0) > 0,
+        )
+      }
+      closure.push(dep)
+      addMember(dep, info)
+    }
   }
 
   const depNote = formatDependencyCountSuffix(
-    resolution.closure.filter(id => id !== pluginId),
+    closure.filter(id => id !== pluginId),
   )
   const priorEnabled = getSettingsForSource(settingSource)?.enabledPlugins ?? {}
   const mergedEnabled: Record<string, unknown> = {}
@@ -604,7 +664,7 @@ export async function installResolvedPlugin({
     })
   }
   const enabledById = resolveClosureEnabled({
-    closure: resolution.closure,
+    closure,
     rootId: pluginId,
     rootRequiredByDependent,
     priorEnabled,
@@ -613,7 +673,7 @@ export async function installResolvedPlugin({
     dependenciesById,
   })
   const closureEnabled: Record<string, boolean | string[]> = {}
-  for (const id of resolution.closure) {
+  for (const id of closure) {
     const prior = priorEnabled[id]
     closureEnabled[id] = Array.isArray(prior) ? prior : enabledById.get(id) ?? true
   }
@@ -673,7 +733,94 @@ export async function installResolvedPlugin({
     restoreSnapshot(error)
     throw error
   }
-  return { ok: true, closure: resolution.closure, depNote }
+  return { ok: true, closure, depNote }
+}
+
+/**
+ * Install the dependencies that enabled plugins report as not installed
+ * (`dependency-unsatisfied` / `not-found`), in the scope that enables the
+ * dependent. Official 2.1.329 runs this on /reload-plugins.
+ *
+ * @returns Plugin ids that were installed
+ */
+export async function resolveMissingDependencies(
+  errors: readonly PluginError[],
+): Promise<string[]> {
+  const dependentsByDep = new Map<string, Set<string>>()
+  for (const error of errors) {
+    if (error.type !== 'dependency-unsatisfied' || error.reason !== 'not-found')
+      continue
+    const dependents = dependentsByDep.get(error.dependency) ?? new Set()
+    dependentsByDep.set(error.dependency, dependents.add(error.source))
+  }
+  if (dependentsByDep.size === 0) return []
+
+  const knownMarketplaces = await loadKnownMarketplacesConfigSafe()
+  const installed: string[] = []
+  for (const [dep, dependents] of dependentsByDep) {
+    if (installed.includes(dep)) continue
+    const marketplace = parsePluginIdentifier(dep).marketplace
+    const known = marketplace ? knownMarketplaces[marketplace] : undefined
+    if (!marketplace || !known || !isSourceAllowedByPolicy(known.source)) {
+      logForDebugging(
+        `resolveMissingDependencies: skipping "${dep}" — its marketplace is unknown or blocked by policy`,
+      )
+      continue
+    }
+    let declaredInAllowedMarketplace = false
+    for (const dependent of dependents) {
+      const from = parsePluginIdentifier(dependent).marketplace
+      if (
+        from === marketplace ||
+        (from &&
+          (
+            await getMarketplaceCacheOnly(from)
+          )?.allowCrossMarketplaceDependenciesOn?.includes(marketplace))
+      ) {
+        declaredInAllowedMarketplace = true
+        break
+      }
+    }
+    if (!declaredInAllowedMarketplace) {
+      logForDebugging(
+        `resolveMissingDependencies: skipping "${dep}" — cross-marketplace dependency not in any declaring marketplace's allowlist`,
+      )
+      continue
+    }
+    const scope =
+      (['user', 'project', 'local'] as const).find(candidate => {
+        const enabled = getEnabledPluginIdsForScope(
+          scopeToSettingSource(candidate),
+        )
+        return [...dependents].some(id => enabled.has(id))
+      }) ?? 'user'
+    try {
+      const info = await getPluginById(dep)
+      if (!info) continue
+      const result = await installResolvedPlugin({
+        pluginId: dep,
+        entry: info.entry,
+        scope,
+        marketplaceInstallLocation: info.marketplaceInstallLocation,
+      })
+      if (result.ok === false) {
+        logForDebugging(
+          `resolveMissingDependencies: install of "${dep}" did not complete (${result.reason})`,
+          { level: 'warn' },
+        )
+        continue
+      }
+      for (const id of result.closure) {
+        if (!installed.includes(id)) installed.push(id)
+      }
+    } catch (error) {
+      logForDebugging(
+        `resolveMissingDependencies: install of "${dep}" threw: ${toError(error).message}`,
+        { level: 'warn' },
+      )
+    }
+  }
+  return installed
 }
 
 /**
@@ -792,7 +939,7 @@ export async function installPluginFromMarketplace({
     return {
       success: true,
       // @ts-ignore - recovered code
-      message: `✓ Installed ${entry.name}${result.depNote}. Run /reload-plugins to activate.`,
+      message: `✓ Installed ${entry.name}${result.depNote}.`,
     }
   } catch (err) {
     if (err instanceof PluginFolderCollisionError) {

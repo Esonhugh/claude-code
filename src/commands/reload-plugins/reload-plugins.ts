@@ -3,6 +3,8 @@ import { getIsRemoteMode } from '../../bootstrap/state.js'
 import { redownloadUserSettings } from '../../services/settingsSync/index.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { formatDependencyCountSuffix } from '../../utils/plugins/dependencyResolver.js'
+import { resolveMissingDependencies } from '../../utils/plugins/pluginInstallationHelpers.js'
 import { refreshActivePlugins } from '../../utils/plugins/refresh.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -34,7 +36,11 @@ export const call: LocalCommandCall = async (_args, context) => {
     }
   }
 
-  const r = await refreshActivePlugins(context.setAppState)
+  let r = await refreshActivePlugins(context.setAppState)
+  // Official 2.1.329: a dependency that is no longer installed is installed
+  // again here, then the reload is repeated so its dependents load.
+  const resolved = await resolveMissingDependencies(r.errors)
+  if (resolved.length > 0) r = await refreshActivePlugins(context.setAppState)
 
   const parts = [
     n(r.enabled_count, 'plugin'),
@@ -49,6 +55,9 @@ export const call: LocalCommandCall = async (_args, context) => {
     n(r.lsp_count, 'plugin LSP server'),
   ]
   let msg = `Reloaded: ${parts.join(' · ')}`
+  if (resolved.length > 0) {
+    msg += `${formatDependencyCountSuffix(resolved)} resolved`
+  }
 
   if (r.error_count > 0) {
     msg += `\n${n(r.error_count, 'error')} during load. Run /doctor for details.`

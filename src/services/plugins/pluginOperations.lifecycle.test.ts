@@ -37,7 +37,7 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 9 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -65,9 +65,23 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
     JSON.stringify({
       name: 'mkt',
       owner: { name: 'x' },
-      plugins: [{ name: 'p', source: './p' }],
+      plugins: [
+        { name: 'p', source: './p' },
+        { name: 'dep-base', source: './dep-base' },
+        { name: 'dep-child', source: './dep-child' },
+      ],
     }),
   )
+  for (const [name, dependencies] of [
+    ['dep-base', undefined],
+    ['dep-child', ['dep-base']],
+  ] as const) {
+    mkdirSync(join(market, name, '.claude-plugin'), { recursive: true })
+    writeFileSync(
+      join(market, name, '.claude-plugin/plugin.json'),
+      JSON.stringify({ name, version: '1.0.0', dependencies }),
+    )
+  }
   mkdirSync(join(market, 'p/.claude-plugin'), { recursive: true })
   writeFileSync(
     join(market, 'p/.claude-plugin/plugin.json'),
@@ -226,5 +240,27 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
       state.setCwdState(project)
     }
     expect((await ops.uninstallPluginOp('p@mkt', 'local')).success).toBe(true)
+  })
+
+  test('disabling a plugin an enabled plugin still depends on is refused', async () => {
+    expect(await ops.installPluginOp('dep-child@mkt', 'user')).toMatchObject({
+      success: true,
+      message: 'Successfully installed plugin: dep-child@mkt (scope: user) (+ 1 dependency: dep-base)',
+    })
+    const settingsPath = join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    const enabledOnDisk = () => JSON.parse(readFileSync(settingsPath, 'utf-8')).enabledPlugins
+    // 官方 2.1.329 实测：`claude plugin disable base@mkt2` 以该文案拒绝，设置不变。
+    expect(await ops.disablePluginOp('dep-base@mkt')).toEqual({
+      success: false,
+      message:
+        'dep-base is still required by dep-child. Disable that plugin first, or disable everything together: claude plugin disable dep-child@mkt && claude plugin disable dep-base@mkt',
+      reverseDependents: ['dep-child'],
+    })
+    expect(enabledOnDisk()).toMatchObject({ 'dep-base@mkt': true, 'dep-child@mkt': true })
+    expect((await ops.disableAllPluginsOp()).success).toBe(true)
+    expect(enabledOnDisk()).toMatchObject({ 'dep-base@mkt': false, 'dep-child@mkt': false })
+    expect((await ops.enablePluginOp('dep-base@mkt')).success).toBe(true)
+    // The dependent is disabled now, so nothing holds dep-base.
+    expect((await ops.disablePluginOp('dep-base@mkt')).success).toBe(true)
   })
 }

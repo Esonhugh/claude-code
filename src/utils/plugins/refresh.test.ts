@@ -564,6 +564,7 @@ async function runIsolatedTests(): Promise<void> {
       error_count: 0,
       agentDefinitions: agents,
       pluginCommands: [...commands, ...skills],
+      errors: [],
     });
     expect(enabled[0]!.mcpServers).toEqual({
       one: { command: "fixture", args: [] },
@@ -605,6 +606,7 @@ async function runIsolatedTests(): Promise<void> {
       error_count: 0,
       agentDefinitions: agents,
       pluginCommands: [],
+      errors: [],
     });
     expect(reinitialize).toHaveBeenCalledTimes(2);
     expect(loadHooks).toHaveBeenCalledTimes(2);

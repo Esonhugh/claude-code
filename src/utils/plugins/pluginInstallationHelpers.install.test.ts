@@ -38,7 +38,7 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
       new Response(child.stderr).text(),
     ])
     console.log(stdout, stderr)
-    expect(stderr).toMatch(/(?:^|\n) 14 pass(?:\n|$)/)
+    expect(stderr).toMatch(/(?:^|\n) 17 pass(?:\n|$)/)
     expect(code).toBe(0)
   }, 60000)
 } else {
@@ -81,6 +81,9 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
     { name: 'evil', source: './self', strict: true },
     { name: 'recover', source: './recover', strict: true },
     { name: 'readonly', source: './readonly', strict: true },
+    { name: 'manifest-base', source: './manifest-base', strict: true },
+    { name: 'manifest-mid', source: './manifest-mid', strict: true },
+    { name: 'manifest-child', source: './manifest-child', strict: true },
   ]
   plugin(join(root, 'outside'), 'trav', '1.0.0')
   plugin(join(market, 'good'), 'good', '1.0.0')
@@ -94,6 +97,19 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
   ])
     plugin(join(market, name), name, '1.0.0')
   plugin(join(market, 'self'), 'evil', '1.0.0')
+  // Dependencies declared in plugin.json only; the marketplace entries omit them.
+  for (const [name, dependencies] of [
+    ['manifest-base', undefined],
+    ['manifest-mid', ['manifest-base']],
+    ['manifest-child', ['manifest-mid', 'absent-dep', 'outside@other']],
+  ] as const) {
+    plugin(join(market, name), name, '1.0.0')
+    write(join(market, name, '.claude-plugin/plugin.json'), {
+      name,
+      version: '1.0.0',
+      dependencies,
+    })
+  }
   write(join(market, 'broken/.claude-plugin/plugin.json'), {
     name: 'invalid name',
     version: '1.0.0',
@@ -211,6 +227,82 @@ if (!process.env.PL3_INSTALL_TEST_CHILD) {
     expect(existsSync(join(pluginsDir, 'cache/evil/dep-good/1.0.0'))).toBe(
       false,
     )
+  })
+
+  test('dependencies declared only in plugin.json are installed with the plugin', async () => {
+    // 官方 2.1.329 实测：entry 不写 dependencies、plugin.json 写了时输出 "(+ 1 dependency: base)"。
+    expect(await install('manifest-child')).toEqual({
+      ok: true,
+      closure: ['manifest-child@evil', 'manifest-mid@evil', 'manifest-base@evil'],
+      depNote: ' (+ 2 dependencies: manifest-mid, manifest-base)',
+    })
+    expect(enabledPlugins()).toEqual({
+      'keep@evil': true,
+      'manifest-child@evil': true,
+      'manifest-mid@evil': true,
+      'manifest-base@evil': true,
+    })
+    expect(installedIds().sort()).toEqual([
+      'manifest-base@evil',
+      'manifest-child@evil',
+      'manifest-mid@evil',
+    ])
+  })
+
+  test('/reload-plugins installs the missing dependency of an enabled plugin', async () => {
+    expect((await install('manifest-mid')).ok).toBe(true)
+    // What `claude plugin uninstall manifest-base@evil` leaves behind.
+    installed.removePluginInstallation('manifest-base@evil', 'user')
+    write(settingsPath, { enabledPlugins: { 'manifest-mid@evil': true } })
+    settingsCache.resetSettingsCache()
+    const { call } = await import(
+      '../../commands/reload-plugins/reload-plugins.js'
+    )
+    const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+    let appState = getDefaultAppState()
+    const result = await call('', {
+      setAppState: (update: (prev: typeof appState) => typeof appState) => {
+        appState = update(appState)
+      },
+    } as never)
+    // 官方 2.1.329 tmux 实测："Reloaded: 2 plugins · … (+ 1 dependency: base) resolved"，Errors 清零。
+    expect(result).toMatchObject({
+      type: 'text',
+      value: expect.stringMatching(
+        /^Reloaded: 2 plugins · .* \(\+ 1 dependency: manifest-base\) resolved$/,
+      ),
+    })
+    expect(enabledPlugins()).toEqual({
+      'manifest-mid@evil': true,
+      'manifest-base@evil': true,
+    })
+    expect(installedIds().sort()).toEqual([
+      'manifest-base@evil',
+      'manifest-mid@evil',
+    ])
+    expect(appState.plugins.errors).toEqual([])
+  })
+
+  test('/plugin activates what it installed, without /reload-plugins', async () => {
+    const { activateInstalledPlugins } = await import('./refresh.js')
+    const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+    let appState = getDefaultAppState()
+    const setAppState = (update: (prev: typeof appState) => typeof appState) => {
+      appState = update(appState)
+    }
+    // 官方 2.1.329 tmux 实测：安装后 "✓ Installed demo. Plugin is now active."，命令立即可用。
+    expect((await install('good')).ok).toBe(true)
+    expect(await activateInstalledPlugins(setAppState, ['good@evil'])).toBe(
+      'activated',
+    )
+    expect(appState.plugins.enabled.map(p => p.source)).toContain('good@evil')
+    expect(appState.plugins.needsRefresh).toBe(false)
+
+    // manifest-child 依赖的 absent-dep 不在任何 marketplace，装上也加载不了。
+    expect((await install('manifest-child')).ok).toBe(true)
+    expect(
+      await activateInstalledPlugins(setAppState, ['manifest-child@evil']),
+    ).toBe('load-failed')
   })
 
   test('a later materialization failure does not enable any closure member', async () => {

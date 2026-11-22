@@ -629,6 +629,7 @@ export async function setPluginEnabledOp(
   plugin: string,
   enabled: boolean,
   scope?: InstallableScope,
+  { bypassDependentsBlock = false }: { bypassDependentsBlock?: boolean } = {},
 ): Promise<PluginOperationResult> {
   const operation = enabled ? 'enable' : 'disable'
 
@@ -802,11 +803,21 @@ export async function setPluginEnabledOp(
   let reverseDependents: string[] | undefined
   if (!enabled) {
     const { enabled: loadedEnabled, disabled } = await loadAllPlugins()
-    const rdeps = findReverseDependents(pluginId, [
-      ...loadedEnabled,
-      ...disabled,
-    ])
+    const loaded = [...loadedEnabled, ...disabled]
+    const rdeps = findReverseDependents(pluginId, loaded)
     if (rdeps.length > 0) reverseDependents = rdeps
+    // Official 2.1.329 refuses instead of leaving the dependents unloadable.
+    if (rdeps.length > 0 && !bypassDependentsBlock) {
+      const together = [
+        ...loaded.filter(p => p.enabled && rdeps.includes(p.name)).map(p => p.source),
+        pluginId,
+      ].map(id => `claude plugin disable ${id}`)
+      return {
+        success: false,
+        message: `${parsePluginIdentifier(pluginId).name} is still required by ${rdeps.join(', ')}. Disable ${plural(rdeps.length, 'that plugin', 'those plugins')} first, or disable everything together: ${together.join(' && ')}`,
+        reverseDependents: rdeps,
+      }
+    }
   }
 
   // ── ACTION: write settings ──
@@ -880,7 +891,9 @@ export async function disableAllPluginsOp(): Promise<PluginOperationResult> {
   const errors: string[] = []
 
   for (const [pluginId] of enabledPlugins) {
-    const result = await setPluginEnabledOp(pluginId, false)
+    const result = await setPluginEnabledOp(pluginId, false, undefined, {
+      bypassDependentsBlock: true,
+    })
     if (result.success) {
       disabled.push(pluginId)
     } else {

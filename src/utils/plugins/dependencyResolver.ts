@@ -286,13 +286,18 @@ export function getEnabledPluginIdsForScope(
 }
 
 /**
- * Format the "(+ N dependencies)" suffix for install success messages.
- * Returns empty string when `installedDeps` is empty.
+ * Format the "(+ N dependencies: a, b)" suffix for install and reload
+ * messages (official 2.1.329 names at most five). Returns empty string when
+ * `installedDeps` is empty.
  */
 export function formatDependencyCountSuffix(installedDeps: string[]): string {
   if (installedDeps.length === 0) return ''
   const n = installedDeps.length
-  return ` (+ ${n} ${n === 1 ? 'dependency' : 'dependencies'})`
+  const names = installedDeps
+    .slice(0, 5)
+    .map(id => parsePluginIdentifier(id).name)
+    .join(', ')
+  return ` (+ ${n} ${n === 1 ? 'dependency' : 'dependencies'}: ${names}${n > 5 ? ', …' : ''})`
 }
 
 /**
