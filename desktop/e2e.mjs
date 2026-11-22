@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 
 const home = mkdtempSync(join(tmpdir(), 'claude-desktop-e2e-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, 'config')
@@ -17,6 +17,12 @@ console.log = (...args) => {
   log(...args)
 }
 const consoleErrors = []
+// The app reports a sidecar that will not start in a modal box, which would
+// block this run (and its timeout) until the job is killed.
+dialog.showErrorBox = (_title, message) => {
+  log(`FAIL ${message}`)
+  app.exit(1)
+}
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', event => {
     if (event.level === 'error') consoleErrors.push(event.message)
