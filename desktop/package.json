@@ -4,6 +4,7 @@
   "version": "0.0.0-dev",
   "description": "Desktop app for Claude Code: an Electron window over `claude web --stdio`.",
   "author": "Anthropic <support@anthropic.com>",
+  "homepage": "https://github.com/Esonhugh/claude-code",
   "license": "SEE LICENSE IN ../README.md",
   "type": "module",
   "main": "main.js",
