@@ -1703,6 +1703,7 @@ const SDKUserMessageContentSchema = lazySchema(() =>
       .optional()
       .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
+    refused_message_id: z.string().optional(),
     tool_use_result: z.unknown().optional(),
     tool_result_meta: z
       .array(
