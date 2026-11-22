@@ -412,7 +412,7 @@ export interface HookResult {
   preventContinuation?: boolean
   stopReason?: string
   impossible?: boolean
-  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
+  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'defer' | 'passthrough'
   hookPermissionDecisionReason?: string
   additionalContext?: string
   initialUserMessage?: string
@@ -440,7 +440,7 @@ export type AggregatedHookResult = {
   impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
-  permissionBehavior?: PermissionResult['behavior']
+  permissionBehavior?: PermissionResult['behavior'] | 'defer'
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
@@ -504,11 +504,11 @@ function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" (optional)',
+        permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
-            permissionDecision: '"allow" | "deny" | "ask" (optional)',
+            permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
             permissionDecisionReason: 'string (optional)',
             updatedInput: 'object (optional) - Modified tool input to use',
           },
@@ -668,10 +668,13 @@ function processHookJSONOutput({
       case 'ask':
         result.permissionBehavior = 'ask'
         break
+      case 'defer':
+        result.permissionBehavior = 'defer'
+        break
       default:
         // Handle unknown decision types as errors
         throw new Error(
-          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask`,
+          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask, defer`,
         )
     }
   }
@@ -711,6 +714,9 @@ function processHookJSONOutput({
               break
             case 'ask':
               result.permissionBehavior = 'ask'
+              break
+            case 'defer':
+              result.permissionBehavior = 'defer'
               break
           }
         }
@@ -3407,10 +3413,13 @@ async function* executeHooks({
       )
       // Preserve the existing tie rules: latest deny/ask wins, first allow wins.
       // The reason and identity must advance together with the winning decision.
+      const current = permissionDecision?.permissionBehavior
       if (
         result.permissionBehavior === 'deny' ||
+        (result.permissionBehavior === 'defer' && current !== 'deny') ||
         (result.permissionBehavior === 'ask' &&
-          permissionDecision?.permissionBehavior !== 'deny') ||
+          current !== 'deny' &&
+          current !== 'defer') ||
         (result.permissionBehavior === 'allow' && !permissionDecision)
       ) {
         permissionDecision = {

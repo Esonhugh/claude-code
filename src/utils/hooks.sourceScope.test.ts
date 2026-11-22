@@ -1753,6 +1753,26 @@ describe('asyncRewake command hooks', () => {
   })
 })
 
+test('PreToolUse permissionDecision defer is accepted and outranks ask and allow, not deny', async () => {
+  const decide = (permissionDecision: 'allow' | 'ask' | 'deny' | 'defer'): HookCallback => ({
+    type: 'callback',
+    callback: async () => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision },
+    }),
+  })
+  const last = async (...decisions: Parameters<typeof decide>[0][]) => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: decisions.map(decide) }]
+    const results = await collect(pre(f))
+    return results.findLast((result) => result.permissionBehavior)
+      ?.permissionBehavior
+  }
+  expect(await last('defer')).toBe('defer')
+  expect(await last('allow', 'defer', 'ask')).toBe('defer')
+  expect(await last('defer', 'deny')).toBe('deny')
+  expect(await last('deny', 'defer')).toBe('deny')
+})
+
 test('runs at most 12 prompt hooks of one event at a time without holding command hooks', async () => {
   const f = fixture()
   for (let i = 0; i < 15; i++)

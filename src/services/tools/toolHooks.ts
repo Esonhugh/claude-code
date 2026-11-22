@@ -406,6 +406,17 @@ async function* runClassicToolHooks(
               ) === answer.deny,
           )
         folded.hookSource = origin?.hookSource
+        // The Mods classic answer has no defer; take it from the hooks' own
+        // results. Like official, deny outranks defer and defer the rest.
+        const deferred =
+          answer.deny === undefined
+            ? observations.findLast(item => item.permissionBehavior === 'defer')
+            : undefined
+        if (deferred) {
+          folded.permissionBehavior = 'defer'
+          folded.hookPermissionDecisionReason = undefined
+          folded.hookSource = deferred.hookSource
+        }
       } else {
         if (answer.block !== undefined) {
           const origin = observations.findLast(
@@ -1189,7 +1200,9 @@ export async function* runPreToolUseHooks(
             hookSource: result.hookSource,
             reason: result.hookPermissionDecisionReason,
           }
-          if (result.permissionBehavior === 'allow') {
+          if (result.permissionBehavior === 'defer') {
+            deferHook = result.hookSource || `PreToolUse:${tool.name}`
+          } else if (result.permissionBehavior === 'allow') {
             yield {
               type: 'hookPermissionResult',
               hookPermissionResult: rewriteDeny ?? {

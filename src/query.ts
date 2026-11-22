@@ -2154,6 +2154,7 @@ async function* queryLoop(
     }
 
     let shouldPreventContinuation = false
+    let toolWasDeferred = false
     let postToolBatchStopReason: string | undefined
     let updatedToolUseContext = toolUseContext
 
@@ -2173,6 +2174,12 @@ async function* queryLoop(
           update.message.attachment.type === 'hook_stopped_continuation'
         ) {
           shouldPreventContinuation = true
+        }
+        if (
+          update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_deferred_tool'
+        ) {
+          toolWasDeferred = true
         }
 
         const currentTools =
@@ -2371,6 +2378,11 @@ async function* queryLoop(
         })
       }
       return { reason: 'aborted_tools' }
+    }
+
+    // A PreToolUse hook deferred the call: the turn ends with the call open.
+    if (toolWasDeferred) {
+      return { reason: 'tool_deferred' }
     }
 
     if (postToolBatchStopReason !== undefined) {
