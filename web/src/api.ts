@@ -123,6 +123,9 @@ export const openLocal = (id: string, path?: string, reveal?: boolean) =>
 export const removeProject = (id: string, purge: boolean) =>
   sendJson(`/api/projects/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, 'DELETE')
 
+export const unarchiveProject = (id: string) =>
+  sendJson(`/api/projects/${encodeURIComponent(id)}/unarchive`, 'POST') as Promise<Project>
+
 export type TranscriptPage = {
   messages: unknown[]
   start: number
@@ -353,6 +356,8 @@ export type Project = {
   coordinator_effort?: string | null
   created_at: number
   updated_at: number
+  /** Set while the project is archived: listed only in a sidebar search. */
+  archived_at?: number | null
   running: boolean
   /** From the tasks table: all, still running (blocked included), and waiting on the user. */
   task_count?: number
@@ -368,7 +373,8 @@ export type ProjectFields = {
   permission_mode?: string
 }
 
-export const listProjects = () => getJson<Project[]>('/api/projects')
+/** Every project, the archived ones included. */
+export const listProjects = () => getJson<Project[]>('/api/projects?archived=1')
 
 export async function createProject(body: ProjectFields & { name: string; cwd: string; trust?: boolean }): Promise<Project> {
   const res = await fetch('/api/projects', {
