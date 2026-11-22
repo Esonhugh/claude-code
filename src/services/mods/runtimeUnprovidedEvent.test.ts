@@ -98,6 +98,26 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'ue: denied'})
   })
 
+  // A module that judges plugin.register makes a cold start build $ before the later plugins are loaded.
+  test.each([[['ue', 'provider']], [['provider', 'ue']]] as const)('a consumer that judges plugin.register keeps the events of a provider loaded after it (%p)', async order => {
+    const sources = {
+      provider: `export function register(on) {
+        on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, nope: {hello: async () => 1}}; });
+      }`,
+      ue: `export function register(on) {
+        on('plugin.register', async ($, e, next) => next(e));
+        on('nope.hello', async ($, e, next) => next(e));
+        ${deny}
+      }`,
+    }
+    const plugins = []
+    for (const name of order) plugins.push(await fixture(sources[name], name))
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'ue: denied'})
+  })
+
   test('a provider removed from the build takes its consumer with it', async () => {
     const provider = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, nope: {hello: async () => 1}}; });
