@@ -38,6 +38,19 @@ if(variant==='race'){
  pendingReply=SendMessageTool.call({to:name,message:'FOLLOW-UP'},context,permit,undefined)
  await entered.promise
  tasks.killAsyncAgent(id,set,'user');await storage.readAgentMetadata(id);release.resolve()
+}else if(variant==='user-race'){
+ // A stop made after the user's message is newer than it, and wins.
+ set(s=>({...s,tasks:{...s.tasks,[id]:{...s.tasks[id],status:'completed',keepaliveReasons:new Set(['agent:pending'])}}}))
+ const entered=Promise.withResolvers(),release=Promise.withResolvers(),read=storage.getAgentTranscript
+ mock.module(m.storage,()=>({...storage,async getAgentTranscript(agentId){entered.resolve();await release.promise;return read(agentId)}}))
+ const {resumeAgentBackground}=await import(m.resume)
+ const resumed=resumeAgentBackground({agentId:id,prompt:'USER-FOLLOW-UP',fromUser:true,toolUseContext:context,canUseTool:permit})
+ await entered.promise
+ tasks.killAsyncAgent(id,set,'user');await storage.readAgentMetadata(id);release.resolve()
+ await assert.rejects(resumed,{name:'AgentStoppedByUserError'})
+ assert.equal(executions.length,0);assert.equal(state.tasks[id].stoppedByUser,true)
+ assert.equal((await storage.readAgentMetadata(id)).stoppedByUser,true)
+ console.log('owned cancellation fixture passed '+variant);process.exit(0)
 }else if(variant==='model-stop'||variant==='sdk-stop'){
  const {stopTask}=await import(m.stop);await stopTask(id,{getAppState:()=>state,setAppState:set,source:variant==='sdk-stop'?'user':'model'})
 }else if(variant==='bulk-user')tasks.killAllRunningAgentTasks(state.tasks,set)
@@ -80,7 +93,7 @@ if(cancelled){
 console.log('owned cancellation fixture passed '+variant)
 `
 
-for (const variant of ['user','user-resume','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
+for (const variant of ['user','user-resume','user-race','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
   test('SendMessage respects the stop source and persisted cancellation: '+variant, async () => {
     const dir=await realpath(await mkdtemp(join(tmpdir(),'send-cancel-')))
     const child=Bun.spawn([process.execPath,'--no-env-file','--eval',source],{

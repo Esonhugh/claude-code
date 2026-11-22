@@ -130,15 +130,13 @@ async function startResume({
   effort: effortOverride,
   fromUser,
 }: ResumeAgentParams): Promise<ResumeAgentResult> {
-  // A user stop bars everyone but the user, whose own message lifts it (2.1.329).
   const refuseUserStop = () => {
     const task = toolUseContext.getAppState().tasks[agentId]
-    if (!fromUser && isLocalAgentTask(task) && task.stoppedByUser) {
+    if (isLocalAgentTask(task) && task.stoppedByUser) {
       logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=live`, { level: 'warn' })
       throw new AgentStoppedByUserError(agentId)
     }
   }
-  refuseUserStop()
   // Like official 2.1.311, a resumed agent reports time since it first started.
   const previous = toolUseContext.getAppState().tasks[agentId]
   const startTime = isLocalAgentTask(previous) ? previous.startTime : Date.now()
@@ -148,6 +146,18 @@ async function startResume({
   // reaches the root store so task registration/progress/kill stay visible.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
+  // A user stop bars everyone but the user, whose own message lifts the stop
+  // it was sent after (2.1.329). A stop made later still bars this resume.
+  const liftsUserStop = fromUser === true && (!isLocalAgentTask(previous) || previous.stoppedByUser === true)
+  if (liftsUserStop && isLocalAgentTask(previous)) {
+    rootSetAppState(prev => {
+      const task = prev.tasks[agentId]
+      if (!isLocalAgentTask(task) || !task.stoppedByUser) return prev
+      return { ...prev, tasks: { ...prev.tasks, [agentId]: { ...task, stoppedByUser: undefined } } }
+    })
+  } else {
+    refuseUserStop()
+  }
 
   // A parked owner is woken as soon as its child reports, often while its own
   // last turn is still queued for disk; read the transcript after that write.
@@ -157,7 +167,7 @@ async function startResume({
     readAgentMetadata(asAgentId(agentId)),
   ])
   if (meta?.stoppedByUser) {
-    if (!fromUser) {
+    if (!liftsUserStop) {
       logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
       throw new AgentStoppedByUserError(agentId)
     }
