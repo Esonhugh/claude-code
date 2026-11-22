@@ -4770,6 +4770,54 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
   return loadSubagentTranscripts(agentIds)
 }
 
+export type RecordedSubagent = {
+  agentId: string
+  agentType?: string
+  description?: string
+  name?: string
+  stoppedByUser: boolean
+  startedAt?: number
+  lastActivityAt?: number
+}
+
+/** The subagents this session has run, oldest first, read from their transcripts on disk. */
+export async function listRecordedSubagents(): Promise<RecordedSubagent[]> {
+  const subagentsDir = join(
+    getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
+    getSessionId(),
+    'subagents',
+  )
+  let entries: Dirent[]
+  try {
+    entries = await readdir(subagentsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const buf = Buffer.alloc(LITE_READ_BUF_SIZE)
+  const recorded: RecordedSubagent[] = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('agent-') || !entry.name.endsWith('.jsonl')) continue
+    const filePath = join(subagentsDir, entry.name)
+    const meta = await readAgentMetadataFile(filePath.replace(/\.jsonl$/, '.meta.json')).catch(() => null)
+    if (meta?.taskKind !== undefined) continue
+    const size = await stat(filePath).then(s => s.size, () => 0)
+    const { head, tail } = await readHeadAndTail(filePath, size, buf)
+    const time = (value: string | undefined) => (value && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : undefined)
+    recorded.push({
+      agentId: entry.name.slice('agent-'.length, -'.jsonl'.length),
+      agentType: meta?.agentType,
+      description: meta?.description,
+      name: meta?.name,
+      stoppedByUser: meta?.stoppedByUser === true,
+      startedAt: time(extractJsonStringField(head, 'timestamp')),
+      lastActivityAt: time(extractLastJsonStringField(tail, 'timestamp')),
+    })
+  }
+  return recorded.sort(
+    (a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.agentId.localeCompare(b.agentId),
+  )
+}
+
 // Exported so useLogMessages can sync-compute the last loggable uuid
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
