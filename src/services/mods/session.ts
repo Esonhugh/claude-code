@@ -1,7 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
 import type { PromptRequest, PromptResponse } from '../../types/hooks.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
@@ -19,6 +19,11 @@ import { modSessionIdentity } from './sessionIdentity.js'
 import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage, isENOENT } from '../../utils/errors.js'
+import { pathExists } from '../../utils/file.js'
+import { stripBOM } from '../../utils/jsonRead.js'
+import { jsonParse } from '../../utils/slowOperations.js'
+import { PluginHooksSchema } from '../../utils/plugins/schemas.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
   shouldAllowManagedHooksOnly,
@@ -109,6 +114,10 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  let watchTargets: string[] = []
+  // Plugin roots kept under watch until the next explicit reload, each with the
+  // last version that named hooks modules (undefined once a valid config unloaded them).
+  const watchedPlugins = new Map<string, LoadedPlugin | undefined>()
   let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
@@ -434,24 +443,67 @@ export function createModsSession(options: ModsSessionOptions) {
     timer.unref?.()
   }
 
-  async function watchPlugins(plugins: readonly LoadedPlugin[]) {
+  /** undefined: every hooks config of the plugin still parses; '': one is gone; otherwise why one is invalid. */
+  async function hooksConfigFailure(plugin: LoadedPlugin): Promise<string | undefined> {
+    for (const { configPath } of plugin.hookModules ?? []) {
+      try {
+        PluginHooksSchema().parse(jsonParse(stripBOM(await readFile(configPath, 'utf8'))))
+      } catch (error) {
+        return isENOENT(error) ? '' : errorMessage(error)
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Between explicit reloads a watched plugin keeps its last good modules while
+   * its hooks config is missing or invalid, or while its --plugin-dir directory
+   * is gone; only a valid config that names no module unloads them.
+   */
+  async function holdWatchedPlugins(found: readonly LoadedPlugin[]) {
+    const configured = [...found]
+    const held: ModDiagnostic[] = []
+    for (const [root, previous] of watchedPlugins) {
+      const index = configured.findIndex(plugin => plugin.path === root)
+      const current = configured[index]
+      if (!previous || current?.hookModules?.some(group => group.paths.length)) continue
+      if (!current) {
+        if (previous.source.endsWith('@inline') && !(await pathExists(root))) configured.push(previous)
+        else watchedPlugins.delete(root)
+        continue
+      }
+      const failure = await hooksConfigFailure(previous)
+      if (failure === undefined) {
+        watchedPlugins.set(root, undefined)
+        continue
+      }
+      configured[index] = { ...current, hookModules: previous.hookModules }
+      if (failure) held.push({ plugin: current.name, stage: 'reload', message: `The previous version stays loaded: Hook load failed: ${failure}` })
+    }
+    for (const plugin of configured) {
+      if (plugin.isBuiltin !== true && !authoringOwns(plugin.path) && plugin.hookModules?.some(group => group.paths.length))
+        watchedPlugins.set(plugin.path, plugin)
+    }
+    return { configured, held }
+  }
+
+  async function watchPlugins() {
     const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
     const nextRoots = watchEnabled ? [
       ...new Set([
         ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
-        ...plugins
-          .filter(
-            plugin =>
-              plugin.isBuiltin !== true &&
-              !authoringOwns(plugin.path) &&
-              plugin.hookModules?.some(group => group.paths.length),
-          )
-          .map(plugin => plugin.path),
+        ...watchedPlugins.keys(),
       ]),
     ].sort() : []
+    // A root that is gone is watched through its nearest existing ancestor, so recreating it is noticed.
+    const nextTargets = await Promise.all(nextRoots.map(async root => {
+      let target = root
+      while (dirname(target) !== target && !(await pathExists(target))) target = dirname(target)
+      return target
+    }))
     if (
       nextRoots.length === roots.length &&
-      nextRoots.every((root, index) => root === roots[index])
+      nextRoots.every((root, index) => root === roots[index] && nextTargets[index] === watchTargets[index])
     )
       return
     const old = watcher
@@ -460,8 +512,9 @@ export function createModsSession(options: ModsSessionOptions) {
     await watcherClosing
     if (stopped) return
     roots = nextRoots
+    watchTargets = nextTargets
     if (roots.length === 0) return
-    watcher = chokidar.watch(roots, {
+    watcher = chokidar.watch([...new Set(watchTargets)], {
       persistent: false,
       ignoreInitial: true,
       followSymlinks: false,
@@ -471,7 +524,8 @@ export function createModsSession(options: ModsSessionOptions) {
       // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
       ignored: (path, stats) => {
         const root = roots.find(root => path === root || path.startsWith(root + sep))
-        return (root === undefined ? path : relative(root, path)).split(sep).some(part => part === '.git' || part === 'node_modules') ||
+        if (root === undefined) return !roots.some(root => root.startsWith(path + sep))
+        return relative(root, path).split(sep).some(part => part === '.git' || part === 'node_modules') ||
           Boolean(stats && !stats.isFile() && !stats.isDirectory()) ||
           Boolean(stats?.isFile() && extname(path) !== '.json' && !esmModuleExtensions.includes(extname(path)))
       },
@@ -570,7 +624,8 @@ export function createModsSession(options: ModsSessionOptions) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const disabled = options.getDisabledReason?.()
-    const configured = options.bare ? [] : plugins ?? (await loadPlugins())
+    if (plugins) watchedPlugins.clear()
+    const { configured, held } = await holdWatchedPlugins(options.bare ? [] : plugins ?? (await loadPlugins()))
     const authoringErrors = deferAuthoring || options.bare
       ? []
       : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
@@ -601,7 +656,7 @@ export function createModsSession(options: ModsSessionOptions) {
     services.sessionIdentity = storageId => managed.has(storageId) ? modSessionIdentity() : undefined
     diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
-    for (const error of prepared.errors) diagnostic(error)
+    for (const error of [...prepared.errors, ...held]) diagnostic(error)
     if (
       disabled &&
       loaded.some(plugin =>
@@ -667,7 +722,8 @@ export function createModsSession(options: ModsSessionOptions) {
       }
     }
     if (stopped) return
-    await watchPlugins(disabled ? [] : loaded)
+    if (disabled) watchedPlugins.clear()
+    await watchPlugins()
     if (!stopped && (diagnostics.length > 0 || setAppState))
       publishDiagnostics()
   }

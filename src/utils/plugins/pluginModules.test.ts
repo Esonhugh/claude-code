@@ -136,4 +136,13 @@ describe('plugin module declarations', () => {
     expect(PluginHooksSchema().safeParse({}).success).toBe(false)
     expect(PluginHooksSchema().safeParse({ modules: ['./first.ts', './second.ts'] }).success).toBe(false)
   })
+  test('rejects modules: [] unless hooks is also declared', () => {
+    // Official 2.1.329 keeps the loaded version rather than reading an empty list as "unload".
+    const empty = PluginHooksSchema().safeParse({ modules: [] })
+    expect(empty.success).toBe(false)
+    expect(empty.error?.issues[0]?.message).toBe(
+      'hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both',
+    )
+    expect(PluginHooksSchema().safeParse({ hooks: {}, modules: [] }).success).toBe(true)
+  })
 })
