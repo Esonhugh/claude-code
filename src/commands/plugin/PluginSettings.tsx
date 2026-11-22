@@ -1,7 +1,8 @@
 import figures from 'figures'
 import * as React from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
+import { Select } from '../../components/CustomSelect/select.js'
 import { Byline } from '../../components/design-system/Byline.js'
 import { Pane } from '../../components/design-system/Pane.js'
 import { Tab, Tabs } from '../../components/design-system/Tabs.js'
@@ -13,6 +14,7 @@ import {
   useKeybindings,
 } from '../../keybindings/useKeybinding.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
+import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import type { PluginError } from '../../types/plugin.js'
 import { errorMessage } from '../../utils/errors.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
@@ -398,6 +400,10 @@ function ErrorsTabContent({
   const setAppState = useSetAppState()
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [pendingUninstall, setPendingUninstall] = useState<{
+    label: string
+    run: () => void
+  } | null>(null)
   const [marketplaceLoadFailures, setMarketplaceLoadFailures] = useState<
     Array<{ name: string; error: string }>
   >([])
@@ -476,7 +482,7 @@ function ErrorsTabContent({
     () => {
       setViewState({ type: 'menu' })
     },
-    { context: 'Confirmation' },
+    { context: 'Confirmation', isActive: !pendingUninstall },
   )
 
   const handleSelect = () => {
@@ -484,10 +490,22 @@ function ErrorsTabContent({
     if (!row) return
     const { action } = row
     switch (action.kind) {
-      case 'navigate':
-        setActiveTab(action.tab)
-        setViewState(action.viewState)
+      case 'navigate': {
+        const navigate = () => {
+          setActiveTab(action.tab)
+          setViewState(action.viewState)
+        }
+        // The Installed tab runs the uninstall as soon as it opens, so ask here.
+        if (
+          action.viewState.type === 'manage-plugins' &&
+          action.viewState.action === 'uninstall'
+        ) {
+          setPendingUninstall({ label: row.label, run: navigate })
+        } else {
+          navigate()
+        }
         break
+      }
       case 'remove-extra-marketplace': {
         const scopes = action.sources.map(s => s.scope).join(', ')
         removeExtraMarketplace(action.name, action.sources)
@@ -495,7 +513,7 @@ function ErrorsTabContent({
         // Synchronously clear all stale state for this marketplace so the UI
         // updates glitch-free. markPluginsChanged only sets needsRefresh —
         // it does not refresh plugins.errors, so this is the authoritative
-        // cleanup until the user runs /reload-plugins.
+        // cleanup until /reload-plugins runs.
         setAppState(prev => ({
           ...prev,
           plugins: {
@@ -552,7 +570,7 @@ function ErrorsTabContent({
         setSelectedIndex(prev => Math.min(rows.length - 1, prev + 1)),
       'select:accept': handleSelect,
     },
-    { context: 'Select', isActive: rows.length > 0 },
+    { context: 'Select', isActive: rows.length > 0 && !pendingUninstall },
   )
 
   // Clamp selectedIndex when rows shrink (e.g. after removal)
@@ -566,6 +584,36 @@ function ErrorsTabContent({
     selectedAction &&
     selectedAction.kind !== 'none' &&
     selectedAction.kind !== 'managed-only'
+
+  if (pendingUninstall) {
+    const cancel = () => setPendingUninstall(null)
+    return (
+      <Box flexDirection="column" marginLeft={1}>
+        <Text bold>Uninstall {pendingUninstall.label}?</Text>
+        <Text>Uninstalling this plugin clears its error.</Text>
+        <Box marginTop={1}>
+          <Select
+            options={[
+              { label: 'Yes, uninstall', value: 'yes' },
+              { label: 'No, cancel', value: 'no' },
+            ]}
+            defaultFocusValue="no"
+            hideIndexes
+            onChange={value => {
+              setPendingUninstall(null)
+              if (value === 'yes') pendingUninstall.run()
+            }}
+            onCancel={cancel}
+          />
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor italic>
+            Enter to confirm · Esc to cancel
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
 
   if (rows.length === 0) {
     return (
@@ -729,10 +777,14 @@ function getInitialTab(viewState: ViewState): TabId {
   return 'discover'
 }
 
+const RELOAD_QUEUED_NOTE =
+  'Plugin changes apply when the current response finishes (/reload-plugins is queued).'
+
 export function PluginSettings({
   onComplete,
   args,
   showMcpRedirectMessage,
+  isMainQueryRunning,
 }: PluginSettingsProps): React.ReactNode {
   const parsedCommand = parsePluginArgs(args)
   const initialViewState = getInitialViewState(parsedCommand)
@@ -777,20 +829,38 @@ export function PluginSettings({
     parsedCommand.action === 'add' &&
     parsedCommand.target !== undefined
 
-  // Signal that plugin state has changed on disk (Layer 2) and active
-  // components (Layer 3) are stale. User runs /reload-plugins to apply.
-  // Previously this was updatePluginState() which did a partial refresh
-  // (commands only — agents/hooks/MCP were silently skipped). Now all
-  // Layer-3 refresh flows through the unified refreshActivePlugins()
-  // primitive via /reload-plugins, giving one consistent mental model:
-  // plugin changes require /reload-plugins.
+  // Plugin state changed on disk (Layer 2); active components (Layer 3) are
+  // stale until refreshActivePlugins() runs. Closing the menu submits
+  // /reload-plugins for changes made here.
+  const changedRef = useRef(false)
   const markPluginsChanged = useCallback(() => {
+    changedRef.current = true
     setAppState(prev =>
       prev.plugins.needsRefresh
         ? prev
         : { ...prev, plugins: { ...prev.plugins, needsRefresh: true } },
     )
   }, [setAppState])
+
+  const close = useCallback<LocalJSXCommandOnDone>(
+    (result, options) => {
+      if (!changedRef.current) {
+        onComplete(result, options)
+        return
+      }
+      changedRef.current = false
+      const reload = { nextInput: '/reload-plugins', submitNextInput: true }
+      if (isMainQueryRunning?.()) {
+        onComplete(
+          result ? `${result}\n${RELOAD_QUEUED_NOTE}` : RELOAD_QUEUED_NOTE,
+          reload,
+        )
+        return
+      }
+      onComplete(result, { ...options, ...reload })
+    },
+    [onComplete, isMainQueryRunning],
+  )
 
   // Handle tab switching (called by Tabs component)
   const handleTabChange = useCallback((tabId: string) => {
@@ -823,9 +893,9 @@ export function PluginSettings({
   // the close AND delivers the message to the transcript.
   useEffect(() => {
     if (viewState.type === 'menu' && !result) {
-      onComplete(undefined, { display: 'skip' })
+      close(undefined, { display: 'skip' })
     }
-  }, [viewState.type, result, onComplete])
+  }, [viewState.type, result, close])
 
   // Sync activeTab when viewState changes to a different tab's content
   // This handles cases like AddMarketplace navigating to browse-marketplace
@@ -851,9 +921,9 @@ export function PluginSettings({
 
   useEffect(() => {
     if (result) {
-      onComplete(result)
+      close(result)
     }
-  }, [result, onComplete])
+  }, [result, close])
 
   // Handle help view completion
   useEffect(() => {
@@ -1041,7 +1111,7 @@ export function PluginSettings({
         ...(showCodexApps
           ? [<Tab key="codex-apps" id="codex-apps" title="Codex Apps">
             <ManageCodexApps
-              onBack={() => onComplete(undefined, { display: 'skip' })}
+              onBack={() => close(undefined, { display: 'skip' })}
               onSearchModeChange={setChildSearchActive}
             />
           </Tab>]
