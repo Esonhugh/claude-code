@@ -30,6 +30,7 @@
 
 - `src/web/webServer.test.ts` 新增 `claude web over stdio`：页面不需要 cookie、非帧输出被忽略、`/api/info` 返回 `local: true`；错误的 Host、缺少或外来的 Origin 返回 403；外来 Origin 的会话连接被拒绝，同一会话的第二个连接被拒绝，应用关闭连接后可以重新连接。
 - `desktop/sidecar.test.js` 用真实的 `stdioTransport` 跑一个假服务端：帧前缀和 Host 与服务端一致；请求、请求体、查询串和 204 响应的转发；页面 Origin 换成服务端的 Origin，其他 Origin 原样转发；会话连接双向收发和两端关闭；停止时关闭管道，未完成的连接以 1006 关闭，之后的请求失败。
+- `desktop/e2e.mjs`（`bun run e2e`，`desktop.yml` 在四个平台上运行，Linux 用 xvfb）：用临时配置目录打开应用，检查页面渲染、页面能新建会话、会话连接能打开和关闭、控制台没有报错，以及本地预览页面发出的 no-cors fetch 和表单 POST 被服务端拒绝。
 - macOS 上手动验证（Electron 45.4.1，`make build` 的 binary）：页面加载，控制台没有 CSP 报错；新建会话发消息收到回复；sidecar 不监听任何 TCP 端口；从预览 iframe 发出的 no-cors fetch 和表单 POST 被服务端以 403 拒绝。
 
 ## 2026-11-19 - v2.1.298 - Code Mode 与 Advisor（实验性）、客户端版本号可配置、OpenAI ultra effort 原样发送、拒绝规则对符号链接本身生效、Codex 式压缩只保留用户消息、启动输入卡顿与长历史 /clear 修复
