@@ -221,6 +221,7 @@ describe('query Stop hook continuation state', () => {
     const previousCap = process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
     delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
     try {
+      drainSdkEvents()
       const run = await runStopHookQuery()
 
       expect(run.modelCalls()).toBe(9)
@@ -236,6 +237,17 @@ describe('query Stop hook continuation state', () => {
             ),
         ),
       ).toBe(true)
+      // Hosts without a footer get the hook problem once, then the same
+      // warning as a notification.
+      expect(drainSdkEvents().filter(event => event.subtype === 'notification')).toMatchObject([
+        { key: 'stop-hook-error' },
+        {
+          key: 'stop-hook-block-cap',
+          text: expect.stringContaining('9 consecutive times\u2014overriding and ending turn'),
+          priority: 'high',
+          color: 'warning',
+        },
+      ])
     } finally {
       if (previousCap === undefined) {
         delete process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP

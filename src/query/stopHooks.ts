@@ -468,8 +468,9 @@ export async function* handleStopHooks(
         stopHookToolUseID,
       )
 
-      // Send notification about errors (shown in verbose/transcript mode via ctrl+o)
-      if (hookErrors.length > 0) {
+      // Send notification about errors (shown in verbose/transcript mode via ctrl+o);
+      // once per turn, not again on each continuation a Stop hook forced.
+      if (hookErrors.length > 0 && !stopHookActive) {
         const expandShortcut = getShortcutDisplay(
           'app:toggleTranscript',
           'Global',

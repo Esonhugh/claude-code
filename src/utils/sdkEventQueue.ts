@@ -124,7 +124,8 @@ type NotificationEvent = {
   subtype: 'notification'
   key: string
   text: string
-  priority: 'immediate'
+  priority: 'immediate' | 'high'
+  color?: 'warning'
 }
 
 // The session's name: sent at startup when it has one, and on each rename.

@@ -2103,7 +2103,8 @@ export const SDKNotificationMessageSchema = lazySchema(() =>
       subtype: z.literal('notification'),
       key: z.string(),
       text: z.string(),
-      priority: z.literal('immediate'),
+      priority: z.enum(['immediate', 'high']),
+      color: z.literal('warning').optional(),
       uuid: UUIDPlaceholder(),
       session_id: z.string(),
     })

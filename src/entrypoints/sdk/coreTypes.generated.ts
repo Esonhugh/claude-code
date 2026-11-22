@@ -407,7 +407,8 @@ export type SDKNotificationMessage = {
   subtype: 'notification'
   key: string
   text: string
-  priority: 'immediate'
+  priority: 'immediate' | 'high'
+  color?: 'warning'
   uuid: string
   session_id: string
 }

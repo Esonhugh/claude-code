@@ -159,7 +159,7 @@ function createStopHookContext(
   }
 }
 
-async function drainStopHooks(toolUseContext: ToolUseContext) {
+async function drainStopHooks(toolUseContext: ToolUseContext, stopHookActive = false) {
   const events: Message[] = []
   const iterator = handleStopHooks(
     [],
@@ -169,7 +169,7 @@ async function drainStopHooks(toolUseContext: ToolUseContext) {
     {},
     toolUseContext,
     'repl_main_thread',
-    false,
+    stopHookActive,
   )
   while (true) {
     const next = await iterator.next()
@@ -212,6 +212,23 @@ test('a failed Stop hook is reported to SDK hosts as a stop-hook-error notificat
       session_id: getSessionId(),
     },
   ])
+})
+
+test('a Stop hook that fails again after forcing a continuation is not reported a second time', async () => {
+  const testContext = createStopHookContext(undefined)
+  addSessionHook(
+    testContext.toolUseContext.setAppState,
+    getSessionId(),
+    'Stop',
+    '',
+    { type: 'command', command: 'echo STOP_ERR >&2; exit 1' },
+  )
+  drainSdkEvents()
+
+  await drainStopHooks(testContext.toolUseContext, true)
+
+  expect(testContext.notifications).toEqual([])
+  expect(drainSdkEvents()).toEqual([])
 })
 
 describe('handleStopHooks Goal lifecycle', () => {

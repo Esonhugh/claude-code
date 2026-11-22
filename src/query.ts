@@ -2088,10 +2088,9 @@ async function* queryLoop(
             hit_max_turns: false,
             hit_cap: true,
           })
-          yield createSystemMessage(
-            `A hook blocked the turn from ending ${nextBlockingCount} consecutive times — overriding and ending turn. For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. Set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP to raise this limit.`,
-            'warning',
-          )
+          const text = `A hook blocked the turn from ending ${nextBlockingCount} consecutive times—overriding and ending turn. For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. Set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP to raise this limit.`
+          yield createSystemMessage(text, 'warning')
+          enqueueSdkEvent({ type: 'system', subtype: 'notification', key: 'stop-hook-block-cap', text, priority: 'high', color: 'warning' })
           return { reason: 'completed' }
         }
 
