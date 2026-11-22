@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
@@ -523,6 +523,7 @@ export function createModsSession(options: ModsSessionOptions) {
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
       // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
       ignored: (path, stats) => {
+        path = normalize(path) // chokidar hands over forward slashes on Windows
         const root = roots.find(root => path === root || path.startsWith(root + sep))
         if (root === undefined) return !roots.some(root => root.startsWith(path + sep))
         return relative(root, path).split(sep).some(part => part === '.git' || part === 'node_modules') ||
