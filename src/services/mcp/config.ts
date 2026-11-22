@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import { chmod, open, rename, stat, unlink } from 'fs/promises'
+import { chmod, open, readFile, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { dirname, join, parse } from 'path'
@@ -20,6 +20,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { safeParseJSON } from '../../utils/json.js'
+import { stripBOM } from '../../utils/jsonRead.js'
 import { logError } from '../../utils/log.js'
 import { getPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
 import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
@@ -37,7 +38,7 @@ import {
   type SettingsJson,
 } from '../../utils/settings/types.js'
 import type { ValidationError } from '../../utils/settings/validation.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -85,12 +86,41 @@ function addScopeToServers(
   return scopedServers
 }
 
+type McpjsonFile = { [key: string]: unknown; mcpServers?: Record<string, unknown> }
+
+/**
+ * The cwd's .mcp.json as written, for add and remove to edit: the parsed config
+ * has `${VAR}` references expanded and drops the keys and entries it does not know.
+ */
+async function readMcpjsonFile(): Promise<McpjsonFile> {
+  let content: string
+  try {
+    content = await readFile(join(getCwd(), '.mcp.json'), 'utf8')
+  } catch (e: unknown) {
+    if (getErrnoCode(e) === 'ENOENT') return {}
+    throw e
+  }
+  if (content.trim() === '') return {}
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+  let parsed: unknown
+  try {
+    parsed = jsonParse(stripBOM(content))
+  } catch {
+    // Not an object, below.
+  }
+  if (!isObject(parsed) || ('mcpServers' in parsed && !isObject(parsed.mcpServers))) {
+    throw new Error('.mcp.json is malformed (not valid JSON, or mcpServers is not an object)')
+  }
+  return parsed
+}
+
 /**
  * Internal utility: Write MCP config to .mcp.json file.
  * Preserves file permissions and flushes to disk before rename.
  * Uses the original path for rename (does not follow symlinks).
  */
-async function writeMcpjsonFile(config: McpJsonConfig): Promise<void> {
+async function writeMcpjsonFile(config: McpjsonFile): Promise<void> {
   if (getProjectConfigRoot() !== null) {
     throw new Error(
       'Project-scope MCP server changes are unavailable in a session started with --project-config-root. Use the local or user scope instead.',
@@ -750,10 +780,11 @@ export async function addMcpConfig(
   }
 
   // Check if server already exists in the target scope
+  let mcpjson: McpjsonFile = {}
   switch (scope) {
     case 'project': {
-      const { servers } = getProjectMcpConfigsFromCwd()
-      if (servers[name]) {
+      mcpjson = await readMcpjsonFile()
+      if (mcpjson.mcpServers && Object.hasOwn(mcpjson.mcpServers, name)) {
         throw new Error(`MCP server ${name} already exists in .mcp.json`)
       }
       break
@@ -783,17 +814,7 @@ export async function addMcpConfig(
   // Add based on scope
   switch (scope) {
     case 'project': {
-      const { servers: existingServers } = getProjectMcpConfigsFromCwd()
-
-      const mcpServers: Record<string, McpServerConfig> = {}
-      for (const [serverName, serverConfig] of Object.entries(
-        existingServers,
-      )) {
-        const { scope: _, ...configWithoutScope } = serverConfig
-        mcpServers[serverName] = configWithoutScope
-      }
-      mcpServers[name] = validatedConfig
-      const mcpConfig = { mcpServers }
+      const mcpConfig = { ...mcpjson, mcpServers: { ...mcpjson.mcpServers, [name]: validatedConfig } }
 
       // Write back to .mcp.json
       try {
@@ -843,23 +864,12 @@ export async function removeMcpConfig(
 ): Promise<void> {
   switch (scope) {
     case 'project': {
-      const { servers: existingServers } = getProjectMcpConfigsFromCwd()
-
-      if (!existingServers[name]) {
+      const mcpjson = await readMcpjsonFile()
+      if (!mcpjson.mcpServers || !Object.hasOwn(mcpjson.mcpServers, name)) {
         throw new Error(`No MCP server named "${name}" in .mcp.json`)
       }
-
-      // Strip scope information when writing back to .mcp.json
-      const mcpServers: Record<string, McpServerConfig> = {}
-      for (const [serverName, serverConfig] of Object.entries(
-        existingServers,
-      )) {
-        if (serverName !== name) {
-          const { scope: _, ...configWithoutScope } = serverConfig
-          mcpServers[serverName] = configWithoutScope
-        }
-      }
-      const mcpConfig = { mcpServers }
+      const { [name]: _, ...mcpServers } = mcpjson.mcpServers
+      const mcpConfig = { ...mcpjson, mcpServers }
       try {
         await writeMcpjsonFile(mcpConfig)
       } catch (error) {
@@ -901,53 +911,6 @@ export async function removeMcpConfig(
 
     default:
       throw new Error(`Cannot remove MCP server from scope: ${scope}`)
-  }
-}
-
-/**
- * Get MCP configs from current directory only (no parent traversal).
- * Used by addMcpConfig and removeMcpConfig to modify the local .mcp.json file.
- * Exported for testing purposes.
- *
- * @returns Servers with scope information and any validation errors from current directory's .mcp.json
- */
-export function getProjectMcpConfigsFromCwd(): {
-  servers: Record<string, ScopedMcpServerConfig>
-  errors: ValidationError[]
-} {
-  // Check if project source is enabled
-  if (!isSettingSourceEnabled('projectSettings')) {
-    return { servers: {}, errors: [] }
-  }
-
-  const mcpJsonPath = join(getProjectConfigRoot() ?? getCwd(), '.mcp.json')
-
-  const { config, errors } = parseMcpConfigFromFilePath({
-    filePath: mcpJsonPath,
-    expandVars: true,
-    scope: 'project',
-  })
-
-  // Missing .mcp.json is expected, but malformed files should report errors
-  if (!config) {
-    const nonMissingErrors = errors.filter(
-      e => !e.message.startsWith('MCP config file not found'),
-    )
-    if (nonMissingErrors.length > 0) {
-      logForDebugging(
-        `MCP config errors for ${mcpJsonPath}: ${jsonStringify(nonMissingErrors.map(e => e.message))}`,
-        { level: 'error' },
-      )
-      return { servers: {}, errors: nonMissingErrors }
-    }
-    return { servers: {}, errors: [] }
-  }
-
-  return {
-    servers: config.mcpServers
-      ? addScopeToServers(config.mcpServers, 'project')
-      : {},
-    errors: errors || [],
   }
 }
 
