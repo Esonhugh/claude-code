@@ -1,8 +1,9 @@
 import { randomUUID, type UUID } from 'crypto'
-import { cp, readdir, readFile, writeFile } from 'fs/promises'
+import { cp, readdir, readFile, rm, writeFile } from 'fs/promises'
 import { dirname, join, sep } from 'path'
 import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
 import type { Message } from '../types/message.js'
+import { isENOENT } from '../utils/errors.js'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
 import type { TranscriptMessage } from '../types/logs.js'
 import {
@@ -378,10 +379,21 @@ export async function forkSession(id: string, messageId: string, uploadsDir?: st
     .slice(0, end + 1)
     .filter(m => !m.isSidechain)
     .map(m => JSON.stringify({ ...m, sessionId: forkId, forkedFrom: { sessionId: id, messageUuid: m.uuid } }))
-  if (uploadsDir !== undefined && (await cp(join(uploadsDir, id), join(uploadsDir, forkId), { recursive: true }).then(() => true, () => false))) {
-    const from = JSON.stringify(join(uploadsDir, id) + sep).slice(1, -1)
-    const to = JSON.stringify(join(uploadsDir, forkId) + sep).slice(1, -1)
-    for (const [i, line] of lines.entries()) lines[i] = line.replaceAll(from, to)
+  if (uploadsDir !== undefined) {
+    const inJson = (text: string) => JSON.stringify(text).slice(1, -1)
+    const from = inJson(join(uploadsDir, id) + sep)
+    const to = inJson(join(uploadsDir, forkId) + sep)
+    try {
+      await cp(join(uploadsDir, id), join(uploadsDir, forkId), { recursive: true })
+      // The page's `@"path"` mention escapes the path once more than a tool's input does.
+      for (const [i, line] of lines.entries()) lines[i] = line.replaceAll(inJson(from), inJson(to)).replaceAll(from, to)
+    } catch (err) {
+      // Most sessions have no uploads; a copy that failed halfway would lose them with the original.
+      if (!isENOENT(err)) {
+        await rm(join(uploadsDir, forkId), { recursive: true, force: true })
+        throw err
+      }
+    }
   }
   await writeFile(join(dirname(found.filePath), `${forkId}.jsonl`), lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' })
   return forkId
