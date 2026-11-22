@@ -6,18 +6,21 @@ import { mock } from 'bun:test'
   VERSION: 'test',
 }
 
-const settingsModule = await import('../../utils/settings/settings.js')
-const pluginLoaderModule = await import('../../utils/plugins/pluginLoader.js')
-const installedPluginsModule = await import(
-  '../../utils/plugins/installedPluginsManager.js'
-)
-const cacheModule = await import('../../utils/plugins/cacheUtils.js')
-const optionsModule = await import(
-  '../../utils/plugins/pluginOptionsStorage.js'
-)
-const directoriesModule = await import(
-  '../../utils/plugins/pluginDirectories.js'
-)
+// Copies: the namespaces follow the mocks, and the real exports go back at the end.
+const settingsModule = { ...(await import('../../utils/settings/settings.js')) }
+const pluginLoaderModule = {
+  ...(await import('../../utils/plugins/pluginLoader.js')),
+}
+const installedPluginsModule = {
+  ...(await import('../../utils/plugins/installedPluginsManager.js')),
+}
+const cacheModule = { ...(await import('../../utils/plugins/cacheUtils.js')) }
+const optionsModule = {
+  ...(await import('../../utils/plugins/pluginOptionsStorage.js')),
+}
+const directoriesModule = {
+  ...(await import('../../utils/plugins/pluginDirectories.js')),
+}
 
 let settingsError: Error | null = new Error('settings are read-only')
 let installationPresent = true
@@ -184,5 +187,16 @@ assert.equal(
   settingsBySource.userSettings.enabledPlugins['url-probe@inline'],
   false,
 )
+
+// Module mocks outlive this file when test files share one bun test process.
+mock.module('../../utils/settings/settings.js', () => settingsModule)
+mock.module('../../utils/plugins/pluginLoader.js', () => pluginLoaderModule)
+mock.module(
+  '../../utils/plugins/installedPluginsManager.js',
+  () => installedPluginsModule,
+)
+mock.module('../../utils/plugins/cacheUtils.js', () => cacheModule)
+mock.module('../../utils/plugins/pluginOptionsStorage.js', () => optionsModule)
+mock.module('../../utils/plugins/pluginDirectories.js', () => directoriesModule)
 
 console.log('pluginOperations.test.ts passed')
