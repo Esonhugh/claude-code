@@ -821,10 +821,15 @@ export class StructuredIO {
     return canUseTool
   }
 
-  createHookCallback(callbackId: string, timeout?: number): HookCallback {
+  createHookCallback(
+    callbackId: string,
+    timeout?: number,
+    onFailure?: 'continue' | 'block',
+  ): HookCallback {
     return {
       type: 'callback',
       timeout,
+      onFailure,
       callback: async (
         input: HookInput,
         toolUseID: string | null,
@@ -843,10 +848,15 @@ export class StructuredIO {
           )
           return result
         } catch (error) {
-          // Official 2.1.329: a timed-out or cancelled callback is not an error to report.
-          if (!isAbortError(error)) {
-            // biome-ignore lint/suspicious/noConsole:: intentional console output
-            console.error(`Error in hook callback ${callbackId}:`, error)
+          // The hook's timeout or an interrupt: the caller decides what an
+          // unanswered hook means for its event.
+          if (isAbortError(error)) throw error
+          // biome-ignore lint/suspicious/noConsole:: intentional console output
+          console.error(`Error in hook callback ${callbackId}:`, error)
+          if (onFailure === 'block') {
+            throw new Error(
+              `Hook callback ${callbackId} failed: the SDK host replied with an error or an invalid answer.`,
+            )
           }
           return {}
         }

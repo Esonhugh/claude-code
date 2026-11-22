@@ -1183,6 +1183,8 @@ async function* queryLoop(
     // loop-exit signal. If false after streaming, we're done (modulo stop-hook retry).
     const toolUseBlocks: ToolUseBlock[] = []
     let needsFollowUp = false
+    // A PreToolUse hook deferred the call, during the stream or after it.
+    let toolWasDeferred = false
 
     queryCheckpoint('query_setup_start')
     let streamingToolExecutor = new StreamingToolExecutor(
@@ -1452,6 +1454,7 @@ async function* queryLoop(
               toolResults.length = 0
               toolUseBlocks.length = 0
               needsFollowUp = false
+              toolWasDeferred = false
 
               // Discard pending results from the failed streaming attempt and create
               // a fresh executor. This prevents orphan tool_results (with old tool_use_ids)
@@ -1584,6 +1587,12 @@ async function* queryLoop(
               for (const result of streamingToolExecutor.getCompletedResults()) {
                 if (result.message) {
                   yield result.message
+                  if (
+                    result.message.type === 'attachment' &&
+                    result.message.attachment.type === 'hook_deferred_tool'
+                  ) {
+                    toolWasDeferred = true
+                  }
                   toolResults.push(
                     ...normalizeMessagesForAPI(
                       [result.message],
@@ -1641,6 +1650,7 @@ async function* queryLoop(
             toolResults.length = 0
             toolUseBlocks.length = 0
             needsFollowUp = false
+            toolWasDeferred = false
 
             // Discard pending results from the failed attempt and create a
             // fresh executor. This prevents orphan tool_results (with old
@@ -2174,6 +2184,12 @@ async function* queryLoop(
         ) {
           shouldPreventContinuation = true
         }
+        if (
+          update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_deferred_tool'
+        ) {
+          toolWasDeferred = true
+        }
 
         const currentTools =
           updatedToolUseContext.options.refreshTools?.() ??
@@ -2371,6 +2387,11 @@ async function* queryLoop(
         })
       }
       return { reason: 'aborted_tools' }
+    }
+
+    // A PreToolUse hook deferred the call: the turn ends with the call open.
+    if (toolWasDeferred) {
+      return { reason: 'tool_deferred' }
     }
 
     if (postToolBatchStopReason !== undefined) {

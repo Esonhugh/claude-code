@@ -438,6 +438,7 @@ import {
   setStrictMcpConfig,
   setIsInteractive,
   setPrintOutputFormat,
+  setHasStreamingInput,
   setKairosActive,
   setOriginalCwd,
   setQuestionPreviewFormat,
@@ -3925,6 +3926,7 @@ async function run(): Promise<CommanderCommand> {
       }
 
       if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
+      setHasStreamingInput(inputFormat === 'stream-json')
       logForDiagnosticsNoPII('info', 'started', {
         version: MACRO.VERSION,
         is_native_binary: isInBundledMode(),

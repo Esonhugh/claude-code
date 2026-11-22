@@ -110,6 +110,7 @@ function fixture() {
   const controls = {
     trusted: true,
     interactive: true,
+    streamingInput: false,
     allowed: [
       'userSettings',
       'projectSettings',
@@ -128,6 +129,7 @@ function fixture() {
     getPromptId: () => null,
     getSessionCronTasks: () => crons,
     getIsNonInteractiveSession: () => !controls.interactive,
+    getHasStreamingInput: () => controls.streamingInput,
     getRegisteredHooks: () => registered,
     getStatsStore: () => undefined,
     addToTurnHookDuration: noop,
@@ -387,7 +389,13 @@ function fixture() {
       isEnvTruthy: (value: string) => value === '1' || value === 'true',
       isSSHLocalUI: () => false,
     },
-    './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
+    './errors.js': {
+      errorMessage: (error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      getErrnoCode: () => undefined,
+      isAbortError: (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+    },
     './messages.js': { getLastAssistantMessage: () => undefined },
   }
   // Tracks concurrent evaluator calls; set `gate` to hold them.
@@ -1723,6 +1731,141 @@ describe('onFailure', () => {
       output: 'failed; blocking because onFailure is "block"\naudit down',
     })
   })
+})
+
+describe('SDK callback hooks that fail or time out', () => {
+  const failure =
+    'Hook callback cb1 failed: the SDK host replied with an error or an invalid answer.'
+  const failing = (onFailure?: 'block'): HookCallback => ({
+    type: 'callback',
+    ...(onFailure && { onFailure }),
+    callback: async () => {
+      throw new Error(failure)
+    },
+  })
+  // Like StructuredIO.sendRequest: rejects once the hook's signal aborts.
+  const unanswered: HookCallback = {
+    type: 'callback',
+    timeout: 0.05,
+    callback: (_input, _toolUseID, abort) =>
+      new Promise((_resolve, reject) => {
+        abort!.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+        )
+      }),
+  }
+
+  test('onFailure block turns a failed callback into a blocking error', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(pre(f))
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: `[callback]: failed; blocking because onFailure is "block"\n${failure}`,
+        command: 'callback',
+      })
+  })
+
+  test('onFailure block on a failed Stop callback is ignored', async () => {
+    const f = fixture()
+    f.registered.Stop = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+
+  test('an unanswered PreToolUse callback rejects instead of counting as no opinion', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [unanswered] }]
+    await expect(collect(pre(f))).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('an unanswered UserPromptSubmit callback blocks the prompt', async () => {
+    const f = fixture()
+    f.registered.UserPromptSubmit = [{ matcher: '', hooks: [unanswered] }]
+    const results = await collect(
+      f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context),
+    )
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: 'UserPromptSubmit hook callback timed out after 50ms',
+        command: 'callback',
+      })
+  })
+
+  test('an unanswered PostToolUse callback still lets the turn go on', async () => {
+    const f = fixture()
+    f.registered.PostToolUse = [
+      { matcher: '', hooks: [{ ...unanswered, onFailure: 'block' }] },
+    ]
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+})
+
+describe('asyncRewake command hooks', () => {
+  const run = (f: ReturnType<typeof fixture>) => {
+    f.addHook('userSettings', 'PostToolUse', {
+      type: 'command',
+      command: 'rewake',
+      asyncRewake: true,
+    })
+    f.exits.set('rewake', { code: 2, stderr: 'REWAKE_MSG' })
+    return collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+  }
+
+  test('a single-shot print session waits for the hook and reports its exit 2', async () => {
+    const f = fixture()
+    f.controls.interactive = false
+    const results = await run(f)
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({ blockingError: '[rewake]: REWAKE_MSG', command: 'rewake' })
+  })
+
+  test.each([
+    ['an interactive session', true, false],
+    ['a print session with streaming input', false, true],
+  ] as const)('%s runs the hook in the background', async (_name, interactive, streamingInput) => {
+    const f = fixture()
+    f.controls.interactive = interactive
+    f.controls.streamingInput = streamingInput
+    const results = await run(f)
+    expect(results.some((result) => result.blockingError)).toBe(false)
+    expect(f.logs.some((log) => log.includes('backgrounding process'))).toBe(true)
+  })
+})
+
+test('PreToolUse permissionDecision defer is accepted and outranks ask and allow, not deny', async () => {
+  const decide = (permissionDecision: 'allow' | 'ask' | 'deny' | 'defer'): HookCallback => ({
+    type: 'callback',
+    callback: async () => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision },
+    }),
+  })
+  const last = async (...decisions: Parameters<typeof decide>[0][]) => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: decisions.map(decide) }]
+    const results = await collect(pre(f))
+    return results.findLast((result) => result.permissionBehavior)
+      ?.permissionBehavior
+  }
+  expect(await last('defer')).toBe('defer')
+  expect(await last('allow', 'defer', 'ask')).toBe('defer')
+  expect(await last('defer', 'deny')).toBe('deny')
+  expect(await last('deny', 'defer')).toBe('deny')
 })
 
 test('runs at most 12 prompt hooks of one event at a time without holding command hooks', async () => {
