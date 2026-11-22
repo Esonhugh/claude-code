@@ -3,7 +3,9 @@ import {
   describePluginOptions,
   parseOptionValues,
   PluginOptionRefusedError,
+  pluginDisplayName,
   preparePluginOptionValues,
+  printable,
   redactOptionValues,
 } from './pluginConfigure.js'
 import type { PluginOptionSchema } from './pluginOptionsStorage.js'
@@ -112,4 +114,14 @@ test('plugin configure reports what is set without showing secrets', () => {
   expect(
     redactOptionValues(schema, { api_key: ' sekret ' }, 'bad sekret, sekret'),
   ).toBe('bad …, …')
+})
+
+test('plugin configure keeps plugin-supplied control sequences off the terminal', () => {
+  expect(
+    pluginDisplayName({ name: 'demo', displayName: 'Dis\u001b[31mplay\u0007' }),
+  ).toBe('Display')
+  expect(pluginDisplayName({ name: 'demo', displayName: '\u001b[2J' })).toBe(
+    'demo',
+  )
+  expect(printable('Fl\u001b[2Jag\b')).toBe('Flag ')
 })

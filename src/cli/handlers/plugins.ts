@@ -55,6 +55,7 @@ import {
   describePluginOptions,
   MAX_VALUES_STDIN_BYTES,
   parseOptionValues,
+  pluginDisplayName,
   PluginOptionRefusedError,
   preparePluginOptionValues,
   printable,
@@ -233,7 +234,7 @@ export async function pluginConfigureHandler(
   }
   const pluginId = getPluginStorageId(target)
   const schema: PluginOptionSchema = target.manifest.userConfig ?? {}
-  const displayName = target.manifest.displayName ?? target.name
+  const displayName = pluginDisplayName(target.manifest)
   const json = (value: object) =>
     process.stdout.write(jsonStringify(value, null, 2) + '\n')
 
@@ -338,8 +339,11 @@ export async function pluginConfigureHandler(
       field.sensitive ? 'sensitive' : undefined,
       described.configured.includes(key) ? 'set' : 'not set',
     ].filter(Boolean)
-    const title = field.title && field.title !== key ? ` — ${field.title}` : ''
-    lines.push(`  ${marker} ${key}${title} (${facts.join(', ')})`)
+    const title =
+      field.title && field.title !== key ? ` — ${printable(field.title)}` : ''
+    lines.push(
+      `  ${marker} ${printable(key)}${title} (${facts.join(', ')})`,
+    )
   }
   lines.push(
     '',

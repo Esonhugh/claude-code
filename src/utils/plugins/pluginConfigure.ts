@@ -24,6 +24,14 @@ export function printable(text: string): string {
   return stripAnsi(text).replace(/\p{Cc}/gu, ' ')
 }
 
+/** The name to show for a plugin: its displayName when that has anything printable. */
+export function pluginDisplayName(manifest: {
+  name: string
+  displayName?: string
+}): string {
+  return printable(manifest.displayName ?? '').trim() || printable(manifest.name)
+}
+
 const own = <T>(object: Record<string, T>, key: string): T | undefined =>
   Object.hasOwn(object, key) ? object[key] : undefined
 
