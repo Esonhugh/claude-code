@@ -411,7 +411,8 @@ export function validateUserConfig(
     if (
       fieldSchema.type === 'string' &&
       fieldSchema.options !== undefined &&
-      value !== undefined
+      value !== undefined &&
+      value !== ''
     ) {
       if (typeof value !== 'string' || !fieldSchema.options.includes(value)) {
         errors.push(

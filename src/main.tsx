@@ -6476,6 +6476,28 @@ async function run(): Promise<CommanderCommand> {
     })
 
   pluginCmd
+    .command('configure <plugin>')
+    .description(
+      "Show a plugin's options and which are unset, or save values from stdin with --values-stdin",
+    )
+    .option('--json', 'Output as JSON')
+    .option(
+      '--values-stdin',
+      'Read option values from stdin as a JSON object of single-line strings; options left out keep their values',
+    )
+    .action(
+      async (
+        plugin: string,
+        options: { json?: boolean; valuesStdin?: boolean },
+      ) => {
+        const { pluginConfigureHandler } = await import(
+          './cli/handlers/plugins.js'
+        )
+        await pluginConfigureHandler(plugin, options)
+      },
+    )
+
+  pluginCmd
     .command('test [dir]')
     .description('Run plugin author tests')
     .option('--child <file>', undefined)

@@ -50,6 +50,23 @@ import {
 } from '../../utils/plugins/marketplaceManager.js'
 import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
 import { parseMarketplaceInput } from '../../utils/plugins/parseMarketplaceInput.js'
+import { getTrustedPluginConfigs } from '../../utils/plugins/mcpbHandler.js'
+import {
+  describePluginOptions,
+  MAX_VALUES_STDIN_BYTES,
+  parseOptionValues,
+  PluginOptionRefusedError,
+  preparePluginOptionValues,
+  printable,
+  redactOptionValues,
+  unsetPluginOptions,
+} from '../../utils/plugins/pluginConfigure.js'
+import {
+  getPluginStorageId,
+  loadPluginOptions,
+  type PluginOptionSchema,
+  savePluginOptions,
+} from '../../utils/plugins/pluginOptionsStorage.js'
 import {
   createPluginTag,
   pluginTagMessage,
@@ -186,6 +203,149 @@ export async function pluginTagHandler(
       : `  Push with: ${pushCommand}`,
   )
   finish(0)
+}
+
+async function readValuesFromStdin(): Promise<string | undefined> {
+  process.stdin.setEncoding('utf8')
+  let text = ''
+  let bytes = 0
+  for await (const chunk of process.stdin) {
+    bytes += Buffer.byteLength(chunk, 'utf8')
+    if (bytes > MAX_VALUES_STDIN_BYTES) return undefined
+    text += chunk
+  }
+  return text
+}
+
+// plugin configure
+export async function pluginConfigureHandler(
+  plugin: string,
+  options: { json?: boolean; valuesStdin?: boolean },
+): Promise<void> {
+  const { enabled, disabled } = await loadAllPlugins()
+  const target = [...enabled, ...disabled].find(
+    p => p.repository === plugin || p.source === plugin,
+  )
+  if (!target) {
+    cliError(
+      `No installed plugin has the id "${printable(plugin)}". Use its full id (name@marketplace), as \`claude plugin list\` shows it.`,
+    )
+  }
+  const pluginId = getPluginStorageId(target)
+  const schema: PluginOptionSchema = target.manifest.userConfig ?? {}
+  const displayName = target.manifest.displayName ?? target.name
+  const json = (value: object) =>
+    process.stdout.write(jsonStringify(value, null, 2) + '\n')
+
+  if (options.valuesStdin) {
+    const example =
+      'Example: claude plugin configure <plugin> --values-stdin < values.json'
+    if (process.stdin.isTTY) {
+      cliError(`No option values were piped in. ${example}`)
+    }
+    const text = await readValuesFromStdin()
+    let values: Record<string, string> | undefined
+    try {
+      values = text === undefined ? undefined : parseOptionValues(jsonParse(text))
+    } catch {
+      values = undefined
+    }
+    if (values === undefined) {
+      cliError(
+        text === undefined
+          ? 'The input on stdin is over the 256 KB limit.'
+          : `The input on stdin isn't a JSON object of strings. ${example}`,
+      )
+    }
+    let saved: string[]
+    try {
+      const final = preparePluginOptionValues(
+        schema,
+        values,
+        loadPluginOptions(pluginId),
+      )
+      saved = Object.keys(final)
+      if (saved.length > 0) savePluginOptions(pluginId, final, schema)
+    } catch (error) {
+      if (options.json && error instanceof PluginOptionRefusedError) {
+        json({
+          pluginId,
+          displayName,
+          refused: {
+            option: error.option,
+            message: redactOptionValues(schema, values, error.message),
+          },
+        })
+      }
+      cliError(
+        redactOptionValues(
+          schema,
+          values,
+          `Failed to save configuration: ${errorMessage(error)}`,
+        ),
+      )
+    }
+    if (options.json) {
+      let unconfigured: string[] | undefined
+      try {
+        unconfigured = unsetPluginOptions(schema, loadPluginOptions(pluginId))
+      } catch (error) {
+        logError(error)
+      }
+      json({
+        pluginId,
+        displayName,
+        saved,
+        ...(unconfigured && { unconfigured }),
+      })
+      process.exit(0)
+    }
+    cliOk(
+      saved.length > 0
+        ? 'Configuration saved. Restart Claude Code to apply it.'
+        : 'No configuration changes.',
+    )
+  }
+
+  let described: ReturnType<typeof describePluginOptions>
+  try {
+    described = describePluginOptions(
+      schema,
+      loadPluginOptions(pluginId),
+      Object.assign(
+        {},
+        ...getTrustedPluginConfigs(pluginId).map(config => config.options),
+      ),
+    )
+  } catch (error) {
+    cliError(
+      `Could not read the saved options for "${pluginId}": ${errorMessage(error)}`,
+    )
+  }
+  if (options.json) {
+    json({ pluginId, displayName, schema, ...described })
+    process.exit(0)
+  }
+  if (Object.keys(schema).length === 0) {
+    cliOk(`${displayName} (${pluginId}) has no options to set.`)
+  }
+  const marker =
+    process.stdout.isTTY && process.stderr.isTTY ? '•' : figures.pointer
+  const lines = [`Options for ${displayName} (${pluginId}):`]
+  for (const [key, field] of Object.entries(schema)) {
+    const facts = [
+      field.required ? 'required' : 'optional',
+      field.sensitive ? 'sensitive' : undefined,
+      described.configured.includes(key) ? 'set' : 'not set',
+    ].filter(Boolean)
+    const title = field.title && field.title !== key ? ` — ${field.title}` : ''
+    lines.push(`  ${marker} ${key}${title} (${facts.join(', ')})`)
+  }
+  lines.push(
+    '',
+    'Set values with /plugin configure <plugin> in Claude Code, or pipe a JSON object to `claude plugin configure <plugin> --values-stdin`.',
+  )
+  cliOk(lines.join('\n'))
 }
 
 // plugin validate
