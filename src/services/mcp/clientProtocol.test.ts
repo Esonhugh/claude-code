@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -136,6 +136,51 @@ if (process.env[childFlag] !== '1') {
       expect(error.message).toBe('first\nsecond\n[Resource link: log] owned://log (full log)')
     })
   },15_000)
+
+  // Official 2.1.329 (tLa).
+  test('an oversized text result is saved as plain text with its line count', async () => {
+    const tokenEstimation = await import('../tokenEstimation.js')
+    const count = spyOn(tokenEstimation,'countMessagesTokensWithAPI').mockResolvedValue(null)
+    process.env.MAX_MCP_OUTPUT_TOKENS = '100'
+    const save = async (...texts: string[]) => {
+      const saved = await client.processMCPResult({content:texts.map(text => ({type:'text', text}))},'big','srv')
+      if (typeof saved !== 'string') throw new Error('expected the saved-file notice')
+      const path = /Output has been saved to (.*)\.\n/.exec(saved)![1]!
+      return {saved, path, file:readFileSync(path,'utf8')}
+    }
+    try {
+      const text = 'x'.repeat(5000)
+      const oneLine = await save(text)
+      expect(oneLine.file).toBe(text)
+      // Two results in the same millisecond must not share a file.
+      expect(oneLine.path).toMatch(/mcp-srv-big-\d+-[a-z0-9]+\.txt$/)
+      expect(oneLine.saved).toBe(
+        `Error: result (5,000 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to ${oneLine.path}.\n` +
+        'Format: Plain text\n' +
+        'Search within the file for specific content, and use jq if the content is JSON.\n' +
+        'REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:\n' +
+        `- You MUST read the content from the file at ${oneLine.path} in sequential chunks until 100% of the content has been read.\n` +
+        "- Note: this file's lines are too long for Read's offset/limit chunking. If a shell tool is available, slice by character range (e.g. python read()[A:B], dd, or cut -c) instead.\n" +
+        '- If you receive truncation warnings when reading the file, reduce the chunk size until you have read 100% of the content without truncation.\n' +
+        '- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***\n' +
+        "- If after a few attempts you cannot read the file (file not found, lines too long for Read's offset/limit, no shell access), STOP retrying. Summarize what you were able to read, explicitly state which portion you could not read and why, and proceed.\n",
+      )
+
+      const manyLines = await save(('y'.repeat(99) + '\n').repeat(50))
+      expect(manyLines.saved).toContain('result (5,000 characters across 50 lines)')
+      expect(manyLines.saved).toContain('Format: Plain text\nUse offset and limit parameters to read specific portions of the file')
+      expect(manyLines.saved).not.toContain('- Note:')
+
+      const blocks = await save('a'.repeat(3000),'b'.repeat(3000))
+      expect(JSON.parse(blocks.file)).toEqual([{type:'text', text:'a'.repeat(3000)},{type:'text', text:'b'.repeat(3000)}])
+      expect(blocks.saved).toContain(`result (${blocks.file.length.toLocaleString()} characters) exceeds`)
+      expect(blocks.saved).toContain('Format: JSON array with schema: [{type: string, text: string}]\nUse jq to make structured queries (find a value, filter by field).\n')
+      expect(blocks.saved).toContain(`- Note: this file is JSON, so a long value (or the whole file) is a single line. Read's offset/limit cannot split a line, so reading in chunks works only if every line is short. If a shell tool is available, first probe the structure (e.g., jq 'type, length, keys?' ${blocks.path}), then extract slices with jq or python.\n`)
+    } finally {
+      delete process.env.MAX_MCP_OUTPUT_TOKENS
+      count.mockRestore()
+    }
+  })
 
   test('resource helper tools are present once while a connected server supports resources', () => {
     const resourceTools = [ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool]
