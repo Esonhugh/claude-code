@@ -2357,18 +2357,15 @@ async function run(): Promise<CommanderCommand> {
       // Handle system prompt options
       let systemPrompt = options.systemPrompt
       if (options.systemPromptFile) {
-        if (options.systemPrompt) {
-          process.stderr.write(
-            chalk.red(
-              'Error: Cannot use both --system-prompt and --system-prompt-file. Please use only one.\n',
-            ),
-          )
-          process.exit(1)
-        }
-
         try {
           const filePath = resolve(options.systemPromptFile)
-          systemPrompt = readFileSync(filePath, 'utf8')
+          const fromFile = readFileSync(filePath, 'utf8')
+          // Both given: the file comes first, then --system-prompt.
+          systemPrompt = !options.systemPrompt
+            ? fromFile
+            : fromFile
+              ? `${fromFile.replace(/\r?\n$/, '')}\n\n${options.systemPrompt}`
+              : options.systemPrompt
         } catch (error) {
           const code = getErrnoCode(error)
           if (code === 'ENOENT') {

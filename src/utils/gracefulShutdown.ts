@@ -454,6 +454,7 @@ export function gracefulShutdownSync(
   options?: {
     getAppState?: () => AppState
     setAppState?: (f: (prev: AppState) => AppState) => void
+    finalMessage?: string
   },
 ): void {
   // Set the exit code that will be used when process naturally exits. Note that we do it
