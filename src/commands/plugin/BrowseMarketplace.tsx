@@ -52,8 +52,10 @@ import {
   buildPluginDetailsMenuOptions,
   extractGitHubRepo,
   type InstallablePlugin,
+  installActivationNote,
   PluginSelectionKeyHint,
 } from './pluginDetailsHelpers.js'
+import type { InstallActivation } from '../../utils/plugins/refresh.js'
 import type { ViewState as ParentViewState } from './types.js'
 import { usePagination } from './usePagination.js'
 
@@ -63,7 +65,7 @@ type Props = {
   result: string | null
   setResult: (result: string | null) => void
   setViewState: (state: ParentViewState) => void
-  onInstallComplete?: () => void | Promise<void>
+  onInstallComplete?: (pluginIds: string[]) => Promise<InstallActivation>
   targetMarketplace?: string
   targetPlugin?: string
 }
@@ -400,7 +402,7 @@ export function BrowseMarketplace({
 
     setInstallingPlugins(new Set(pluginsToInstall.map(p => p.pluginId)))
 
-    let successCount = 0
+    const installedIds: string[] = []
     let failureCount = 0
     const newFailedPlugins: Array<{ name: string; reason: string }> = []
 
@@ -413,7 +415,7 @@ export function BrowseMarketplace({
       })
 
       if (result.success === true) {
-        successCount++
+        installedIds.push(plugin.pluginId)
       } else {
         failureCount++
         newFailedPlugins.push({
@@ -427,14 +429,19 @@ export function BrowseMarketplace({
     setSelectedForInstall(new Set())
     clearAllCaches()
 
+    const successCount = installedIds.length
+    const activationNote = installActivationNote(
+      successCount > 0 && onInstallComplete
+        ? await onInstallComplete(installedIds)
+        : 'reload-required',
+      successCount,
+    )
+
     // Handle installation results
     if (failureCount === 0) {
-      // All succeeded
-      const message =
-        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}. ` +
-        `Run /reload-plugins to activate.`
-
-      setResult(message)
+      setResult(
+        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}.${activationNote}`,
+      )
     } else if (successCount === 0) {
       // All failed - show error with reasons
       setError(
@@ -444,17 +451,9 @@ export function BrowseMarketplace({
       // Mixed results - show partial success
       const message =
         `✓ Installed ${successCount} of ${successCount + failureCount} plugins. ` +
-        `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` +
-        `Run /reload-plugins to activate successfully installed plugins.`
+        `Failed: ${formatFailureDetails(newFailedPlugins, false)}.${activationNote}`
 
       setResult(message)
-    }
-
-    // Handle completion callback and navigation
-    if (successCount > 0) {
-      if (onInstallComplete) {
-        await onInstallComplete()
-      }
     }
 
     setParentViewState({ type: 'menu' })
@@ -488,10 +487,14 @@ export function BrowseMarketplace({
         })
         return
       }
-      setResult(result.message)
-      if (onInstallComplete) {
-        await onInstallComplete()
-      }
+      setResult(
+        result.message +
+          installActivationNote(
+            onInstallComplete
+              ? await onInstallComplete([plugin.pluginId])
+              : 'reload-required',
+          ),
+      )
       setParentViewState({ type: 'menu' })
     } else {
       setIsInstalling(false)
@@ -683,11 +686,11 @@ export function BrowseMarketplace({
 
   if (typeof viewState === 'object' && viewState.type === 'plugin-options') {
     const { plugin, pluginId } = viewState
-    function finish(msg: string): void {
-      setResult(msg)
-      if (onInstallComplete) {
-        void onInstallComplete()
-      }
+    async function finish(msg: string, saved = true): Promise<void> {
+      const outcome = onInstallComplete
+        ? await onInstallComplete([pluginId])
+        : 'reload-required'
+      setResult(saved ? msg + installActivationNote(outcome) : msg)
       setParentViewState({ type: 'menu' })
     }
     return (
@@ -697,17 +700,16 @@ export function BrowseMarketplace({
         onDone={(outcome, detail) => {
           switch (outcome) {
             case 'configured':
-              finish(
-                `✓ Installed and configured ${plugin.name}. Run /reload-plugins to apply.`,
-              )
+              void finish(`✓ Installed and configured ${plugin.name}.`)
               break
             case 'skipped':
-              finish(
-                `✓ Installed ${plugin.name}. Run /reload-plugins to apply.`,
-              )
+              void finish(`✓ Installed ${plugin.name}.`)
               break
             case 'error':
-              finish(`Installed but failed to save config: ${detail}`)
+              void finish(
+                `Installed but failed to save config: ${detail}`,
+                false,
+              )
               break
           }
         }}

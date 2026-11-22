@@ -426,7 +426,7 @@ loadBuiltinOnly = false
 disableMode = 'success'
 const successOutput = await renderAndToggle('will disable')
 assert.match(successOutput, /will disable/)
-assert.match(successOutput, /Run \/reload-plugins to apply changes/)
+assert.match(successOutput, /Applies when you close this menu\./)
 assert.doesNotMatch(successOutput, /Failed to disable/)
 
 for (const mode of ['success-false', 'reject'] as const) {
@@ -438,7 +438,7 @@ for (const mode of ['success-false', 'reject'] as const) {
   )
   assert.match(output, /enabled/)
   assert.doesNotMatch(output, /will disable/)
-  assert.doesNotMatch(output, /Run \/reload-plugins to apply changes/)
+  assert.doesNotMatch(output, /Applies when you close this menu\./)
 }
 
 console.log('ManagePlugins.toggleFailure.test.tsx passed')

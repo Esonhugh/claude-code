@@ -8,6 +8,7 @@ import * as React from 'react'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
 import { Byline } from '../../components/design-system/Byline.js'
 import { Box, Text } from '../../ink.js'
+import type { InstallActivation } from '../../utils/plugins/refresh.js'
 import type { PluginMarketplaceEntry } from '../../utils/plugins/schemas.js'
 
 /**
@@ -23,6 +24,23 @@ export type InstallablePlugin = {
 /**
  * Menu option for plugin details view
  */
+/** Official 2.1.329 ending of an install result, by what activation did. */
+export function installActivationNote(
+  outcome: InstallActivation,
+  count = 1,
+): string {
+  switch (outcome) {
+    case 'activated':
+      return count === 1 ? ' Plugin is now active.' : ' Plugins are now active.'
+    case 'load-failed':
+      return count === 1
+        ? " The plugin couldn't load. See /plugin for details."
+        : " Some plugins couldn't load. See /plugin for details."
+    case 'reload-required':
+      return ' Run /reload-plugins to apply.'
+  }
+}
+
 export type PluginDetailsMenuOption = {
   label: string
   action: string

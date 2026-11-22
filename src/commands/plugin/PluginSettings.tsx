@@ -1,8 +1,10 @@
 import figures from 'figures'
 import * as React from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js'
+import { Select } from '../../components/CustomSelect/select.js'
 import { Byline } from '../../components/design-system/Byline.js'
+import { Dialog } from '../../components/design-system/Dialog.js'
 import { Pane } from '../../components/design-system/Pane.js'
 import { Tab, Tabs } from '../../components/design-system/Tabs.js'
 import { getCodexAppsEligibility } from '../../services/apps/auth.js'
@@ -12,7 +14,11 @@ import {
   useKeybinding,
   useKeybindings,
 } from '../../keybindings/useKeybinding.js'
-import { useAppState, useSetAppState } from '../../state/AppState.js'
+import {
+  useAppState,
+  useAppStateStore,
+  useSetAppState,
+} from '../../state/AppState.js'
 import type { PluginError } from '../../types/plugin.js'
 import { errorMessage } from '../../utils/errors.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
@@ -22,6 +28,7 @@ import {
   removeMarketplaceSource,
 } from '../../utils/plugins/marketplaceManager.js'
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
+import { activateInstalledPlugins } from '../../utils/plugins/refresh.js'
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import {
   getSettingsForSource,
@@ -384,7 +391,7 @@ function removeExtraMarketplace(
   }
 }
 
-function ErrorsTabContent({
+export function ErrorsTabContent({
   setViewState,
   setActiveTab,
   markPluginsChanged,
@@ -398,6 +405,10 @@ function ErrorsTabContent({
   const setAppState = useSetAppState()
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [uninstallConfirm, setUninstallConfirm] = useState<{
+    label: string
+    run: () => void
+  } | null>(null)
   const [marketplaceLoadFailures, setMarketplaceLoadFailures] = useState<
     Array<{ name: string; error: string }>
   >([])
@@ -476,7 +487,7 @@ function ErrorsTabContent({
     () => {
       setViewState({ type: 'menu' })
     },
-    { context: 'Confirmation' },
+    { context: 'Confirmation', isActive: uninstallConfirm === null },
   )
 
   const handleSelect = () => {
@@ -484,10 +495,22 @@ function ErrorsTabContent({
     if (!row) return
     const { action } = row
     switch (action.kind) {
-      case 'navigate':
-        setActiveTab(action.tab)
-        setViewState(action.viewState)
+      case 'navigate': {
+        const run = () => {
+          setActiveTab(action.tab)
+          setViewState(action.viewState)
+        }
+        // Official 2.1.329 asks before uninstalling; the answer defaults to No.
+        if (
+          action.viewState.type === 'manage-plugins' &&
+          action.viewState.action === 'uninstall'
+        ) {
+          setUninstallConfirm({ label: row.label, run })
+        } else {
+          run()
+        }
         break
+      }
       case 'remove-extra-marketplace': {
         const scopes = action.sources.map(s => s.scope).join(', ')
         removeExtraMarketplace(action.name, action.sources)
@@ -552,7 +575,7 @@ function ErrorsTabContent({
         setSelectedIndex(prev => Math.min(rows.length - 1, prev + 1)),
       'select:accept': handleSelect,
     },
-    { context: 'Select', isActive: rows.length > 0 },
+    { context: 'Select', isActive: rows.length > 0 && uninstallConfirm === null },
   )
 
   // Clamp selectedIndex when rows shrink (e.g. after removal)
@@ -566,6 +589,28 @@ function ErrorsTabContent({
     selectedAction &&
     selectedAction.kind !== 'none' &&
     selectedAction.kind !== 'managed-only'
+
+  if (uninstallConfirm) {
+    return (
+      <Dialog
+        title={`Uninstall ${uninstallConfirm.label}?`}
+        onCancel={() => setUninstallConfirm(null)}
+      >
+        <Text>Uninstalling this plugin clears its error.</Text>
+        <Select<'yes' | 'no'>
+          defaultFocusValue="no"
+          onChange={value => {
+            setUninstallConfirm(null)
+            if (value === 'yes') uninstallConfirm.run()
+          }}
+          options={[
+            { label: 'Yes, uninstall', value: 'yes' },
+            { label: 'No, cancel', value: 'no' },
+          ]}
+        />
+      </Dialog>
+    )
+  }
 
   if (rows.length === 0) {
     return (
@@ -778,19 +823,38 @@ export function PluginSettings({
     parsedCommand.target !== undefined
 
   // Signal that plugin state has changed on disk (Layer 2) and active
-  // components (Layer 3) are stale. User runs /reload-plugins to apply.
-  // Previously this was updatePluginState() which did a partial refresh
-  // (commands only — agents/hooks/MCP were silently skipped). Now all
-  // Layer-3 refresh flows through the unified refreshActivePlugins()
-  // primitive via /reload-plugins, giving one consistent mental model:
-  // plugin changes require /reload-plugins.
+  // components (Layer 3) are stale. Official 2.1.329 applies the change when
+  // this menu closes, through the same /reload-plugins primitive.
+  const changedRef = useRef(false)
   const markPluginsChanged = useCallback(() => {
+    changedRef.current = true
     setAppState(prev =>
       prev.plugins.needsRefresh
         ? prev
         : { ...prev, plugins: { ...prev.plugins, needsRefresh: true } },
     )
   }, [setAppState])
+
+  // An install is activated right away so its result can say whether it loaded.
+  const activateInstalled = useCallback(
+    (pluginIds: string[]) => {
+      changedRef.current = true
+      return activateInstalledPlugins(setAppState, pluginIds)
+    },
+    [setAppState],
+  )
+
+  const store = useAppStateStore()
+  const close = useCallback<PluginSettingsProps['onComplete']>(
+    (result, options) =>
+      onComplete(
+        result,
+        changedRef.current && store.getState().plugins.needsRefresh
+          ? { ...options, nextInput: '/reload-plugins', submitNextInput: true }
+          : options,
+      ),
+    [onComplete, store],
+  )
 
   // Handle tab switching (called by Tabs component)
   const handleTabChange = useCallback((tabId: string) => {
@@ -823,9 +887,9 @@ export function PluginSettings({
   // the close AND delivers the message to the transcript.
   useEffect(() => {
     if (viewState.type === 'menu' && !result) {
-      onComplete(undefined, { display: 'skip' })
+      close(undefined, { display: 'skip' })
     }
-  }, [viewState.type, result, onComplete])
+  }, [viewState.type, result, close])
 
   // Sync activeTab when viewState changes to a different tab's content
   // This handles cases like AddMarketplace navigating to browse-marketplace
@@ -851,9 +915,9 @@ export function PluginSettings({
 
   useEffect(() => {
     if (result) {
-      onComplete(result)
+      close(result)
     }
-  }, [result, onComplete])
+  }, [result, close])
 
   // Handle help view completion
   useEffect(() => {
@@ -976,7 +1040,7 @@ export function PluginSettings({
               result={result}
               setResult={setResult}
               setViewState={setViewState}
-              onInstallComplete={markPluginsChanged}
+              onInstallComplete={activateInstalled}
               targetMarketplace={viewState.targetMarketplace}
               targetPlugin={viewState.targetPlugin}
             />
@@ -987,7 +1051,7 @@ export function PluginSettings({
               result={result}
               setResult={setResult}
               setViewState={setViewState}
-              onInstallComplete={markPluginsChanged}
+              onInstallComplete={activateInstalled}
               onSearchModeChange={setChildSearchActive}
               targetPlugin={
                 viewState.type === 'discover-plugins'
@@ -1041,7 +1105,7 @@ export function PluginSettings({
         ...(showCodexApps
           ? [<Tab key="codex-apps" id="codex-apps" title="Codex Apps">
             <ManageCodexApps
-              onBack={() => onComplete(undefined, { display: 'skip' })}
+              onBack={() => close(undefined, { display: 'skip' })}
               onSearchModeChange={setChildSearchActive}
             />
           </Tab>]
