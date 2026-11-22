@@ -409,6 +409,15 @@ export type SDKModelFallbackMessage = {
   uuid: string
   session_id: string
 }
+export type SDKConversationResetMessage = {
+  type: 'conversation_reset'
+  new_conversation_id: string
+  uuid: string
+  trigger: 'clear'
+  user_message_uuid?: string
+  timestamp: string
+  session_id: string
+}
 export type SDKModelRefusalNoFallbackMessage = {
   type: 'system'
   subtype: 'model_refusal_no_fallback'
@@ -813,6 +822,7 @@ export type SDKMessage =
   | SDKInformationalMessage
   | SDKModelFallbackMessage
   | SDKModelRefusalNoFallbackMessage
+  | SDKConversationResetMessage
   | SDKNotificationMessage
   | SDKSessionTitleChangedMessage
   | SDKUIToastMessage

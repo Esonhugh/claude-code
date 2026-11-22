@@ -1,7 +1,7 @@
 import type { UUID } from 'crypto'
 import { randomBytes, randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
-import type { SDKAssistantMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
+import type { SDKAssistantMessage, SDKConversationResetMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {
@@ -148,7 +148,8 @@ export type SdkEvent =
 
 // A background agent's own messages, tagged with parent_tool_use_id. They share
 // the queue so they stay in order with that agent's task events.
-type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage
+// So does conversation_reset, sent whole: it names the session /clear left.
+type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage | SDKConversationResetMessage
 
 // Id of one run of a task, as official sends it on every task_* event: a resumed
 // task keeps its task_id and gets a new run id. Run ids of one task sort in the
@@ -167,7 +168,7 @@ export function getTaskRunId(taskId: string): string | undefined {
 }
 
 const MAX_QUEUE_SIZE = 1000
-const queue: (SdkEvent | SubagentSdkMessage)[] = []
+const queue: ((SdkEvent & { session_id: string }) | SubagentSdkMessage)[] = []
 let onEnqueue: (() => void) | undefined
 
 /** Called after each queued event, so the output stream can take it right away. */
@@ -187,7 +188,8 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   if (event.type === 'system' && 'task_id' in event && runIds.has(event.task_id)) {
     event = { ...event, run_id: runIds.get(event.task_id) }
   }
-  queue.push(event)
+  // Named for the session it happened in, which /clear may leave before the drain.
+  queue.push(event.type === 'system' ? { ...event, session_id: getSessionId() } : event)
   onEnqueue?.()
 }
 
@@ -198,11 +200,11 @@ export function drainSdkOutput(): Array<
   if (queue.length === 0) {
     return []
   }
-  return queue.splice(0).map(e =>
-    e.type === 'system'
-      ? { ...e, uuid: randomUUID(), session_id: getSessionId() }
-      : e,
-  )
+  return queue.splice(0).map(e => {
+    if (e.type !== 'system') return e
+    const { session_id, ...event } = e
+    return { ...event, uuid: randomUUID(), session_id } as SdkEvent & { uuid: UUID; session_id: string }
+  })
 }
 
 /** The queued system events; subagent messages are dropped. */

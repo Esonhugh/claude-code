@@ -1,3 +1,4 @@
+import { NO_CONTENT_MESSAGE } from './constants/messages.js'
 import { createModCommandQueue } from './services/mods/commandRunQueue.js'
 import { createModMcpConnections } from './services/mods/mcpConnect.js'
 import { copyModCallerChain, type ModCallerChain } from './services/mods/callerChain.js'
@@ -1143,7 +1144,10 @@ export class QueryEngine {
           (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
             msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
         ) {
-          yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          // Like official 2.1.329, a command that printed nothing (/clear) sends no reply.
+          const reply = localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          const [block] = (reply.message as { content: Array<{ type: string; text?: string }> }).content
+          if (block?.text !== NO_CONTENT_MESSAGE) yield reply
         }
 
         if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
