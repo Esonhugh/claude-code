@@ -118,6 +118,57 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'ue: denied'})
   })
 
+  test.each([[['judge', 'x']], [['x', 'judge']]] as const)('a module that does not load for an unprovided event refuses no plugin (%p)', async order => {
+    const sources = {
+      judge: `export function register(on) {
+        on('plugin.register', ($, e, next) => e.name === 'x' ? {refuse:'judge says no'} : next(e));
+        on('nope.event', async ($, e, next) => next(e));
+      }`,
+      x: `export function register(on) { on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'x: denied'})); }`,
+    }
+    const plugins = []
+    for (const name of order) plugins.push(await fixture(sources[name], name))
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([{ plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)' }])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'x: denied'})
+  })
+
+  test('a judge whose event comes from a plugin loaded later still refuses the plugins between them', async () => {
+    const plugins = [
+      await fixture(`export function register(on) {
+        on('plugin.register', ($, e, next) => e.name === 'x' ? {refuse:'judge says no'} : next(e));
+        on('nope.hello', async ($, e, next) => next(e));
+      }`, 'judge'),
+      await fixture(`export function register(on) { on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'x: denied'})); }`, 'x'),
+      await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, nope: {hello: async () => 1}}; }); }`, 'provider'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([{ plugin: 'x', stage: 'admission', message: 'judge says no' }])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
+  test('a judge that refuses the provider of its own event keeps it out and does not load', async () => {
+    const plugins = [
+      await fixture(`export function register(on) {
+        on('plugin.register', ($, e, next) => e.name === 'provider' ? {refuse:'judge says no'} : next(e));
+        on('nope.hello', async ($, e, next) => next(e));
+      }`, 'judge'),
+      await fixture(`export function register(on) {
+        on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, nope: {hello: async () => 1}}; });
+        on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'provider: denied'}));
+      }`, 'provider'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([
+      { plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.hello, but no loaded plugin provides $.nope)' },
+      { plugin: 'provider', stage: 'admission', message: 'judge says no' },
+    ])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
   test('a provider removed from the build takes its consumer with it', async () => {
     const provider = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, nope: {hello: async () => 1}}; });

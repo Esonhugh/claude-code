@@ -3163,14 +3163,30 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
+  /** Why the built $ has no event for one of the module's registrations, if so. */
+  function unprovidedEvent(owner: Activation, table: Nouns, owners: ReadonlyMap<string, string>): string | undefined {
+    for (const { event } of owner.environment.registrations) {
+      const negated = event.startsWith('!')
+      const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
+      if (method === undefined || engineEventNouns.has(noun)) continue
+      const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
+      if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
+      return negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
+        : methods ? `registered ${event}, but $.${noun} (${owners.get(noun)}) has no method ${method}`
+        : `registered ${event}, but no loaded plugin provides $.${noun}`
+    }
+    return undefined
+  }
+
   async function build(
     snapshot: Activation[],
     replacements = new Map<Activation, Activation>(),
     refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
     order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
     // A cold start builds $ before every plugin is loaded; a plugin still to come can provide the event.
+    // Such a build keeps the module and reports it as unconfirmed instead.
     checkRegistrations = true,
-  ): Promise<{ modules: Activation[]; table: Nouns }> {
+  ): Promise<{ modules: Activation[]; table: Nouns; unconfirmed?: ReadonlySet<Activation> }> {
     const previousTable = refresh?.table ?? nouns
     const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
     let modules = [...snapshot]
@@ -3287,21 +3303,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           },
         }) as Nouns
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.
-        for (const owner of failed || !checkRegistrations ? [] : modules) {
+        const unconfirmed = new Set<Activation>()
+        for (const owner of failed ? [] : modules) {
           if (owner.declaration.isNative) continue
-          let reason: string | undefined
-          for (const { event } of owner.environment.registrations) {
-            const negated = event.startsWith('!')
-            const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
-            if (method === undefined || engineEventNouns.has(noun)) continue
-            const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
-            if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
-            reason = negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
-              : methods ? `registered ${event}, but $.${noun} (${state.owners.get(noun)}) has no method ${method}`
-              : `registered ${event}, but no loaded plugin provides $.${noun}`
-            break
-          }
+          const reason = unprovidedEvent(owner, table, state.owners)
           if (!reason) continue
+          if (!checkRegistrations) {
+            unconfirmed.add(owner)
+            continue
+          }
           failed = owner
           if (!hostDead && !controller.signal.aborted)
             unloadedSteps.set(owner.declaration.storageId, { declaration: owner.declaration, order: [...order] })
@@ -3310,7 +3320,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         }
         if (!failed) {
           for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
-          return { modules, table }
+          return { modules, table, unconfirmed }
         }
       } catch (error) { if (!failed) throw error }
       finally { for (const lease of leases) lease.building = false }
@@ -3519,7 +3529,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
     const cold = previous.length === 0
     const scanned = new Map<ModPluginInput, ModDeclaration>()
-    let bootstrap: { modules: Activation[]; table: Nouns } | undefined
+    let bootstrap: { modules: Activation[]; table: Nouns; unconfirmed?: ReadonlySet<Activation> } | undefined
     // A native seat holds the user tier out of the privileged events it wraps.
     // Its own failure must not leave user Mods running unguarded, so the whole
     // tier stands down for this reconcile instead.
@@ -3578,7 +3588,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     let registrationsChecked = false
     async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
-      if (bootstrap && !changed.size && (!isLast || registrationsChecked)) return
+      const removed = bootstrap?.modules.some(owner => !candidates.includes(owner))
+      if (bootstrap && !changed.size && !removed && (!isLast || registrationsChecked)) return
       // Keep newly admitted providers barred during their own bootstrap fold.
       for (const owner of changed) owner.state = 'candidate'
       bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
@@ -3589,12 +3600,22 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       candidates = [...bootstrap.modules]
       for (const owner of candidates) owner.state = 'active'
     }
-    for (const input of loading) {
+    // Official 2.1.329 judges plugins after it validated every module's registrations, so a module that
+    // does not load refuses nothing. Here a plugin is judged before it loads: a refusal that a judge with
+    // unconfirmed registrations took part in waits for the last build to say whether that judge loads.
+    const heldRefusals: { input: ModPluginInput; name: string; refusal: string; judges: Activation[] }[] = []
+    const refuse = (input: ModPluginInput, name: string, refusal: string) => {
+      failGuard(input)
+      knownArgs.delete(input.storageId)
+      unloadedSteps.delete(input.storageId)
+      diagnostic(name, 'admission', refusal)
+    }
+    const load = async (input: ModPluginInput) => {
       const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
       if (guardFailed && (input.tier ?? 'user') === 'user') {
         if (old) withdraw(old)
         diagnostic(input.name, 'guard', 'Managed Mods protection is not loaded; this user Mod stands down')
-        continue
+        return
       }
       let suggestionSuspended = false
       try {
@@ -3616,7 +3637,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (old && !reloading?.has(input.storageId) && sameModDeclaration(old.declaration, declaration)) {
           await refreshDeclarations()
           ensureLive()
-          continue
+          return
         }
         if (old) {
           old.suggestionEligible = false
@@ -3633,11 +3654,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
             if (old) withdraw(old)
-            failGuard(input)
-            knownArgs.delete(input.storageId)
-            unloadedSteps.delete(input.storageId)
-            diagnostic(declaration.name, 'admission', refusal)
-            continue
+            const unconfirmed = judges.filter(owner => bootstrap?.unconfirmed?.has(owner))
+            if (unconfirmed.length) heldRefusals.push({ input, name: declaration.name, refusal, judges: unconfirmed })
+            else refuse(input, declaration.name, refusal)
+            return
           }
         }
         await refreshDeclarations()
@@ -3675,6 +3695,29 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         // A retained previous version still guards the user tier.
         if (!old) failGuard(input)
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+      }
+    }
+    for (const input of loading) await load(input)
+    while (heldRefusals.length) {
+      await buildBootstrap(true)
+      const retried: typeof heldRefusals = []
+      for (const held of heldRefusals.splice(0)) {
+        if (held.judges.every(owner => candidates.includes(owner))) {
+          refuse(held.input, held.name, held.refusal)
+          continue
+        }
+        await load(held.input)
+        retried.push(held)
+      }
+      if (!retried.length) continue
+      await buildBootstrap(true)
+      for (const held of retried) {
+        const owner = candidates.find(owner => owner.declaration.storageId === held.input.storageId)
+        // Official builds $ with the refused plugin still in it: a judge whose event that plugin provides
+        // loads there, so its refusal stands (and the judge then does not load without the plugin).
+        if (!owner || !held.judges.some(judge => !candidates.includes(judge) && !unprovidedEvent(judge, bootstrap!.table, new Map()))) continue
+        withdraw(owner)
+        refuse(held.input, held.name, held.refusal)
       }
     }
     candidates.sort(seatOrder)
