@@ -91,6 +91,23 @@ jobs:
         working-directory: desktop
         run: bun test
 
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox uses.
+      - name: Prepare Electron on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get install -y xvfb
+
+      - name: End-to-end
+        working-directory: desktop
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a bun run e2e
+          else
+            bun run e2e
+          fi
+
       # electron-builder's bundled fpm (for .deb) is x64 only.
       - name: Install fpm
         if: runner.os == 'Linux' && runner.arch == 'ARM64'
