@@ -5412,6 +5412,8 @@ function runHeadlessStreaming(
           } else {
             try {
               await saveCustomTitle(getSessionId() as UUID, title, getTranscriptPath())
+              // No turn may be running to flush session_title_changed.
+              for (const event of drainSdkOutput()) output.enqueue(event)
               sendControlResponseSuccess(message)
             } catch (error) {
               sendControlResponseError(message, errorMessage(error))

@@ -53,8 +53,10 @@ if (process.env[childFlag] !== '1') {
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
   const { readFileSync } = await import('node:fs')
 
+  let written: StdoutMessage[] = []
   async function run(requests: Record<string, unknown>[], store = createStore(getDefaultAppState(), onChangeAppState)) {
     const frames: StdoutMessage[] = []
+    written = frames
     const receipts = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
     const mocks = [
       spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
@@ -211,6 +213,14 @@ if (process.env[childFlag] !== '1') {
     expect(b64.response).toMatchObject({ contents: readFileSync('package.json').subarray(0, 3).toString('base64'), encoding: 'base64' })
     expect(outside).toMatchObject({ subtype: 'error', error: 'read_file: permission denied for /etc/hostname' })
     expect(missing).toMatchObject({ subtype: 'error', error: 'read_file: path is required' })
+  })
+
+  test('rename_session with no turn running reports the new title before it answers', async () => {
+    const [rename] = await run([{ subtype: 'rename_session', title: 'idle title' }])
+    expect(rename).toMatchObject({ subtype: 'success' })
+    expect(written.map(frame => frame.type === 'system' ? frame.subtype : frame.type).filter(kind => kind === 'session_title_changed' || kind === 'control_response'))
+      .toEqual(['session_title_changed', 'control_response'])
+    expect(written.find(frame => frame.type === 'system' && frame.subtype === 'session_title_changed')).toMatchObject({ title: 'idle title' })
   })
 
   test('update_settings writes only the allowlisted key', async () => {
