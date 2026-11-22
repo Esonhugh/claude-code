@@ -33,10 +33,10 @@ test('ended agent: shown in its transcript, caller resumes it', () => {
   expect(s.get('a').pendingMessages).toEqual([])
 })
 
-test('agent stopped by the user: refused before anything is shown', () => {
+test('agent stopped by the user: their own message resumes it, like 2.1.329', () => {
   const s = setup({ a: agent('a', { status: 'killed', stoppedByUser: true }) })
-  expect(() => deliverTaskMessage(s.get('a'), 'hi', s.setAppState)).toThrow('agent a was stopped by the user')
-  expect(s.get('a').messages).toEqual([])
+  expect(deliverTaskMessage(s.get('a'), 'hi', s.setAppState)).toBe('resume')
+  expect(s.get('a').messages).toHaveLength(1)
 })
 
 test('teammates: running gets the message, stopped refuses', () => {

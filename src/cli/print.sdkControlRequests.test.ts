@@ -118,7 +118,8 @@ if (process.env[childFlag] !== '1') {
     expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
     // Shown in its view from the queue until the agent reads it (#825).
     expect(tasks.a1.messages).toHaveLength(0)
-    expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
+    // The host speaks for the user, who may resume an agent they stopped (2.1.329); this one has no transcript to resume from.
+    expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: No transcript found for agent ID: a2' })
     // A teammate's transcript is named by its agent id, which the web server keys sends by (#826).
     expect(injected.response).toEqual({ delivery: 'injected', agent_id: 'aalice-1' })
     expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
