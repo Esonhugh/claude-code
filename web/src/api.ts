@@ -195,14 +195,59 @@ export const loadModels = (): Promise<{ models: ModelOption[]; model?: string }>
 export const loadSnippet = (sessionId: string) =>
   getJson<{ snippet: string }>(`/api/history/${encodeURIComponent(sessionId)}/snippet`).then(r => r.snippet)
 
+/**
+ * What the desktop app's preload exposes. Its page is served over a pipe, which carries no
+ * WebSocket, so the session socket is relayed by the app instead.
+ */
+type DesktopBridge = {
+  socket: (
+    path: string,
+    onEvent: (type: 'open' | 'message' | 'close', data?: string, code?: number, reason?: string) => void,
+  ) => { send: (data: string) => void; close: (code?: number, reason?: string) => void }
+}
+
+/** The parts of a WebSocket the page uses, over the desktop app's relay. */
+class DesktopSocket extends EventTarget {
+  readyState: number = WebSocket.CONNECTING
+  private channel: ReturnType<DesktopBridge['socket']>
+
+  constructor(bridge: DesktopBridge, path: string) {
+    super()
+    this.channel = bridge.socket(path, (type, data, code, reason) => {
+      if (type === 'open') {
+        this.readyState = WebSocket.OPEN
+        this.dispatchEvent(new Event('open'))
+      } else if (type === 'message') {
+        this.dispatchEvent(new MessageEvent('message', { data }))
+      } else {
+        this.readyState = WebSocket.CLOSED
+        this.dispatchEvent(new CloseEvent('close', { code, reason }))
+      }
+    })
+  }
+
+  send(data: string) {
+    if (this.readyState === WebSocket.OPEN) this.channel.send(data)
+  }
+
+  close(code?: number, reason?: string) {
+    if (this.readyState >= WebSocket.CLOSING) return
+    this.readyState = WebSocket.CLOSING
+    this.channel.close(code, reason)
+  }
+}
+
 /** Opens the session's stream-json socket; resolves once it is open. */
 export function openSessionSocket(
   id: string,
   onMessage: (msg: unknown) => void,
 ): Promise<WebSocket> {
+  const desktop = (window as { claudeDesktop?: DesktopBridge }).claudeDesktop
   const url = new URL(`/api/sessions/${encodeURIComponent(id)}/ws`, location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  const socket = new WebSocket(url)
+  const socket = desktop
+    ? (new DesktopSocket(desktop, url.pathname) as unknown as WebSocket)
+    : new WebSocket(url)
   let buffer = ''
   socket.addEventListener('message', event => {
     buffer += String(event.data)
