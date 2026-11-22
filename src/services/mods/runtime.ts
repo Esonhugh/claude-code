@@ -3372,7 +3372,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return result.refuse
   }
 
-  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[], unadmitted?: ReadonlySet<Activation>) {
+  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[], unadmitted?: { has(owner: Activation): boolean }) {
     const live = (judge: Activation) => judge.state === 'active' || unadmitted?.has(judge)
     const eligible = before.filter(judge => live(judge) && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
     if (candidate.isNative) return eligible.filter(judge => judge.declaration.isNative)
@@ -3580,8 +3580,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
       loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
-    // Loaded on a cold start before a judge could be asked; barred from the host until judged.
-    const unadmitted = new Set<Activation>()
+    // Loaded on a cold start before every judge could be asked; barred from the host until judged.
+    // The value lists the judges that already let the plugin in.
+    const unadmitted = new Map<Activation, readonly Activation[]>()
     let registrationsChecked = false
     async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
@@ -3637,7 +3638,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           old.suggestionEligible = false
           suggestionSuspended = true
         }
-        let unsettled = false
+        let unsettled: readonly Activation[] | undefined
         {
           const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
           const position = seats.findIndex(owner => owner.declaration === declaration)
@@ -3649,7 +3650,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             // cannot refuse this plugin yet: the plugin loads and is judged after the last build, below.
             const settled = judges.filter(owner => candidates.includes(owner) && !unadmitted.has(owner) &&
               !(judgesPlugins(owner) && unprovidedEvent(owner, bootstrap!.table, new Map())))
-            unsettled = judges.some(owner => candidates.includes(owner) && !settled.includes(owner) && judgesPlugins(owner))
+            if (judges.some(owner => candidates.includes(owner) && !settled.includes(owner) && judgesPlugins(owner))) unsettled = settled
             judges = settled
           }
           const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
@@ -3686,7 +3687,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (old) candidates.splice(candidates.indexOf(old), 1, candidate)
         else candidates.push(candidate)
         if (unsettled) {
-          unadmitted.add(candidate)
+          unadmitted.set(candidate, unsettled)
           candidate.state = 'candidate'
         }
         if (old) replacements.set(candidate, old)
@@ -3705,10 +3706,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       await buildBootstrap(true)
       for (const input of loading) {
         const owner = candidates.find(owner => owner.declaration.storageId === input.storageId)
-        if (!owner || !unadmitted.delete(owner)) continue
+        const asked = owner && unadmitted.get(owner)
+        if (!owner || !asked) continue
+        unadmitted.delete(owner)
         const seats = [...candidates].sort(seatOrder)
         const position = seats.indexOf(owner)
-        const refusal = await admit(owner.declaration, judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)), bootstrap!.table)
+        const judges = judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)).filter(judge => !asked.includes(judge))
+        const refusal = await admit(owner.declaration, judges, bootstrap!.table)
         ensureLive()
         if (refusal === undefined) {
           owner.state = 'active'

@@ -187,6 +187,20 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
   })
 
+  test('a judge that let a plugin in before the others could be asked is not asked again', async () => {
+    const plugins = [
+      await fixture(`let asked = 0; export function register(on) {
+        on('plugin.register', ($, e, next) => e.name === 'x' && ++asked > 1 ? {refuse:'counter asked twice'} : next(e));
+      }`, 'counter'),
+      await fixture(unloadedJudge('nobody'), 'jbad'),
+      await fixture(`export function register(on) { on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'x: denied'})); }`, 'x'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([jbadDidNotLoad])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'x: denied'})
+  })
+
   test('a user plugin whose engine.create withholds a noun does not load (official 2.1.329)', async () => {
     const plugins = [
       await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, greeting: {read: async () => 'original'}}; }); }`, 'provider'),
