@@ -466,10 +466,14 @@ describe('Mods CLI session host', () => {
     expect(diagnostics.at(-1)!.message).toStartWith('The previous version stays loaded: Hook load failed: ')
     expect(diagnostics.at(-1)!.message).toContain('hooks.json must have `hooks`')
 
+    // An invalid config freezes the loaded version; a missing one still follows the source.
+    await writeFile(join(declaration.path, 'register.ts'), `export function register(on) { on('tool.call', () => ({ result: 'edited' })) }`)
+    await host.refresh()
+    expect(await result()).toBe('mod')
     diagnostics.length = 0
     await rm(config)
     await host.refresh()
-    expect(await result()).toBe('mod')
+    expect(await result()).toBe('edited')
     expect(diagnostics).toEqual([])
 
     await writeFile(config, '{"hooks":{}}')
@@ -480,13 +484,67 @@ describe('Mods CLI session host', () => {
     current = [declaration]
     await writeFile(config, '{"modules":["./register.ts"]}')
     await host.refresh()
-    expect(await result()).toBe('mod')
+    expect(await result()).toBe('edited')
 
     // An explicit reload starts over: nothing is held and the root is dropped.
     await writeFile(config, '{"modules":[]}')
     await host.refresh([without])
     expect(await result()).toBe('core')
     expect(roots).toEqual([[declaration.path], []])
+  })
+
+  test('a plugin with two hooks configs keeps the modules of the one that is missing and its loaded version when one is invalid', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'a' })) }`)
+    const second = join(declaration.path, 'second.json')
+    await writeFile(join(declaration.path, 'second.ts'), `export function register(on) { on('tool.call', { tool: 'Read' }, () => ({ result: 'b' })) }`)
+    const both = [declaration.hookModules![0]!, { configPath: second, paths: ['./second.ts'] }]
+    await writeFile(both[0]!.configPath, '{"modules":["./register.ts"]}')
+    await writeFile(second, '{"modules":["./second.ts"]}')
+    let current: LoadedPlugin[] = [{ ...declaration, hookModules: both }]
+    const diagnostics: ModDiagnostic[] = []
+    const host = session({ loadPlugins: async () => current, onDiagnostic: event => diagnostics.push(event) })
+    const results = async () => {
+      const out: unknown[] = []
+      for (const call of [input, { tool: 'Read', tool_use_id: 'call', file_path: '/x' }])
+        out.push(((await host.runtime!.dispatch('tool.call', call, core)) as { result: unknown }).result)
+      return out
+    }
+    await host.bind(binding)
+    expect(await results()).toEqual(['a', 'b'])
+
+    current = [{ ...declaration, hookModules: [both[0]!] }]
+    await rm(second)
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'b'])
+    expect(diagnostics).toEqual([])
+
+    await writeFile(second, '{"modules":[]}')
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'b'])
+    expect(diagnostics.at(-1)!.message).toStartWith('The previous version stays loaded: Hook load failed: ')
+
+    await writeFile(second, '{"hooks":{}}')
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'core'])
+  })
+
+  test('a held hooks config keeps its place, so hooks on the same event run in the same order', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'first' })) }`)
+    const first = declaration.hookModules![0]!
+    const second = { configPath: join(declaration.path, 'second.json'), paths: ['./second.ts'] }
+    await writeFile(join(declaration.path, 'second.ts'), `export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'second' })) }`)
+    await writeFile(first.configPath, '{"modules":["./register.ts"]}')
+    await writeFile(second.configPath, '{"modules":["./second.ts"]}')
+    let current: LoadedPlugin[] = [{ ...declaration, hookModules: [first, second] }]
+    const host = session({ loadPlugins: async () => current })
+    const result = async () => ((await host.runtime!.dispatch('tool.call', input, core)) as { result: unknown }).result
+    await host.bind(binding)
+    const winner = await result()
+
+    current = [{ ...declaration, hookModules: [second] }]
+    await rm(first.configPath)
+    await host.refresh()
+    expect(await result()).toBe(winner)
   })
 
   test('an inline plugin whose directory disappears stays loaded; one that is merely no longer enabled unloads', async () => {

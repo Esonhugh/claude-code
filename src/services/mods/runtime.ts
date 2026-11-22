@@ -107,6 +107,8 @@ export type ModPluginInput = {
   isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
+  /** Why the host could not read this plugin's declaration; the version already loaded stays. */
+  loadError?: string
   /** Host-only author project dependencies; not sent to the hook Worker. */
   authorTypeDependencies?: readonly ModTypeDependency[]
   options?: ModInput
@@ -3508,6 +3510,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
       try {
+        if (input.loadError && !recoveringOwners) throw new Error(input.loadError)
         const declaration = recoveringOwners
           ? knownArgs.get(input.storageId)
           : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
