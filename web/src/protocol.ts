@@ -1076,6 +1076,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         }
       }
       const queued = uuid === undefined ? undefined : state.queued.find(q => q.id === uuid)
+      if (raw.isQueued === true) {
+        // The server's copy of a prompt that still waits behind the turn, for a page that reloaded.
+        if (uuid === undefined || queued || echo) return state
+        const images = content
+          .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
+          .filter((u): u is string => !!u)
+        return queueUserMessage(state, contentText(message.content), uuid, images)
+      }
       if (raw.isReplay === true && queued) {
         // Fed to the model between tool calls.
         const rest = { ...next, queued: next.queued.filter(q => q !== queued) }

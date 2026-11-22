@@ -32,6 +32,10 @@ type Session = SessionInfo & {
   turnRunning?: boolean
   /** The stream events of the reply being streamed, and whether a client was sent each (replayTasks only). */
   streaming?: { line: string; sent: boolean }[]
+  /** The main thread's messages of the last few seconds, which the transcript may not have yet (replayTasks only). */
+  recent?: { line: string; at: number; prompt?: string }[]
+  /** Prompts written behind a running turn that the engine has not echoed yet, by uuid and marked `isQueued` (replayTasks only). */
+  waiting?: Map<string, string>
   idleTimer?: ReturnType<typeof setTimeout>
   exited: Promise<void>
   spawnOptions: SpawnSessionOptions
@@ -157,7 +161,27 @@ function recordInit(init: string | undefined, line: string): string | undefined 
   }
 }
 
+/**
+ * A message reaches the client up to 100 ms before the transcript, which a page reads before
+ * it attaches: one that reloads right then is given what came this recently again.
+ */
+const RECENT_MESSAGE_MS = 5000
+
 const TURN_RUNNING_LINE = JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+
+/** The text of a prompt the engine echoed. */
+function echoedPrompt(line: string): string | undefined {
+  try {
+    const content = (JSON.parse(line) as { message?: { content?: unknown } }).message?.content
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return undefined
+    return (content as { type?: unknown; text?: unknown }[])
+      .flatMap(block => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : []))
+      .join('\n')
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Follows the turn and the main reply being streamed, for a client that attaches mid-turn:
@@ -172,6 +196,20 @@ function recordTurn(session: Session, line: string): void {
     if (line.includes('"type":"message_stop"')) session.streaming = undefined
     return
   }
+  if (
+    (line.startsWith('{"type":"user"') || line.startsWith('{"type":"assistant"')) &&
+    line.includes('"parent_tool_use_id":null')
+  ) {
+    const now = Date.now()
+    const recent = (session.recent ?? []).filter(r => now - r.at < RECENT_MESSAGE_MS)
+    const prompt = line.includes('"isReplay":true') ? echoedPrompt(line) : undefined
+    // Prompts run as one are each echoed, the last with the text of all: the transcript has that one only.
+    while (prompt !== undefined && recent.at(-1)?.prompt !== undefined && `\n${prompt}\n`.includes(`\n${recent.at(-1)!.prompt}\n`)) {
+      recent.pop()
+    }
+    session.recent = [...recent, { line, at: now, ...(prompt !== undefined && { prompt }) }]
+    return
+  }
   if (line.startsWith('{"type":"result"')) {
     session.turnRunning = false
     session.streaming = undefined
@@ -180,6 +218,33 @@ function recordTurn(session: Session, line: string): void {
   if (!line.startsWith('{"type":"system","subtype":"session_state_changed"')) return
   if (line.includes('"state":"running"')) session.turnRunning = true
   else if (line.includes('"state":"idle"')) session.turnRunning = false
+}
+
+/**
+ * Follows the prompts that wait behind a turn, for a client that attaches before they run: one
+ * the client `written` joins, and its cancel request or the engine's echo takes it out. Going
+ * idle means none is left.
+ */
+function recordWaiting(waiting: Map<string, string>, line: string, written: boolean): void {
+  if (!written && line.startsWith('{"type":"system","subtype":"session_state_changed"')) {
+    if (line.includes('"state":"idle"')) waiting.clear()
+    return
+  }
+  const cancel = written && line.includes('"subtype":"cancel_async_message"')
+  const prompt = line.includes('"type":"user"') && (written || line.includes('"isReplay":true'))
+  if (!cancel && !prompt) return
+  let msg: { type?: unknown; uuid?: unknown; request?: { message_uuid?: unknown } }
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return
+  }
+  if (cancel) {
+    if (typeof msg.request?.message_uuid === 'string') waiting.delete(msg.request.message_uuid)
+  } else if (msg.type === 'user' && typeof msg.uuid === 'string') {
+    if (written) waiting.set(msg.uuid, JSON.stringify({ ...msg, isQueued: true }))
+    else waiting.delete(msg.uuid)
+  }
 }
 
 function recordModStatus(modStatus: Map<string, string>, line: string): void {
@@ -317,7 +382,7 @@ export class SessionManager {
       socket: null,
       pending: [],
       asks: new Map(),
-      ...(this.replayTasks && { taskLines: new Map(), modStatus: new Map() }),
+      ...(this.replayTasks && { taskLines: new Map(), modStatus: new Map(), waiting: new Map() }),
       exited: closed(child),
       spawnOptions,
       busy: false,
@@ -398,6 +463,7 @@ export class SessionManager {
         if (session.modStatus) recordModStatus(session.modStatus, line)
         session.init = recordInit(session.init, line)
         recordTurn(session, line)
+        if (session.waiting?.size) recordWaiting(session.waiting, line, false)
       }
       if (line.includes('"can_use_tool"') || line.includes('"control_cancel_request"')) recordAsk(session.asks, line)
       if (session.channelRequests?.size && line.includes('"type":"control_response"')) recordChannelLine(session, line)
@@ -491,11 +557,18 @@ export class SessionManager {
     }
     // Mid-turn: the turn is running, and the reply streamed so far precedes what was held back.
     if (session.turnRunning) socket.send(TURN_RUNNING_LINE + '\n')
+    // The page folds a message it already has from the transcript into the one shown.
+    const since = Date.now() - RECENT_MESSAGE_MS
+    session.recent = session.recent?.filter(r => r.at >= since)
+    for (const { line } of session.recent ?? []) {
+      if (!session.pending.includes(line)) socket.send(line + '\n')
+    }
     for (const entry of session.streaming ?? []) {
       if (entry.sent) socket.send(entry.line + '\n')
       entry.sent = true
     }
     for (const line of session.pending.splice(0)) socket.send(line + '\n')
+    for (const line of session.waiting?.values() ?? []) socket.send(line + '\n')
     this.logger?.info(`session ${id} attached`)
     return true
   }
@@ -520,6 +593,8 @@ export class SessionManager {
     const stdin = session.process.stdin
     if (!stdin || stdin.destroyed) return
     for (const line of lines) {
+      // A prompt behind a running turn waits its turn; the first one starts it.
+      if (session.waiting && (session.busy || session.waiting.size)) recordWaiting(session.waiting, line, true)
       if (line.includes('"type":"user"')) session.busy = true
       if (line.includes('"type":"control_response"')) recordAsk(session.asks, line)
       if (line.includes('"subtype":"channel_enable"')) recordChannelLine(session, line)
