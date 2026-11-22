@@ -62,5 +62,5 @@ test('a local command is told which message ran it: the uuid its sender gave, el
   await processSlashCommand('/reads', [], [], [], context, () => {}, 'host-uuid-1')
   const own = await processSlashCommand('/reads', [], [], [], context, () => {})
   expect(seen[0]).toBe('host-uuid-1')
-  expect(own.messages.map(message => message.uuid)).toContain(seen[1])
+  expect(own.messages.map(message => String(message.uuid))).toContain(seen[1])
 })
