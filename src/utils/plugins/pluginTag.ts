@@ -87,7 +87,7 @@ async function findMarketplaceEntry(pluginRoot: string, name: string) {
   for (let dir = pluginRoot; ; ) {
     const path = join(dir, '.claude-plugin', 'marketplace.json')
     const marketplace = await readFile(path, 'utf8')
-      .then(text => PluginMarketplaceSchema().safeParse(jsonParse(text)))
+      .then(text => PluginMarketplaceSchema().safeParse(jsonParse(stripBOM(text))))
       .catch(() => undefined)
     if (marketplace?.success) {
       for (const [entryIndex, entry] of marketplace.data.plugins.entries()) {
