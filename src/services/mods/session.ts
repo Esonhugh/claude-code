@@ -471,16 +471,24 @@ export function createModsSession(options: ModsSessionOptions) {
         else watchedPlugins.delete(root)
         continue
       }
-      const groups = [...(current.hookModules ?? [])]
+      // Held groups keep their place, so hooks stay registered in the same order.
+      const found = current.hookModules ?? []
+      const groups: typeof found = []
       for (const group of previous.hookModules ?? []) {
-        if (!group.paths.length || groups.some(other => other.configPath === group.configPath && other.paths.length)) continue
+        const now = found.find(other => other.configPath === group.configPath)
+        if (now?.paths.length || !group.paths.length) continue
         const failure = await hooksConfigFailure(group.configPath)
         if (failure === undefined) continue
         groups.push(group)
         if (failure) failed.set(root, failure)
       }
-      if (groups.length !== (current.hookModules?.length ?? 0)) configured[index] = { ...current, hookModules: groups }
-      if (!groups.some(group => group.paths.length)) watchedPlugins.set(root, undefined)
+      if (groups.length) {
+        const order = (previous.hookModules ?? []).map(group => group.configPath)
+        const seat = (group: (typeof found)[number]) => (order.indexOf(group.configPath) + 1) || order.length + 1
+        configured[index] = { ...current, hookModules: [...groups, ...found.filter(group => !groups.some(held => held.configPath === group.configPath))].sort((a, b) => seat(a) - seat(b)) }
+      }
+      const merged = configured[index]!.hookModules ?? []
+      if (!merged.some(group => group.paths.length)) watchedPlugins.set(root, undefined)
     }
     for (const plugin of configured) {
       if (plugin.isBuiltin !== true && !authoringOwns(plugin.path) && plugin.hookModules?.some(group => group.paths.length))

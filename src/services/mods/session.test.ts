@@ -528,6 +528,25 @@ describe('Mods CLI session host', () => {
     expect(await results()).toEqual(['a', 'core'])
   })
 
+  test('a held hooks config keeps its place, so hooks on the same event run in the same order', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'first' })) }`)
+    const first = declaration.hookModules![0]!
+    const second = { configPath: join(declaration.path, 'second.json'), paths: ['./second.ts'] }
+    await writeFile(join(declaration.path, 'second.ts'), `export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'second' })) }`)
+    await writeFile(first.configPath, '{"modules":["./register.ts"]}')
+    await writeFile(second.configPath, '{"modules":["./second.ts"]}')
+    let current: LoadedPlugin[] = [{ ...declaration, hookModules: [first, second] }]
+    const host = session({ loadPlugins: async () => current })
+    const result = async () => ((await host.runtime!.dispatch('tool.call', input, core)) as { result: unknown }).result
+    await host.bind(binding)
+    const winner = await result()
+
+    current = [{ ...declaration, hookModules: [second] }]
+    await rm(first.configPath)
+    await host.refresh()
+    expect(await result()).toBe(winner)
+  })
+
   test('an inline plugin whose directory disappears stays loaded; one that is merely no longer enabled unloads', async () => {
     const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'mod' })) }`)
     let current: LoadedPlugin[] = [declaration]
