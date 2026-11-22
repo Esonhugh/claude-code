@@ -39,4 +39,5 @@ open the app the first time with right click → Open.
 
 ```sh
 bun test
+bun run e2e              # opens the app against the staged sidecar; xvfb-run on Linux
 ```

@@ -12,7 +12,8 @@
     "start": "electron .",
     "stage": "bun ./stage-sidecar.mjs",
     "dist": "electron-builder --publish never",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e": "electron e2e.mjs"
   },
   "devDependencies": {
     "electron": "45.4.1",
