@@ -3276,8 +3276,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
           for (const [noun, methods] of Object.entries(before)) {
             if (Object.hasOwn(result, noun)) continue
-            if (noun === 'telemetry' && owner.declaration.tier === 'user')
-              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.telemetry, added by core; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
+            if (owner.declaration.tier === 'user')
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.${noun}, added by ${state.owners.get(noun) === 'engine' ? 'core' : state.owners.get(noun)}; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
             const withholders = state.withheld.get(noun) ?? new Set<string>()
             withholders.add(owner.declaration.name)
             state.withheld.set(noun, withholders)

@@ -187,6 +187,21 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
   })
 
+  test('a user plugin whose engine.create withholds a noun does not load (official 2.1.329)', async () => {
+    const plugins = [
+      await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, greeting: {read: async () => 'original'}}; }); }`, 'provider'),
+      await fixture(`export function register(on) {
+        on('engine.create', async ($, e, next) => { const built = await next(e); return {telemetry: built.telemetry}; });
+        on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'hide: denied'}));
+      }`, 'hide'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile([plugins[1]!, plugins[0]!])
+    expect(events.map(event => event.plugin)).toEqual(['hide'])
+    expect(events[0]!.message).toMatch(/engine\.create withheld \$\.\w+, added by (core|provider); it runs in the user tier/)
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
   test.each([[['jbad', 'provider', 'consumer']], [['jbad', 'consumer', 'provider']]] as const)('a provider that a module that does not load would have refused keeps its consumer loaded (%p)', async order => {
     const sources = {
       jbad: unloadedJudge('provider'),
