@@ -632,8 +632,9 @@ export function getPolicySettingsOrigin():
 export function updateSettingsForSource(
   source: EditableSettingSource,
   // An updater is called under the lock with the current settings, for
-  // changes computed from them (e.g. adding to a rule list).
-  settings: SettingsJson | ((existing: SettingsJson) => SettingsJson),
+  // changes computed from them (e.g. adding to a rule list). It returns null
+  // when there is nothing to write.
+  settings: SettingsJson | ((existing: SettingsJson) => SettingsJson | null),
   options?: { atomicOnly?: boolean },
 ): { error: Error | null } {
   if (
@@ -727,7 +728,9 @@ export function updateSettingsForSource(
         const update = (base: SettingsJson) =>
           typeof settings === 'function' ? settings(clone(base)) : settings
         const base = existingSettings || {}
-        const updatedSettings = mergeWith(base, update(base), mergeUpdate)
+        const changes = update(base)
+        if (changes === null) return null
+        const updatedSettings = mergeWith(base, changes, mergeUpdate)
 
         const content = jsonStringify(updatedSettings, null, 2) + '\n'
         writeFileSyncAndFlush_DEPRECATED(filePath, content, {
@@ -741,7 +744,7 @@ export function updateSettingsForSource(
             ...accepted,
             settings: mergeWith(
               clone(accepted.settings ?? {}),
-              update(accepted.settings ?? {}),
+              update(accepted.settings ?? {}) ?? {},
               mergeUpdate,
             ),
           })

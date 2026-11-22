@@ -62,7 +62,10 @@ import {
   redactOptionValues,
   unsetPluginOptions,
 } from '../../utils/plugins/pluginConfigure.js'
+import { updateSettingsForSource } from '../../utils/settings/settings.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
 import {
+  clearPluginOptionsCache,
   getPluginStorageId,
   loadPluginOptions,
   type PluginOptionSchema,
@@ -414,6 +417,50 @@ export async function pluginDetailsHandler(name: string): Promise<void> {
     }
   }
   cliOk(formatPluginDetails(plugin, inventory, tokens))
+}
+
+// plugin restore-set-aside
+export async function pluginRestoreSetAsideHandler(
+  plugin: string,
+  options: { discard?: boolean },
+): Promise<void> {
+  const discard = options.discard ?? false
+  logEvent('tengu_plugin_restore_set_aside_command', { discard })
+  const { restoreSetAsideConfigs, saveRestoredSetAsideSecrets } = await import(
+    '../../utils/plugins/pluginSetAside.js'
+  )
+  let optionCount = 0
+  const { error } = updateSettingsForSource('userSettings', existing => {
+    const { count, update } = restoreSetAsideConfigs(
+      existing.pluginConfigs ?? {},
+      plugin,
+      discard,
+    )
+    optionCount = count
+    return count === 0
+      ? null
+      : { pluginConfigs: update as SettingsJson['pluginConfigs'] }
+  })
+  if (error) {
+    cliError(
+      'Your user settings file could not be changed, so nothing was restored or discarded. Try again once it can be.',
+    )
+  }
+  const { count: secretCount, saved: secretsSaved } =
+    saveRestoredSetAsideSecrets(plugin, discard)
+  clearPluginOptionsCache()
+  if (!secretsSaved) {
+    cliError(
+      'Secure storage could not be fully read or changed, so some stored secrets may not have been restored or discarded. Try again where it can be, such as on the machine itself if your keychain is locked over SSH.',
+    )
+  }
+  cliOk(
+    optionCount + secretCount === 0
+      ? `No options or secrets are set aside for ${plugin}.`
+      : discard
+        ? `Discarded the options and secrets set aside for ${plugin}.`
+        : `Restored the options and secrets set aside for ${plugin}. Any plugin installed under that id can read them. What it saved in its data folder is not moved: \`claude plugin list\` says where that is.`,
+  )
 }
 
 // plugin validate
@@ -780,8 +827,17 @@ export async function pluginListHandler(options: {
   }
 
   const refusal = getInstalledPluginsReadRefusal()
-  const recoveryNotes = [getSetAsideInstalledPluginsNote(), getUnreadableInstalledPluginsNote()]
-    .filter((note): note is string => note !== null)
+  const { storedSetAsidePluginIds } = await import(
+    '../../utils/plugins/pluginSetAside.js'
+  )
+  const setAsideIds = storedSetAsidePluginIds()
+  const recoveryNotes = [
+    getSetAsideInstalledPluginsNote(),
+    getUnreadableInstalledPluginsNote(),
+    setAsideIds.length > 0
+      ? `Note: your organization replaced a plugin marketplace with one of the same name, so the options and secrets stored for ${setAsideIds.join(', ')} were set aside. They stay until you choose: \`claude plugin restore-set-aside <plugin>\` gives them to the plugin now under that id, and adding --discard deletes them.`
+      : null,
+  ].filter((note): note is string => note !== null)
   if (pluginIds.length === 0 && inlinePlugins.length === 0) {
     // inlineLoadErrors can exist with zero inline plugins (e.g. --plugin-dir
     // points at a nonexistent path). Don't early-exit over them — fall
