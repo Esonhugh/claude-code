@@ -7,6 +7,7 @@ import { query } from './query.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { createAssistantMessage } from './utils/messages.js'
+import { getErrorMessageIfRefusal } from './services/api/errors.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
 import { registerHookCallbacks, resetStateForTests } from './bootstrap/state.js'
 
@@ -15,7 +16,7 @@ beforeEach(() => {
 })
 
 // The stream delivers the tool_use, then stays open for `streamTailMs`.
-async function runDeferred(streamTailMs: number) {
+async function runDeferred(streamTailMs: number, endsRefused = false) {
   let calls = 0
   const tool = {
     name: 'DeferFixture',
@@ -100,6 +101,7 @@ async function runDeferred(streamTailMs: number) {
           // Like the message_delta that follows the last content block.
           yield { type: 'stream_event', event: { type: 'message_delta' } } as never
         }
+        if (endsRefused) yield getErrorMessageIfRefusal('refusal', 'claude-sonnet-4-6', 'msg_refused')!
       },
     },
   })
@@ -125,4 +127,14 @@ test.each([
   expect(run.calls).toBe(0)
   expect(JSON.stringify(run.events)).toContain('hook_deferred_tool')
   expect(JSON.stringify(run.events)).not.toContain('tool_result')
+})
+
+test('a refusal after a deferred call is announced before its error', async () => {
+  const run = await runDeferred(100, true)
+  expect(run.terminal).toEqual({ reason: 'tool_deferred' })
+  expect(run.modelRequests).toBe(1)
+  const tail = run.events.slice(-2) as Array<{ type: string; modelRefusalNoFallback?: unknown; isApiErrorMessage?: boolean }>
+  expect(tail.map(event => event.type)).toEqual(['system', 'assistant'])
+  expect(tail[0]!.modelRefusalNoFallback).toMatchObject({ originalModel: 'claude-sonnet-4-6' })
+  expect(tail[1]!.isApiErrorMessage).toBe(true)
 })
