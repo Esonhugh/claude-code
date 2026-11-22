@@ -1,7 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
 import type { PromptRequest, PromptResponse } from '../../types/hooks.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
@@ -19,6 +19,11 @@ import { modSessionIdentity } from './sessionIdentity.js'
 import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage, isENOENT } from '../../utils/errors.js'
+import { pathExists } from '../../utils/file.js'
+import { stripBOM } from '../../utils/jsonRead.js'
+import { jsonParse } from '../../utils/slowOperations.js'
+import { PluginHooksSchema } from '../../utils/plugins/schemas.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
   shouldAllowManagedHooksOnly,
@@ -109,6 +114,10 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  let watchTargets: string[] = []
+  // Plugin roots kept under watch until the next explicit reload, each with the
+  // last version that named hooks modules (undefined once a valid config unloaded them).
+  const watchedPlugins = new Map<string, LoadedPlugin | undefined>()
   let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
@@ -434,24 +443,77 @@ export function createModsSession(options: ModsSessionOptions) {
     timer.unref?.()
   }
 
-  async function watchPlugins(plugins: readonly LoadedPlugin[]) {
+  /** undefined: the hooks config still parses; '': it is gone; otherwise why it is invalid. */
+  async function hooksConfigFailure(configPath: string): Promise<string | undefined> {
+    try {
+      PluginHooksSchema().parse(jsonParse(stripBOM(await readFile(configPath, 'utf8'))))
+      return undefined
+    } catch (error) {
+      return isENOENT(error) ? '' : errorMessage(error)
+    }
+  }
+
+  /**
+   * Between explicit reloads a watched plugin keeps the modules of a hooks config
+   * that is missing or invalid, and all of them while its --plugin-dir directory
+   * is gone; only a valid config that names no module unloads them. `failed` maps
+   * the roots whose config is invalid, which stay on the version already loaded.
+   */
+  async function holdWatchedPlugins(found: readonly LoadedPlugin[]) {
+    const configured = [...found]
+    const failed = new Map<string, string>()
+    for (const [root, previous] of watchedPlugins) {
+      if (!previous) continue
+      const index = configured.findIndex(plugin => plugin.path === root)
+      const current = configured[index]
+      if (!current) {
+        if (previous.source.endsWith('@inline') && !(await pathExists(root))) configured.push(previous)
+        else watchedPlugins.delete(root)
+        continue
+      }
+      // Held groups keep their place, so hooks stay registered in the same order.
+      const found = current.hookModules ?? []
+      const groups: typeof found = []
+      for (const group of previous.hookModules ?? []) {
+        const now = found.find(other => other.configPath === group.configPath)
+        if (now?.paths.length || !group.paths.length) continue
+        const failure = await hooksConfigFailure(group.configPath)
+        if (failure === undefined) continue
+        groups.push(group)
+        if (failure) failed.set(root, failure)
+      }
+      if (groups.length) {
+        const order = (previous.hookModules ?? []).map(group => group.configPath)
+        const seat = (group: (typeof found)[number]) => (order.indexOf(group.configPath) + 1) || order.length + 1
+        configured[index] = { ...current, hookModules: [...groups, ...found.filter(group => !groups.some(held => held.configPath === group.configPath))].sort((a, b) => seat(a) - seat(b)) }
+      }
+      const merged = configured[index]!.hookModules ?? []
+      if (!merged.some(group => group.paths.length)) watchedPlugins.set(root, undefined)
+    }
+    for (const plugin of configured) {
+      if (plugin.isBuiltin !== true && !authoringOwns(plugin.path) && plugin.hookModules?.some(group => group.paths.length))
+        watchedPlugins.set(plugin.path, plugin)
+    }
+    return { configured, failed }
+  }
+
+  async function watchPlugins() {
     const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
     const nextRoots = watchEnabled ? [
       ...new Set([
         ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
-        ...plugins
-          .filter(
-            plugin =>
-              plugin.isBuiltin !== true &&
-              !authoringOwns(plugin.path) &&
-              plugin.hookModules?.some(group => group.paths.length),
-          )
-          .map(plugin => plugin.path),
+        ...watchedPlugins.keys(),
       ]),
     ].sort() : []
+    // A root that is gone is watched through its nearest existing ancestor, so recreating it is noticed.
+    const nextTargets = await Promise.all(nextRoots.map(async root => {
+      let target = root
+      while (dirname(target) !== target && !(await pathExists(target))) target = dirname(target)
+      return target
+    }))
     if (
       nextRoots.length === roots.length &&
-      nextRoots.every((root, index) => root === roots[index])
+      nextRoots.every((root, index) => root === roots[index] && nextTargets[index] === watchTargets[index])
     )
       return
     const old = watcher
@@ -460,8 +522,9 @@ export function createModsSession(options: ModsSessionOptions) {
     await watcherClosing
     if (stopped) return
     roots = nextRoots
+    watchTargets = nextTargets
     if (roots.length === 0) return
-    watcher = chokidar.watch(roots, {
+    watcher = chokidar.watch([...new Set(watchTargets)], {
       persistent: false,
       ignoreInitial: true,
       followSymlinks: false,
@@ -470,8 +533,10 @@ export function createModsSession(options: ModsSessionOptions) {
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
       // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
       ignored: (path, stats) => {
+        path = normalize(path) // chokidar hands over forward slashes on Windows
         const root = roots.find(root => path === root || path.startsWith(root + sep))
-        return (root === undefined ? path : relative(root, path)).split(sep).some(part => part === '.git' || part === 'node_modules') ||
+        if (root === undefined) return !roots.some(root => root.startsWith(path + sep))
+        return relative(root, path).split(sep).some(part => part === '.git' || part === 'node_modules') ||
           Boolean(stats && !stats.isFile() && !stats.isDirectory()) ||
           Boolean(stats?.isFile() && extname(path) !== '.json' && !esmModuleExtensions.includes(extname(path)))
       },
@@ -570,7 +635,8 @@ export function createModsSession(options: ModsSessionOptions) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const disabled = options.getDisabledReason?.()
-    const configured = options.bare ? [] : plugins ?? (await loadPlugins())
+    if (plugins) watchedPlugins.clear()
+    const { configured, failed } = await holdWatchedPlugins(options.bare ? [] : plugins ?? (await loadPlugins()))
     const authoringErrors = deferAuthoring || options.bare
       ? []
       : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
@@ -584,6 +650,8 @@ export function createModsSession(options: ModsSessionOptions) {
     configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
     for (const input of prepared.inputs) {
+      const failure = failed.get(input.pluginRoot)
+      if (failure) input.loadError = `Hook load failed: ${failure}`
       const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
       for (const [key, field] of Object.entries(schema ?? {})) {
         if (!field.sensitive) continue
@@ -667,7 +735,8 @@ export function createModsSession(options: ModsSessionOptions) {
       }
     }
     if (stopped) return
-    await watchPlugins(disabled ? [] : loaded)
+    if (disabled) watchedPlugins.clear()
+    await watchPlugins()
     if (!stopped && (diagnostics.length > 0 || setAppState))
       publishDiagnostics()
   }

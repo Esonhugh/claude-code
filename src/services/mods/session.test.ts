@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { disposeModsHosts } from '../../utils/gracefulShutdown.js'
@@ -438,6 +438,163 @@ describe('Mods CLI session host', () => {
     await host.refresh()
     expect(watching.watchers[0]!.closed).toBe(true)
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:1})
+  })
+
+  test('a watched plugin keeps its modules while its hooks config is missing or invalid, and stays watched once a valid config unloads them', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'mod' })) }`)
+    const config = declaration.hookModules![0]!.configPath
+    const without = { ...declaration, hookModules: undefined }
+    await writeFile(config, '{"modules":["./register.ts"]}')
+    let current: LoadedPlugin[] = [declaration]
+    const diagnostics: ModDiagnostic[] = []
+    const roots: string[][] = []
+    const watch = spyOn(chokidar, 'watch').mockImplementation(paths => {
+      roots.push([...(paths as string[])])
+      return Object.assign(new EventEmitter(), { close: async () => { roots.push([]) } }) as unknown as FSWatcher
+    })
+    cleanups.push(() => watch.mockRestore())
+    const host = session({ loadPlugins: async () => current, onDiagnostic: event => diagnostics.push(event) })
+    const result = async () => ((await host.runtime!.dispatch('tool.call', input, core)) as { result: unknown }).result
+    await host.bind(binding)
+    expect(await result()).toBe('mod')
+
+    current = [without]
+    await writeFile(config, '{"modules":[]}')
+    await host.refresh()
+    expect(await result()).toBe('mod')
+    expect(diagnostics.at(-1)).toMatchObject({ plugin: 'fixture', stage: 'reload' })
+    expect(diagnostics.at(-1)!.message).toStartWith('The previous version stays loaded: Hook load failed: ')
+    expect(diagnostics.at(-1)!.message).toContain('hooks.json must have `hooks`')
+
+    // An invalid config freezes the loaded version; a missing one still follows the source.
+    await writeFile(join(declaration.path, 'register.ts'), `export function register(on) { on('tool.call', () => ({ result: 'edited' })) }`)
+    await host.refresh()
+    expect(await result()).toBe('mod')
+    diagnostics.length = 0
+    await rm(config)
+    await host.refresh()
+    expect(await result()).toBe('edited')
+    expect(diagnostics).toEqual([])
+
+    await writeFile(config, '{"hooks":{}}')
+    await host.refresh()
+    expect(await result()).toBe('core')
+    expect(roots).toEqual([[declaration.path]])
+
+    current = [declaration]
+    await writeFile(config, '{"modules":["./register.ts"]}')
+    await host.refresh()
+    expect(await result()).toBe('edited')
+
+    // An explicit reload starts over: nothing is held and the root is dropped.
+    await writeFile(config, '{"modules":[]}')
+    await host.refresh([without])
+    expect(await result()).toBe('core')
+    expect(roots).toEqual([[declaration.path], []])
+  })
+
+  test('a plugin with two hooks configs keeps the modules of the one that is missing and its loaded version when one is invalid', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'a' })) }`)
+    const second = join(declaration.path, 'second.json')
+    await writeFile(join(declaration.path, 'second.ts'), `export function register(on) { on('tool.call', { tool: 'Read' }, () => ({ result: 'b' })) }`)
+    const both = [declaration.hookModules![0]!, { configPath: second, paths: ['./second.ts'] }]
+    await writeFile(both[0]!.configPath, '{"modules":["./register.ts"]}')
+    await writeFile(second, '{"modules":["./second.ts"]}')
+    let current: LoadedPlugin[] = [{ ...declaration, hookModules: both }]
+    const diagnostics: ModDiagnostic[] = []
+    const host = session({ loadPlugins: async () => current, onDiagnostic: event => diagnostics.push(event) })
+    const results = async () => {
+      const out: unknown[] = []
+      for (const call of [input, { tool: 'Read', tool_use_id: 'call', file_path: '/x' }])
+        out.push(((await host.runtime!.dispatch('tool.call', call, core)) as { result: unknown }).result)
+      return out
+    }
+    await host.bind(binding)
+    expect(await results()).toEqual(['a', 'b'])
+
+    current = [{ ...declaration, hookModules: [both[0]!] }]
+    await rm(second)
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'b'])
+    expect(diagnostics).toEqual([])
+
+    await writeFile(second, '{"modules":[]}')
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'b'])
+    expect(diagnostics.at(-1)!.message).toStartWith('The previous version stays loaded: Hook load failed: ')
+
+    await writeFile(second, '{"hooks":{}}')
+    await host.refresh()
+    expect(await results()).toEqual(['a', 'core'])
+  })
+
+  test('a held hooks config keeps its place, so hooks on the same event run in the same order', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'first' })) }`)
+    const first = declaration.hookModules![0]!
+    const second = { configPath: join(declaration.path, 'second.json'), paths: ['./second.ts'] }
+    await writeFile(join(declaration.path, 'second.ts'), `export function register(on) { on('tool.call', { tool: 'Bash' }, () => ({ result: 'second' })) }`)
+    await writeFile(first.configPath, '{"modules":["./register.ts"]}')
+    await writeFile(second.configPath, '{"modules":["./second.ts"]}')
+    let current: LoadedPlugin[] = [{ ...declaration, hookModules: [first, second] }]
+    const host = session({ loadPlugins: async () => current })
+    const result = async () => ((await host.runtime!.dispatch('tool.call', input, core)) as { result: unknown }).result
+    await host.bind(binding)
+    const winner = await result()
+
+    current = [{ ...declaration, hookModules: [second] }]
+    await rm(first.configPath)
+    await host.refresh()
+    expect(await result()).toBe(winner)
+  })
+
+  test('an inline plugin whose directory disappears stays loaded; one that is merely no longer enabled unloads', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'mod' })) }`)
+    let current: LoadedPlugin[] = [declaration]
+    const host = session({ loadPlugins: async () => current })
+    const result = async () => ((await host.runtime!.dispatch('tool.call', input, core)) as { result: unknown }).result
+    await host.bind({ ...binding, isInteractive: false })
+    current = []
+    await host.refresh()
+    expect(await result()).toBe('core')
+
+    current = [declaration]
+    await host.refresh()
+    expect(await result()).toBe('mod')
+    current = []
+    await rm(declaration.path, { recursive: true })
+    await host.refresh()
+    expect(await result()).toBe('mod')
+  })
+
+  test('a watched plugin root that is deleted is watched through its parent until it is recreated', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'mod' })) }`)
+    await writeFile(declaration.hookModules![0]!.configPath, '{"modules":["./register.ts"]}')
+    let current: LoadedPlugin[] = [declaration]
+    const watched: { paths: string[]; ignored: (path: string) => boolean }[] = []
+    const watch = spyOn(chokidar, 'watch').mockImplementation((paths, options) => {
+      watched.push({ paths: [...(paths as string[])], ignored: options!.ignored as (path: string) => boolean })
+      return Object.assign(new EventEmitter(), { close: async () => {} }) as unknown as FSWatcher
+    })
+    cleanups.push(() => watch.mockRestore())
+    const host = session({ loadPlugins: async () => current })
+    await host.bind(binding)
+    expect(watched.map(entry => entry.paths)).toEqual([[declaration.path]])
+
+    current = []
+    await rm(declaration.path, { recursive: true })
+    await host.refresh()
+    const parent = dirname(declaration.path)
+    expect(watched.at(-1)!.paths).toEqual([parent])
+    expect(watched.at(-1)!.ignored(parent)).toBe(false)
+    expect(watched.at(-1)!.ignored(join(declaration.path, 'register.ts'))).toBe(false)
+    expect(watched.at(-1)!.ignored(join(parent, 'sibling'))).toBe(true)
+
+    current = [declaration]
+    await mkdir(declaration.path)
+    await writeFile(join(declaration.path, 'register.ts'), `export function register(on) { on('tool.call', () => ({ result: 'again' })) }`)
+    await host.refresh()
+    expect(watched.at(-1)!.paths).toEqual([declaration.path])
+    expect((await host.runtime!.dispatch('tool.call', input, core) as { result: unknown }).result).toBe('again')
   })
 
   test('restores consent only for the exact current session authoring path', async () => {
