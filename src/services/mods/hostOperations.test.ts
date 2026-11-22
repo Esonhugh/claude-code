@@ -649,6 +649,24 @@ describe('store', () => {
     expect(await host.store.get('n')).toBe(8)
   })
 
+  test('a legacy store that cannot be read or understood is not replaced by a new one', async () => {
+    const legacy = join(pluginDataDirPath('example@market'), `mod-store-${createHash('sha256').update('example@market').digest('hex')}.json`)
+    await mkdir(pluginDataDirPath('example@market'), { recursive: true })
+    for (const text of ['[["n",7]', '{"n": 7}']) {
+      await writeFile(legacy, text)
+      await expect(host.store.get('n')).rejects.toThrow(`example@market: store file ${legacy} is malformed (`)
+      await expect(host.store.set('other', 1)).rejects.toThrow(`example@market: store file ${legacy} is malformed (`)
+    }
+    await rm(legacy)
+    await mkdir(legacy)
+    await expect(host.store.set('other', 1)).rejects.toThrow(`example@market: store file ${legacy} is unreadable (`)
+    expect(await readdir(storeDir()).then(names => names.filter(name => name.endsWith('.json')), () => [])).toEqual([])
+    await rm(legacy, { recursive: true })
+    await writeFile(legacy, '[["n",7]]')
+    await host.store.set('other', 1)
+    expect(await host.store.keys()).toEqual(['n', 'other'])
+  })
+
   test('requires nonempty keys of at most 256 UTF-16 code units without changing existing data', async () => {
     await host.store.set('original', 1)
     const path = await storedFile()
