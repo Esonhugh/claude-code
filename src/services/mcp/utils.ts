@@ -22,11 +22,11 @@ import {
 import {
   getRelativeSettingsFilePathForSource,
   getSettings_DEPRECATED,
-  getSettingsFilePathForSource,
   getSettingsForSource,
   hasSkipDangerousModePermissionPrompt,
 } from '../../utils/settings/settings.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
+import { isSettingSourceWorkspaceTrusted } from '../../utils/settings/workspaceTrust.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { getEnterpriseMcpFilePath, getMcpConfigByName } from './config.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
@@ -438,18 +438,15 @@ export function getProjectMcpServerStatus(
       name => normalizeNameForMCP(name) === normalizedName,
     ) ??
       false)
-  // Before the workspace is trusted, a repo must not approve its own
-  // .mcp.json servers: skip .claude/settings.json (unless it is the user
-  // settings file) and a git-tracked .claude/settings.local.json, which is
-  // repo content too (official 2.1.196).
+  // Before the workspace is trusted, the folder must not approve its own
+  // .mcp.json servers: skip .claude/settings.json and
+  // .claude/settings.local.json, tracked or not (official 2.1.329). Where
+  // they are the user's own settings, a git-tracked settings.local.json
+  // still counts as repo content (official 2.1.196).
   const approved = checkHasTrustDialogAccepted()
     ? approves(settings)
     : getEnabledSettingSources().some(source => {
-        if (
-          source === 'projectSettings' &&
-          getSettingsFilePathForSource('projectSettings') !==
-            getSettingsFilePathForSource('userSettings')
-        ) {
+        if (!isSettingSourceWorkspaceTrusted(source)) {
           return false
         }
         if (

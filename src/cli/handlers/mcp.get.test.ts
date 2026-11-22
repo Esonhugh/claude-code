@@ -105,6 +105,8 @@ async function runChild(): Promise<void> {
   state.setCwdState(process.cwd())
   // `claude mcp get | cat` is non-interactive but not a -p session: no auto-approve.
   state.setIsInteractive(false)
+  // The folder is trusted; before that settings.local.json approves nothing.
+  state.setSessionTrustAccepted(true)
   const { enableConfigs, saveCurrentProjectConfig, saveGlobalConfig } =
     await import('../../utils/config.js')
   enableConfigs()
