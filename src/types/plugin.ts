@@ -79,6 +79,8 @@ export type LoadedPlugin = {
   outputStylesPaths?: string[] // Additional output style paths from manifest
   hooksConfig?: HooksSettings
   hookModules?: { configPath: string; paths: string[] }[]
+  /** Why a hooks file failed to load; the Mods session keeps the previous modules. */
+  hookLoadError?: string
   mcpServers?: Record<string, McpServerConfig>
   lspServers?: Record<string, LspServerConfig>
   settings?: Record<string, unknown>

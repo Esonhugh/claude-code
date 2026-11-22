@@ -122,4 +122,12 @@ describe('plugin module declarations', () => {
     expect(PluginHooksSchema().safeParse({}).success).toBe(false)
     expect(PluginHooksSchema().safeParse({ modules: ['./first.ts', './second.ts'] }).success).toBe(false)
   })
+  test('rejects an empty modules list that names no hooks', () => {
+    const result = PluginHooksSchema().safeParse({ modules: [] })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe(
+      'hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both',
+    )
+    expect(PluginHooksSchema().parse({ hooks: {}, modules: [] })).toEqual({ hooks: {}, modules: [] })
+  })
 })

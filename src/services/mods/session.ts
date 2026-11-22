@@ -109,6 +109,8 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  const moduleRoots = new Set<string>()
+  const loadedHookModules = new Map<string, NonNullable<LoadedPlugin['hookModules']>>()
   let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
@@ -434,19 +436,17 @@ export function createModsSession(options: ModsSessionOptions) {
     timer.unref?.()
   }
 
-  async function watchPlugins(plugins: readonly LoadedPlugin[]) {
-    const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
+  async function watchPlugins(plugins: readonly LoadedPlugin[], disabled: boolean) {
+    const watchEnabled = !disabled && (binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1')
+    // A root stays watched after its module unloads, so restoring hooks.json
+    // or the plugin directory reloads it without /reload-plugins.
+    for (const plugin of plugins) {
+      if (plugin.isBuiltin !== true && plugin.hookModules?.some(group => group.paths.length)) moduleRoots.add(plugin.path)
+    }
     const nextRoots = watchEnabled ? [
       ...new Set([
         ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
-        ...plugins
-          .filter(
-            plugin =>
-              plugin.isBuiltin !== true &&
-              !authoringOwns(plugin.path) &&
-              plugin.hookModules?.some(group => group.paths.length),
-          )
-          .map(plugin => plugin.path),
+        ...[...moduleRoots].filter(root => !authoringOwns(root)),
       ]),
     ].sort() : []
     if (
@@ -582,6 +582,17 @@ export function createModsSession(options: ModsSessionOptions) {
       managedNames: managedPluginNames(settings),
     })
     configPlugins = loaded
+    const keptAfterFailedReload: LoadedPlugin[] = []
+    for (const plugin of loaded) {
+      const storageId = getPluginStorageId(plugin)
+      const previous = loadedHookModules.get(storageId)
+      if (plugin.hookLoadError !== undefined && previous) {
+        // Official 2.1.329: a hooks file that fails to load does not unload the running module.
+        plugin.hookModules = previous
+        keptAfterFailedReload.push(plugin)
+      } else if (plugin.hookModules) loadedHookModules.set(storageId, plugin.hookModules)
+      else loadedHookModules.delete(storageId)
+    }
     const prepared = prepareModPlugins(loaded, settings)
     for (const input of prepared.inputs) {
       const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
@@ -602,6 +613,9 @@ export function createModsSession(options: ModsSessionOptions) {
     diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)
+    for (const plugin of keptAfterFailedReload) {
+      diagnostic({ plugin: plugin.name, stage: 'reload', message: `The previous version stays loaded: Hook load failed: ${plugin.hookLoadError}` })
+    }
     if (
       disabled &&
       loaded.some(plugin =>
@@ -667,7 +681,7 @@ export function createModsSession(options: ModsSessionOptions) {
       }
     }
     if (stopped) return
-    await watchPlugins(disabled ? [] : loaded)
+    await watchPlugins(loaded, Boolean(disabled))
     if (!stopped && (diagnostics.length > 0 || setAppState))
       publishDiagnostics()
   }

@@ -1745,6 +1745,7 @@ export async function createPluginFromPath(
         },
       )
       logError(toError(error))
+      plugin.hookLoadError = errorMsg
       errors.push({
         type: 'hook-load-failed',
         source,
@@ -1855,6 +1856,7 @@ export async function createPluginFromPath(
             { level: 'error' },
           )
           logError(toError(error))
+          plugin.hookLoadError ??= errorMsg
           errors.push({
             type: 'hook-load-failed',
             source,

@@ -1929,6 +1929,59 @@ describe('Mods CLI session host', () => {
     await Promise.all(watching.ready)
   })
 
+  test('a hooks.json that fails to load keeps the previous module version loaded', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'kept' })); }`)
+    let current = declaration
+    const diagnostics: string[] = []
+    const host = session({
+      loadPlugins: async () => [current],
+      onDiagnostic: event => diagnostics.push(`${event.plugin} (${event.stage}): ${event.message}`),
+    })
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 'kept' })
+
+    const reason = 'hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both'
+    current = { ...declaration, hookModules: undefined, hookLoadError: reason }
+    await host.refresh()
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 'kept' })
+    expect(diagnostics).toEqual([
+      `fixture (reload): The previous version stays loaded: Hook load failed: ${reason}`,
+    ])
+
+    // A hooks.json that validly names no module still unloads it.
+    current = { ...declaration, hookModules: undefined }
+    await host.refresh()
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 'core' })
+  })
+
+  test('a plugin root stays watched after its hooks module is unloaded, so restoring it reloads', async () => {
+    const watching = watchEvents()
+    const declaration = await plugin(`export function register(on) { on('tool.call', () => ({ result: 'restored' })); }`)
+    let current: LoadedPlugin = declaration
+    const loads = [Promise.withResolvers<void>(), Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+    let count = 0
+    const host = session({
+      loadPlugins: async () => {
+        loads[count++]?.resolve()
+        return [current]
+      },
+    })
+    await host.bind(binding)
+    await watching.ready[0]
+    current = { ...declaration, hookModules: undefined }
+    await writeFile(join(declaration.path, 'hooks.json'), '{"hooks":{}}')
+    await loads[1]!.promise
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 'core' })
+    expect(watching.watchers.at(-1)!.closed).toBe(false)
+
+    current = declaration
+    await writeFile(join(declaration.path, 'hooks.json'), '{"modules":["./register.ts"]}')
+    await loads[2]!.promise
+    await host.bind(binding)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 'restored' })
+  }, 10000)
+
   test('owned import changes reload with polling, idle polls do not reload plugins', async () => {
     const watching = watchEvents()
     const declaration = await plugin(
