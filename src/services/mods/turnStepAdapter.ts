@@ -38,6 +38,8 @@ type Block = {
   name?: string
   started: boolean
   closed: boolean
+  /** The block arrived as stream events of the request the engine is streaming. */
+  streamed?: true
 }
 const tokenFields = [
   'input_tokens',
@@ -358,7 +360,12 @@ export async function* streamModTurnStep(
         const event =
           item.type === 'stream_event' ? (item.event as ModelEvent | undefined) : undefined
         if (event?.type === 'message_start') {
-          for (const index of blocks.keys()) yield* closeBlock(index)
+          // The engine streams a request again when its connection dropped
+          // before a block finished: what the cut request left open was never
+          // a reply, and a tool call among it must not run.
+          for (const [index, block] of blocks) {
+            if (!block.streamed) yield* closeBlock(index)
+          }
           syncMetadata()
           blocks.clear()
           emitted.length = 0
@@ -370,6 +377,7 @@ export async function* streamModTurnStep(
         } else if (event?.type === 'content_block_start' && event.index !== undefined) {
           const block = blockAt(event.index)
           block.start = item as StreamEvent
+          block.streamed = true
           if (!['text', 'thinking', 'tool_use'].includes(event.content_block?.type ?? '')) {
             yield* startMessage()
             block.started = true
@@ -413,6 +421,7 @@ export async function* streamModTurnStep(
       }
       const block = blockAt(chunk.index)
       if (block.closed) continue
+      if (reference?.item.type === 'stream_event') block.streamed = true
       if (chunk.kind === 'input') {
         // Dropping the tool start also drops its arguments and execution.
         if (block.kind !== 'tool') continue
