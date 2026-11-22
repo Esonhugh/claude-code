@@ -573,7 +573,11 @@ export class StructuredIO {
     agentId: string | undefined,
     decision: PermissionDecision,
   ): void {
-    if (decision.behavior === 'allow' || decision.decisionReason?.type === 'hook')
+    // A hook's own refusal is not reported; its "ask" that nobody answered is.
+    if (
+      decision.behavior === 'allow' ||
+      (decision.behavior === 'deny' && decision.decisionReason?.type === 'hook')
+    )
       return
     this.outbound.enqueue({
       type: 'system',

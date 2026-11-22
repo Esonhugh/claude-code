@@ -128,6 +128,25 @@ if (process.env[childFlag] !== '1') {
     expect(d.emitted).toEqual([])
   })
 
+  // Official 2.1.329: a PreToolUse hook's "ask" that nobody can answer is a refusal too.
+  test('plain --print reports an unanswered PreToolUse hook ask as permission_denied', async () => {
+    const d = denials()
+    const ask = {
+      behavior: 'ask' as const,
+      message: 'ASK_REASON_X',
+      decisionReason: { type: 'hook' as const, hookName: 'PreToolUse:NeedsApproval', reason: 'ASK_REASON_X' },
+    }
+    await getCanUseToolFn(undefined, d.io, () => [])(promptingTool, {}, toolUseContext(), assistant, 'toolu_6', ask)
+    expect(d.emitted).toEqual([expect.objectContaining({
+      subtype: 'permission_denied',
+      tool_name: 'NeedsApproval',
+      tool_use_id: 'toolu_6',
+      decision_reason_type: 'hook',
+      decision_reason: 'ASK_REASON_X',
+      message: 'ASK_REASON_X',
+    })])
+  })
+
   test('plain --print runs PermissionRequest hooks for a prompt', async () => {
     const calls = permissionRequestHook('allow')
     const canUseTool = getCanUseToolFn(undefined, denials().io, () => [])

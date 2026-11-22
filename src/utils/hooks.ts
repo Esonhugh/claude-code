@@ -175,6 +175,7 @@ import {
   type FunctionHook,
 } from './hooks/sessionHooks.js'
 import type { AppState } from '../state/AppState.js'
+import { enqueueSdkEvent } from './sdkEventQueue.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy, isSSHLocalUI } from './envUtils.js'
 import {
@@ -427,6 +428,8 @@ export interface HookResult {
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
+  /** A failed command hook that ran and returned its own exit code. */
+  ranByContract?: boolean
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -908,6 +911,8 @@ async function execCommandHook(
   status: number
   aborted?: boolean
   backgrounded?: boolean
+  /** The hook process was ended by a signal instead of exiting on its own. */
+  signaled?: boolean
 }> {
   // Gated to once-per-session events to keep diag_log volume bounded.
   // started/completed live inside the try/finally so setup-path throws
@@ -1417,8 +1422,10 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    signaled?: boolean
   }>(resolve => {
     let exitCode: number | null = null
+    let signaled = false
     let settled = false
     let quietTimer: ReturnType<typeof setTimeout> | undefined
     const streamsEnded = Promise.all([stdoutEndPromise, stderrEndPromise])
@@ -1445,6 +1452,7 @@ async function execCommandHook(
         output,
         status: exitCode!,
         aborted: signal.aborted,
+        ...(signaled && { signaled }),
       })
     }
 
@@ -1464,6 +1472,7 @@ async function execCommandHook(
 
     const onExit = (code: number | null) => {
       if (exitCode !== null) return
+      signaled = code === null
       exitCode = code ?? 1
       // Wait for both streams to end before resolving with the final output
       void streamsEnded.then(finish)
@@ -2345,6 +2354,8 @@ function applyHookOnFailure(
  * @param messages Optional conversation history for prompt/function hooks
  * @returns Async generator that yields progress messages and hook results
  */
+const hooksReportedWithoutVerdict = new Set<string>()
+
 async function* executeHooks({
   hookInput,
   toolUseID,
@@ -3150,6 +3161,12 @@ async function* executeHooks({
         }),
         outcome: 'non_blocking_error' as const,
         hook,
+        // The hook ran and chose this exit code itself: not killed, and not
+        // the shell's "cannot run" (126) / "not found" (127).
+        ...(!result.signaled &&
+          result.status <= 128 &&
+          result.status !== 126 &&
+          result.status !== 127 && { ranByContract: true }),
       }
       return
     } catch (error) {
@@ -3264,6 +3281,35 @@ async function* executeHooks({
 
     if (result.message) {
       yield { message: result.message, ...hookMetadata }
+    }
+
+    // Like official 2.1.329, SDK hosts are told once per hook when a
+    // PreToolUse hook ended without checking the call.
+    const timedOut =
+      result.outcome === 'cancelled' &&
+      !signal?.aborted &&
+      result.hook.type !== 'callback'
+    if (
+      hookEvent === 'PreToolUse' &&
+      (timedOut ||
+        (result.outcome === 'non_blocking_error' && !result.ranByContract))
+    ) {
+      const hookKey = `${matchedHook?.pluginId ?? ''}\0${getHookDisplayText(result.hook)}`
+      if (!hooksReportedWithoutVerdict.has(hookKey)) {
+        hooksReportedWithoutVerdict.add(hookKey)
+        enqueueSdkEvent({
+          type: 'system',
+          subtype: 'informational',
+          content: `A hook ${timedOut ? "didn't answer in time" : 'gave no usable answer'}, so it didn't check this action.`,
+          level: 'warning',
+          tag: 'hook_no_verdict',
+          hook_no_verdict: {
+            hook_event: 'PreToolUse',
+            tool_use_id: toolUseID,
+            timed_out: timedOut,
+          },
+        })
+      }
     }
 
     // Yield system message separately if present

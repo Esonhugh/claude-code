@@ -78,6 +78,7 @@ const { addSessionHook, getSessionHooks, removeSessionHook } =
   await import('./sessionHooks.js')
 const { executePostToolHooks } = await import('../hooks.js')
 const { createAssistantMessage } = await import('../messages.js')
+const { drainSdkEvents } = await import('../sdkEventQueue.js')
 const { asSystemPrompt } = await import('../systemPromptType.js')
 
 const hook: PromptHook = {
@@ -184,6 +185,34 @@ function goalAttachments(events: Message[]): GoalStatusAttachment[] {
       : [],
   )
 }
+
+test('a failed Stop hook is reported to SDK hosts as a stop-hook-error notification', async () => {
+  const testContext = createStopHookContext(undefined)
+  addSessionHook(
+    testContext.toolUseContext.setAppState,
+    getSessionId(),
+    'Stop',
+    '',
+    { type: 'command', command: 'echo STOP_ERR >&2; exit 1' },
+  )
+  drainSdkEvents()
+
+  await drainStopHooks(testContext.toolUseContext)
+
+  const text = 'stop hook problem \u00b7 ctrl+o to see'
+  expect(testContext.notifications).toEqual([text])
+  expect(drainSdkEvents()).toEqual([
+    {
+      type: 'system',
+      subtype: 'notification',
+      key: 'stop-hook-error',
+      text,
+      priority: 'immediate',
+      uuid: expect.any(String),
+      session_id: getSessionId(),
+    },
+  ])
+})
 
 describe('handleStopHooks Goal lifecycle', () => {
   test('Goal block updates state and yields one active attachment without a hook error notification', async () => {
