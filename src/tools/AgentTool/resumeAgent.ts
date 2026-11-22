@@ -149,15 +149,7 @@ async function startResume({
   // A user stop bars everyone but the user, whose own message lifts the stop
   // it was sent after (2.1.329). A stop made later still bars this resume.
   const liftsUserStop = fromUser === true && (!isLocalAgentTask(previous) || previous.stoppedByUser === true)
-  if (liftsUserStop && isLocalAgentTask(previous)) {
-    rootSetAppState(prev => {
-      const task = prev.tasks[agentId]
-      if (!isLocalAgentTask(task) || !task.stoppedByUser) return prev
-      return { ...prev, tasks: { ...prev.tasks, [agentId]: { ...task, stoppedByUser: undefined } } }
-    })
-  } else {
-    refuseUserStop()
-  }
+  if (!liftsUserStop) refuseUserStop()
 
   // A parked owner is woken as soon as its child reports, often while its own
   // last turn is still queued for disk; read the transcript after that write.
@@ -172,6 +164,14 @@ async function startResume({
       throw new AgentStoppedByUserError(agentId)
     }
     await clearAgentMetadataStoppedByUser(asAgentId(agentId), meta)
+  }
+  // Only once the durable record is gone: a failed write leaves the stop for a retry to lift.
+  if (liftsUserStop) {
+    rootSetAppState(prev => {
+      const task = prev.tasks[agentId]
+      if (!isLocalAgentTask(task) || !task.stoppedByUser) return prev
+      return { ...prev, tasks: { ...prev.tasks, [agentId]: { ...task, stoppedByUser: undefined } } }
+    })
   }
   const savedScope = await readForkedSkillScope(asAgentId(agentId))
   const liveTask = appState.tasks[agentId]

@@ -65,6 +65,20 @@ if(variant==='sticky-write'){
  await storage.writeAgentMetadata(id,{agentType:'fork',name,model:'claude-sonnet-4-6',spawnDepth:2})
  assert.equal((await storage.readAgentMetadata(id)).stoppedByUser,true,'a later metadata write must not lose cancellation')
 }
+if(variant==='user-retry'){
+ // The stop stays in place until its durable record is gone, so a failed write can be retried.
+ let failures=1
+ const clear=storage.clearAgentMetadataStoppedByUser
+ mock.module(m.storage,()=>({...storage,async clearAgentMetadataStoppedByUser(...args){if(failures-->0)throw new Error('disk full');return clear(...args)}}))
+ const {resumeAgentBackground}=await import(m.resume)
+ const resume=()=>resumeAgentBackground({agentId:id,prompt:'USER-FOLLOW-UP',fromUser:true,toolUseContext:context,canUseTool:permit})
+ await assert.rejects(resume(),/disk full/)
+ assert.equal(state.tasks[id].stoppedByUser,true);assert.equal(executions.length,0)
+ await resume()
+ for(let i=0;i<200&&state.tasks[id].status==='running';i++)await new Promise(r=>setTimeout(r,10))
+ assert.equal(executions.length,1);assert.notEqual((await storage.readAgentMetadata(id)).stoppedByUser,true)
+ console.log('owned cancellation fixture passed '+variant);process.exit(0)
+}
 if(variant==='user-resume'){
  // Like 2.1.329: the user who stopped an agent can message it back to work, which lifts the stop.
  const {resumeAgentBackground}=await import(m.resume)
@@ -93,7 +107,7 @@ if(cancelled){
 console.log('owned cancellation fixture passed '+variant)
 `
 
-for (const variant of ['user','user-resume','user-race','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
+for (const variant of ['user','user-resume','user-retry','user-race','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
   test('SendMessage respects the stop source and persisted cancellation: '+variant, async () => {
     const dir=await realpath(await mkdtemp(join(tmpdir(),'send-cancel-')))
     const child=Bun.spawn([process.execPath,'--no-env-file','--eval',source],{
