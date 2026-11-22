@@ -23,6 +23,7 @@ const { KeybindingSetup } = await import('../../keybindings/KeybindingProviderSe
 const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
 const { addSessionCronTask, getSessionCronTasks, removeSessionCronTasks } = await import('../../bootstrap/state.js')
 const { getAgentTranscriptPath } = await import('../../utils/sessionStorage.js')
+const { persistForkedSkillScope } = await import('../../utils/forkedSkillScope.js')
 
 class TestStdout extends Writable {
   columns = 120
@@ -182,6 +183,33 @@ test('agents this session ran earlier are listed from disk and reopen', async ()
   })
   expect(state.viewingAgentTaskId).toBe('aold1')
   expect(dialog.done).toEqual(['Viewing agent'])
+})
+
+test('an earlier agent that ran as a forked skill reopens with the skill it may resume as', async () => {
+  const agentId = 'askill1' as AgentId
+  const transcript = getAgentTranscriptPath(agentId)
+  mkdirSync(dirname(transcript), { recursive: true })
+  writeFileSync(transcript, `${JSON.stringify({ type: 'user', timestamp: new Date().toISOString() })}\n`)
+  writeFileSync(
+    transcript.replace(/\.jsonl$/, '.meta.json'),
+    JSON.stringify({ agentType: 'general-purpose', description: 'skill worker' }),
+  )
+  await persistForkedSkillScope(agentId, { skillName: 'probe-skill', attributionName: 'probe-skill' })
+  const dialog = await open({ tasks: {} })
+  await dialog.press('\r')
+  await dialog.press('\r')
+  expect(state.tasks.askill1).toMatchObject({ forkedSkillName: 'probe-skill' })
+  expect(state.viewingAgentTaskId).toBe('askill1')
+})
+
+test('back from the one running task shows the list, where earlier agents are', async () => {
+  const dialog = await open({
+    tasks: { busy: { ...doneAgent, id: 'busy', agentId: 'busy', status: 'running', notified: false } },
+  })
+  expect(dialog.screen()).toContain('to go back')
+  await dialog.press('\x1b[D')
+  expect(dialog.done).toEqual([])
+  expect(dialog.screen()).toContain('Earlier in this session (0)')
 })
 
 test('scheduled tasks, loop wakeups and the goal are listed', async () => {

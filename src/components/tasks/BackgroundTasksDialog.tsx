@@ -56,10 +56,15 @@ import {
   isBackgroundTask,
   type TaskState,
 } from 'src/tasks/types.js'
+import { asAgentId } from 'src/types/ids.js'
 import type { Message } from 'src/types/message.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { intersperse } from 'src/utils/array.js'
 import { createAttachmentMessage } from 'src/utils/attachments.js'
+import {
+  readForkedSkillScope,
+  readForkedSkillWitness,
+} from 'src/utils/forkedSkillScope.js'
 import { cronToHuman } from 'src/utils/cron.js'
 import { nextCronRunMs } from 'src/utils/cronTasks.js'
 import { formatDuration, formatRelativeTimeAgo } from 'src/utils/format.js'
@@ -538,7 +543,7 @@ function LocalBackgroundTasksDialog({
           } else if (current.type === 'subagent_history') {
             if (current.size > 0) setHistoryOpen(true)
           } else if (current.type === 'recorded_agent') {
-            openRecordedAgent(current.entry)
+            void openRecordedAgent(current.entry)
           } else if (current.type === 'local_agent' && isCompletedBackgroundAgent(current.task)) {
             enterTeammateView(current.id, setAppState)
             onDone('Viewing agent', { display: 'system' })
@@ -696,9 +701,17 @@ function LocalBackgroundTasksDialog({
   }
 
   // The agent left the task list; its transcript on disk is what reopens it.
-  function openRecordedAgent(entry: RecordedSubagent): void {
+  async function openRecordedAgent(entry: RecordedSubagent): Promise<void> {
     const { agentId, agentType } = entry
-    if (agentType === undefined) {
+    // A forked skill's agent resumes only as the skill its launch recorded.
+    const scope = await readForkedSkillScope(asAgentId(agentId))
+    const forkedSkillName =
+      scope.status === 'valid' ? scope.scoping.skillName : undefined
+    if (
+      agentType === undefined ||
+      (forkedSkillName !== undefined &&
+        (await readForkedSkillWitness(asAgentId(agentId))) !== forkedSkillName)
+    ) {
       setUnopenable(prev => new Set(prev).add(agentId))
       return
     }
@@ -715,6 +728,7 @@ function LocalBackgroundTasksDialog({
         agentId,
         prompt: '',
         agentType,
+        ...(forkedSkillName !== undefined && { forkedSkillName }),
         spawnDepth: 0,
         retrieved: false,
         lastReportedToolCount: 0,
@@ -774,9 +788,10 @@ function LocalBackgroundTasksDialog({
   // the stale-state trap: if you opened with 1 task (auto-skipped to detail),
   // then a second task started, 'back' should show the list — not close.
   const goBackToList = () => {
+    // Like 2.1.329: scheduled tasks and the goal have no detail view to come back from.
     if (
       skippedListOnMount.current &&
-      allSelectableItems.length - historyItems.length <= 1
+      allSelectableItems.length - scheduledItems.length - goalItems.length <= 1
     ) {
       onDone('Background tasks dialog dismissed', { display: 'system' })
     } else {
