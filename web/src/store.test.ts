@@ -162,6 +162,45 @@ describe('appReducer', () => {
     state = appReducer(state, { type: 'removed', id: 'fresh' })
     expect(state.history.map(h => h.id)).toEqual(['disk'])
   })
+
+  it('drops the approvals of a session whose socket is gone: the server asks again on the next attach', () => {
+    const ask = {
+      type: 'chat' as const,
+      id: 's',
+      action: {
+        type: 'message' as const,
+        raw: {
+          type: 'control_request',
+          request_id: 'r1',
+          request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' }, tool_use_id: 'toolu_1' },
+        },
+      },
+    }
+    let state = appReducer(initialAppState, { type: 'created', id: 's', workDir: '/w', title: 't', start: { mode: 'default' } })
+    for (const mode of ['connecting', 'readonly', 'elsewhere'] as const) {
+      state = appReducer(appReducer(state, { type: 'mode', id: 's', mode: 'live' }), ask)
+      expect(state.chats.s!.approvals.map(a => a.requestId)).toEqual(['r1'])
+      state = appReducer(state, { type: 'mode', id: 's', mode })
+      expect([mode, state.chats.s!.approvals]).toEqual([mode, []])
+    }
+  })
+
+  it('keeps a tab-created session\'s folder and title while the disk listing has neither', () => {
+    let state = appReducer(initialAppState, {
+      type: 'created', id: 'fresh', workDir: '/w', title: 'Fresh', start: { mode: 'default' },
+    })
+    const listed = (entry: object) =>
+      (state = appReducer(state, {
+        type: 'history',
+        entries: [{ id: 'fresh', title: 'fresh', lastModified: 5, ...entry }],
+        folders: {},
+        more: false,
+      })).history
+    expect(listed({ label: 'id' })).toEqual([{ id: 'fresh', title: 'Fresh', label: undefined, cwd: '/w', lastModified: 5 }])
+    expect(listed({ label: 'message', title: 'hello', cwd: '/w' })).toEqual([
+      { id: 'fresh', title: 'hello', label: 'message', cwd: '/w', lastModified: 5 },
+    ])
+  })
 })
 
 describe('queued messages on stop', () => {

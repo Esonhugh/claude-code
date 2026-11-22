@@ -5,6 +5,7 @@ import stripAnsi from 'strip-ansi'
 import { render } from '../../ink.js'
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../../state/AppState.js'
+import { env } from '../../utils/env.js'
 import { clearCommandQueue, enqueue } from '../../utils/messageQueueManager.js'
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js'
 
@@ -33,7 +34,11 @@ async function renderQueue(withKeybindings = false) {
   }
 }
 
-afterEach(() => clearCommandQueue())
+const savedTerminal = env.terminal
+afterEach(() => {
+  clearCommandQueue()
+  env.terminal = savedTerminal
+})
 
 test('a queued prompt shows the send-now hint', async () => {
   enqueue({ value: 'follow up question', mode: 'prompt' })
@@ -49,6 +54,8 @@ test('system-generated queued commands get no send-now hint', async () => {
 })
 
 test('without extended key reporting the hint names the chord that can be typed, as official does', async () => {
+  // Not the terminal of the shell running the tests: tmux reports extended keys.
+  env.terminal = 'xterm'
   enqueue({ value: 'follow up question', mode: 'prompt' })
   const output = await renderQueue(true)
   expect(output).toContain('ctrl+x ctrl+s to send now')

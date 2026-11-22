@@ -618,6 +618,49 @@ describe('claude web server', () => {
     expect(other.status).toBe(404)
   })
 
+  it('saves an empty upload and removes a deleted session\'s uploads', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const id = '99999999-2222-4333-8444-666666666666'
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      const line = { type: 'user', sessionId: id, cwd: r.workspace, uuid: 'a0000000-0000-4000-8000-000000000002', message: { role: 'user', content: 'hello there' } }
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(line) + '\n')
+      const empty = await fetch(`${r.base}/api/files/${id}?name=empty.txt`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        body: '',
+      })
+      expect(empty.status).toBe(200)
+      expect(await empty.json()).toEqual({ path: join(r.uploads, id, 'empty.txt'), name: 'empty.txt', size: 0 })
+
+      const del = await fetch(`${r.base}/api/sessions/${id}?transcript=1`, {
+        method: 'DELETE',
+        headers: { cookie, origin: r.origin },
+      })
+      expect(del.status).toBe(204)
+      expect(existsSync(join(r.uploads, id))).toBe(false)
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
+  })
+
+  it('answers a HEAD like a GET, without an Origin', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const head = (path: string, headers: Record<string, string> = { cookie }) =>
+      fetch(`${r.base}${path}`, { method: 'HEAD', headers })
+    expect((await head('/')).status).toBe(200)
+    expect((await head('/', {})).status).toBe(401)
+    expect((await head('/', { cookie, origin: 'https://evil.example' })).status).toBe(403)
+    // Nothing in the API acts on a HEAD.
+    expect((await head('/api/sessions')).status).toBe(404)
+  })
+
   it('answers to <hostname>.local only with the local network flag', async () => {
     const name = hostname().toLowerCase().split('.')[0]
     const signInAs = (r: Running) =>
@@ -740,6 +783,15 @@ describe('claude web server', () => {
     expect(await (await call('GET', '/api/projects')).json()).toEqual([])
     expect((await call('PATCH', `/api/projects/${id}`, { name: 'x' })).status).toBe(404)
     expect((await meta({ project_id: id })).status).toBe(400)
+    // An archived project is listed only on request, and comes back whole.
+    expect(await (await call('GET', '/api/projects?archived=1')).json()).toMatchObject([{ id, name: 'Beta' }])
+    expect((await call('GET', `/api/projects/${id}/unarchive`)).status).toBe(405)
+    expect((await call('POST', `/api/projects/${crypto.randomUUID()}/unarchive`)).status).toBe(404)
+    expect(await (await call('POST', `/api/projects/${id}/unarchive`)).json()).toMatchObject({ id, archived_at: null })
+    expect((await call('POST', `/api/projects/${id}/unarchive`)).status).toBe(404)
+    expect(await (await call('GET', '/api/projects')).json()).toMatchObject([{ id }])
+    expect((await meta({ project_id: id })).status).toBe(200)
+    expect((await call('DELETE', `/api/projects/${id}?purge=1`)).status).toBe(204)
 
     const other = (await (await call('POST', '/api/projects', { name: 'Gamma', cwd: dir })).json()) as { id: string }
     expect((await call('DELETE', `/api/projects/${other.id}?purge=1`)).status).toBe(204)

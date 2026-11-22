@@ -108,6 +108,10 @@ export type ModPluginInput = {
   isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
+  /** Why the host could not read this plugin's declaration; the version already loaded stays. */
+  loadError?: string
+  /** The plugin directory is gone for now; the version already loaded stays without being read again. */
+  keepLoaded?: boolean
   /** Host-only author project dependencies; not sent to the hook Worker. */
   authorTypeDependencies?: readonly ModTypeDependency[]
   options?: ModInput
@@ -3481,7 +3485,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (staleDrawings && !stopped) await ui.render(services.uiPresentation?.())
   }
 
-  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>) {
+  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>, reloading?: ReadonlySet<string>) {
     if (recoveringOwners === undefined) unattributedCrashes = 0
     if (hostDead) {
       host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
@@ -3531,7 +3535,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
       try {
-        const declaration = recoveringOwners
+        if (input.loadError && !recoveringOwners) throw new Error(input.loadError)
+        const declaration = recoveringOwners || (input.keepLoaded && knownArgs.has(input.storageId))
           ? knownArgs.get(input.storageId)
           : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         if (!declaration) continue
@@ -3558,7 +3563,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (!recoveringOwners) {
       const pending = ordered.filter(input => !gated.has(input.storageId))
       const kept = active.filter(owner => !gated.has(owner.declaration.storageId))
-      const unchanged = !releasedWithholding && previouslyKnown.every(id => wanted.has(id)) &&
+      const unchanged = !releasedWithholding && !reloading?.size && previouslyKnown.every(id => wanted.has(id)) &&
         pending.length === kept.length && pending.every((input, index) =>
           input.storageId === kept[index]!.declaration.storageId && sameModDeclaration(kept[index]!.declaration, scanned.get(input)!))
       if (!unchanged) gated.clear()
@@ -3591,7 +3596,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       try {
         const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         const refreshDeclarations = async () => {
-          if (declaration.isNative || declaration.tier === 'builtin') return
+          if (declaration.isNative || declaration.tier === 'builtin' || input.keepLoaded) return
           try {
             const project = await ensureModDeclarations(
               declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
@@ -3604,7 +3609,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
         }
         ensureLive()
-        if (old && sameModDeclaration(old.declaration, declaration)) {
+        if (old && !reloading?.has(input.storageId) && sameModDeclaration(old.declaration, declaration)) {
           await refreshDeclarations()
           ensureLive()
           continue
@@ -4105,7 +4110,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
       return beginRegisteredTurn(turnId, undefined, abort).release
     },
-    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)).catch(error => {
+    /** `reloading` names the storage ids to load again even when their declaration is unchanged. */
+    reconcile: (inputs: ModPluginInput[], reloading?: ReadonlySet<string>) => enqueue(() => reconcile(inputs, undefined, reloading)).catch(error => {
       const recovery = error instanceof Error ? workerRecoveries.get(error) : undefined
       if (recovery) return recovery
       throw error
@@ -4138,6 +4144,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }),
     stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
+    /** The loaded activation of a plugin, its module files and the events it hooks, in registration order. */
+    loaded(storageId: string): { activation: string; modules: string[]; events: string[] } | undefined {
+      const owner = active.find(owner => owner.declaration.storageId === storageId)
+      return owner && { activation: owner.suggestionOwner, modules: owner.declaration.modules.map(module => module.path), events: [...new Set(owner.environment.registrations.map(registration => registration.event))] }
+    },
     hasHooks: (event: string, known?: Record<string, unknown>) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
     dispose(): Promise<void> {
       if (disposal) return disposal

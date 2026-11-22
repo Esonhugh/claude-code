@@ -1,7 +1,7 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
 import type { PromptRequest, PromptResponse } from '../../types/hooks.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
@@ -19,6 +19,11 @@ import { modSessionIdentity } from './sessionIdentity.js'
 import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage, isENOENT } from '../../utils/errors.js'
+import { pathExists } from '../../utils/file.js'
+import { stripBOM } from '../../utils/jsonRead.js'
+import { jsonParse } from '../../utils/slowOperations.js'
+import { PluginHooksSchema } from '../../utils/plugins/schemas.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
   shouldAllowManagedHooksOnly,
@@ -109,6 +114,15 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  let watchTargets: string[] = []
+  // Plugin roots kept under watch until the next explicit reload, each with the
+  // last version that named hooks modules (undefined once a valid config unloaded them).
+  const watchedPlugins = new Map<string, LoadedPlugin | undefined>()
+  // The file whose change asks each watched root to reload; a manifest outranks a module source.
+  const causes = new Map<string, { path: string; manifest: boolean; changed: boolean }>()
+  const reloadFailures = new Set<string>()
+  // Every hooks config a watched plugin has named, so one that stops naming modules is still a manifest.
+  const hookConfigs = new Set<string>()
   let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
@@ -343,6 +357,7 @@ export function createModsSession(options: ModsSessionOptions) {
       return value
     }
     event = { ...event, message: redact(event.message) }
+    if (event.stage === 'reload') reloadFailures.add(event.plugin)
     const key = `${event.plugin}:${event.stage}:${event.message}`
     if (reported.has(key) && !event.workerFault) return
     reported.add(key)
@@ -356,7 +371,8 @@ export function createModsSession(options: ModsSessionOptions) {
     const cascade = event.message === 'Module environment unloaded' ||
       (event.message === workerDeath && (!event.workerFault || event.workerFault.culprit !== undefined))
     // Raw stderr is overdrawn by the interactive TUI, which shows the diagnostic itself.
-    if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, `${event.stage}: ${event.message}`.replace(/[\r\n]/g, ' ')) }
+    const line = event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') : `${event.stage}: ${event.message}`
+    if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
     else process.stderr.write(text + '\n')
     const fault = event.workerFault
     logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
@@ -434,24 +450,97 @@ export function createModsSession(options: ModsSessionOptions) {
     timer.unref?.()
   }
 
-  async function watchPlugins(plugins: readonly LoadedPlugin[]) {
+  /** undefined: the hooks config still parses; '': it is gone; otherwise why it is invalid. */
+  async function hooksConfigFailure(configPath: string): Promise<string | undefined> {
+    try {
+      PluginHooksSchema().parse(jsonParse(stripBOM(await readFile(configPath, 'utf8'))))
+      return undefined
+    } catch (error) {
+      return isENOENT(error) ? '' : errorMessage(error)
+    }
+  }
+
+  /**
+   * Between explicit reloads a watched plugin keeps the modules of a hooks config
+   * that is missing or invalid, and all of them while its --plugin-dir directory
+   * is gone; only a valid config that names no module unloads them. `failed` maps
+   * the roots whose config is invalid, which stay on the version already loaded.
+   */
+  async function holdWatchedPlugins(found: readonly LoadedPlugin[]) {
+    const configured = [...found]
+    const failed = new Map<string, string>()
+    const gone = new Set<string>()
+    for (const plugin of found) for (const group of plugin.hookModules ?? []) hookConfigs.add(group.configPath)
+    for (const [root, previous] of watchedPlugins) {
+      if (!previous) continue
+      const index = configured.findIndex(plugin => plugin.path === root)
+      const current = configured[index]
+      if (!current) {
+        if (previous.source.endsWith('@inline') && !(await pathExists(root))) { configured.push(previous); gone.add(root) }
+        else watchedPlugins.delete(root)
+        continue
+      }
+      // Held groups keep their place, so hooks stay registered in the same order.
+      const found = current.hookModules ?? []
+      const groups: typeof found = []
+      for (const group of previous.hookModules ?? []) {
+        const now = found.find(other => other.configPath === group.configPath)
+        if (now?.paths.length || !group.paths.length) continue
+        const failure = await hooksConfigFailure(group.configPath)
+        if (failure === undefined) continue
+        groups.push(group)
+        if (failure) failed.set(root, failure)
+      }
+      if (groups.length) {
+        const order = (previous.hookModules ?? []).map(group => group.configPath)
+        const seat = (group: (typeof found)[number]) => (order.indexOf(group.configPath) + 1) || order.length + 1
+        configured[index] = { ...current, hookModules: [...groups, ...found.filter(group => !groups.some(held => held.configPath === group.configPath))].sort((a, b) => seat(a) - seat(b)) }
+      }
+      const merged = configured[index]!.hookModules ?? []
+      if (!merged.some(group => group.paths.length)) watchedPlugins.set(root, undefined)
+      // A loaded module file that is missing is treated like a missing root: nothing is read until it is back.
+      const entries = (groups: typeof found) => groups.flatMap(group => group.paths.map(path => join(dirname(group.configPath), path)))
+      const loadedEntries = entries(previous.hookModules ?? [])
+      for (const entry of entries(merged)) if (loadedEntries.includes(entry) && !(await pathExists(entry))) gone.add(root)
+    }
+    for (const plugin of configured) {
+      if (plugin.isBuiltin !== true && !authoringOwns(plugin.path) && plugin.hookModules?.some(group => group.paths.length))
+        watchedPlugins.set(plugin.path, plugin)
+    }
+    return { configured, failed, gone }
+  }
+
+  const isManifest = (root: string, path: string) =>
+    path === join(root, '.claude-plugin', 'plugin.json') || path === join(root, 'hooks', 'hooks.json') || hookConfigs.has(path)
+
+  /** What a watched plugin is told after the change to `cause` was applied, in official 2.1.329's words. */
+  function reloadNotice(root: string, cause: { path: string; manifest: boolean }, previous: LoadedPlugin | undefined, current: LoadedPlugin | undefined, events: string[] | undefined) {
+    const modules = (plugin: LoadedPlugin | undefined) =>
+      (plugin?.hookModules ?? []).flatMap(group => group.paths.map(path => relative(root, join(dirname(group.configPath), path)))).join(', ') || 'none'
+    const hooks = () => `${events!.length} ${events!.length === 1 ? 'hook' : 'hooks'}${events!.length ? `: ${events!.join(', ')}` : ''}`
+    if (!cause.manifest) return events && `reloaded (${hooks()})`
+    const before = modules(previous), now = modules(current)
+    if (now === 'none') return `${basename(cause.path)} changed \u2014 names no hooks module now; ${before === 'none' ? 'nothing to unload' : `${before} unloaded`}`
+    return events && `${basename(cause.path)} changed \u2014 reloaded (modules: ${before === now ? `${now} unchanged` : `${before} \u2192 ${now}`}; ${hooks()})`
+  }
+
+  async function watchPlugins() {
     const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
     const nextRoots = watchEnabled ? [
       ...new Set([
         ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
-        ...plugins
-          .filter(
-            plugin =>
-              plugin.isBuiltin !== true &&
-              !authoringOwns(plugin.path) &&
-              plugin.hookModules?.some(group => group.paths.length),
-          )
-          .map(plugin => plugin.path),
+        ...watchedPlugins.keys(),
       ]),
     ].sort() : []
+    // A root that is gone is watched through its nearest existing ancestor, so recreating it is noticed.
+    const nextTargets = await Promise.all(nextRoots.map(async root => {
+      let target = root
+      while (dirname(target) !== target && !(await pathExists(target))) target = dirname(target)
+      return target
+    }))
     if (
       nextRoots.length === roots.length &&
-      nextRoots.every((root, index) => root === roots[index])
+      nextRoots.every((root, index) => root === roots[index] && nextTargets[index] === watchTargets[index])
     )
       return
     const old = watcher
@@ -460,8 +549,9 @@ export function createModsSession(options: ModsSessionOptions) {
     await watcherClosing
     if (stopped) return
     roots = nextRoots
+    watchTargets = nextTargets
     if (roots.length === 0) return
-    watcher = chokidar.watch(roots, {
+    watcher = chokidar.watch([...new Set(watchTargets)], {
       persistent: false,
       ignoreInitial: true,
       followSymlinks: false,
@@ -470,17 +560,28 @@ export function createModsSession(options: ModsSessionOptions) {
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
       // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
       ignored: (path, stats) => {
+        path = normalize(path) // chokidar hands over forward slashes on Windows
         const root = roots.find(root => path === root || path.startsWith(root + sep))
-        return (root === undefined ? path : relative(root, path)).split(sep).some(part => part === '.git' || part === 'node_modules') ||
+        if (root === undefined) return !roots.some(root => root.startsWith(path + sep))
+        return relative(root, path).split(sep).some(part => part === '.git' || part === 'node_modules') ||
           Boolean(stats && !stats.isFile() && !stats.isDirectory()) ||
           Boolean(stats?.isFile() && extname(path) !== '.json' && !esmModuleExtensions.includes(extname(path)))
       },
     })
-    watcher.on('all', (_event, path: string) => {
+    watcher.on('all', (event, path: string) => {
       // Invalidate the declaration cache only on an actual owned-file change,
       // never on polling ticks. This picks up imports and hooks.json changes.
       if (stopped) return
       clearPluginCache()
+      path = normalize(path)
+      const root = [...watchedPlugins.keys()].find(root => path === root || path.startsWith(root + sep))
+      // A file that went away is no reason to load again; the loaded version stays until it is back.
+      if (root !== undefined && event !== 'unlink' && event !== 'unlinkDir') {
+        // A root that came back is read again as a whole; its hooks config answers for that.
+        const cause = path === root ? watchedPlugins.get(root)?.hookModules?.[0]?.configPath ?? join(root, '.claude-plugin', 'plugin.json') : path
+        const manifest = isManifest(root, cause)
+        if (manifest || !causes.get(root)?.manifest) causes.set(root, { path: cause, manifest, changed: event === 'change' })
+      }
       scheduleRefresh(authoringOwns(path))
     })
     watcher.on('error', () =>
@@ -570,7 +671,12 @@ export function createModsSession(options: ModsSessionOptions) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const disabled = options.getDisabledReason?.()
-    const configured = options.bare ? [] : plugins ?? (await loadPlugins())
+    if (plugins) watchedPlugins.clear()
+    // Only a change the watcher saw is told; an explicit reload reports for itself.
+    const pending = plugins ? [] : [...causes].map(([root, cause]) => ({ root, cause, previous: watchedPlugins.get(root) }))
+    causes.clear()
+    reloadFailures.clear()
+    const { configured, failed, gone } = await holdWatchedPlugins(options.bare ? [] : plugins ?? (await loadPlugins()))
     const authoringErrors = deferAuthoring || options.bare
       ? []
       : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
@@ -584,6 +690,10 @@ export function createModsSession(options: ModsSessionOptions) {
     configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
     for (const input of prepared.inputs) {
+      const failure = failed.get(input.pluginRoot)
+      if (gone.has(input.pluginRoot)) input.keepLoaded = true
+      // The reason is shown the way official 2.1.329 writes plugin errors.
+      if (failure) input.loadError = `Hook load failed: ${failure.replace(/\s+/g, ' ').trim().replace(/"/g, '\u201D').replace(/'/g, '\u2019')}`
       const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
       for (const [key, field] of Object.entries(schema ?? {})) {
         if (!field.sensitive) continue
@@ -659,15 +769,32 @@ export function createModsSession(options: ModsSessionOptions) {
     if (runtime) {
       // A clear can bind the runtime directly through ToolUseContext. Do not
       // replay the host's older binding when only declarations are refreshed.
-      await runtime.reconcile(inputs)
+      const asked = pending.flatMap(change => {
+        const input = gone.has(change.root) ? undefined : inputs.find(input => input.pluginRoot === change.root)
+        return input ? [{ ...change, input, loaded: runtime!.loaded(input.storageId) }] : []
+      })
+      // A manifest, or a loaded module file written again, loads again; any other file only if it changes the declaration.
+      await runtime.reconcile(inputs, new Set(asked.filter(({ cause, loaded }) =>
+        cause.manifest || (cause.changed && loaded?.modules.includes(cause.path))).map(change => change.input.storageId)))
       if (stopped) return
+      for (const { root, cause, previous } of pending) {
+        if (gone.has(root)) continue
+        const change = asked.find(change => change.root === root)
+        const current = configured.find(plugin => plugin.path === root)
+        const name = change?.input.name ?? current?.name ?? previous?.name
+        if (name === undefined || reloadFailures.has(name)) continue
+        const now = change && runtime.loaded(change.input.storageId)
+        const text = reloadNotice(root, cause, previous, current, now && now.activation !== change.loaded?.activation ? now.events : undefined)
+        if (text) services.uiLog?.(name, text, 'transcript')
+      }
       if (binding && !runtimeBound) {
         await runtime.bind(binding)
         runtimeBound = true
       }
     }
     if (stopped) return
-    await watchPlugins(disabled ? [] : loaded)
+    if (disabled) watchedPlugins.clear()
+    await watchPlugins()
     if (!stopped && (diagnostics.length > 0 || setAppState))
       publishDiagnostics()
   }

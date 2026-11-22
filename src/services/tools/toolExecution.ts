@@ -129,6 +129,7 @@ import {
 } from '../../utils/toolSearch.js'
 import {
   getConnectionTimeoutMs,
+  getToolListRefresh,
   McpAuthError,
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../mcp/client.js'
@@ -354,7 +355,7 @@ export type McpServerType =
   | 'claudeai-proxy'
   | undefined
 
-function findMcpServerConnection(
+export function findMcpServerConnection(
   toolName: string,
   mcpClients: MCPServerConnection[],
 ): MCPServerConnection | undefined {
@@ -538,6 +539,28 @@ export async function* runToolUse(
       toolName,
       toolUseContext.getAppState().mcp.clients,
     )
+    // The server may have announced this tool a moment ago: its
+    // tools/list_changed refresh is still running, so the pool lacks the tool.
+    const listRefresh = server && getToolListRefresh(server.name)
+    if (listRefresh) {
+      // The refresh is shared, so an aborted call leaves it running.
+      const { signal } = toolUseContext.abortController
+      await Promise.race([
+        listRefresh,
+        new Promise<void>(resolve => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        }),
+      ])
+      const tools = refreshTools()
+      if (findToolByName(tools, toolName)) {
+        yield* runToolUse(toolUse, assistantMessage, canUseTool, {
+          ...toolUseContext,
+          options: { ...toolUseContext.options, tools },
+        })
+        return
+      }
+    }
     if (isWaitablePendingMcpServer(server)) {
       const wait = await waitForPendingMcpTool(
         toolName,
@@ -1074,6 +1097,46 @@ export function buildSchemaNotSentHint(
   )
 }
 
+/**
+ * Appended to an MCP tool's own error when the model called the tool without
+ * having seen its schema: the error may be about the input, and the model has
+ * nothing to correct it against. Null if the schema was sent.
+ */
+export function buildInputSchemaNotInPromptHint(
+  tool: Tool,
+  messages: Message[],
+  tools: readonly { name: string }[],
+): string | null {
+  if (tool.inputJSONSchema === undefined) return null
+  if (!isToolSearchEnabledOptimistic()) return null
+  if (!isToolSearchToolAvailable(tools)) return null
+  if (!isDeferredTool(tool)) return null
+  if (extractDiscoveredToolNames(messages).has(tool.name)) return null
+  const loadTool = `call ${TOOL_SEARCH_TOOL_NAME} with query "select:${tool.name}" to load the tool, then call it again.`
+  // Say it once per tool: a repeat means the hint did not help.
+  const alreadyHinted = messages.some(
+    message =>
+      message.type === 'user' &&
+      Array.isArray(message.message.content) &&
+      message.message.content.some(
+        block =>
+          block.type === 'tool_result' &&
+          typeof block.content === 'string' &&
+          block.content.endsWith(loadTool),
+      ),
+  )
+  if (alreadyHinted) return null
+  const notInPrompt = `\n\nThis tool's input schema was not in your prompt when you called it. `
+  const schema = jsonStringify(tool.inputJSONSchema)
+  if (schema.length > 10_000) {
+    return `${notInPrompt}If the error above is about the input, ${loadTool}`
+  }
+  return (
+    `${notInPrompt}The input schema is: ${schema}\n` +
+    `If your input does not match this schema, correct it and call the tool again. If it matches, the error above has another cause. If the corrected call fails the same way, ${loadTool}`
+  )
+}
+
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
@@ -1342,6 +1405,46 @@ async function checkPermissionsAndCallTool(
       case 'additionalContext':
         resultingMessages.push(result.message)
         break
+      case 'defer': {
+        if (!toolUseContext.options.isNonInteractiveSession) {
+          logForDebugging(
+            `Hook ${result.hookName} returned permissionDecision=defer in interactive mode; ignoring (defer is print-mode only)`,
+            { level: 'warn' },
+          )
+          break
+        }
+        const batchSize = Array.isArray(assistantMessage.message.content)
+          ? assistantMessage.message.content.filter(
+              block => block.type === 'tool_use',
+            ).length
+          : 1
+        if (batchSize > 1) {
+          logForDebugging(
+            `Hook ${result.hookName} returned permissionDecision=defer but ${batchSize} tool calls are in this batch; ignoring (defer is solo-only — siblings would be orphaned on resume)`,
+            { level: 'warn' },
+          )
+          break
+        }
+        getStatsStore()?.observe(
+          'pre_tool_hook_duration_ms',
+          Date.now() - preToolHookStart,
+        )
+        // No tool_result: the call stays open in the transcript, and
+        // `-p --resume` finds this marker and runs it through PreToolUse again.
+        resultingMessages.push({
+          message: createAttachmentMessage({
+            type: 'hook_deferred_tool',
+            toolUseID,
+            toolName: tool.name,
+            toolInput: processedInput as Record<string, unknown>,
+            hookName: result.hookName,
+            hookEvent: 'PreToolUse',
+            permissionMode:
+              toolUseContext.getAppState().toolPermissionContext.mode,
+          }),
+        })
+        return resultingMessages
+      }
       case 'stop':
         getStatsStore()?.observe(
           'pre_tool_hook_duration_ms',
@@ -1349,8 +1452,13 @@ async function checkPermissionsAndCallTool(
         )
         resultingMessages.push({
           message: createUserMessage({
-            content: [createToolResultStopMessage(toolUseID)],
-            toolUseResult: `Error: ${stopReason}`,
+            content: [
+              {
+                ...createToolResultStopMessage(toolUseID),
+                ...(result.stopReason && { content: result.stopReason }),
+              },
+            ],
+            toolUseResult: `Error: ${result.stopReason ?? stopReason}`,
             sourceToolAssistantUUID: assistantMessage.uuid,
           }),
         })
@@ -2334,6 +2442,22 @@ async function checkPermissionsAndCallTool(
         ...(mcpServerScope && { mcp_server_scope: mcpServerScope }),
       })
     }
+    const inputSchemaHint =
+      error instanceof
+        McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS &&
+      !toolUseContext.replScriptCall
+        ? buildInputSchemaNotInPromptHint(
+            tool,
+            toolUseContext.messages,
+            toolUseContext.options.tools,
+          )
+        : null
+    if (inputSchemaHint) {
+      logEvent('tengu_deferred_tool_schema_not_sent', {
+        toolName: sanitizeToolNameForAnalytics(tool.name),
+        isMcp: tool.isMcp ?? false,
+      })
+    }
     const content = formatError(error)
 
     // Determine if this was a user interrupt
@@ -2366,7 +2490,7 @@ async function checkPermissionsAndCallTool(
           content: [
             {
               type: 'tool_result',
-              content,
+              content: content + (inputSchemaHint ?? ''),
               is_error: true,
               tool_use_id: toolUseID,
             },

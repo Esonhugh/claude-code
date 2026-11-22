@@ -1160,7 +1160,12 @@ export async function loadModDeclaration(input: {
       const syntax = extension === '.tsx' || extension === '.jsx' ? 'tsx' : 'ts'
       compiled = transpilers[syntax].transformSync(source, syntax)
       program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module', locations: true }) as unknown as Node
-    } catch (error) { fail(path, `cannot parse/transpile module: ${error instanceof Error ? error.message : String(error)}`) }
+    } catch (error) {
+      // Wording of official 2.1.329.
+      const position = (error as { position?: { line?: number; column?: number } } | null)?.position
+      throw new Error(`${path} does not parse: ${error instanceof Error ? error.message : String(error)}` +
+        (position?.line === undefined ? '' : ` (line ${position.line}, column ${position.column})`))
+    }
     function clientSpecifier(node: Node): Node | undefined {
       if (node.type !== 'CallExpression') return
       const callee = node.callee
