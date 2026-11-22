@@ -4,6 +4,7 @@ import { valid } from 'semver'
 import { getCwd } from '../cwd.js'
 import { errorMessage, isENOENT } from '../errors.js'
 import { execFileNoThrow } from '../execFileNoThrow.js'
+import { isSafeRefName } from '../git/gitFilesystem.js'
 import { findGitRoot, gitExe } from '../git.js'
 import { stripBOM } from '../jsonRead.js'
 import { jsonParse } from '../slowOperations.js'
@@ -172,8 +173,8 @@ export async function preparePluginTag(
   const versionFrom = manifestVersion !== undefined ? 'plugin.json' : 'marketplace entry'
 
   const tag = `${pluginName}--v${version}`
-  const ref = await execFileNoThrow(gitExe(), ['check-ref-format', `refs/tags/${tag}`])
-  if (ref.code !== 0) {
+  // The tag is printed inside git commands to copy, so only plain ref characters.
+  if (!isSafeRefName(tag)) {
     return fail(
       `Computed tag name "${tag}" is not a valid git ref. Check the plugin name for characters git rejects (spaces, ~, ^, :, ?, *, [, \\, or sequences like .., @{, //).`,
     )
