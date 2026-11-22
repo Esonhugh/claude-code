@@ -679,18 +679,9 @@ export function ManagePlugins({
     ) {
       setViewState({ type: 'mcp-tools', client: viewState.client })
     } else {
-      if (pendingToggles.size > 0 && onManageComplete) {
-        void onManageComplete()
-      }
       setParentViewState({ type: 'menu' })
     }
-  }, [
-    viewState,
-    setParentViewState,
-    pendingToggles,
-    setResult,
-    onManageComplete,
-  ])
+  }, [viewState, setParentViewState, setResult, onManageComplete])
 
   // Escape when not in search mode - go back.
   // Excludes confirm-project-uninstall (has its own confirm:no handler in
@@ -1538,6 +1529,7 @@ export function ManagePlugins({
                 throw new Error(result.message)
               }
               clearAllCaches()
+              if (onManageComplete) void onManageComplete()
             } catch (err) {
               setPendingToggles(prev => {
                 const next = new Map(prev)
@@ -1563,6 +1555,7 @@ export function ManagePlugins({
                 throw new Error(result.message)
               }
               clearAllCaches()
+              if (onManageComplete) void onManageComplete()
             } catch (err) {
               setPendingToggles(prev => {
                 const next = new Map(prev)
@@ -1589,6 +1582,7 @@ export function ManagePlugins({
     pluginStates,
     toggleMcpServer,
     updateCodexAppEnabled,
+    onManageComplete,
   ])
 
   // Handle accept (Enter) in plugin-list
