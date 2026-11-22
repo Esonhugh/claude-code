@@ -98,6 +98,8 @@ async function runChild(): Promise<void> {
   // `claude mcp list | cat` has no TTY, so it counts as non-interactive; it is
   // still not a -p session, so .mcp.json servers are not auto-approved.
   state.setIsInteractive(false)
+  // The folder is trusted; before that settings.local.json approves nothing.
+  state.setSessionTrustAccepted(true)
   const { enableConfigs, saveCurrentProjectConfig } = await import(
     '../../utils/config.js'
   )

@@ -96,6 +96,7 @@ import {
   isRestrictedToPluginOnly,
   isSourceAdminTrusted,
 } from '../../utils/settings/pluginOnlyPolicy.js'
+import { isSettingSourceWorkspaceTrusted } from '../../utils/settings/workspaceTrust.js'
 import {
   asSystemPrompt,
   type SystemPrompt,
@@ -431,6 +432,30 @@ export function getAgentOptionsSubagentDepthForTesting(
   context: ToolUseContext,
 ): number | undefined {
   return context.options.subagentDepth
+}
+
+/**
+ * Whether an agent's frontmatter hooks may be registered. A project agent's
+ * definition file is workspace content: its hooks need the folder to be
+ * trusted, also in -p and SDK sessions (official 2.1.329).
+ */
+export function agentFrontmatterHooksAllowed(
+  agentDefinition: AgentDefinition,
+): boolean {
+  if (
+    isRestrictedToPluginOnly('hooks') &&
+    !isSourceAdminTrusted(agentDefinition.source)
+  ) {
+    return false
+  }
+  if (isSettingSourceWorkspaceTrusted(agentDefinition.source)) {
+    return true
+  }
+  logForDebugging(
+    `Skipping frontmatter hooks for agent '${agentDefinition.agentType}': the folder its definition file came from is not trusted (source: ${agentDefinition.source})`,
+    { level: 'error' },
+  )
+  return false
 }
 
 /**
@@ -885,10 +910,7 @@ export async function* runAgent({
   // frontmatter-hook REGISTRATION here where source is known, rather than
   // blanket-blocking all session hooks at execution time (which would
   // also kill plugin agents' hooks).
-  const hooksAllowedForThisAgent =
-    !isRestrictedToPluginOnly('hooks') ||
-    isSourceAdminTrusted(agentDefinition.source)
-  if (agentDefinition.hooks && hooksAllowedForThisAgent) {
+  if (agentDefinition.hooks && agentFrontmatterHooksAllowed(agentDefinition)) {
     registerFrontmatterHooks(
       rootSetAppState,
       agentId,

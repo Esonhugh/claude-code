@@ -125,9 +125,17 @@ export function TrustDialog({ onDone, commands }: Props): React.ReactNode {
     hasDangerousEnvVars,
   ])
 
+  // No is the default answer, so say why nothing started (official 2.1.329).
+  function exitUntrusted(exitCode: number) {
+    gracefulShutdownSync(exitCode, 'other', {
+      finalMessage:
+        "Claude Code didn't start because this folder isn't trusted.\nRun claude again and choose Yes, or run it in another folder.",
+    })
+  }
+
   function onChange(value: 'enable_all' | 'exit') {
     if (value === 'exit') {
-      gracefulShutdownSync(1)
+      exitUntrusted(1)
       return
     }
 
@@ -179,7 +187,7 @@ export function TrustDialog({ onDone, commands }: Props): React.ReactNode {
   useKeybinding(
     'confirm:no',
     () => {
-      gracefulShutdownSync(0)
+      exitUntrusted(0)
     },
     { context: 'Confirmation' },
   )
@@ -255,17 +263,27 @@ export function TrustDialog({ onDone, commands }: Props): React.ReactNode {
           </Box>
         )}
 
-        <Text dimColor>
-          <Link url="https://code.claude.com/docs/en/security">
-            Security guide
-          </Link>
-        </Text>
+        <Box flexDirection="column">
+          {hasMcpServers && (
+            <Text>
+              Trusting this folder loads .mcp.json here or above (MCP servers).
+            </Text>
+          )}
+          <Text dimColor>
+            <Link url="https://code.claude.com/docs/en/security">
+              Security guide
+            </Link>
+          </Text>
+        </Box>
 
+        {/* No comes first and has the focus, so a bare Enter never trusts
+            the folder (official 2.1.329). */}
         <Select
           options={[
-            { label: 'Yes, I trust this folder', value: 'enable_all' },
             { label: 'No, exit', value: 'exit' },
+            { label: 'Yes, I trust this folder', value: 'enable_all' },
           ]}
+          hideIndexes
           onChange={value => onChange(value as 'enable_all' | 'exit')}
           onCancel={() => onChange('exit')}
         />
