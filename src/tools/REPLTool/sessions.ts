@@ -132,6 +132,8 @@ export function releaseReplSession(key: string): void {
   if (!session) return
   sessions.delete(key)
   session.released = true
+  // Official `clear` ends in `interrupt`: the scripts stop with their inner calls, not only the Worker.
+  interruptReplSession(session)
   session.executor.release()
   wake(session)
   if (session.agentId === undefined) mainScriptsChanged()

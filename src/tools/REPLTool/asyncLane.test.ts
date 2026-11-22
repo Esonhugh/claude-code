@@ -35,6 +35,7 @@ import {
   MAIN_REPL_SESSION,
   releaseAllReplSessions,
   replLedger,
+  resetMainReplSession,
 } from './sessions.js'
 
 const savedCodeMode = process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE
@@ -700,6 +701,55 @@ describe('a dispatched script as a background task (official 2.1.325 registerScr
     expect(scripts().find(task => task.id === running.id)!.status).toBe('killed')
     await new Promise(r => setTimeout(r, 50))
     expect(findReplSession(MAIN_REPL_SESSION)!.ledger.size).toBe(0)
+  })
+
+  test('a conversation reset stops the script with its running, queued and permission-pending calls', async () => {
+    const { context, scripts } = interactiveContext()
+    const entered: string[] = []
+    const stopped: string[] = []
+    const waiter = buildTool({
+      ...(fakeRead as object),
+      name: 'Waiter',
+      inputSchema: z.object({ id: z.string() }),
+      call: ({ id }: { id: string }, inner: ToolUseContext) =>
+        new Promise(resolve => {
+          entered.push(id)
+          inner.abortController.signal.addEventListener('abort', () => stopped.push(id))
+          setTimeout(() => resolve({ data: id }), 150)
+        }),
+    } as unknown as Parameters<typeof buildTool>[0]) as Tool
+    ;(context.options as unknown as { tools: Tool[] }).tools = [REPLTool, PollTool, waiter]
+    const concurrency = process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
+    process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '1'
+    try {
+      await dispatch("await Promise.all([Waiter({ id: 'running' }), Waiter({ id: 'queued' })])", context)
+      await calling()
+      expect(entered).toEqual(['running'])
+      resetMainReplSession()
+      expect(stopped).toEqual(['running'])
+      expect(scripts()).toMatchObject([{ status: 'killed' }])
+      await new Promise(r => setTimeout(r, 300))
+      expect(entered).toEqual(['running'])
+      expect(scripts()).toMatchObject([{ status: 'killed' }])
+    } finally {
+      if (concurrency === undefined) delete process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
+      else process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = concurrency
+    }
+
+    // A call waiting on its permission prompt is withdrawn with the script.
+    let asking: AbortSignal | undefined
+    const prompt: CanUseToolFn = (_tool, _input, inner) =>
+      new Promise(resolve => {
+        asking = inner.abortController.signal
+        asking.addEventListener('abort', () => resolve({ behavior: 'deny', message: 'withdrawn', decisionReason: { type: 'other', reason: 'withdrawn' } }))
+      })
+    await REPLTool.call({ code: "await Waiter({ id: 'asked' })" }, context, prompt, undefined as never, undefined as never)
+    await calling()
+    expect(asking?.aborted).toBe(false)
+    resetMainReplSession()
+    expect(asking?.aborted).toBe(true)
+    await new Promise(r => setTimeout(r, 50))
+    expect(entered).toEqual(['running'])
   })
 
   test('a non-interactive session registers no task', async () => {
