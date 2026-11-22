@@ -2590,7 +2590,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         .some(name => name !== owner.declaration.name)
   }
 
-  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation, callerChain?: ModCallerChain): ModDispatchHook[] {
+  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation | readonly Activation[], callerChain?: ModCallerChain): ModDispatchHook[] {
     const trusted = [...hostHooks].map(hook => ({
       ...hook,
       ...(hook.invokeStream ? { invokeStream: (input: ModInput, next: ModStreamNext, catching: boolean) => {
@@ -2620,7 +2620,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { entered.active = false }
       },
     }))
-    return [...trusted, ...snapshot.filter(owner => (!only || owner === only) && owner !== skipOwner).flatMap(owner => owner.environment.registrations.map(registration => ({
+    return [...trusted, ...snapshot.filter(owner => (!only || owner === only) && owner !== skipOwner && !(Array.isArray(skipOwner) && skipOwner.includes(owner))).flatMap(owner => owner.environment.registrations.map(registration => ({
       plugin: owner.declaration.name,
       tier: owner.declaration.tier,
       registration,
@@ -3039,7 +3039,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
     snapshot: readonly Activation[] = active,
     table: Nouns = nouns,
-    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
+    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation | readonly Activation[]; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     // Official 2.1.292 raises filesystem entry paths against the invocation's cwd.
@@ -3359,7 +3359,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return composed
   }
 
-  async function admit(candidate: ModDeclaration, judges: readonly Activation[], table: Nouns) {
+  // `asked` already let the candidate in: they are not asked again, but stay in the call's snapshot.
+  async function admit(candidate: ModDeclaration, judges: readonly Activation[], table: Nouns, asked?: readonly Activation[]) {
     const result = await dispatch('plugin.register', {
       name: candidate.name, tier: candidate.tier, root: candidate.pluginRoot, provenance: candidate.storageId,
       ...(candidate.version === undefined ? {} : { version: candidate.version }),
@@ -3368,7 +3369,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ...(candidate.env ? { env: candidate.env } : {}),
         ...(candidate.state ? { state: candidate.state } : {}),
       },
-    }, async () => ({ allow: true }), judges, table) as { allow?: true; refuse?: string }
+    }, async () => ({ allow: true }), judges, table, asked ? { skipOwner: asked } : {}) as { allow?: true; refuse?: string }
     return result.refuse
   }
 
@@ -3711,8 +3712,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         unadmitted.delete(owner)
         const seats = [...candidates].sort(seatOrder)
         const position = seats.indexOf(owner)
-        const judges = judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)).filter(judge => !asked.includes(judge))
-        const refusal = await admit(owner.declaration, judges, bootstrap!.table)
+        const refusal = await admit(owner.declaration, judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)), bootstrap!.table, asked)
         ensureLive()
         if (refusal === undefined) {
           owner.state = 'active'

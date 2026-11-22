@@ -201,6 +201,26 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'x: denied'})
   })
 
+  test('a judge asked after the last build still sees the hooks of the judges that were asked before', async () => {
+    const plugins = [
+      await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, greeting: {read: async () => 'original'}}; }); }`, 'provider'),
+      await fixture(`export function register(on) {
+        on('plugin.register', ($, e, next) => next(e));
+        on('greeting.read', async ($, e, next) => ({value:'from m'}));
+      }`, 'm'),
+      await fixture(`export function register(on) {
+        on('plugin.register', async ($, e, next) => e.name === 'x' && await $.greeting.read({}) !== 'from m' ? {refuse:'j2 read the unhooked greeting'} : next(e));
+        on('late.hello', async ($, e, next) => next(e));
+      }`, 'j2'),
+      await fixture(`export function register(on) { on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'x: denied'})); }`, 'x'),
+      await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, late: {hello: async () => 'hi'}}; }); }`, 'late'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'x: denied'})
+  })
+
   test('a user plugin whose engine.create withholds a noun does not load (official 2.1.329)', async () => {
     const plugins = [
       await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, greeting: {read: async () => 'original'}}; }); }`, 'provider'),
