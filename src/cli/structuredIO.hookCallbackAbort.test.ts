@@ -41,16 +41,17 @@ async function runCallback(answer: 'abort' | 'error') {
     const pending = io.createHookCallback('cb1', 1).callback(hookInput, null, timeout.signal)
     await requestId.promise
     if (answer === 'abort') timeout.abort()
-    return { output: await pending, logged, sent }
+    const output = await pending.catch((error: unknown) => error)
+    return { output, logged, sent }
   } finally {
     done.resolve()
     error.mockRestore()
   }
 }
 
-test('a timed-out hook callback is cancelled without writing to stderr, like 2.1.329', async () => {
+test('a timed-out hook callback is cancelled without writing to stderr, like 2.1.329, and left to its caller', async () => {
   const { output, logged, sent } = await runCallback('abort')
-  expect(output).toEqual({})
+  expect((output as Error).name).toBe('AbortError')
   expect(sent).toEqual(['control_request', 'control_cancel_request'])
   expect(logged).toEqual([])
 })
