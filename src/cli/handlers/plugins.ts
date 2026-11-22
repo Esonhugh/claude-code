@@ -266,7 +266,19 @@ export async function pluginConfigureHandler(
         loadPluginOptions(pluginId),
       )
       saved = Object.keys(final)
-      if (saved.length > 0) savePluginOptions(pluginId, final, schema)
+      if (saved.length > 0) {
+        // A cleared option is saved as '', which is not one of its choices.
+        savePluginOptions(
+          pluginId,
+          final,
+          Object.fromEntries(
+            Object.entries(schema).map(([key, field]) => [
+              key,
+              final[key] === '' ? { ...field, options: undefined } : field,
+            ]),
+          ),
+        )
+      }
     } catch (error) {
       if (options.json && error instanceof PluginOptionRefusedError) {
         json({

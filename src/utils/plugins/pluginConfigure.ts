@@ -133,6 +133,8 @@ export function preparePluginOptionValues(
     }
   }
   for (const key of Object.keys(final)) {
+    // An empty value clears the option, so it need not be one of its choices.
+    if (final[key] === '') continue
     const check = validateUserConfig(
       { [key]: final[key]! },
       { [key]: schema[key]! },
