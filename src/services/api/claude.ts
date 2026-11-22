@@ -2912,6 +2912,7 @@ async function* queryModelRequest(
             const refusalMessage = getErrorMessageIfRefusal(
               part.delta.stop_reason,
               options.model,
+              partialMessage?.id,
             )
             if (refusalMessage) {
               yield refusalMessage

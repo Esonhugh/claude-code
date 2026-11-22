@@ -1926,6 +1926,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1956,6 +1957,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2169,6 +2171,7 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    api_message_id: z.string().optional(),
   }),
 )
 

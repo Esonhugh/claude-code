@@ -1266,15 +1266,29 @@ export function categorizeRetryableAPIError(
   return 'unknown'
 }
 
+// How many responses a safety classifier has stopped since this session
+// started in this process (SDK result.safety_stops).
+let safetyStops = 0
+
+export function getSafetyStops(): number {
+  return safetyStops
+}
+
+export function resetSafetyStops(): void {
+  safetyStops = 0
+}
+
 export function getErrorMessageIfRefusal(
   stopReason: BetaStopReason | null,
   model: string,
+  refusedMessageId?: string,
 ): AssistantMessage | undefined {
   if (stopReason !== 'refusal') {
     return
   }
 
   logEvent('tengu_refusal_api_response', {})
+  safetyStops++
 
   const baseMessage = getIsNonInteractiveSession()
     ? `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request or attempting a different approach.`
@@ -1285,8 +1299,11 @@ export function getErrorMessageIfRefusal(
       ? ' If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.'
       : ''
 
-  return createAssistantAPIErrorMessage({
+  const message = createAssistantAPIErrorMessage({
     content: baseMessage + modelSuggestion,
     error: 'invalid_request',
   })
+  message.message.stop_reason = 'refusal'
+  message.refusedMessageId = refusedMessageId
+  return message
 }

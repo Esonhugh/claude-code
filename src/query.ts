@@ -281,6 +281,19 @@ export type QueryParams = {
   deps?: QueryDeps
 }
 
+const REFUSAL_TOOL_NOT_RUN = 'Not run: the response that made this tool call was stopped by a safety classifier.'
+const REFUSAL_TOOL_INTERRUPTED =
+  'Interrupted: the response that made this tool call was stopped by a safety classifier while the call was running; it may have partially or fully completed.'
+const REFUSAL_RETRY_NOTE =
+  'Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.'
+const REFUSAL_RETRY_NOTE_INTERRUPTED =
+  REFUSAL_RETRY_NOTE +
+  ' Exception: a tool call whose result reads "Interrupted" was already running when the response was stopped; it may have partially or fully completed.'
+
+function isRefusalMessage(message: Message | StreamEvent | RequestStartEvent | TombstoneMessage | ToolUseSummaryMessage): message is AssistantMessage {
+  return message.type === 'assistant' && message.isApiErrorMessage === true && message.message.stop_reason === 'refusal'
+}
+
 // -- query loop state
 
 // Mutable state carried between loop iterations
@@ -778,6 +791,8 @@ async function* queryLoop(
     state.toolUseContext,
   )
 
+  // A response stopped by a safety classifier is retried once per query.
+  let refusalRetrySpent = false
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // Destructure state at the top of each iteration. toolUseContext alone
@@ -1189,6 +1204,11 @@ async function* queryLoop(
     let needsFollowUp = false
     // A PreToolUse hook deferred the call, during the stream or after it.
     let toolWasDeferred = false
+    const refusalRetryAllowed =
+      !refusalRetrySpent &&
+      !process.env.CLAUDE_CODE_DISABLE_REFUSAL_RETRY &&
+      (querySource === 'sdk' || querySource.startsWith('repl_main_thread') || querySource.startsWith('agent:'))
+    let withheldRefusal: AssistantMessage | undefined
 
     queryCheckpoint('query_setup_start')
     let streamingToolExecutor = new StreamingToolExecutor(
@@ -1561,6 +1581,10 @@ async function* queryLoop(
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
+            if (refusalRetryAllowed && isRefusalMessage(message)) {
+              withheld = true
+              withheldRefusal = message
+            }
             if (message.type === 'assistant')
               updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })
             if (!withheld) {
@@ -1800,6 +1824,64 @@ async function* queryLoop(
         })
       }
       return { reason: 'aborted_streaming' }
+    }
+
+    // A response the safety classifier stopped is retried once on the same
+    // model: what it had produced stays, its unfinished tool calls get a
+    // result saying so, and the model is told why (official 2.1.329).
+    if (withheldRefusal && assistantMessages.at(-1) === withheldRefusal) {
+      for (const update of streamingToolExecutor.getCompletedResults()) {
+        if (!update.message) continue
+        yield update.message
+        if (update.message.type === 'attachment' && update.message.attachment.type === 'hook_deferred_tool') toolWasDeferred = true
+        toolResults.push(...normalizeMessagesForAPI([update.message], toolUseContext.options.tools).filter(_ => _.type === 'user'))
+      }
+      if (toolWasDeferred) {
+        yield withheldRefusal
+      } else {
+        const started = new Set(streamingToolExecutor.getStartedToolUseIds())
+        streamingToolExecutor.discard()
+        const kept = assistantMessages.filter(message => message !== withheldRefusal)
+        const answered = new Set(toolResults.flatMap(message =>
+          message.type === 'user' && Array.isArray(message.message.content)
+            ? message.message.content.flatMap(block => block.type === 'tool_result' ? [block.tool_use_id] : [])
+            : []))
+        let interrupted = false
+        const notRun = kept.flatMap(message => message.message.content.flatMap(block => {
+          if (block.type !== 'tool_use' || answered.has(block.id)) return []
+          const running = started.has(block.id)
+          if (running) interrupted = true
+          const content = running ? REFUSAL_TOOL_INTERRUPTED : REFUSAL_TOOL_NOT_RUN
+          return [createUserMessage({
+            content: [{ type: 'tool_result', tool_use_id: block.id, is_error: true, content }],
+            toolUseResult: content,
+            toolDenialKind: running ? 'interrupted' : 'cancelled',
+            sourceToolAssistantUUID: message.uuid,
+          })]
+        }))
+        const nudge = createUserMessage({
+          content: interrupted ? REFUSAL_RETRY_NOTE_INTERRUPTED : REFUSAL_RETRY_NOTE,
+          isMeta: true,
+        })
+        nudge.refusedMessageId = withheldRefusal.refusedMessageId
+        yield* notRun
+        yield createSystemMessage(
+          `${renderModelName(currentModel)}'s safeguards stopped the response above · continuing once with that noted`,
+          'notice',
+        )
+        yield nudge
+        refusalRetrySpent = true
+        state = {
+          ...state,
+          messages: [...messagesForQuery, ...kept, ...toolResults, ...notRun, nudge],
+          toolUseContext,
+          autoCompactTracking: tracking,
+          maxOutputTokensOverride: undefined,
+          pendingToolUseSummary: undefined,
+          transition: { reason: 'refusal_retry' },
+        }
+        continue
+      }
     }
 
     // Yield tool use summary from previous turn — haiku (~1s) resolved during model streaming (5-30s)

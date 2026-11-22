@@ -131,6 +131,8 @@ export interface UserMessage {
   type: 'user'
   uuid: UUID
   timestamp: string
+  /** On the note that follows a refused response: the id of that API message. */
+  refusedMessageId?: string
   message: {
     role: 'user'
     content: string | ContentBlockParam[]
@@ -172,6 +174,8 @@ export interface AssistantMessage {
   type: 'assistant'
   uuid: UUID
   timestamp: string
+  /** On a refusal error: the id of the API message the safety classifier stopped. */
+  refusedMessageId?: string
   message: {
     id: string
     role: 'assistant'
