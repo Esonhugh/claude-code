@@ -4,6 +4,7 @@ import { logEvent } from 'src/services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { Box, Text } from '../ink.js'
 import { execFileNoThrow } from '../utils/execFileNoThrow.js'
+import { logError } from '../utils/log.js'
 import { getPlansDirectory } from '../utils/plans.js'
 import { setCwd } from '../utils/Shell.js'
 import {
@@ -25,6 +26,21 @@ function recordWorktreeExit(): void {
     require('../utils/sessionStorage.js') as typeof import('../utils/sessionStorage.js')
   ).saveWorktreeState(null)
   /* eslint-enable @typescript-eslint/no-require-imports */
+}
+
+// Runs before the worktree session is cleared: once it is, this dialog's next
+// render ends the exit flow.
+async function relocateTranscript(originalCwd: string): Promise<void> {
+  try {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    await (
+      require('../utils/sessionStorage.js') as typeof import('../utils/sessionStorage.js')
+    ).relocateSessionTranscript(originalCwd)
+    /* eslint-enable @typescript-eslint/no-require-imports */
+  } catch (error) {
+    // The session still exits; it stays resumable from the worktree.
+    logError(error)
+  }
 }
 
 type Props = {
@@ -70,7 +86,8 @@ export function WorktreeExitDialog({
         // If no changes and no commits, clean up silently
         if (changeLines.length === 0 && count === 0) {
           setStatus('removing')
-          void cleanupWorktree()
+          void relocateTranscript(worktreeSession.originalCwd)
+            .then(cleanupWorktree)
             .then(() => {
               process.chdir(worktreeSession.originalCwd)
               setCwd(worktreeSession.originalCwd)
@@ -124,6 +141,7 @@ export function WorktreeExitDialog({
         commits: commitCount,
         changed_files: changes.length,
       })
+      await relocateTranscript(worktreeSession.originalCwd)
       await keepWorktree()
       process.chdir(worktreeSession.originalCwd)
       setCwd(worktreeSession.originalCwd)
@@ -148,6 +166,7 @@ export function WorktreeExitDialog({
       if (worktreeSession.tmuxSessionName) {
         await killTmuxSession(worktreeSession.tmuxSessionName)
       }
+      await relocateTranscript(worktreeSession.originalCwd)
       await keepWorktree()
       process.chdir(worktreeSession.originalCwd)
       setCwd(worktreeSession.originalCwd)
@@ -167,6 +186,7 @@ export function WorktreeExitDialog({
         await killTmuxSession(worktreeSession.tmuxSessionName)
       }
       try {
+        await relocateTranscript(worktreeSession.originalCwd)
         await cleanupWorktree()
         process.chdir(worktreeSession.originalCwd)
         setCwd(worktreeSession.originalCwd)

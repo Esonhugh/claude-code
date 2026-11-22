@@ -225,6 +225,8 @@ export function deriveShortMessageId(uuid: string): string {
 export const INTERRUPT_MESSAGE = '[Request interrupted by user]'
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   '[Request interrupted by user for tool use]'
+export const TOOL_CALL_INTERRUPTED_MESSAGE =
+  "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]"
 export const CANCEL_MESSAGE =
   "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed."
 export const REJECT_MESSAGE =
@@ -1160,7 +1162,9 @@ function isHookAttachmentMessage(
       // @ts-ignore - recovered code
       message.attachment.type === 'hook_additional_context' ||
       // @ts-ignore - recovered code
-      message.attachment.type === 'hook_stopped_continuation')
+      message.attachment.type === 'hook_stopped_continuation' ||
+      // @ts-ignore - recovered code
+      message.attachment.type === 'hook_deferred_tool')
   )
 }
 
@@ -3109,7 +3113,11 @@ export function getToolUseID(message: NormalizedMessage): string | null {
   }
 }
 
-export function filterUnresolvedToolUses(messages: Message[]): Message[] {
+export function filterUnresolvedToolUses(
+  messages: Message[],
+  // Calls a resume is about to run (a deferred tool); they stay open.
+  keepToolUseIds?: ReadonlySet<string>,
+): Message[] {
   // Collect all tool_use IDs and tool_result IDs directly from message content blocks.
   // This avoids calling normalizeMessages() which generates new UUIDs — if those
   // normalized messages were returned and later recorded to the transcript JSONL,
@@ -3135,7 +3143,9 @@ export function filterUnresolvedToolUses(messages: Message[]): Message[] {
   }
 
   const unresolvedIds = new Set(
-    [...toolUseIds].filter(id => !toolResultIds.has(id)),
+    [...toolUseIds].filter(
+      id => !toolResultIds.has(id) && !keepToolUseIds?.has(id),
+    ),
   )
 
   if (unresolvedIds.size === 0) {
@@ -4783,6 +4793,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'hook_error_during_execution':
     case 'hook_non_blocking_error':
     case 'hook_system_message':
+    case 'hook_deferred_tool':
     case 'structured_output':
     case 'hook_permission_decision':
       return []

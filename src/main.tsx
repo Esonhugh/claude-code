@@ -131,6 +131,7 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
 import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
+import { getResumeHintLaunchFlags } from './utils/resumeHint.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
 import { initScreenReaderMode } from './utils/screenReader.js'
 import { isFocusViewConfigured } from './utils/focusView.js'
@@ -214,6 +215,7 @@ import {
   fetchToolsForClient,
   getMcpToolsCommandsAndResources,
   prefetchAllMcpResources,
+  trackToolListRefresh,
 } from './services/mcp/client.js'
 import {
   VALID_INSTALLABLE_SCOPES,
@@ -391,6 +393,7 @@ import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js'
 import {
   gracefulShutdown,
   gracefulShutdownSync,
+  setResumeHintLaunchFlags,
 } from 'src/utils/gracefulShutdown.js'
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
@@ -435,6 +438,7 @@ import {
   setStrictMcpConfig,
   setIsInteractive,
   setPrintOutputFormat,
+  setHasStreamingInput,
   setKairosActive,
   setOriginalCwd,
   setQuestionPreviewFormat,
@@ -1916,6 +1920,11 @@ async function run(): Promise<CommanderCommand> {
     .action(async (prompt, options) => {
       profileCheckpoint('action_handler_start')
       configureTuiRestart(program)
+      setResumeHintLaunchFlags(
+        _pendingSSH?.host || _pendingConnect?.url
+          ? ''
+          : getResumeHintLaunchFlags(program.options, process.argv.slice(2)),
+      )
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -2350,18 +2359,15 @@ async function run(): Promise<CommanderCommand> {
       // Handle system prompt options
       let systemPrompt = options.systemPrompt
       if (options.systemPromptFile) {
-        if (options.systemPrompt) {
-          process.stderr.write(
-            chalk.red(
-              'Error: Cannot use both --system-prompt and --system-prompt-file. Please use only one.\n',
-            ),
-          )
-          process.exit(1)
-        }
-
         try {
           const filePath = resolve(options.systemPromptFile)
-          systemPrompt = readFileSync(filePath, 'utf8')
+          const fromFile = readFileSync(filePath, 'utf8')
+          // Both given: the file comes first, then --system-prompt.
+          systemPrompt = !options.systemPrompt
+            ? fromFile
+            : fromFile
+              ? `${fromFile.replace(/\r?\n$/, '')}\n\n${options.systemPrompt}`
+              : options.systemPrompt
         } catch (error) {
           const code = getErrnoCode(error)
           if (code === 'ENOENT') {
@@ -3920,6 +3926,7 @@ async function run(): Promise<CommanderCommand> {
       }
 
       if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
+      setHasStreamingInput(inputFormat === 'stream-json')
       logForDiagnosticsNoPII('info', 'started', {
         version: MACRO.VERSION,
         is_native_binary: isInBundledMode(),
@@ -4200,28 +4207,32 @@ async function run(): Promise<CommanderCommand> {
               if (client.type === 'connected' && client.capabilities?.tools?.listChanged) {
                 client.client.setNotificationHandler(
                   'notifications/tools/list_changed',
-                  async () => {
-                    try {
-                      clearFetchToolsCache(client.name)
-                      const newTools = await fetchToolsForClient(client)
-                      headlessStore.setState(prev => ({
-                        ...prev,
-                        mcp: {
-                          ...prev.mcp,
-                          tools: [
-                            ...prev.mcp.tools.filter(
-                              t => t.mcpInfo?.serverName !== client.name,
-                            ),
-                            ...newTools,
-                          ],
-                        },
-                      }))
-                    } catch (err) {
-                      logForDebugging(
-                        `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
-                      )
-                    }
-                  },
+                  () =>
+                    trackToolListRefresh(
+                      client.name,
+                      (async () => {
+                        try {
+                          clearFetchToolsCache(client.name)
+                          const newTools = await fetchToolsForClient(client)
+                          headlessStore.setState(prev => ({
+                            ...prev,
+                            mcp: {
+                              ...prev.mcp,
+                              tools: [
+                                ...prev.mcp.tools.filter(
+                                  t => t.mcpInfo?.serverName !== client.name,
+                                ),
+                                ...newTools,
+                              ],
+                            },
+                          }))
+                        } catch (err) {
+                          logForDebugging(
+                            `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
+                          )
+                        }
+                      })(),
+                    ),
                 )
               }
               headlessStore.setState(prev => ({
@@ -5962,11 +5973,7 @@ async function run(): Promise<CommanderCommand> {
     .command('serve')
     .description(`Start the Claude Code MCP server`)
     .option('-d, --debug', 'Enable debug mode', () => true)
-    .option(
-      '--verbose',
-      'Override verbose mode setting from config',
-      () => true,
-    )
+    .option('--verbose', 'Override the verbose setting', () => true)
     .action(
       async ({ debug, verbose }: { debug?: boolean; verbose?: boolean }) => {
         const { mcpServeHandler } = await import('./cli/handlers/mcp.js')
@@ -5986,7 +5993,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Remove an MCP server')
     .option(
       '-s, --scope <scope>',
-      'Configuration scope (local, user, or project) - if not specified, removes from whichever scope it exists in',
+      'Configuration scope (local, user, or project); if not set, removes it from whichever scope has it',
     )
     .action(async (name: string, options: { scope?: string }) => {
       const { mcpRemoveHandler } = await import('./cli/handlers/mcp.js')
@@ -6018,7 +6025,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)')
     .option(
       '--no-browser',
-      'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
+      'Print the authorization URL instead of opening a browser (for SSH or no-browser sessions — paste the redirect URL back when prompted)',
     )
     .action(async (name: string, options: { browser?: boolean }) => {
       const { mcpLoginHandler } = await import('./cli/handlers/mcp.js')

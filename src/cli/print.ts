@@ -109,6 +109,7 @@ import {
   loadConversationForResume,
   type TurnInterruptionState,
 } from 'src/utils/conversationRecovery.js'
+import type { DeferredToolMarker } from '../utils/attachments.js'
 import { getMcpServerStatusSource } from 'src/services/mcp/types.js'
 import type {
   MCPServerConnection,
@@ -434,6 +435,7 @@ import {
   restoreAgentFromSession,
   restoreGoalSessionFromLog,
   restoreSessionStateFromLog,
+  restoreWorktreeForResume,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
 import { exec as execShell } from 'src/utils/Shell.js'
@@ -657,14 +659,24 @@ export function canBatchWith(
 }
 
 /**
- * Official 2.1.311: an empty -p prompt is an error, including with --resume or
- * --continue (official resumes a deferred tool there; this build has none).
+ * Official 2.1.329: an empty -p prompt is an error, unless --resume or
+ * --continue found a tool call that a PreToolUse hook deferred, which then runs.
  */
 export function getMissingPromptError(
   inputPrompt: string | AsyncIterable<string>,
-  options: { resume?: string | boolean; continue?: boolean; sdkUrl?: string },
+  options: {
+    resume?: string | boolean
+    continue?: boolean
+    sdkUrl?: string
+    deferredToolUse?: unknown
+  },
 ): string | null {
-  if (typeof inputPrompt !== 'string' || inputPrompt.trim() !== '' || options.sdkUrl) {
+  if (
+    typeof inputPrompt !== 'string' ||
+    inputPrompt.trim() !== '' ||
+    options.sdkUrl ||
+    options.deferredToolUse
+  ) {
     return null
   }
   if (inputPrompt !== '') {
@@ -673,7 +685,8 @@ export function getMissingPromptError(
   const resuming =
     (typeof options.resume === 'string' && options.resume.trim().length > 0) ||
     options.continue
-  return resuming
+  return resuming &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME)
     ? 'Error: No deferred tool marker found in the resumed session. Either the session was not deferred, the marker is stale (tool already ran), or it exceeds the tail-scan window. Provide a prompt to continue the conversation.\n'
     : 'Error: Input must be provided either through stdin or as a prompt argument when using --print\n'
 }
@@ -950,6 +963,7 @@ export async function runHeadless(
   const {
     messages: initialMessages,
     turnInterruptionState,
+    deferredToolUse,
     agentSetting: resumedAgentSetting,
   } = await loadInitialMessages(setAppState, {
     continue: options.continue,
@@ -1045,7 +1059,10 @@ export async function runHeadless(
     return
   }
 
-  const missingPromptError = getMissingPromptError(inputPrompt, options)
+  const missingPromptError = getMissingPromptError(inputPrompt, {
+    ...options,
+    deferredToolUse,
+  })
   if (missingPromptError) {
     process.stderr.write(missingPromptError)
     gracefulShutdownSync(1)
@@ -1170,6 +1187,7 @@ export async function runHeadless(
     agents,
     options,
     turnInterruptionState,
+    deferredToolUse,
   )) {
     // Like official 2.1.311: each written result is numbered in run order.
     if (message.type === 'result') {
@@ -1344,8 +1362,11 @@ function runHeadlessStreaming(
     workload?: string | undefined
   },
   turnInterruptionState?: TurnInterruptionState,
+  deferredToolUse?: DeferredToolMarker,
 ): AsyncIterable<StdoutMessage> {
   let running = false
+  // Handed to the first turn only; later turns must not run the call again.
+  let pendingDeferredToolUse = deferredToolUse
   let runPhase:
     | 'draining_commands'
     | 'waiting_for_agents'
@@ -1859,7 +1880,14 @@ function runHeadlessStreaming(
     // appState instead so tools/list_changed and reconnects replace them.
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools.filter(tool => !isMcpTool(tool)), ...sdkTools, ...dynamicMcpState.tools],
+        [
+          ...tools.filter(tool => !isMcpTool(tool)),
+          // These win over `assembledTools` in the merge, so deny rules apply here too.
+          ...filterToolsByDenyRules(
+            [...sdkTools, ...dynamicMcpState.tools],
+            appState.toolPermissionContext,
+          ),
+        ],
         assembledTools,
         appState.toolPermissionContext.mode,
       ),
@@ -2728,6 +2756,8 @@ function runHeadlessStreaming(
               for (const event of drainSdkOutput()) output.enqueue(event)
             })
           })
+          const deferredToolUseForTurn = pendingDeferredToolUse
+          pendingDeferredToolUse = undefined
           try {
             await runWithWorkload(cmd.workload ?? options.workload, async () => {
               for await (const message of ask({
@@ -2805,6 +2835,7 @@ function runHeadlessStreaming(
               agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
               allowedAgentTypes: resolveMainThreadAgentTools(allTools)?.allowedAgentTypes,
               orphanedPermission: cmd.orphanedPermission,
+              deferredToolUse: deferredToolUseForTurn,
               setSDKStatus: (status, compact) => {
                 output.enqueue({
                   type: 'system',
@@ -5909,12 +5940,19 @@ function runHeadlessStreaming(
 
       const remoteFields = structuredIO instanceof RemoteIO ? extractInboundMessageFields(message) : undefined
       if (structuredIO instanceof RemoteIO && !remoteFields) continue
+      // Official 2.1.329: content that is neither a string nor an array is
+      // dropped, and null or absent content is an empty prompt.
+      // @ts-ignore - recovered code
+      const inboundContent = remoteFields?.content ?? message.message.content ?? ''
+      if (typeof inboundContent !== 'string' && !Array.isArray(inboundContent)) {
+        logForDebugging(`Dropping user message with ${typeof inboundContent} content`, { level: 'warn' })
+        continue
+      }
       const inboundCommand: QueuedCommand = {
         mode: 'prompt',
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
-        // @ts-ignore - recovered code
-        value: await resolveAndPrepend(message, remoteFields?.content ?? message.message.content),
+        value: await resolveAndPrepend(message, inboundContent),
         // @ts-ignore - recovered code
         uuid: message.uuid,
         priority: message.priority,
@@ -5973,6 +6011,21 @@ function runHeadlessStreaming(
       await finishOutput()
     }
   })()
+
+  // Like official: a call that a PreToolUse hook deferred runs on resume, and
+  // the model is then asked to go on, with or without a prompt of the user's.
+  if (deferredToolUse) {
+    logForDebugging(
+      `[print.ts] Auto-resuming deferred tool: ${deferredToolUse.toolName} (${deferredToolUse.toolUseID})`,
+    )
+    enqueue({
+      mode: 'prompt',
+      value: 'Continue from where you left off.',
+      uuid: randomUUID(),
+      isMeta: true,
+    })
+    void run()
+  }
 
   // The live permission getter may admit held messages before the wake
   // callback is installed. Drain them once all streaming state is initialized.
@@ -6344,7 +6397,11 @@ async function handleInitializeRequest(
       // @ts-ignore - recovered code
       hooks[event as HookEvent] = matchers.map(matcher => {
         const callbacks = matcher.hookCallbackIds.map(callbackId => {
-          return structuredIO.createHookCallback(callbackId, matcher.timeout)
+          return structuredIO.createHookCallback(
+            callbackId,
+            matcher.timeout,
+            matcher.onFailure,
+          )
         })
         return {
           matcher: matcher.matcher,
@@ -6364,6 +6421,7 @@ async function handleInitializeRequest(
   const initResponse: SDKControlInitializeResponse = {
     ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
+    hook_on_failure_supported: true,
     // Mods' own commands join the list once they have loaded, as official 2.1.318 lists them.
     commands: toSdkSlashCommands(describeCommands ? await describeCommands(commands) : commands),
     agents: [...agents]
@@ -6963,10 +7021,12 @@ export function removeInterruptedMessage(
 type LoadInitialMessagesResult = {
   messages: Message[]
   turnInterruptionState?: TurnInterruptionState
+  deferredToolUse?: DeferredToolMarker
   agentSetting?: string
 }
 
-async function loadInitialMessages(
+// exported for testing
+export async function loadInitialMessages(
   setAppState: (f: (prev: AppState) => AppState) => void,
   options: {
     continue: boolean | undefined
@@ -7040,6 +7100,9 @@ async function loadInitialMessages(
             ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
             : result,
         )
+        if (!options.forkSession) {
+          restoreWorktreeForResume(result.worktreeSession)
+        }
         restoreSessionCosts(result, { forkSession: options.forkSession })
         setAppState(prev => {
           const toolPermissionContext = restorePermissionModeForResume(
@@ -7063,6 +7126,7 @@ async function loadInitialMessages(
         return {
           messages: result.messages,
           turnInterruptionState: result.turnInterruptionState,
+          deferredToolUse: result.deferredToolUse,
           agentSetting: result.agentSetting,
         }
       }
@@ -7284,6 +7348,9 @@ async function loadInitialMessages(
           ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
           : result,
       )
+      if (!options.forkSession) {
+        restoreWorktreeForResume(result.worktreeSession)
+      }
       restoreSessionCosts(result, { forkSession: options.forkSession })
       setAppState(prev => {
         const toolPermissionContext = restorePermissionModeForResume(
@@ -7305,6 +7372,7 @@ async function loadInitialMessages(
       return {
         messages: result.messages,
         turnInterruptionState: result.turnInterruptionState,
+        deferredToolUse: result.deferredToolUse,
         agentSetting: result.agentSetting,
       }
     } catch (error) {

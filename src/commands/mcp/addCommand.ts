@@ -19,6 +19,7 @@ import {
   ensureConfigScope,
   ensureTransport,
   parseHeaders,
+  redactSensitiveHeaders,
 } from '../../services/mcp/utils.js'
 import {
   getXaaIdpSettings,
@@ -33,6 +34,7 @@ import { jsonStringify } from '../../utils/slowOperations.js'
 export function registerMcpAddCommand(mcp: Command): void {
   mcp
     .command('add <name> <commandOrUrl> [args...]')
+    .summary('Add an MCP server')
     .description(
       'Add an MCP server to Claude Code.\n\n' +
         'Examples:\n' +
@@ -41,7 +43,7 @@ export function registerMcpAddCommand(mcp: Command): void {
         '  # Add HTTP server with headers:\n' +
         '  claude mcp add --transport http corridor https://app.corridor.dev/api/mcp --header "Authorization: Bearer ..."\n\n' +
         '  # Add stdio server with environment variables:\n' +
-        '  claude mcp add my-server -e API_KEY=xxx -- npx my-mcp-server\n\n' +
+        '  claude mcp add my-server -e API_KEY=xxx -- node ./my-server.js\n\n' +
         '  # Add stdio server with subprocess flags:\n' +
         '  claude mcp add my-server -- my-command --some-flag arg1',
     )
@@ -52,7 +54,7 @@ export function registerMcpAddCommand(mcp: Command): void {
     )
     .option(
       '-t, --transport <transport>',
-      'Transport type (stdio, sse, http). Defaults to stdio if not specified.',
+      'Transport type (stdio, sse, http). Defaults to stdio.',
     )
     .option(
       '-e, --env <env...>',
@@ -60,7 +62,7 @@ export function registerMcpAddCommand(mcp: Command): void {
     )
     .option(
       '-H, --header <header...>',
-      'Set headers for HTTP/SSE servers (e.g. -H "X-Api-Key: abc123" -H "X-Custom: value")',
+      'Set headers for HTTP/SSE servers, repeat for more (e.g. -H "X-Api-Key: abc123")',
     )
     .option('--client-id <clientId>', 'OAuth client ID for HTTP/SSE servers')
     .option(
@@ -187,7 +189,7 @@ export function registerMcpAddCommand(mcp: Command): void {
           )
           if (headers) {
             process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
+              `Headers: ${jsonStringify(redactSensitiveHeaders(headers), null, 2)}\n`,
             )
           }
         } else if (transport === 'http') {
@@ -233,7 +235,7 @@ export function registerMcpAddCommand(mcp: Command): void {
           )
           if (headers) {
             process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
+              `Headers: ${jsonStringify(redactSensitiveHeaders(headers), null, 2)}\n`,
             )
           }
         } else {
@@ -251,7 +253,7 @@ export function registerMcpAddCommand(mcp: Command): void {
           // Warn if this looks like a URL but transport wasn't explicitly specified
           if (!transportExplicit && looksLikeUrl) {
             process.stderr.write(
-              `\nWarning: The command "${actualCommand}" looks like a URL, but is being interpreted as a stdio server as --transport was not specified.\n`,
+              `\nWarning: The command "${actualCommand}" looks like a URL, but is treated as a stdio server because --transport wasn't set.\n`,
             )
             process.stderr.write(
               `If this is an HTTP server, use: claude mcp add --transport http ${name} ${actualCommand}\n`,

@@ -629,6 +629,44 @@ function expandEnvVars(config: McpServerConfig): {
   }
 }
 
+// The union schema only reports "Invalid input"; validate against the schema
+// the "type" selects so the message names the field (official 2.1.329).
+function describeInvalidMcpConfig(
+  config: unknown,
+  unionIssues: { path: PropertyKey[]; message: string }[],
+): string {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    return 'not a JSON object. Check its quotes, commas and braces.'
+  }
+  const hasKind = 'type' in config || 'command' in config
+  if (!hasKind && 'url' in config) {
+    return 'it has a "url" but no "type". Add "type": "http" (or "sse" / "ws").'
+  }
+  if (!hasKind && 'mcpServers' in config) {
+    return 'leave out the "mcpServers" wrapper and the server name. Pass only the settings inside them.'
+  }
+  if (!hasKind) {
+    return 'it needs a "command" for a local server, or a "type" and a "url" for a remote one.'
+  }
+  const type = 'type' in config ? config.type : 'stdio'
+  if (
+    typeof type !== 'string' ||
+    !Object.hasOwn(McpServerConfigSchemaByType, type)
+  ) {
+    return 'unknown "type". Use "stdio", "sse", "http" (or "streamable-http") or "ws".'
+  }
+  const typed =
+    McpServerConfigSchemaByType[
+      type as keyof typeof McpServerConfigSchemaByType
+    ]().safeParse(config)
+  return (typed.error?.issues ?? unionIssues)
+    .map(
+      issue =>
+        `${issue.path.join('.')}: ${issue.message.replace(/^Invalid input: /, '')}`,
+    )
+    .join(', ')
+}
+
 /**
  * Add a new MCP server configuration
  * @param name The name of the server
@@ -676,12 +714,26 @@ export async function addMcpConfig(
   // Validate config first (needed for command-based policy checks)
   const result = McpServerConfigSchema().safeParse(config)
   if (!result.success) {
-    const formattedErrors = result.error.issues
-      .map(err => `${err.path.join('.')}: ${err.message}`)
-      .join(', ')
-    throw new Error(`Invalid configuration: ${formattedErrors}`)
+    throw new Error(
+      `Invalid configuration: ${describeInvalidMcpConfig(config, result.error.issues)}`,
+    )
   }
   const validatedConfig = result.data
+
+  if (
+    validatedConfig.type === 'sdk' ||
+    validatedConfig.type === 'sse-ide' ||
+    validatedConfig.type === 'ws-ide'
+  ) {
+    throw new Error(
+      `Cannot add MCP server "${name}": type "${validatedConfig.type}" servers are registered by the host application at runtime, not stored in configuration`,
+    )
+  }
+  if (validatedConfig.type === 'claudeai-proxy') {
+    throw new Error(
+      `Cannot add MCP server "${name}": type "claudeai-proxy" is used only by claude.ai connectors — connect the service at claude.ai/customize/connectors, or add it with type "http"`,
+    )
+  }
 
   // Check denylist (with config for command-based checks)
   if (isMcpServerDenied(name, validatedConfig)) {
@@ -794,7 +846,7 @@ export async function removeMcpConfig(
       const { servers: existingServers } = getProjectMcpConfigsFromCwd()
 
       if (!existingServers[name]) {
-        throw new Error(`No MCP server found with name: ${name} in .mcp.json`)
+        throw new Error(`No MCP server named "${name}" in .mcp.json`)
       }
 
       // Strip scope information when writing back to .mcp.json
@@ -819,7 +871,7 @@ export async function removeMcpConfig(
     case 'user': {
       const config = getGlobalConfig()
       if (!config.mcpServers?.[name]) {
-        throw new Error(`No user-scoped MCP server found with name: ${name}`)
+        throw new Error(`No MCP server named "${name}" in user scope`)
       }
       saveGlobalConfig(current => {
         const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
@@ -835,7 +887,7 @@ export async function removeMcpConfig(
       // Check if server exists before updating
       const config = getCurrentProjectConfig()
       if (!config.mcpServers?.[name]) {
-        throw new Error(`No project-local MCP server found with name: ${name}`)
+        throw new Error(`No MCP server named "${name}" in local scope`)
       }
       saveCurrentProjectConfig(current => {
         const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
@@ -1062,7 +1114,10 @@ export function getMcpConfigByName(
 ): ScopedMcpServerConfig | null {
   const config = doesEnterpriseMcpConfigExist()
     ? (getMcpConfigsByScope('enterprise').servers[name] ?? null)
-    : findMcpConfigByName(name, includeUnapprovedProjectServers)
+    : findMcpConfigByName(
+        name,
+        includeUnapprovedProjectServers ? 'display' : 'approved',
+      )
   return config && isMcpServerAllowedByPolicy(name, config) ? config : null
 }
 
@@ -1073,12 +1128,12 @@ export function getMcpConfigByName(
 export function getConfiguredMcpConfigByName(
   name: string,
 ): ScopedMcpServerConfig | null {
-  return findMcpConfigByName(name, true)
+  return findMcpConfigByName(name, 'raw')
 }
 
 function findMcpConfigByName(
   name: string,
-  includeUnapprovedProjectServers: boolean,
+  projectServers: 'approved' | 'display' | 'raw',
 ): ScopedMcpServerConfig | null {
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
 
@@ -1089,7 +1144,7 @@ function findMcpConfigByName(
   }
 
   const { servers: userServers } = getMcpConfigsByScope('user')
-  const { servers: projectServers } = getMcpConfigsByScope('project')
+  const projectServer = getMcpConfigsByScope('project').servers[name]
   const { servers: localServers } = getMcpConfigsByScope('local')
 
   if (enterpriseServers[name]) {
@@ -1099,14 +1154,21 @@ function findMcpConfigByName(
     return localServers[name]
   }
   if (
-    projectServers[name] &&
-    (includeUnapprovedProjectServers ||
-      getProjectMcpServerStatus(name) === 'approved')
+    projectServer &&
+    (projectServers === 'raw' ||
+      getProjectMcpServerStatus(name, {
+        settingsOnly: projectServers === 'display',
+      }) === 'approved')
   ) {
-    return projectServers[name]
+    return projectServer
   }
   if (userServers[name]) {
     return userServers[name]
+  }
+  // Shown for status only, so it must not hide a usable server of that name
+  // (official 2.1.329).
+  if (projectServer && projectServers === 'display') {
+    return projectServer
   }
 
   return null
@@ -1227,7 +1289,11 @@ export async function getClaudeCodeMcpConfigs(
   const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
   const pendingProjectServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(projectServers)) {
-    const status = getProjectMcpServerStatus(name)
+    // Status display decides from settings alone, like its callers: the
+    // non-interactive auto-approve would put a pending server above the user's.
+    const status = getProjectMcpServerStatus(name, {
+      settingsOnly: includePendingProjectServers,
+    })
     if (status === 'approved') {
       approvedProjectServers[name] = config
     } else if (includePendingProjectServers && status === 'pending') {
@@ -1355,7 +1421,8 @@ export async function getAllMcpConfigs({
         Object.entries(claudeCodeServers).filter(
           ([name, config]) =>
             config.scope !== 'project' ||
-            getProjectMcpServerStatus(name) === 'approved',
+            getProjectMcpServerStatus(name, { settingsOnly: true }) ===
+              'approved',
         ),
       )
     : claudeCodeServers
