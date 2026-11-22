@@ -866,8 +866,8 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Internal: this request retries one whose tool search the endpoint refused. */
   toolSearchRefused?: true
-  /** Internal: attempts already spent on this request by streams that were cut. */
-  streamCutAttempts?: number
+  /** Internal: this request is streamed again after its connection dropped; the attempts spent so far and when the first one began. */
+  streamCut?: { attempts: number; startedAt: number }
   /** The request continues a parent's prompt as a fork, so it may keep the parent's advisor. */
   forkAdvisor?: true
   /** Called once when the server refused this conversation's advisor, before the retry. */
@@ -2100,7 +2100,7 @@ async function* queryModelRequest(
     isFastMode,
   )
 
-  const startIncludingRetries = Date.now()
+  const startIncludingRetries = options.streamCut?.startedAt ?? Date.now()
   let start = Date.now()
   let attemptNumber = 0
   const attemptStartTimes: number[] = []
@@ -3254,7 +3254,7 @@ async function* queryModelRequest(
       // nothing to keep, so the request is streamed again with the retries
       // that remain. An error the API sent, or a stream without events, is not.
       const maxRetries = options.maxRetries ?? getDefaultMaxRetries()
-      const spentAttempts = options.streamCutAttempts ?? 0
+      const spentAttempts = options.streamCut?.attempts ?? 0
       if (
         connectionDropped &&
         newMessages.length === 0 &&
@@ -3286,7 +3286,10 @@ async function* queryModelRequest(
           {
             ...options,
             maxRetries: retriesLeft(maxRetries, attemptNumber),
-            streamCutAttempts: spentAttempts + attemptNumber,
+            streamCut: {
+              attempts: spentAttempts + attemptNumber,
+              startedAt: startIncludingRetries,
+            },
           },
         )
         return

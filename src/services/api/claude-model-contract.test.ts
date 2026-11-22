@@ -2034,8 +2034,13 @@ test('a connection dropped before any block finished is streamed again while att
   }
   const ok = [expect.objectContaining({ message: expect.objectContaining({ content: [{ type: 'text', text: 'OK' }] }) })]
 
+  const { getTotalAPIDuration } = await import('../../bootstrap/state.js')
+  const apiDuration = getTotalAPIDuration()
   streamSocketCuts = 1
   expect(await run(2)).toEqual({ streamed: [true, true], retries: [1], replies: ok })
+  // The cut request and the wait before streaming again are API time too.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(getTotalAPIDuration() - apiDuration).toBeGreaterThanOrEqual(300)
   // Out of attempts, the request is sent once more without streaming.
   streamSocketCuts = 3
   expect(await run(2)).toEqual({ streamed: [true, true, true, false], retries: [1, 2], replies: ok })
