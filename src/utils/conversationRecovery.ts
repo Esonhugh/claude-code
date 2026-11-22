@@ -300,7 +300,9 @@ export function deserializeMessagesWithInterruptDetection(
 
     // The session ended while the last reply's tool calls were running: keep
     // those calls and answer them, so the model knows their outcome is unknown.
-    migratedMessages.push(...createInterruptedToolResults(migratedMessages))
+    migratedMessages.push(
+      ...createInterruptedToolResults(migratedMessages, deferredToolUseIds),
+    )
 
     // Filter out unresolved tool uses and any synthetic messages that follow them
     const filteredToolUses = filterUnresolvedToolUses(
@@ -399,7 +401,11 @@ export function deserializeMessagesWithInterruptDetection(
  * a later reply follows them) are not answered; filterUnresolvedToolUses
  * drops those.
  */
-function createInterruptedToolResults(messages: Message[]): Message[] {
+function createInterruptedToolResults(
+  messages: Message[],
+  // A deferred call was never started; this resume runs it and answers it.
+  deferredToolUseIds?: ReadonlySet<string>,
+): Message[] {
   let lastReplyId: string | undefined
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!
@@ -415,7 +421,7 @@ function createInterruptedToolResults(messages: Message[]): Message[] {
   if (lastReplyId === undefined) return []
 
   // A result can sit between two parts of the same streamed reply.
-  const answered = new Set<string>()
+  const answered = new Set<string>(deferredToolUseIds)
   for (const message of messages) {
     if (message.type !== 'user' || !Array.isArray(message.message.content)) {
       continue

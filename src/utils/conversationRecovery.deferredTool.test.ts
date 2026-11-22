@@ -72,13 +72,15 @@ test('resume keeps the deferred call open instead of dropping it as unresolved',
     createUserMessage({ content: 'go' }),
     createAssistantMessage({ content: [block] }),
   ]
+  // Without a marker the open call counts as interrupted and is answered.
   expect(
     JSON.stringify(deserializeMessagesWithInterruptDetection(messages).messages),
-  ).not.toContain('toolu_deferred')
+  ).toContain('"tool_use_id":"toolu_deferred"')
   const kept = deserializeMessagesWithInterruptDetection(
     messages,
     new Set(['toolu_deferred']),
   )
+  expect(JSON.stringify(kept.messages)).not.toContain('tool_result')
   expect(kept.messages.at(-1)).toMatchObject({
     type: 'assistant',
     message: { content: [block] },
