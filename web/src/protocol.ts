@@ -1062,8 +1062,8 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const content = Array.isArray(message.content) ? message.content : []
       let next = state
       const uuid = str(raw.uuid)
-      // The echo of a message this page sent is already shown.
-      const echo = uuid !== undefined && state.items.some(i => i.id === uuid)
+      // The echo of a message this page sent is already shown; teammate messages are numbered under the uuid.
+      const echo = uuid !== undefined && state.items.some(i => i.id === uuid || i.id === `${uuid}-0`)
       const compact = next.items.findLast(i => i.kind === 'compact')
       if (
         compact?.kind === 'compact' &&

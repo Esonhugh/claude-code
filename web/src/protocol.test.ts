@@ -120,6 +120,20 @@ describe('reduce', () => {
     expect(reduce(state, waiting('u3', 'C')).queued).toEqual([])
   })
 
+  it('shows the teammate messages of a prompt once when the server sends it again after a reload', () => {
+    const delivered = {
+      type: 'user',
+      isReplay: true,
+      uuid: 't1',
+      message: {
+        role: 'user',
+        content: '<teammate-message teammate_id="alice">\none\n</teammate-message>\n<teammate-message teammate_id="bob">\ntwo\n</teammate-message>',
+      },
+    }
+    const state = [delivered, delivered].reduce(reduce, initialState)
+    expect(state.items.map(i => i.id)).toEqual(['t1-0', 't1-1'])
+  })
+
   it('runs a queued message the turn did not take as the next turn', () => {
     let state = addUserMessage(initialState, 'first', [], 'u1')
     state = queueUserMessage(state, 'later', 'u2')
