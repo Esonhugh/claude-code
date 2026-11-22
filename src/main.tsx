@@ -6455,6 +6455,27 @@ async function run(): Promise<CommanderCommand> {
     })
 
   pluginCmd
+    .command('tag [path]')
+    .description(
+      'Create a {name}--v{version} git tag for a plugin release, validating that plugin.json and any enclosing marketplace entry agree',
+    )
+    .option('--dry-run', 'Print what would be tagged without creating it')
+    .option(
+      '-f, --force',
+      'Skip the dirty-working-tree and tag-already-exists checks',
+    )
+    .option(
+      '-m, --message <msg>',
+      'Tag annotation message (use %s for the version)',
+    )
+    .option('--push', 'Push the tag to --remote after creating it')
+    .option('--remote <name>', 'Remote to push to with --push', 'origin')
+    .action(async (path: string | undefined, options) => {
+      const { pluginTagHandler } = await import('./cli/handlers/plugins.js')
+      await pluginTagHandler(path, options)
+    })
+
+  pluginCmd
     .command('test [dir]')
     .description('Run plugin author tests')
     .option('--child <file>', undefined)

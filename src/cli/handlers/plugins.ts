@@ -51,6 +51,11 @@ import {
 import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
 import { parseMarketplaceInput } from '../../utils/plugins/parseMarketplaceInput.js'
 import {
+  createPluginTag,
+  pluginTagMessage,
+  preparePluginTag,
+} from '../../utils/plugins/pluginTag.js'
+import {
   parsePluginIdentifier,
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
@@ -115,6 +120,72 @@ function printValidationResult(result: ValidationResult): void {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('')
   }
+}
+
+// plugin tag
+export async function pluginTagHandler(
+  path: string | undefined,
+  options: {
+    push?: boolean
+    dryRun?: boolean
+    force?: boolean
+    message?: string
+    remote?: string
+  },
+): Promise<void> {
+  const force = options.force ?? false
+  const remote = options.remote ?? 'origin'
+  const prepared = await preparePluginTag(path ?? '.', { force })
+  const lines = prepared.warnings.map(w => `${figures.warning} ${w}`)
+  const finish = (code: number): never => {
+    // One terminal line per entry, as official prints them.
+    process.stdout.write(lines.map(l => l.replace(/\n+/g, ' ')).join('\n') + '\n')
+    process.exit(code)
+  }
+  if (prepared.ok === false) {
+    lines.push(`${figures.cross} ${prepared.error}`)
+    return finish(1)
+  }
+  const { plan } = prepared
+  lines.push(
+    `Plugin:  ${plan.pluginName}`,
+    `Version: ${plan.version} (from ${plan.versionFrom})`,
+  )
+  if (plan.marketplace) {
+    lines.push(
+      `Marketplace entry: plugins[${plan.marketplace.entryIndex}] in ${plan.marketplace.path}` +
+        (plan.marketplace.entryVersion
+          ? ` (version: ${plan.marketplace.entryVersion})`
+          : ''),
+    )
+  }
+  lines.push(`Tag:     ${plan.tag}`, '')
+  const pushCommand = `git -C ${plan.gitRoot} push ${force ? '--force ' : ''}${remote} refs/tags/${plan.tag}`
+  if (options.dryRun) {
+    lines.push(
+      `${figures.tick} Dry run — would create tag ${plan.tag} at HEAD in ${plan.gitRoot}`,
+      `  git -C ${plan.gitRoot} tag ${force ? '-f ' : ''}-a ${plan.tag} -m ${jsonStringify(pluginTagMessage(plan, options.message))}`,
+      `  ${pushCommand}`,
+    )
+    return finish(0)
+  }
+  const created = await createPluginTag(plan, {
+    push: options.push ?? false,
+    force,
+    message: options.message,
+    remote,
+  })
+  if (created.ok === false) {
+    lines.push(`${figures.cross} ${created.error}`)
+    return finish(1)
+  }
+  lines.push(`${figures.tick} Created tag ${plan.tag}`)
+  lines.push(
+    created.pushed
+      ? `${figures.tick} Pushed to ${remote}`
+      : `  Push with: ${pushCommand}`,
+  )
+  finish(0)
 }
 
 // plugin validate
