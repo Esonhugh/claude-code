@@ -19,6 +19,7 @@ import type { ServerLogger } from '../server/serverLog.js'
 import {
   type SessionManager,
   SessionManagerError,
+  type SessionSocket,
 } from '../server/sessionManager.js'
 import { isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
@@ -62,6 +63,7 @@ import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
+import { serveStdio, STDIO_HOST } from './stdioTransport.js'
 import {
   allowedHosts,
   checkToken,
@@ -101,6 +103,8 @@ export type WebServerConfig = {
   projectsDb?: string
   /** Opens a file or folder with the OS default app; resolves to an error message. Tests pass a fake. */
   openLocal?: (path: string) => Promise<string | undefined>
+  /** Serve over these streams (see `serveStdio`) instead of a port; no sign-in cookie is needed. */
+  stdio?: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream }
 }
 
 type SocketData = { sessionId: string }
@@ -1292,6 +1296,129 @@ export function startWebServer(
     return errorResponse(404, 'Not found')
   }
 
+  type Srv = {
+    requestIP: (req: Request) => { address: string } | null
+    upgrade: (req: Request, opts: { data: SocketData }) => boolean
+  }
+  const handleRequest = async (req: Request, srv: Srv): Promise<Response | undefined> => {
+    // Before anything else: only loopback and LAN peers are served.
+    const peer = srv.requestIP(req)?.address
+    if (!isAllowedPeer(peer)) {
+      logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
+      return new Response(null, { status: 403 })
+    }
+    const url = new URL(req.url)
+    const { pathname } = url
+    const isApi = pathname === '/api' || pathname.startsWith('/api/')
+    // Same-origin GETs and page loads may omit Origin; anything that can
+    // change state (and every WebSocket handshake) must carry it.
+    const requireOrigin =
+      (req.method !== 'GET' && req.method !== 'HEAD') ||
+      req.headers.get('upgrade')?.toLowerCase() === 'websocket'
+    const reason = untrustedReason(req, hosts, { requireOrigin })
+    if (reason) {
+      logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
+      return withHeaders(errorResponse(403, 'Forbidden'))
+    }
+
+    if (pathname === '/' && url.searchParams.has('token')) {
+      if (!checkToken(config.token, url.searchParams.get('token'))) {
+        logger.warn('rejected an invalid token')
+        return withHeaders(errorResponse(401, 'Invalid token'))
+      }
+      return withHeaders(
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: '/',
+            'Set-Cookie': cookieHeader(
+              signCookie(config.cookieKey),
+              config.tls !== undefined,
+            ),
+          },
+        }),
+      )
+    }
+
+    if (!config.stdio && !verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
+      return withHeaders(
+        isApi
+          ? errorResponse(401, 'Unauthorized')
+          : new Response(
+              'Open the URL printed by `claude web` in the terminal to sign in.\n',
+              {
+                status: 401,
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+              },
+            ),
+      )
+    }
+
+    if (isApi) {
+      let res: Response | undefined
+      try {
+        res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+      } catch (err) {
+        // A malformed %-escape in a path segment.
+        if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
+        throw err
+      }
+      return res && withHeaders(res)
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return withHeaders(errorResponse(405, 'Method not allowed'))
+    }
+    if (pathname === MODS_FRAME_PATH) {
+      const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+      for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+      res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+      return res
+    }
+    if (pathname === MCP_APP_FRAME_PATH) {
+      const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+      for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+      res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
+      return res
+    }
+    const asset = assets.get(pathname) ?? assets.get('/index.html')
+    if (!asset) return withHeaders(errorResponse(404, 'Not found'))
+    return withHeaders(
+      new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
+    )
+  }
+
+  // Without this, Bun answers an uncaught error with its debug page (source lines and paths).
+  const error = (err: Error) => {
+    logger.warn(`request failed: ${err.message}`)
+    return withHeaders(errorResponse(500, 'Internal error'))
+  }
+  const websocket = {
+    open(ws: SessionSocket & { data: SocketData }) {
+      if (!sessionManager.attach(ws.data.sessionId, ws)) {
+        ws.close(1008, 'Session unavailable')
+      }
+    },
+    message(ws: SessionSocket & { data: SocketData }, message: string | Buffer) {
+      sessionManager.write(ws.data.sessionId, message.toString())
+    },
+    close(ws: SessionSocket & { data: SocketData }) {
+      sessionManager.detach(ws.data.sessionId, ws)
+    },
+  }
+
+  if (config.stdio) {
+    hosts = new Set([STDIO_HOST])
+    const stopStdio = serveStdio(config.stdio, { fetch: handleRequest, error, websocket }, logger)
+    logger.info('serving over stdio')
+    return {
+      port: 0,
+      stop: () => {
+        taskStore?.stopLive('restart')
+        stopStdio()
+      },
+    }
+  }
+
   const serve = (hostname: string, port: number) =>
     Bun.serve<SocketData, never>({
       hostname,
@@ -1300,110 +1427,9 @@ export function startWebServer(
         cert: Bun.file(config.tls.cert),
         key: Bun.file(config.tls.key),
       },
-      async fetch(req, srv) {
-        // Before anything else: only loopback and LAN peers are served.
-        const peer = srv.requestIP(req)?.address
-        if (!isAllowedPeer(peer)) {
-          logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
-          return new Response(null, { status: 403 })
-        }
-        const url = new URL(req.url)
-        const { pathname } = url
-        const isApi = pathname === '/api' || pathname.startsWith('/api/')
-        // Same-origin GETs and page loads may omit Origin; anything that can
-        // change state (and every WebSocket handshake) must carry it.
-        const requireOrigin =
-          (req.method !== 'GET' && req.method !== 'HEAD') ||
-          req.headers.get('upgrade')?.toLowerCase() === 'websocket'
-        const reason = untrustedReason(req, hosts, { requireOrigin })
-        if (reason) {
-          logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
-          return withHeaders(errorResponse(403, 'Forbidden'))
-        }
-
-        if (pathname === '/' && url.searchParams.has('token')) {
-          if (!checkToken(config.token, url.searchParams.get('token'))) {
-            logger.warn('rejected an invalid token')
-            return withHeaders(errorResponse(401, 'Invalid token'))
-          }
-          return withHeaders(
-            new Response(null, {
-              status: 302,
-              headers: {
-                Location: '/',
-                'Set-Cookie': cookieHeader(
-                  signCookie(config.cookieKey),
-                  config.tls !== undefined,
-                ),
-              },
-            }),
-          )
-        }
-
-        if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
-          return withHeaders(
-            isApi
-              ? errorResponse(401, 'Unauthorized')
-              : new Response(
-                  'Open the URL printed by `claude web` in the terminal to sign in.\n',
-                  {
-                    status: 401,
-                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-                  },
-                ),
-          )
-        }
-
-        if (isApi) {
-          let res: Response | undefined
-          try {
-            res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
-          } catch (err) {
-            // A malformed %-escape in a path segment.
-            if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
-            throw err
-          }
-          return res && withHeaders(res)
-        }
-        if (req.method !== 'GET' && req.method !== 'HEAD') {
-          return withHeaders(errorResponse(405, 'Method not allowed'))
-        }
-        if (pathname === MODS_FRAME_PATH) {
-          const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
-          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
-          res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
-          return res
-        }
-        if (pathname === MCP_APP_FRAME_PATH) {
-          const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
-          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
-          res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
-          return res
-        }
-        const asset = assets.get(pathname) ?? assets.get('/index.html')
-        if (!asset) return withHeaders(errorResponse(404, 'Not found'))
-        return withHeaders(
-          new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
-        )
-      },
-      // Without this, Bun answers an uncaught error with its debug page (source lines and paths).
-      error(err) {
-        logger.warn(`request failed: ${err.message}`)
-        return withHeaders(errorResponse(500, 'Internal error'))
-      },
-      websocket: {
-        open(ws) {
-          if (!sessionManager.attach(ws.data.sessionId, ws)) {
-            ws.close(1008, 'Session unavailable')
-          }
-        },
-        message(ws, message) {
-          sessionManager.write(ws.data.sessionId, message.toString())
-        },
-        close(ws) {
-          sessionManager.detach(ws.data.sessionId, ws)
-        },
-      },
+      fetch: handleRequest,
+      error,
+      websocket,
     })
 
   const servers = listen(config.host, config.port, serve)

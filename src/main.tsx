@@ -6240,6 +6240,9 @@ async function run(): Promise<CommanderCommand> {
         (val: string, prev: string[]) => [...prev, val],
         [] as string[],
       )
+      .addOption(
+        new Option('--stdio', 'Serve the UI as JSON lines over stdin/stdout instead of a port (for the desktop app)').hideHelp(),
+      )
       .action(
         async opts => {
           // Same as `claude server`: give Ctrl+C back to the terminal.
