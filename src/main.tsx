@@ -6663,16 +6663,58 @@ async function run(): Promise<CommanderCommand> {
       '--keep-data',
       "Preserve the plugin's persistent data directory (~/.claude/plugins/data/{id}/)",
     )
+    .option(
+      '--prune',
+      'Also remove auto-installed dependencies that are no longer needed (requires -y in non-interactive contexts)',
+    )
+    .option(
+      '-y, --yes',
+      'Skip the --prune confirmation prompt (required when input or output is piped or redirected)',
+    )
     .addOption(coworkOption())
     .action(
       async (
         plugin: string,
-        options: { scope?: string; cowork?: boolean; keepData?: boolean },
+        options: {
+          scope?: string
+          cowork?: boolean
+          keepData?: boolean
+          prune?: boolean
+          yes?: boolean
+        },
       ) => {
         const { pluginUninstallHandler } = await import(
           './cli/handlers/plugins.js'
         )
         await pluginUninstallHandler(plugin, options)
+      },
+    )
+
+  // Plugin prune command
+  pluginCmd
+    .command('prune')
+    .alias('autoremove')
+    .description('Remove auto-installed dependencies that are no longer needed')
+    .option('--dry-run', 'List what would be removed without removing')
+    .option(
+      '-s, --scope <scope>',
+      'Prune at scope: user, project, or local',
+      'user',
+    )
+    .option(
+      '-y, --yes',
+      'Skip the confirmation prompt (required when input or output is piped or redirected)',
+    )
+    .addOption(coworkOption())
+    .action(
+      async (options: {
+        scope?: string
+        dryRun?: boolean
+        yes?: boolean
+        cowork?: boolean
+      }) => {
+        const { pluginPruneHandler } = await import('./cli/handlers/plugins.js')
+        await pluginPruneHandler(options)
       },
     )
 
