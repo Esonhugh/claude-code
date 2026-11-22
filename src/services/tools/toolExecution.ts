@@ -543,7 +543,15 @@ export async function* runToolUse(
     // tools/list_changed refresh is still running, so the pool lacks the tool.
     const listRefresh = server && getToolListRefresh(server.name)
     if (listRefresh) {
-      await listRefresh
+      // The refresh is shared, so an aborted call leaves it running.
+      const { signal } = toolUseContext.abortController
+      await Promise.race([
+        listRefresh,
+        new Promise<void>(resolve => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        }),
+      ])
       const tools = refreshTools()
       if (findToolByName(tools, toolName)) {
         yield* runToolUse(toolUse, assistantMessage, canUseTool, {

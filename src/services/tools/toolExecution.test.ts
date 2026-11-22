@@ -195,6 +195,33 @@ test('a call to a tool announced by tools/list_changed waits for the running ref
   expect(await stream()).toEqual([expect.objectContaining({ is_error: true })])
 })
 
+test('an aborted call does not keep waiting for a tools/list_changed refresh', async () => {
+  const f = fixture(async (event, next) => next(event), 'mcp__fx__slow')
+  f.context.options.tools = []
+  f.context.options.refreshTools = () => []
+  f.context.mods = undefined
+  const appState = f.context.getAppState()
+  f.context.getAppState = () => ({
+    ...appState,
+    mcp: { clients: [{ name: 'fx', type: 'connected' }], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+  }) as unknown as ReturnType<ToolUseContext['getAppState']>
+  let finishRefresh = () => {}
+  void trackToolListRefresh('fx', new Promise<void>(resolve => { finishRefresh = resolve }))
+  try {
+    const run = Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    setTimeout(() => f.context.abortController.abort(), 10)
+    const ended = await Promise.race([
+      run.then(() => 'ended'),
+      new Promise(resolve => setTimeout(resolve, 500, 'still waiting')),
+    ])
+    expect(ended).toBe('ended')
+  } finally {
+    finishRefresh()
+  }
+})
+
 test('an empty permission handler updatedInput keeps the model input', async () => {
   const f = fixture(async (event, next) => next(event))
   await Array.fromAsync(runToolUse(
