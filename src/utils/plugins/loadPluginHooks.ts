@@ -132,11 +132,28 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
     MessageDisplay: [],
   }
 
-  // Process each enabled plugin
-  for (const plugin of enabled) {
+  // Process each enabled plugin. Plugins the organization enables go first, so
+  // a same-named plugin from another marketplace cannot take over their hooks.
+  const policyEnabled = getSettingsForSource('policySettings')?.enabledPlugins
+  const isPolicyEnabled = (plugin: LoadedPlugin) =>
+    policyEnabled?.[plugin.source] === true
+  const registeredNames = new Set<string>()
+  for (const plugin of [
+    ...enabled.filter(isPolicyEnabled),
+    ...enabled.filter((plugin) => !isPolicyEnabled(plugin)),
+  ]) {
     if (!plugin.hooksConfig) {
       continue
     }
+
+    // The same plugin installed from two marketplaces must not fire twice.
+    if (registeredNames.has(plugin.name)) {
+      logForDebugging(
+        `Skipping duplicate hook registration for plugin "${plugin.name}" from ${plugin.source} - already registered from another source`,
+      )
+      continue
+    }
+    registeredNames.add(plugin.name)
 
     logForDebugging(`Loading hooks from plugin: ${plugin.name}`)
     const pluginMatchers = convertPluginHooksToMatchers(plugin)
@@ -252,6 +269,8 @@ export function getPluginAffectingSettingsSnapshot(): string {
     o ? Object.fromEntries(Object.entries(o).sort()) : {}
   return jsonStringify({
     enabledPlugins: sortKeys(merged.enabledPlugins),
+    // Decides which same-named plugin keeps its hooks (see loadPluginHooks).
+    policyEnabledPlugins: sortKeys(policy?.enabledPlugins),
     extraKnownMarketplaces: sortKeys(merged.extraKnownMarketplaces),
     strictKnownMarketplaces: policy?.strictKnownMarketplaces ?? [],
     blockedMarketplaces: policy?.blockedMarketplaces ?? [],
