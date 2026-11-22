@@ -788,9 +788,10 @@ function LocalBackgroundTasksDialog({
   // the stale-state trap: if you opened with 1 task (auto-skipped to detail),
   // then a second task started, 'back' should show the list — not close.
   const goBackToList = () => {
+    // Like 2.1.329: scheduled tasks and the goal have no detail view to come back from.
     if (
       skippedListOnMount.current &&
-      allSelectableItems.length - historyItems.length <= 1
+      allSelectableItems.length - scheduledItems.length - goalItems.length <= 1
     ) {
       onDone('Background tasks dialog dismissed', { display: 'system' })
     } else {

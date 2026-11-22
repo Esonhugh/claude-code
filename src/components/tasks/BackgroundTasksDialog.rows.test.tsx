@@ -202,6 +202,16 @@ test('an earlier agent that ran as a forked skill reopens with the skill it may 
   expect(state.viewingAgentTaskId).toBe('askill1')
 })
 
+test('back from the one running task shows the list, where earlier agents are', async () => {
+  const dialog = await open({
+    tasks: { busy: { ...doneAgent, id: 'busy', agentId: 'busy', status: 'running', notified: false } },
+  })
+  expect(dialog.screen()).toContain('to go back')
+  await dialog.press('\x1b[D')
+  expect(dialog.done).toEqual([])
+  expect(dialog.screen()).toContain('Earlier in this session (0)')
+})
+
 test('scheduled tasks, loop wakeups and the goal are listed', async () => {
   addSessionCronTask({ id: 'cron1', cron: '*/30 * * * *', prompt: 'CRON_PING check', createdAt: Date.now(), recurring: true })
   addSessionCronTask({ id: 'loop1', cron: '0 0 1 1 *', prompt: 'LOOP_WAKE check deploy', createdAt: Date.now(), kind: 'loop' })
