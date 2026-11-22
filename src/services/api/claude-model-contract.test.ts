@@ -116,7 +116,8 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
-    if (toolSearchRefusal) {
+    // A request whose stream is about to be cut is cut before the gateway objects to it.
+    if (toolSearchRefusal && !(request.stream === true && streamSocketCuts > 0)) {
       const deferred = (request.tools ?? []).some(t => 'defer_loading' in t)
       const message =
         toolSearchRefusal === 'beta' && headers.get('anthropic-beta')?.includes('advanced-tool-use-2025-11-20')
@@ -995,6 +996,53 @@ test.each(['beta', 'unnamed', 'always'] as const)(
     }
   },
 )
+
+test('a tool search refusal of a request streamed again after a cut still retries without deferred tools', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } = await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } = await import('../../utils/toolSchemaCache.js')
+  const { resetToolSearchRefusedForTesting } = await import('../../utils/toolSearch.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  delete process.env.ENABLE_TOOL_SEARCH
+  clearToolSchemaCache()
+  resetToolSearchRefusedForTesting()
+  const deferred = {
+    name: 'mcp__corp__lookup',
+    isMcp: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  try {
+    toolSearchRefusal = 'unnamed'
+    streamSocketCuts = 1
+    const reply = await queryModelWithoutStreaming({
+      messages: [createUserMessage({ content: 'test' })],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools: [ToolSearchTool, deferred],
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [deferred],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    // Cut, refused when streamed again, then sent without the deferred tools.
+    expect(requests.map(request => (request.tools ?? []).some(t => 'defer_loading' in t))).toEqual([true, true, false])
+    expect(reply.isApiErrorMessage).toBeFalsy()
+  } finally {
+    resetToolSearchRefusedForTesting()
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
 
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')

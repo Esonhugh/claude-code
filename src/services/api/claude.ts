@@ -2431,6 +2431,7 @@ async function* queryModelRequest(
   }
   let stopReason: BetaStopReason | null = null
   let didFallBackToNonStreaming = false
+  let streamedAgain = false
   let fallbackMessage: AssistantMessage | undefined
   let maxOutputTokens = 0
   let responseHeaders: globalThis.Headers | undefined = undefined
@@ -3277,6 +3278,7 @@ async function* queryModelRequest(
           spentAttempts + maxRetries,
         )
         await sleep(delayMs, signal, { abortError: () => new APIUserAbortError() })
+        streamedAgain = true
         yield* queryModelRequest(
           messages,
           systemPrompt,
@@ -3429,7 +3431,9 @@ async function* queryModelRequest(
     // actual model switch. Swallowing it here would turn the fallback into a
     // no-op — the user would just see "Model fallback triggered: X -> Y" as
     // an error message with no actual retry on the fallback model.
-    if (errorFromRetry instanceof FallbackTriggeredError) {
+    // The request streamed again has reported its own failures; what it
+    // throws (a recovery queryModel performs) is for the caller as well.
+    if (errorFromRetry instanceof FallbackTriggeredError || streamedAgain) {
       throw errorFromRetry
     }
 
