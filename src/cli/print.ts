@@ -435,6 +435,7 @@ import {
   restoreAgentFromSession,
   restoreGoalSessionFromLog,
   restoreSessionStateFromLog,
+  restoreWorktreeForResume,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
 import { exec as execShell } from 'src/utils/Shell.js'
@@ -7023,7 +7024,8 @@ type LoadInitialMessagesResult = {
   agentSetting?: string
 }
 
-async function loadInitialMessages(
+// exported for testing
+export async function loadInitialMessages(
   setAppState: (f: (prev: AppState) => AppState) => void,
   options: {
     continue: boolean | undefined
@@ -7097,6 +7099,9 @@ async function loadInitialMessages(
             ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
             : result,
         )
+        if (!options.forkSession) {
+          restoreWorktreeForResume(result.worktreeSession)
+        }
         restoreSessionCosts(result, { forkSession: options.forkSession })
         setAppState(prev => {
           const toolPermissionContext = restorePermissionModeForResume(
@@ -7342,6 +7347,9 @@ async function loadInitialMessages(
           ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
           : result,
       )
+      if (!options.forkSession) {
+        restoreWorktreeForResume(result.worktreeSession)
+      }
       restoreSessionCosts(result, { forkSession: options.forkSession })
       setAppState(prev => {
         const toolPermissionContext = restorePermissionModeForResume(

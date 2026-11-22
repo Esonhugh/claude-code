@@ -54,6 +54,7 @@ import {
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
+  TOOL_CALL_INTERRUPTED_MESSAGE,
 } from './messages.js'
 import { copyPlanForResume } from './plans.js'
 import { processSessionStartHooks } from './sessionStart.js'
@@ -297,6 +298,10 @@ export function deserializeMessagesWithInterruptDetection(
       }
     }
 
+    // The session ended while the last reply's tool calls were running: keep
+    // those calls and answer them, so the model knows their outcome is unknown.
+    migratedMessages.push(...createInterruptedToolResults(migratedMessages))
+
     // Filter out unresolved tool uses and any synthetic messages that follow them
     const filteredToolUses = filterUnresolvedToolUses(
       migratedMessages,
@@ -386,6 +391,65 @@ export function deserializeMessagesWithInterruptDetection(
     logError(error as Error)
     throw error
   }
+}
+
+/**
+ * Interrupted tool_results for the tool calls of the last assistant reply that
+ * never got a result. Calls the conversation already moved past (a prompt or
+ * a later reply follows them) are not answered; filterUnresolvedToolUses
+ * drops those.
+ */
+function createInterruptedToolResults(messages: Message[]): Message[] {
+  let lastReplyId: string | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (message.type === 'assistant') {
+      lastReplyId = message.message.id
+      break
+    }
+    if (message.type !== 'user') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) return []
+    if (!content.some(block => block.type === 'tool_result')) return []
+  }
+  if (lastReplyId === undefined) return []
+
+  // A result can sit between two parts of the same streamed reply.
+  const answered = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      continue
+    }
+    for (const block of message.message.content) {
+      if (block.type === 'tool_result') answered.add(block.tool_use_id)
+    }
+  }
+
+  return messages.flatMap(message =>
+    message.type === 'assistant' &&
+    message.message.id === lastReplyId &&
+    Array.isArray(message.message.content)
+      ? message.message.content
+          .filter(
+            block => block.type === 'tool_use' && !answered.has(block.id),
+          )
+          .map(block =>
+            createUserMessage({
+              content: [
+                {
+                  type: 'tool_result',
+                  content: TOOL_CALL_INTERRUPTED_MESSAGE,
+                  is_error: true,
+                  tool_use_id: (block as { id: string }).id,
+                },
+              ],
+              toolUseResult: TOOL_CALL_INTERRUPTED_MESSAGE,
+              toolDenialKind: 'interrupted',
+              sourceToolAssistantUUID: message.uuid,
+            }),
+          )
+      : [],
+  )
 }
 
 function isLocalCommandOutput(message: NormalizedMessage): boolean {
