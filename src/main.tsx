@@ -131,6 +131,7 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
 import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
+import { getResumeHintLaunchFlags } from './utils/resumeHint.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
 import { initScreenReaderMode } from './utils/screenReader.js'
 import { isFocusViewConfigured } from './utils/focusView.js'
@@ -391,6 +392,7 @@ import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js'
 import {
   gracefulShutdown,
   gracefulShutdownSync,
+  setResumeHintLaunchFlags,
 } from 'src/utils/gracefulShutdown.js'
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
@@ -1916,6 +1918,11 @@ async function run(): Promise<CommanderCommand> {
     .action(async (prompt, options) => {
       profileCheckpoint('action_handler_start')
       configureTuiRestart(program)
+      setResumeHintLaunchFlags(
+        _pendingSSH?.host || _pendingConnect?.url
+          ? ''
+          : getResumeHintLaunchFlags(program.options, process.argv.slice(2)),
+      )
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
