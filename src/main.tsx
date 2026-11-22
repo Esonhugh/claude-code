@@ -6476,6 +6476,20 @@ async function run(): Promise<CommanderCommand> {
     })
 
   pluginCmd
+    .command('restore-set-aside <plugin>')
+    .description(
+      'Give a plugin id back the options and secrets set aside when a marketplace your organization declares replaced another source',
+    )
+    .option('--discard', 'Delete what is set aside instead of restoring it')
+    .allowExcessArguments()
+    .action(async (plugin: string, options: { discard?: boolean }) => {
+      const { pluginRestoreSetAsideHandler } = await import(
+        './cli/handlers/plugins.js'
+      )
+      await pluginRestoreSetAsideHandler(plugin, options)
+    })
+
+  pluginCmd
     .command('configure <plugin>')
     .description(
       "Show a plugin's options and which are unset, or save values from stdin with --values-stdin",
