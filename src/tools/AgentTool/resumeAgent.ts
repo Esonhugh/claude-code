@@ -42,6 +42,7 @@ import {
   PLAN_MODE_DISABLED_MESSAGE,
 } from '../../utils/planModeV2.js'
 import {
+  clearAgentMetadataStoppedByUser,
   flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
@@ -127,10 +128,12 @@ async function startResume({
   delivery = 'notification',
   model: modelOverride,
   effort: effortOverride,
+  fromUser,
 }: ResumeAgentParams): Promise<ResumeAgentResult> {
+  // A user stop bars everyone but the user, whose own message lifts it (2.1.329).
   const refuseUserStop = () => {
     const task = toolUseContext.getAppState().tasks[agentId]
-    if (isLocalAgentTask(task) && task.stoppedByUser) {
+    if (!fromUser && isLocalAgentTask(task) && task.stoppedByUser) {
       logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=live`, { level: 'warn' })
       throw new AgentStoppedByUserError(agentId)
     }
@@ -154,8 +157,11 @@ async function startResume({
     readAgentMetadata(asAgentId(agentId)),
   ])
   if (meta?.stoppedByUser) {
-    logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
-    throw new AgentStoppedByUserError(agentId)
+    if (!fromUser) {
+      logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
+      throw new AgentStoppedByUserError(agentId)
+    }
+    await clearAgentMetadataStoppedByUser(asAgentId(agentId), meta)
   }
   const savedScope = await readForkedSkillScope(asAgentId(agentId))
   const liveTask = appState.tasks[agentId]

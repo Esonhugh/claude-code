@@ -377,6 +377,14 @@ export async function markAgentMetadataStoppedByUser(agentId: AgentId, agentType
   await mutateAgentMetadata(agentId, current => ({ ...current ?? { agentType }, stoppedByUser: true }))
 }
 
+/** The user sent the agent they stopped back to work. */
+export async function clearAgentMetadataStoppedByUser(agentId: AgentId, fallback: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => {
+    const { stoppedByUser: _stopped, ...rest } = current ?? fallback
+    return rest
+  })
+}
+
 export async function readAgentMetadata(agentId: AgentId): Promise<AgentMetadata | null> {
   const path = getAgentMetadataPath(agentId)
   await agentMetadataWrites.get(path)
