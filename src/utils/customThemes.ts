@@ -1,6 +1,6 @@
 import chokidar from 'chokidar'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs'
-import { basename, extname, join } from 'path'
+import { basename, extname, join, resolve } from 'path'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
 import { createSignal } from './signal.js'
@@ -67,23 +67,64 @@ export function reloadCustomThemes(): CustomTheme[] {
 
 /** Reloads the themes when files in the themes directory change on disk. */
 export function watchCustomThemes(): () => void {
-  const watcher = chokidar.watch(getCustomThemesDir(), {
+  const dir = resolve(getCustomThemesDir())
+  const usePolling = typeof Bun !== 'undefined'
+  const stabilityThreshold = 300
+  const watcher = chokidar.watch(dir, {
     persistent: true,
     ignoreInitial: true,
     depth: 0,
-    awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
+    awaitWriteFinish: { stabilityThreshold, pollInterval: 100 },
     ignorePermissionErrors: true,
-    usePolling: typeof Bun !== 'undefined',
+    usePolling,
     interval: 500,
   })
-  const reload = () => void reloadCustomThemes()
+  let pendingDirectoryReload: ReturnType<typeof setTimeout> | undefined
+  const reload = () => {
+    clearTimeout(pendingDirectoryReload)
+    reloadCustomThemes()
+  }
+  if (usePolling) {
+    const themeFileStats = () => {
+      try {
+        return readdirSync(dir)
+          .filter(file => extname(file) === '.json')
+          .map(file => {
+            const stats = statSync(join(dir, file), { throwIfNoEntry: false })
+            return `${file}:${stats?.size}:${stats?.mtimeMs}`
+          })
+          .join('\n')
+      } catch {
+        return ''
+      }
+    }
+    // chokidar reports the directory before it starts waiting for the write to
+    // finish. Wait longer than it does, so that a file event cancels this
+    // reload, and start over while the theme files are still changing.
+    const scheduleDirectoryReload = () => {
+      clearTimeout(pendingDirectoryReload)
+      const before = themeFileStats()
+      pendingDirectoryReload = setTimeout(() => {
+        if (themeFileStats() === before) reload()
+        else scheduleDirectoryReload()
+      }, stabilityThreshold + 200)
+    }
+    // An atomic replacement can leave the file's size and mtime unchanged.
+    // The directory poll still sees the rename, even without a file event.
+    watcher.on('raw', (_event, path) => {
+      if (path === dir) scheduleDirectoryReload()
+    })
+  }
   watcher.on('add', reload)
   watcher.on('change', reload)
   watcher.on('unlink', reload)
   watcher.on('error', error =>
     logForDebugging(`[theme] watcher error: ${error}`, { level: 'warn' }),
   )
-  return () => void watcher.close().catch(() => {})
+  return () => {
+    clearTimeout(pendingDirectoryReload)
+    void watcher.close().catch(() => {})
+  }
 }
 
 export function saveCustomTheme(theme: CustomTheme): void {

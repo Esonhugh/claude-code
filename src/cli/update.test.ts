@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: '2.1.666',
   PACKAGE_URL: '@esonhugh/claude-code',
@@ -11,6 +19,29 @@ let nativeInstallCalled = false
 let nativeInstallResult = { latestVersion: '2.1.667', wasUpdated: true }
 let shutdownCode: number | undefined
 const shutdownSentinel = new Error('shutdown')
+
+// Module mocks outlive this file when test files share one bun test process:
+// keep the real exports (the namespace follows the mock) and put them back.
+const mockedModules = [
+  'src/services/analytics/index.js',
+  'src/utils/process.js',
+  'src/utils/gracefulShutdown.js',
+  'src/utils/doctorDiagnostic.js',
+  'src/utils/nativeInstaller/index.js',
+  'src/utils/settings/settings.js',
+  'src/utils/config.js',
+  'src/utils/autoUpdater.js',
+  'src/utils/localInstaller.js',
+  'src/utils/completionCache.js',
+  'src/utils/userType.js',
+]
+const realModules = new Map<string, Record<string, unknown>>()
+for (const path of mockedModules) {
+  realModules.set(path, { ...(await import(path)) })
+}
+afterAll(() => {
+  for (const [path, real] of realModules) mock.module(path, () => real)
+})
 
 mock.module('src/services/analytics/index.js', () => ({
   logEvent: () => {},

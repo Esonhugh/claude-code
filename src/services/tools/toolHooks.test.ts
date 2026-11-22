@@ -300,14 +300,35 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(contexts(results)).toEqual(['module'])
   })
 
-  test('identical real commands in managed and user sources each run exactly once around modules', async () => {
-    const marker = join(home, 'runs')
+  test('an identical managed and user matcher runs once, before modules (official 2.1.329)', async () => {
+    const marker = join(home, 'runs-identical')
     const hook = {
       type: 'command' as const,
       command: `printf x >> '${marker}'; printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'same' } })}'`,
     }
     const settings = { hooks: { PreToolUse: [{ hooks: [hook] }] } }
     configure(settings, settings)
+    let observedRuns = ''
+    const f = fixture(async (e, next) => {
+      observedRuns = readFileSync(marker, 'utf8')
+      return next(e)
+    })
+    const results = await Array.fromAsync(pre(f))
+    expect(observedRuns).toBe('x')
+    expect(readFileSync(marker, 'utf8')).toBe('x')
+    expect(contexts(results)).toEqual(['same'])
+  })
+
+  test('the same real command in differing managed and user matchers runs once each around modules', async () => {
+    const marker = join(home, 'runs')
+    const hook = {
+      type: 'command' as const,
+      command: `printf x >> '${marker}'; printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'same' } })}'`,
+    }
+    configure(
+      { hooks: { PreToolUse: [{ hooks: [hook] }] } },
+      { hooks: { PreToolUse: [{ hooks: [{ ...hook, timeout: 5 }] }] } },
+    )
     let observedRuns = ''
     const f = fixture(async (e, next) => {
       observedRuns = readFileSync(marker, 'utf8')
