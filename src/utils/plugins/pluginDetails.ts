@@ -16,6 +16,7 @@ import {
 import { safeParseJSON } from '../json.js'
 import { extractDescriptionFromMarkdown } from '../markdownConfigLoader.js'
 import { containsPathTraversal } from '../path.js'
+import { getInPlaceEscapeError } from './managedPlugins.js'
 import { getPluginById } from './marketplaceManager.js'
 import { isMcpbSource } from './mcpbHandler.js'
 import { pluginDisplayName, printable } from './pluginConfigure.js'
@@ -86,16 +87,23 @@ async function markdownFiles(
   return [...found.values()]
 }
 
-const hasSkillFile = (directory: string) =>
-  stat(join(directory, 'SKILL.md')).then(
-    file => file.isFile(),
-    () => false,
-  )
+/** Whether a plugin loaded in place must not read a file: it is outside its marketplace. */
+const escapes = async (plugin: LoadedPlugin, path: string) =>
+  (await getInPlaceEscapeError(plugin, path, 'details')) !== undefined
 
 async function skillDirectories(
   directories: (string | undefined)[],
-  pluginName: string,
+  plugin: LoadedPlugin,
 ): Promise<PluginComponent[]> {
+  const pluginName = plugin.name
+  const hasSkillFile = async (directory: string) => {
+    const path = join(directory, 'SKILL.md')
+    const isFile = await stat(path).then(
+      file => file.isFile(),
+      () => false,
+    )
+    return isFile && !(await escapes(plugin, path))
+  }
   const found = new Map<string, PluginComponent>()
   const add = (name: string, path: string) => {
     if (!found.has(resolve(path))) found.set(resolve(path), { name, path })
@@ -132,7 +140,13 @@ const keysOf = (value: unknown): string[] =>
     .filter(item => item != null && typeof item === 'object')
     .flatMap(item => Object.keys(item as object))
 
-async function keysInFile(path: string, wrapper?: string): Promise<string[]> {
+async function keysInFile(
+  plugin: LoadedPlugin,
+  file: string,
+  wrapper?: string,
+): Promise<string[]> {
+  const path = join(plugin.path, file)
+  if (await escapes(plugin, path)) return []
   try {
     const parsed = safeParseJSON(await readHead(path), false)
     if (parsed == null || typeof parsed !== 'object') return []
@@ -146,12 +160,12 @@ async function keysInFile(path: string, wrapper?: string): Promise<string[]> {
 }
 
 async function mcpServerNames(plugin: LoadedPlugin): Promise<string[]> {
-  const names = [await keysInFile(join(plugin.path, '.mcp.json'), 'mcpServers')]
+  const names = [await keysInFile(plugin, '.mcp.json', 'mcpServers')]
   for (const declared of [plugin.manifest.mcpServers ?? []].flat()) {
     if (typeof declared !== 'string') {
       names.push(keysOf(declared))
     } else if (!isMcpbSource(declared) && !containsPathTraversal(declared)) {
-      names.push(await keysInFile(join(plugin.path, declared), 'mcpServers'))
+      names.push(await keysInFile(plugin, declared, 'mcpServers'))
     }
   }
   return names.flat()
@@ -190,7 +204,7 @@ export async function getPluginInventory(
     markdownFiles([plugin.agentsPath, ...(plugin.agentsPaths ?? [])]),
     skillDirectories(
       [plugin.skillsPath, ...(plugin.skillsPaths ?? [])],
-      plugin.name,
+      plugin,
     ),
   ])
   const orDeclared = (names: string[], declared: unknown) =>
@@ -212,7 +226,7 @@ export async function getPluginInventory(
       plugin.lspServers
         ? Object.keys(plugin.lspServers)
         : [
-            ...(await keysInFile(join(plugin.path, '.lsp.json'))),
+            ...(await keysInFile(plugin, '.lsp.json')),
             ...keysOf(plugin.manifest.lspServers),
           ],
       entry?.lspServers,
