@@ -154,6 +154,11 @@ export function SystemTextMessage({
     return null
   }
 
+  // The contentless line that announces a refusal to SDK hosts.
+  if (message.subtype === 'informational' && message.modelRefusalNoFallback) {
+    return null
+  }
+
   // Retries are shown on the spinner row while the request is in flight.
   if (message.subtype === 'api_error') {
     return null

@@ -2913,6 +2913,8 @@ async function* queryModelRequest(
               part.delta.stop_reason,
               options.model,
               partialMessage?.id,
+              (part.delta as { stop_details?: { category?: string | null; explanation?: string | null } | null }).stop_details,
+              streamRequestId,
             )
             if (refusalMessage) {
               yield refusalMessage

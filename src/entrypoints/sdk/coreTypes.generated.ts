@@ -322,6 +322,11 @@ export type SDKAssistantMessage = {
   task_description?: string
   timestamp?: string
   error?: SDKAssistantMessageError
+  is_api_error_message?: true
+  api_error_status?: number
+  api_error_code?: string
+  api_error_type?: string
+  refused_message_id?: string
   uuid: string
   session_id: string
   request_id?: string
@@ -333,7 +338,7 @@ export type SDKRateLimitEvent = {
   session_id: string
 }
 export type SDKResultMessage =
-  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; api_error_code?: string; api_error_type?: string; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
   | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
 export type SDKSystemMessage = {
   type: 'system'
@@ -401,6 +406,18 @@ export type SDKModelFallbackMessage = {
   original_model: string
   fallback_model: string
   content?: string
+  uuid: string
+  session_id: string
+}
+export type SDKModelRefusalNoFallbackMessage = {
+  type: 'system'
+  subtype: 'model_refusal_no_fallback'
+  original_model: string
+  request_id: string | null
+  api_refusal_category: string | null
+  api_refusal_explanation: string | null
+  refused_user_message_uuid?: string
+  content: string
   uuid: string
   session_id: string
 }
@@ -795,6 +812,7 @@ export type SDKMessage =
   | SDKUILogMessage
   | SDKInformationalMessage
   | SDKModelFallbackMessage
+  | SDKModelRefusalNoFallbackMessage
   | SDKNotificationMessage
   | SDKSessionTitleChangedMessage
   | SDKUIToastMessage
