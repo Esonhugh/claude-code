@@ -163,10 +163,42 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     const { value, events } = runtime()
     await value.reconcile(plugins)
     expect(events).toEqual([
-      { plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.hello, but no loaded plugin provides $.nope)' },
       { plugin: 'provider', stage: 'admission', message: 'judge says no' },
+      { plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.hello, but no loaded plugin provides $.nope)' },
     ])
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
+  const unloadedJudge = (refused: string) => `export function register(on) {
+    on('plugin.register', ($, e, next) => e.name === '${refused}' ? {refuse:'jbad says no'} : next(e));
+    on('nope.event', async ($, e, next) => next(e));
+  }`
+  const jbadDidNotLoad = { plugin: 'jbad', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)' }
+
+  test('a judge that a module that does not load would have refused still judges the plugins after it', async () => {
+    const plugins = [
+      await fixture(unloadedJudge('policy'), 'jbad'),
+      await fixture(`export function register(on) { on('plugin.register', ($, e, next) => e.name === 'y' ? {refuse:'policy says no'} : next(e)); }`, 'policy'),
+      await fixture(`export function register(on) { on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'y: denied'})); }`, 'y'),
+    ]
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([jbadDidNotLoad, { plugin: 'y', stage: 'admission', message: 'policy says no' }])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
+  test.each([[['jbad', 'provider', 'consumer']], [['jbad', 'consumer', 'provider']]] as const)('a provider that a module that does not load would have refused keeps its consumer loaded (%p)', async order => {
+    const sources = {
+      jbad: unloadedJudge('provider'),
+      provider: `export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, prov: {hello: async () => 1}}; }); }`,
+      consumer: `export function register(on) { on('prov.hello', async ($, e, next) => next(e)); on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'consumer: denied'})); }`,
+    }
+    const plugins = []
+    for (const name of order) plugins.push(await fixture(sources[name], name))
+    const { value, events } = runtime()
+    await value.reconcile(plugins)
+    expect(events).toEqual([jbadDidNotLoad])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'consumer: denied'})
   })
 
   test('a provider removed from the build takes its consumer with it', async () => {

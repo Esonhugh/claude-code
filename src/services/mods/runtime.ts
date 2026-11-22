@@ -3184,9 +3184,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
     order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
     // A cold start builds $ before every plugin is loaded; a plugin still to come can provide the event.
-    // Such a build keeps the module and reports it as unconfirmed instead.
     checkRegistrations = true,
-  ): Promise<{ modules: Activation[]; table: Nouns; unconfirmed?: ReadonlySet<Activation> }> {
+  ): Promise<{ modules: Activation[]; table: Nouns }> {
     const previousTable = refresh?.table ?? nouns
     const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
     let modules = [...snapshot]
@@ -3303,15 +3302,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           },
         }) as Nouns
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.
-        const unconfirmed = new Set<Activation>()
-        for (const owner of failed ? [] : modules) {
+        for (const owner of failed || !checkRegistrations ? [] : modules) {
           if (owner.declaration.isNative) continue
           const reason = unprovidedEvent(owner, table, state.owners)
           if (!reason) continue
-          if (!checkRegistrations) {
-            unconfirmed.add(owner)
-            continue
-          }
           failed = owner
           if (!hostDead && !controller.signal.aborted)
             unloadedSteps.set(owner.declaration.storageId, { declaration: owner.declaration, order: [...order] })
@@ -3320,7 +3314,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         }
         if (!failed) {
           for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
-          return { modules, table, unconfirmed }
+          return { modules, table }
         }
       } catch (error) { if (!failed) throw error }
       finally { for (const lease of leases) lease.building = false }
@@ -3378,10 +3372,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return result.refuse
   }
 
-  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[]) {
-    const eligible = before.filter(judge => judge.state === 'active' && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
+  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[], unadmitted?: ReadonlySet<Activation>) {
+    const live = (judge: Activation) => judge.state === 'active' || unadmitted?.has(judge)
+    const eligible = before.filter(judge => live(judge) && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
     if (candidate.isNative) return eligible.filter(judge => judge.declaration.isNative)
-    return [...eligible, ...after.filter(judge => judge.state === 'active' && (candidate.tier === 'user' ? judge.declaration.tier !== 'user' : judge.declaration.isNative))]
+    return [...eligible, ...after.filter(judge => live(judge) && (candidate.tier === 'user' ? judge.declaration.tier !== 'user' : judge.declaration.isNative))]
   }
 
   async function publish(
@@ -3529,7 +3524,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
     const cold = previous.length === 0
     const scanned = new Map<ModPluginInput, ModDeclaration>()
-    let bootstrap: { modules: Activation[]; table: Nouns; unconfirmed?: ReadonlySet<Activation> } | undefined
+    let bootstrap: { modules: Activation[]; table: Nouns } | undefined
     // A native seat holds the user tier out of the privileged events it wraps.
     // Its own failure must not leave user Mods running unguarded, so the whole
     // tier stands down for this reconcile instead.
@@ -3585,6 +3580,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
       loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
+    // Loaded on a cold start before a judge could be asked; barred from the host until judged.
+    const unadmitted = new Set<Activation>()
     let registrationsChecked = false
     async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
@@ -3598,12 +3595,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       registrationsChecked = isLast
       ensureLive()
       candidates = [...bootstrap.modules]
-      for (const owner of candidates) owner.state = 'active'
+      for (const owner of candidates) owner.state = unadmitted.has(owner) ? 'candidate' : 'active'
     }
-    // Official 2.1.329 judges plugins after it validated every module's registrations, so a module that
-    // does not load refuses nothing. Here a plugin is judged before it loads: a refusal that a judge with
-    // unconfirmed registrations took part in waits for the last build to say whether that judge loads.
-    const heldRefusals: { input: ModPluginInput; name: string; refusal: string; judges: Activation[] }[] = []
+    const judgesPlugins = (owner: Activation) => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register'))
     const refuse = (input: ModPluginInput, name: string, refusal: string) => {
       failGuard(input)
       knownArgs.delete(input.storageId)
@@ -3643,20 +3637,25 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           old.suggestionEligible = false
           suggestionSuspended = true
         }
+        let unsettled = false
         {
           const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
           const position = seats.findIndex(owner => owner.declaration === declaration)
-          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[])
-          if (cold && judges.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register')))) {
+          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[], unadmitted)
+          if (cold && judges.some(judgesPlugins)) {
             await buildBootstrap()
-            judges = judges.filter(owner => candidates.includes(owner))
+            // Official 2.1.329 judges plugins after it loaded all of them and validated every module's
+            // registrations. A judge that may still be unloaded for an unprovided event, or refused itself,
+            // cannot refuse this plugin yet: the plugin loads and is judged after the last build, below.
+            const settled = judges.filter(owner => candidates.includes(owner) && !unadmitted.has(owner) &&
+              !(judgesPlugins(owner) && unprovidedEvent(owner, bootstrap!.table, new Map())))
+            unsettled = judges.some(owner => candidates.includes(owner) && !settled.includes(owner) && judgesPlugins(owner))
+            judges = settled
           }
           const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
             if (old) withdraw(old)
-            const unconfirmed = judges.filter(owner => bootstrap?.unconfirmed?.has(owner))
-            if (unconfirmed.length) heldRefusals.push({ input, name: declaration.name, refusal, judges: unconfirmed })
-            else refuse(input, declaration.name, refusal)
+            refuse(input, declaration.name, refusal)
             return
           }
         }
@@ -3686,6 +3685,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         }
         if (old) candidates.splice(candidates.indexOf(old), 1, candidate)
         else candidates.push(candidate)
+        if (unsettled) {
+          unadmitted.add(candidate)
+          candidate.state = 'candidate'
+        }
         if (old) replacements.set(candidate, old)
       } catch (error) {
         if (suggestionSuspended && old && active.includes(old)) {
@@ -3698,27 +3701,23 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
     }
     for (const input of loading) await load(input)
-    while (heldRefusals.length) {
+    if (unadmitted.size) {
       await buildBootstrap(true)
-      const retried: typeof heldRefusals = []
-      for (const held of heldRefusals.splice(0)) {
-        if (held.judges.every(owner => candidates.includes(owner))) {
-          refuse(held.input, held.name, held.refusal)
+      for (const input of loading) {
+        const owner = candidates.find(owner => owner.declaration.storageId === input.storageId)
+        if (!owner || !unadmitted.delete(owner)) continue
+        const seats = [...candidates].sort(seatOrder)
+        const position = seats.indexOf(owner)
+        const refusal = await admit(owner.declaration, judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)), bootstrap!.table)
+        ensureLive()
+        if (refusal === undefined) {
+          owner.state = 'active'
           continue
         }
-        await load(held.input)
-        retried.push(held)
-      }
-      if (!retried.length) continue
-      await buildBootstrap(true)
-      for (const held of retried) {
-        const owner = candidates.find(owner => owner.declaration.storageId === held.input.storageId)
-        // Official builds $ with the refused plugin still in it: a judge whose event that plugin provides
-        // loads there, so its refusal stands (and the judge then does not load without the plugin).
-        if (!owner || !held.judges.some(judge => !candidates.includes(judge) && !unprovidedEvent(judge, bootstrap!.table, new Map()))) continue
         withdraw(owner)
-        refuse(held.input, held.name, held.refusal)
+        refuse(input, owner.declaration.name, refusal)
       }
+      unadmitted.clear()
     }
     candidates.sort(seatOrder)
     if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) {
