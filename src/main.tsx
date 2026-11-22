@@ -6498,6 +6498,17 @@ async function run(): Promise<CommanderCommand> {
     )
 
   pluginCmd
+    .command('details <name>')
+    .description(
+      "Show a plugin's component inventory and projected token cost",
+    )
+    .allowExcessArguments()
+    .action(async (name: string) => {
+      const { pluginDetailsHandler } = await import('./cli/handlers/plugins.js')
+      await pluginDetailsHandler(name)
+    })
+
+  pluginCmd
     .command('test [dir]')
     .description('Run plugin author tests')
     .option('--child <file>', undefined)
