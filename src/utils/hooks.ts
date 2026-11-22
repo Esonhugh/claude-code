@@ -30,6 +30,7 @@ import {
   getProjectConfigRoot,
   getProjectRoot,
   getIsNonInteractiveSession,
+  getHasStreamingInput,
   getRegisteredHooks,
   getStatsStore,
   addToTurnHookDuration,
@@ -184,7 +185,7 @@ import {
   resolveAppliedEffort,
 } from './effort.js'
 import { getMainLoopModel } from './model/model.js'
-import { errorMessage, getErrnoCode } from './errors.js'
+import { errorMessage, getErrnoCode, isAbortError } from './errors.js'
 
 export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
@@ -412,7 +413,7 @@ export interface HookResult {
   preventContinuation?: boolean
   stopReason?: string
   impossible?: boolean
-  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
+  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'defer' | 'passthrough'
   hookPermissionDecisionReason?: string
   additionalContext?: string
   initialUserMessage?: string
@@ -442,7 +443,7 @@ export type AggregatedHookResult = {
   impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
-  permissionBehavior?: PermissionResult['behavior']
+  permissionBehavior?: PermissionResult['behavior'] | 'defer'
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
@@ -506,11 +507,11 @@ function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" (optional)',
+        permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
-            permissionDecision: '"allow" | "deny" | "ask" (optional)',
+            permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
             permissionDecisionReason: 'string (optional)',
             updatedInput: 'object (optional) - Modified tool input to use',
           },
@@ -670,10 +671,13 @@ function processHookJSONOutput({
       case 'ask':
         result.permissionBehavior = 'ask'
         break
+      case 'defer':
+        result.permissionBehavior = 'defer'
+        break
       default:
         // Handle unknown decision types as errors
         throw new Error(
-          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask`,
+          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask, defer`,
         )
     }
   }
@@ -713,6 +717,9 @@ function processHookJSONOutput({
               break
             case 'ask':
               result.permissionBehavior = 'ask'
+              break
+            case 'defer':
+              result.permissionBehavior = 'defer'
               break
           }
         }
@@ -1166,7 +1173,13 @@ async function execCommandHook(
   // Track whether stdin has already been written (to avoid "write after end" errors)
   let stdinWritten = false
 
-  if ((hook.async || hook.asyncRewake) && !forceSyncExecution) {
+  // A single-shot print session exits after its turn, so nothing would be
+  // left to rewake: an asyncRewake hook runs to completion there.
+  const canRewake = !getIsNonInteractiveSession() || getHasStreamingInput()
+  if (
+    (hook.async || (hook.asyncRewake && canRewake)) &&
+    !forceSyncExecution
+  ) {
     const processId = `async_hook_${child.pid}`
     logForDebugging(
       `Hooks: Config-based async hook, backgrounding process ${processId}`,
@@ -1738,14 +1751,30 @@ function isInternalHook(matched: MatchedHook): boolean {
   return matched.hook.type === 'callback' && matched.hook.internal === true
 }
 
+const NON_MANAGED_SETTINGS_SOURCES = new Set([
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'flagSettings',
+])
+
 /**
  * Build a dedup key for a matched hook, namespaced by source context.
  *
- * Each settings source retains its own commands. Plugin/skill roots also
- * distinguish identical templates that expand to different files.
+ * User/project/local/--settings hooks share one namespace, so a command
+ * configured in several of them runs once. Managed hooks keep their own
+ * (identical managed matchers are dropped from the other sources when the
+ * snapshot is captured). Plugin/skill roots distinguish identical templates
+ * that expand to different files.
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
-  const source = m.pluginRoot ? 'plugin' : m.skillRoot ? 'skill' : m.hookSource
+  const source = m.pluginRoot
+    ? 'plugin'
+    : m.skillRoot
+      ? 'skill'
+      : m.hookSource && NON_MANAGED_SETTINGS_SOURCES.has(m.hookSource)
+        ? 'settings'
+        : m.hookSource
   return `${source ?? ''}\0${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
 }
 
@@ -2031,11 +2060,11 @@ export async function getMatchingHooks(
     })
 
     // Deduplicate hooks by command/prompt/url within the same source context.
-    // Key includes the settings source and plugin/skill root, so
-    // cross-plugin template collisions don't drop hooks (gh-29724).
+    // Key includes the plugin/skill root, so cross-plugin template collisions
+    // don't drop hooks (gh-29724).
     //
     // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-    // Within each source, the last matching definition still wins.
+    // Across settings files the highest-precedence definition therefore wins.
     // Fast-path: callback/function hooks don't need dedup (each is unique).
     // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
     // callback/function — the common case for internal hooks like
@@ -2286,7 +2315,10 @@ function hookBlocksOnFailure(hook: HookResult['hook']): boolean {
   if (hook.type === 'command') {
     return hook.onFailure === 'block' && !hook.async && !hook.asyncRewake
   }
-  return hook.type === 'http' && hook.onFailure === 'block'
+  return (
+    (hook.type === 'http' || hook.type === 'callback') &&
+    hook.onFailure === 'block'
+  )
 }
 
 /**
@@ -2300,7 +2332,10 @@ function applyHookOnFailure(
 ): HookResult {
   if (!hookBlocksOnFailure(result.hook)) return result
   const failure =
-    result.outcome === 'cancelled' && !signal?.aborted
+    // An SDK callback left unanswered is not a failure of the hook.
+    result.outcome === 'cancelled' &&
+    !signal?.aborted &&
+    result.hook.type !== 'callback'
       ? 'timed out'
       : result.outcome === 'non_blocking_error'
         ? 'failed'
@@ -2313,8 +2348,15 @@ function applyHookOnFailure(
     )
     return result
   }
-  const hook = result.hook as HookCommand & { type: 'command' | 'http' }
-  const command = hook.type === 'http' ? hook.url : hook.command
+  const hook = result.hook as
+    | (HookCommand & { type: 'command' | 'http' })
+    | HookCallback
+  const command =
+    hook.type === 'http'
+      ? hook.url
+      : hook.type === 'command'
+        ? hook.command
+        : getHookDisplayText(hook)
   const message = result.message as
     | { type: string; attachment?: { type: string; stderr?: string } }
     | undefined
@@ -2580,15 +2622,55 @@ async function* executeHooks({
         signal,
         { timeoutMs: callbackTimeoutMs },
       )
-      yield executeHookCallback({
-        toolUseID,
-        hook,
-        hookEvent,
-        hookInput,
-        signal: abortSignal,
-        hookIndex,
-        toolUseContext,
-      }).finally(cleanup)
+      try {
+        yield await executeHookCallback({
+          toolUseID,
+          hook,
+          hookEvent,
+          hookInput,
+          signal: abortSignal,
+          hookIndex,
+          toolUseContext,
+        }).finally(cleanup)
+      } catch (error) {
+        if (hookBlocksOnFailure(hook) && !isAbortError(error)) {
+          yield {
+            // @ts-ignore - recovered code
+            message: createAttachmentMessage({
+              type: 'hook_non_blocking_error',
+              hookName,
+              toolUseID,
+              hookEvent,
+              stderr: errorMessage(error),
+              stdout: '',
+              exitCode: 1,
+              command: getHookDisplayText(hook),
+            }),
+            outcome: 'non_blocking_error',
+            hook,
+          }
+          return
+        }
+        // PreToolUse rethrows so that its caller refuses the tool call.
+        if (!isAbortError(error) || hookEvent === 'PreToolUse') throw error
+        // Only the hook's own timeout counts as unanswered, not an interrupt.
+        const timedOut = abortSignal.aborted && !signal?.aborted
+        if (!timedOut || hookEvent !== 'UserPromptSubmit') {
+          logForDebugging(
+            `${hookName} callback hook ${timedOut ? `timed out after ${callbackTimeoutMs}ms` : 'cancelled'}; continuing without its answer`,
+          )
+          yield { outcome: 'cancelled', hook }
+          return
+        }
+        yield {
+          blockingError: {
+            blockingError: `${hookName} hook callback timed out after ${callbackTimeoutMs}ms`,
+            command: getHookDisplayText(hook),
+          },
+          outcome: 'blocking',
+          hook,
+        }
+      }
       return
     }
 
@@ -3393,10 +3475,13 @@ async function* executeHooks({
       )
       // Preserve the existing tie rules: latest deny/ask wins, first allow wins.
       // The reason and identity must advance together with the winning decision.
+      const current = permissionDecision?.permissionBehavior
       if (
         result.permissionBehavior === 'deny' ||
+        (result.permissionBehavior === 'defer' && current !== 'deny') ||
         (result.permissionBehavior === 'ask' &&
-          permissionDecision?.permissionBehavior !== 'deny') ||
+          current !== 'deny' &&
+          current !== 'defer') ||
         (result.permissionBehavior === 'allow' && !permissionDecision)
       ) {
         permissionDecision = {

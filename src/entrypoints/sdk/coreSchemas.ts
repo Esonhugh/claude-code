@@ -1088,7 +1088,7 @@ export const AsyncHookJSONOutputSchema = lazySchema(() =>
 export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PreToolUse'),
-    permissionDecision: PermissionBehaviorSchema().optional(),
+    permissionDecision: z.enum(['allow', 'deny', 'ask', 'defer']).optional(),
     permissionDecisionReason: z.string().optional(),
     updatedInput: z.record(z.string(), z.unknown()).optional(),
     additionalContext: z.string().optional(),
@@ -1915,6 +1915,13 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
+    deferred_tool_use: z
+      .object({
+        id: z.string(),
+        name: z.string(),
+        input: z.record(z.string(), z.unknown()),
+      })
+      .optional(),
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),

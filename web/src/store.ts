@@ -197,7 +197,11 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       const chat = state.chats[action.id] ?? emptyChat(action.mode)
       return {
         ...state,
-        chats: { ...state.chats, [action.id]: { ...chat, mode: action.mode } },
+        chats: {
+          ...state.chats,
+          // Without its socket nothing answers an approval; the server asks again on the next attach.
+          [action.id]: { ...chat, mode: action.mode, ...(action.mode !== 'live' && { approvals: [] }) },
+        },
         running:
           action.mode === 'live'
             ? { ...state.running, [action.id]: true }
@@ -228,17 +232,27 @@ export function appReducer(state: AppState, action: AppAction): AppState {
           ...state.history.filter(h => h.id !== action.id),
         ],
       }
-    case 'history':
+    case 'history': {
+      const mine = new Map(state.history.filter(h => state.chats[h.id]).map(h => [h.id, h]))
       return {
         ...state,
         history: [
           // Keep sessions created in this tab that the disk listing lacks yet.
-          ...state.history.filter(h => state.chats[h.id] && !action.entries.some(e => e.id === h.id)),
-          ...action.entries,
+          ...[...mine.values()].filter(h => !action.entries.some(e => e.id === h.id)),
+          // A new transcript is listed before its folder and first prompt are on disk:
+          // until then the row keeps the folder and title this tab gave it.
+          ...action.entries.map(e => {
+            const known = mine.get(e.id)
+            if (!known || e.cwd) return e
+            return e.label === 'id'
+              ? { ...e, label: undefined, title: known.title, cwd: known.cwd }
+              : { ...e, cwd: known.cwd }
+          }),
         ],
         folders: action.folders,
         historyMore: action.more,
       }
+    }
     case 'running':
       return {
         ...state,

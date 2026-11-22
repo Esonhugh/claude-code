@@ -7,7 +7,12 @@ import {
   checkEnabledPlugins,
   getPluginEditableScopes,
 } from './pluginStartupCheck.js'
-import { setAllowedSettingSources, setFlagSettingsInline } from '../../bootstrap/state.js'
+import {
+  getAllowedSettingSources,
+  getFlagSettingsInline,
+  setAllowedSettingSources,
+  setFlagSettingsInline,
+} from '../../bootstrap/state.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
 
 const childFlag = 'CLAUDE_CODE_INLINE_PLUGIN_TEST_CHILD'
@@ -92,13 +97,22 @@ if (!process.env[childFlag]) {
 
 describe('enabled plugin settings', () => {
   test('treats version constraint arrays as enabled', async () => {
-    setAllowedSettingSources(['flagSettings'])
-    setFlagSettingsInline({
-      enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
-    })
-    resetSettingsCache()
-    expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
-    expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+    const allowedSources = getAllowedSettingSources()
+    const flagSettings = getFlagSettingsInline()
+    try {
+      setAllowedSettingSources(['flagSettings'])
+      setFlagSettingsInline({
+        enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
+      })
+      resetSettingsCache()
+      expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
+      expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+    } finally {
+      // Later test files in the same process read user settings again.
+      setAllowedSettingSources(allowedSources)
+      setFlagSettingsInline(flagSettings)
+      resetSettingsCache()
+    }
   })
 })
 

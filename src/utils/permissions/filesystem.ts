@@ -1495,6 +1495,35 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     return restrictedOutsideDecision(path, toolPermissionContext)
   }
 
+  // permissions.blockWritesOutsideWorkingDirectories (official 2.1.329): no
+  // allow rule or permission mode lifts it, and settings files stay closed
+  // because one of them could turn the setting off.
+  if (toolPermissionContext.blockWritesOutsideWorkingDirectories) {
+    if (!pathInAllowedWorkingPath(path, toolPermissionContext, pathsToCheck)) {
+      const dirs = Array.from(allWorkingDirectories(toolPermissionContext)).join(', ')
+      return {
+        behavior: 'deny',
+        message: `${path} is outside ${dirs}; the permissions.blockWritesOutsideWorkingDirectories setting blocks writes outside the working directories. Ask the user to add the directory with /add-dir, or to remove that setting.`,
+        // safetyCheck: a tool.check mod must not lift it either.
+        decisionReason: {
+          type: 'safetyCheck',
+          reason:
+            'Writes outside the working directories are blocked (permissions.blockWritesOutsideWorkingDirectories). Add the directory with /add-dir, or remove that setting.',
+          classifierApprovable: false,
+        },
+      }
+    }
+    if (pathsToCheck.some(isClaudeSettingsPath)) {
+      const reason =
+        'Writes to Claude Code settings files are blocked while permissions.blockWritesOutsideWorkingDirectories is on, because a settings file can lift that block. While a managed settings folder cannot be resolved, any .json file counts as one.'
+      return {
+        behavior: 'deny',
+        message: `${path}: ${reason}`,
+        decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false },
+      }
+    }
+  }
+
   // 1.6. Check for .claude/** allow rules BEFORE safety checks
   // This allows session-level permissions to bypass the safety blocks for .claude/
   // We only allow this for session-level rules to prevent users from accidentally

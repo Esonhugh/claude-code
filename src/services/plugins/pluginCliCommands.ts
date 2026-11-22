@@ -12,6 +12,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { logError } from '../../utils/log.js'
 import { getManagedPluginNames } from '../../utils/plugins/managedPlugins.js'
+import { formatOrphanedDependenciesNote } from '../../utils/plugins/dependencyResolver.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
 import type {
   CommandPluginSource,
@@ -32,7 +33,9 @@ import {
   disablePluginOp,
   enablePluginOp,
   type InstallableScope,
+  findPrunablePlugins,
   installPluginOp,
+  prunePluginsOp,
   uninstallPluginOp,
   updatePluginOp,
   VALID_INSTALLABLE_SCOPES,
@@ -48,6 +51,7 @@ type PluginCliCommand =
   | 'disable'
   | 'disable-all'
   | 'update'
+  | 'prune'
 
 /**
  * Generic error handler for plugin CLI commands. Emits
@@ -192,6 +196,8 @@ export async function uninstallPlugin(
   plugin: string,
   scope: InstallableScope = 'user',
   keepData = false,
+  prune = false,
+  yes = false,
 ): Promise<void> {
   try {
     const result = await uninstallPluginOp(plugin, scope, !keepData)
@@ -200,8 +206,21 @@ export async function uninstallPlugin(
       throw new Error(result.message)
     }
 
+    // The plugin is gone either way; a failed scan only loses the follow-up.
+    let followUp: string
+    try {
+      followUp = prune
+        ? `\n${await prunePluginsOp(scope, { yes, deleteDataDir: !keepData, confirm: confirmPrune })}`
+        : formatOrphanedDependenciesNote(
+            (await findPrunablePlugins(scope)).orphans,
+            scope,
+          )
+    } catch (error) {
+      logError(error)
+      followUp = `\n(${prune ? 'prune' : 'orphan scan'} failed: ${errorMessage(error)})`
+    }
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`${figures.tick} ${result.message}`)
+    console.log(`${figures.tick} ${result.message}${followUp}`)
 
     const { name, marketplace } = parsePluginIdentifier(
       result.pluginId || plugin,
@@ -222,6 +241,38 @@ export async function uninstallPlugin(
     process.exit(0)
   } catch (error) {
     handlePluginCommandError(error, 'uninstall', plugin)
+  }
+}
+
+async function confirmPrune(listing: string): Promise<boolean> {
+  writeToStdout(`${listing}\n`)
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = (await rl.question('Remove? [y/N] ')).trim().toLowerCase()
+    return answer === 'y' || answer === 'yes'
+  } catch {
+    return false
+  } finally {
+    rl.close()
+  }
+}
+
+/**
+ * CLI command: Remove auto-installed dependencies that are no longer needed
+ */
+export async function prunePlugins(
+  scope: InstallableScope = 'user',
+  options: { dryRun?: boolean; yes?: boolean } = {},
+): Promise<void> {
+  try {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(
+      await prunePluginsOp(scope, { ...options, confirm: confirmPrune }),
+    )
+    // eslint-disable-next-line custom-rules/no-process-exit
+    process.exit(0)
+  } catch (error) {
+    handlePluginCommandError(error, 'prune')
   }
 }
 

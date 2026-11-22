@@ -1232,9 +1232,15 @@ export function addInstalledPlugin(
   metadata: InstalledPlugin,
   scope: PersistableScope = 'user',
   projectPath?: string,
+  // Installed because another plugin depends on it. An installation the user
+  // asked for by name stays a manual one.
+  asDependency = false,
 ): void {
   return withRegistryLock(() => {
     const v2Data = loadInstalledPluginsFromDisk()
+    const previous = v2Data.plugins[pluginId]?.find(
+      entry => entry.scope === scope && entry.projectPath === projectPath,
+    )
     const v2Entry: PluginInstallationEntry = {
       scope,
       installPath: metadata.installPath,
@@ -1244,6 +1250,7 @@ export function addInstalledPlugin(
       gitCommitSha: metadata.gitCommitSha,
       ...(metadata.sourceCommand && { sourceCommand: metadata.sourceCommand }),
       ...(projectPath && { projectPath }),
+      ...(asDependency && (!previous || previous.auto === true) && { auto: true }),
     }
 
     // Get or create array for this plugin (preserves other scope installations)

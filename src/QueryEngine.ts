@@ -52,7 +52,13 @@ import {
 } from './services/mcp/client.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
-import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
+import {
+  findToolByName,
+  type Tools,
+  type ToolUseContext,
+  toolMatchesName,
+} from './Tool.js'
+import type { DeferredToolMarker } from './utils/attachments.js'
 import type { ModsSession } from './services/mods/session.js'
 import { UNSUBMITTED_PROMPT_DROP, type PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
@@ -137,6 +143,7 @@ import {
 } from './utils/permissions/filesystem.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
+  handleDeferredToolResume,
   handleOrphanedPermission,
   isResultSuccessful,
   normalizeMessage,
@@ -306,6 +313,8 @@ export type QueryEngineConfig = {
   setSDKStatus?: ToolUseContext['setSDKStatus']
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
+  /** The call a PreToolUse hook deferred, to run before this turn's prompt. */
+  deferredToolUse?: DeferredToolMarker
   /**
    * Snip-boundary handler: receives each yielded system message plus the
    * current mutableMessages store. Returns undefined if the message is not a
@@ -339,6 +348,7 @@ export class QueryEngine {
   private permissionDenials: SDKPermissionDenial[]
   private totalUsage: NonNullableUsage
   private hasHandledOrphanedPermission = false
+  private hasHandledDeferredToolResume = false
   private readFileState: FileStateCache
   // Turn-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across the two
@@ -473,6 +483,7 @@ export class QueryEngine {
       allowedAgentTypes,
       setSDKStatus,
       orphanedPermission,
+      deferredToolUse,
     } = this.config
 
     this.discoveredSkillNames.clear()
@@ -778,6 +789,67 @@ export class QueryEngine {
         processUserInputContext,
       )) {
         yield message
+      }
+    }
+
+    // Run the call a PreToolUse hook deferred (only once per engine lifetime)
+    if (deferredToolUse && !this.hasHandledDeferredToolResume) {
+      this.hasHandledDeferredToolResume = true
+      const deferredResult = (
+        ended: 'tool_deferred' | 'tool_deferred_unavailable',
+        call: DeferredToolMarker,
+      ) => ({
+        type: 'result' as const,
+        subtype: 'success' as const,
+        is_error: ended === 'tool_deferred_unavailable',
+        duration_ms: Date.now() - startTime,
+        duration_api_ms: getTotalAPIDuration(),
+        num_turns: this.mutableMessages.length,
+        result: '',
+        stop_reason: ended,
+        session_id: getSessionId(),
+        total_cost_usd: getTotalCost(),
+        usage: this.totalUsage,
+        modelUsage: getModelUsage(),
+        permission_denials: this.permissionDenials,
+        deferred_tool_use: {
+          id: call.toolUseID,
+          name: call.toolName,
+          input: call.toolInput,
+        },
+        terminal_reason: ended,
+        uuid: randomUUID(),
+      })
+      if (
+        !findToolByName(
+          processUserInputContext.options.tools,
+          deferredToolUse.toolName,
+        )
+      ) {
+        logForDebugging(
+          `Deferred tool resume: tool '${deferredToolUse.toolName}' is no longer available (MCP server disconnected or tool removed)`,
+          { level: 'warn' },
+        )
+        yield deferredResult('tool_deferred_unavailable', deferredToolUse)
+        return
+      }
+      let deferredAgain: DeferredToolMarker | undefined
+      for await (const message of handleDeferredToolResume(
+        deferredToolUse,
+        wrappedCanUseTool,
+        this.mutableMessages,
+        processUserInputContext,
+      )) {
+        // Attachments are passed through as SDK messages here.
+        const { attachment } = message as { attachment?: DeferredToolMarker }
+        if (attachment?.type === 'hook_deferred_tool') {
+          deferredAgain = attachment
+        }
+        yield message
+      }
+      if (deferredAgain) {
+        yield deferredResult('tool_deferred', deferredAgain)
+        return
       }
     }
 
@@ -1148,6 +1220,10 @@ export class QueryEngine {
     let hasAcknowledgedInitialMessages = false
     // Track structured output from StructuredOutput tool calls
     let structuredOutputFromTool: unknown
+    // The call a PreToolUse hook deferred this turn, reported on the result
+    let deferredToolUseResult:
+      | { id: string; name: string; input: Record<string, unknown> }
+      | undefined
     // Track the last stop_reason from assistant messages
     let lastStopReason: string | null = null
     // Reference-based watermark so error_during_execution's errors[] is
@@ -1410,6 +1486,18 @@ export class QueryEngine {
           if (message.attachment.type === 'structured_output') {
             // @ts-ignore - recovered code
             structuredOutputFromTool = message.attachment.data
+          }
+          // @ts-ignore - recovered code
+          else if (message.attachment.type === 'hook_deferred_tool') {
+            deferredToolUseResult = {
+              // @ts-ignore - recovered code
+              id: message.attachment.toolUseID,
+              // @ts-ignore - recovered code
+              name: message.attachment.toolName,
+              // @ts-ignore - recovered code
+              input: message.attachment.toolInput,
+            }
+            lastStopReason = 'tool_deferred'
           }
           // Handle max turns reached signal from query.ts
           // @ts-ignore - recovered code
@@ -1677,7 +1765,11 @@ export class QueryEngine {
       }
     }
 
-    if (!isResultSuccessful(result, lastStopReason)) {
+    // A deferred call ends the turn on an open tool_use; that is not a failure.
+    if (
+      deferredToolUseResult === undefined &&
+      !isResultSuccessful(result, lastStopReason)
+    ) {
       yield {
         type: 'result',
         subtype: 'error_during_execution',
@@ -1718,7 +1810,7 @@ export class QueryEngine {
     let textResult = ''
     let isApiError = false
 
-    if (result.type === 'assistant') {
+    if (result?.type === 'assistant') {
       textResult = resultTextOf(messages, result)
       isApiError = Boolean(result.isApiErrorMessage)
     }
@@ -1742,6 +1834,7 @@ export class QueryEngine {
       modelUsage: getModelUsage(),
       permission_denials: this.permissionDenials,
       structured_output: structuredOutputFromTool,
+      ...(deferredToolUseResult && { deferred_tool_use: deferredToolUseResult }),
       ...resultFastMode(),
       terminal_reason: terminal?.reason,
       uuid: randomUUID(),
@@ -1815,6 +1908,7 @@ export async function* ask({
   allowedAgentTypes,
   setSDKStatus,
   orphanedPermission,
+  deferredToolUse,
   modsSession,
 }: {
   modsSession?: ModsSession
@@ -1856,6 +1950,7 @@ export async function* ask({
   allowedAgentTypes?: string[]
   setSDKStatus?: ToolUseContext['setSDKStatus']
   orphanedPermission?: OrphanedPermission
+  deferredToolUse?: DeferredToolMarker
 }): AsyncGenerator<SDKMessage, void, unknown> {
   // @ts-ignore - recovered code
   const engine = new QueryEngine({
@@ -1888,6 +1983,7 @@ export async function* ask({
     setSDKStatus,
     abortController,
     orphanedPermission,
+    deferredToolUse,
     ...(feature('HISTORY_SNIP')
       ? {
           snipReplay: (yielded: Message, store: Message[]) => {
