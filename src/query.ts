@@ -111,7 +111,7 @@ import {
   takePollEventChunk,
 } from './utils/messageQueueManager.js'
 import { pollEventsAttachment } from './tools/PollTool/delivery.js'
-import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
+import { shouldWaitAfterToolCalls, takeStoppedReplRows, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
 import { findReplSession, MAIN_REPL_SESSION, takeReplLateMessages } from './tools/REPLTool/sessions.js'
 import type { QueuedCommand } from './types/textInputTypes.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
@@ -580,6 +580,18 @@ function foldPollEvents(
   return createAttachmentMessage(attachment)
 }
 
+/**
+ * Official 2.1.329: the rows of the scripts this turn's abort stopped (the
+ * calls they left running among them) are recorded with the interruption.
+ * A "turn-abort" leaves the scripts running.
+ */
+async function stoppedReplRows(querySource: QuerySource, toolUseContext: ToolUseContext): Promise<Message[]> {
+  const ownsScripts =
+    querySource.startsWith('repl_main_thread') || querySource === 'sdk' || toolUseContext.agentId !== undefined
+  if (!ownsScripts || toolUseContext.abortController.signal.reason === 'turn-abort') return []
+  return takeStoppedReplRows(toolUseContext.agentId)
+}
+
 async function* queryLoop(
   params: QueryParams,
   consumedCommandUuids: string[],
@@ -803,6 +815,7 @@ async function* queryLoop(
       if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
         yield createUserInterruptionMessage({ toolUse: false })
       }
+      for (const row of await stoppedReplRows(params.querySource, toolUseContext)) yield row
       return { reason: 'aborted_streaming' }
     }
 
@@ -1778,6 +1791,7 @@ async function* queryLoop(
           toolUse: false,
         })
       }
+      for (const row of await stoppedReplRows(querySource, toolUseContext)) yield row
       return { reason: 'aborted_streaming' }
     }
 
@@ -2361,6 +2375,7 @@ async function* queryLoop(
           toolUse: true,
         })
       }
+      for (const row of await stoppedReplRows(querySource, toolUseContext)) yield row
       // Check maxTurns before returning when aborted
       const nextTurnCountOnAbort = turnCount + 1
       if (maxTurns && nextTurnCountOnAbort > maxTurns) {

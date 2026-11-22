@@ -11,6 +11,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
 import type { REPLToolCallProgress } from '../../types/tools.js'
 import { AbortError } from '../../utils/errors.js'
+import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { createUserMessage, REJECT_MESSAGE } from '../../utils/messages.js'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { buildSchemaNotSentHint } from '../../services/tools/toolExecution.js'
@@ -416,6 +417,34 @@ test('aborting the script signal aborts the inner tool and rejects', async () =>
   expect(context.abortController.signal.aborted).toBe(false)
   expect(progress.at(-1)?.phase).toBe('error')
   expect(host.call('Fixture', { value: 'y' })).rejects.toBeInstanceOf(AbortError)
+})
+
+test('a call still running when the code is stopped is recorded as one that gave no result (official 2.1.329)', async () => {
+  const script = new AbortController()
+  const entered = Promise.withResolvers<void>()
+  const { host } = hostFor([fixtureTool('Fixture', async (_input, inner) => {
+    entered.resolve()
+    await new Promise<void>(resolve => inner.abortController.signal.addEventListener('abort', () => resolve()))
+    throw new AbortError()
+  })], { signal: script.signal })
+  const pending = host.call('Fixture', { value: 'x' })
+  await entered.promise
+  script.abort('user-cancel')
+  // The stopped script's rows are taken as it stops, before the call itself has ended.
+  const [assistant, user] = host.drainMessages() as [AssistantMessage, UserMessage]
+  await pending.catch(() => {})
+  expect(host.drainMessages()).toEqual([])
+  expect(assistant.isVirtual).toBe(true)
+  expect(assistant.message.content[0]).toMatchObject({ type: 'tool_use', name: 'Fixture', input: { value: 'x' } })
+  expect(user).toMatchObject({ isVirtual: true, toolDenialKind: 'interrupted', sourceToolAssistantUUID: assistant.uuid })
+  expect(user.message.content).toEqual([
+    {
+      type: 'tool_result',
+      tool_use_id: (assistant.message.content[0] as { id: string }).id,
+      content: 'Still running when the code stopped, so it gave no result. It may have run in part or in full.',
+      is_error: true,
+    },
+  ])
 })
 
 /** A permission prompt the user declines with no feedback (PermissionContext `cancelAndAbort`). */

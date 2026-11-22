@@ -66,6 +66,9 @@ export type ReplToolHost = {
 const REPL_CALL_AFTER_SCRIPT_END =
   "This tool call did not run. The piece of code that it belongs to had already finished, and a timer or promise that finished code leaves running can't make tool calls. To run these steps, send them again in one piece of code that awaits each of them."
 /** Official `Ln`: a call still waiting for a slot when its script ended. */
+/** Official `fh`. */
+const REPL_CALL_STILL_RUNNING =
+  'Still running when the code stopped, so it gave no result. It may have run in part or in full.'
 const REPL_CALL_NOT_STARTED =
   'This tool call did not run. The code that made it finished or was stopped before the call could start. If it is still needed and nobody stopped the code, make the call again in code that awaits it.'
 
@@ -384,6 +387,21 @@ export function createReplToolHost(opts: {
     // its parents had not, which is how a declined permission prompt shows.
     let declined: { reason: unknown } | undefined
     let settled = false
+    let inCall = false
+    // Official `Bu`: a call still running when the code is stopped gave no result, and is shown as that.
+    const stoppedInCall = () => {
+      if (!inCall || settled) return
+      messages.push(
+        assistant,
+        createUserMessage({
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: REPL_CALL_STILL_RUNNING, is_error: true }],
+          isVirtual: true,
+          toolDenialKind: 'interrupted',
+          sourceToolAssistantUUID: assistant.uuid,
+        }),
+      )
+    }
+    signal.addEventListener('abort', stoppedInCall, { once: true })
     abortController.signal.addEventListener(
       'abort',
       () => {
@@ -413,7 +431,10 @@ export function createReplToolHost(opts: {
         modToolCallResult: undefined,
         fileReadingLimits: READ_LIMITS,
         globLimits: GLOB_LIMITS,
-        onReplToolCall: onToolCall,
+        onReplToolCall: () => {
+          inCall = true
+          onToolCall()
+        },
         replSessionTools: context.replSessionTools ?? context.options.tools,
         options: { ...context.options, tools: refreshTools(), refreshTools },
         abortController,
@@ -464,6 +485,7 @@ export function createReplToolHost(opts: {
     } finally {
       settled = true
       for (const parent of parents) parent.removeEventListener('abort', abort)
+      signal.removeEventListener('abort', stoppedInCall)
     }
   }
 

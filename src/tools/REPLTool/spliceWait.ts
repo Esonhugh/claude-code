@@ -1,3 +1,4 @@
+import type { Message } from '../../types/message.js'
 import type { QueuedCommand } from '../../types/textInputTypes.js'
 import { REPL_STATUS_EVENT_KIND } from '../../utils/messageQueueManager.js'
 import { isReplSpliceWaitEnabled } from './codeModeGate.js'
@@ -8,6 +9,7 @@ import {
   onReplLedgerChange,
   replLedger,
   type ReplLedgerRow,
+  takeReplLateMessages,
   takeReplStatusLineGiven,
   takeUnwaitedReplEvals,
 } from './sessions.js'
@@ -127,4 +129,30 @@ export async function waitForReplScriptsAfterToolCalls(
     const stillPending = rows.some(row => row.state === 'detached') && unwaited.some(id => !session.undelivered.has(id))
     enqueueReplStatus(session, rows, stillPending)
   }
+}
+
+/** How long an aborted turn waits for the scripts it stopped to report. */
+const STOPPED_ROWS_WAIT_MS = 1000
+
+/**
+ * Official 2.1.329: the rows of the scripts a turn's abort stopped (the calls
+ * they left running among them) are recorded with the interruption, not with
+ * a later delivery. Scripts still to report get `waitMs` to do so.
+ */
+export async function takeStoppedReplRows(agentId: string | undefined, waitMs = STOPPED_ROWS_WAIT_MS): Promise<Message[]> {
+  const session = findReplSession(agentId ?? MAIN_REPL_SESSION)
+  if (!session) return []
+  if (session.undelivered.size > 0)
+    await new Promise<void>(resolve => {
+      const done = () => {
+        clearTimeout(timer)
+        unsubscribe()
+        resolve()
+      }
+      const unsubscribe = onReplLedgerChange(session, () => {
+        if (session.undelivered.size === 0) done()
+      })
+      const timer = setTimeout(done, waitMs)
+    })
+  return takeReplLateMessages(session)
 }

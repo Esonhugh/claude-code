@@ -10,6 +10,7 @@ import {
 } from '../../utils/messageQueueManager.js'
 import { noteReplLaunchPermissionMode, resetCodeModeGateForTesting } from './codeModeGate.js'
 import {
+  deliverReplEvent,
   detachReplEval,
   dispatchReplEval,
   getReplSession,
@@ -19,7 +20,7 @@ import {
   releaseAllReplSessions,
   startReplEval,
 } from './sessions.js'
-import { shouldWaitAfterToolCalls, waitForNews, waitForReplScriptsAfterToolCalls } from './spliceWait.js'
+import { shouldWaitAfterToolCalls, takeStoppedReplRows, waitForNews, waitForReplScriptsAfterToolCalls } from './spliceWait.js'
 
 const savedCodeMode = process.env.CLAUDE_CODE_EXPERIMENTAL_CODE_MODE
 const savedEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
@@ -176,5 +177,37 @@ describe('waitForReplScriptsAfterToolCalls (official Bu)', () => {
     expect(Date.now() - started).toBeLessThan(100)
     await sleep(0)
     expect(statusEvents()).toHaveLength(0)
+  })
+})
+
+describe('takeStoppedReplRows (official 2.1.329: a stopped script’s rows go with the interruption)', () => {
+  const row = { type: 'user', uuid: 'row' } as never
+  const event = (id: number) => ({ id, text: `<event kind="repl-eval" at="t" eval="${id}" status="settled"></event>`, startsTurn: false as const })
+
+  test('waits for the scripts the abort stopped to report, then hands their rows over', async () => {
+    const session = getReplSession(MAIN_REPL_SESSION)
+    dispatchReplEval(session, 1, 'x')
+    startReplEval(session, 1)
+    setTimeout(() => deliverReplEvent(session, event(1), [row]), 30)
+    expect(await takeStoppedReplRows(undefined)).toEqual([row])
+    expect(session.lateMessages).toEqual([])
+  })
+
+  test('a script that goes on running does not hold the interruption for long', async () => {
+    const session = getReplSession(MAIN_REPL_SESSION)
+    dispatchReplEval(session, 1, 'x')
+    startReplEval(session, 1)
+    const started = Date.now()
+    expect(await takeStoppedReplRows(undefined, 50)).toEqual([])
+    expect(Date.now() - started).toBeLessThan(500)
+  })
+
+  test('nothing to wait for without a session or a pending eval', async () => {
+    expect(await takeStoppedReplRows('no-such-agent')).toEqual([])
+    const session = getReplSession(MAIN_REPL_SESSION)
+    session.lateMessages.push(row)
+    const started = Date.now()
+    expect(await takeStoppedReplRows(undefined)).toEqual([row])
+    expect(Date.now() - started).toBeLessThan(100)
   })
 })
