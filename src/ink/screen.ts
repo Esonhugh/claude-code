@@ -301,6 +301,18 @@ export const enum CellWidth {
 
 export type Hyperlink = string | undefined
 
+/** How a written line relates to the line before it. */
+export const enum SoftWrap {
+  HardBreak = 0,
+  // The `\n` before the line was inserted by word-wrap.
+  Continuation = 1,
+  // Same, and the separator space that led the line was dropped.
+  ContinuationElidedSep = 2,
+}
+
+/** Bit set in Screen.softWrap[r] when row r lost its leading separator space. */
+export const SW_ELIDED_SEP = 0x8000
+
 /**
  * Cell is a view type returned by cellAt(). Cells are stored as packed typed
  * arrays internally to avoid GC pressure from allocating objects per cell.
@@ -409,8 +421,9 @@ export type Screen = Size & {
    * is chosen so shiftRows preserves the is-continuation semantics: when
    * row r scrolls off the top and row r+1 shifts to row r, sw[r] gets
    * old sw[r+1] — which correctly says the new row r is a continuation
-   * of what's now in scrolledOffAbove. Reset each frame; copied by
-   * blitRegion/shiftRows.
+   * of what's now in scrolledOffAbove. SW_ELIDED_SEP is OR-ed into N when
+   * the separator space that led row r was dropped, so copy can put it
+   * back at the join. Reset each frame; copied by blitRegion/shiftRows.
    */
   softWrap: Int32Array
 }

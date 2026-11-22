@@ -2160,8 +2160,41 @@ test('Worker rejects empty store keys before middleware but checks oversized key
     result: {rejected:6,calls:[['store.get',257],['store.set',257],['store.delete',257]]},
   })
   expect(diagnostics).toEqual(['store.get', 'store.set', 'store.delete'].map(stage => ({
-    plugin: 'store-observer', stage, message: 'key must be a nonempty string of at most 256 characters',
+    plugin: 'store-observer', stage, message: `store-keys@test: $.${stage}: the key is 257 characters, over the 256 limit`,
   })))
+})
+
+test('Worker refuses a bad store key or value with the wording of official 2.1.329', async () => {
+  const consumer = await plugin('store-words', `export function register(on) {
+    on('tool.call', async ($) => {
+      const messages=[];
+      const attempt = async call => { try { await call(); messages.push('ok'); } catch (error) { messages.push(error.message); } };
+      await attempt(() => $.store.get(''));
+      await attempt(() => $.store.set(5, 1));
+      await attempt(() => $.store.delete(''));
+      await attempt(() => $.store.set('u', undefined));
+      await attempt(() => $.store.set('f', () => 1));
+      await attempt(() => $.store.set('', undefined));
+      await attempt(() => $.store.set('big', 'x'.repeat(4194304)));
+      const loop = {}; loop.self = loop;
+      await attempt(() => $.store.set('loop', loop));
+      return {result:{messages}};
+    });
+  }`)
+  const { value } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const { result } = await value.dispatch('tool.call', input, async () => ({result:'unexpected core'})) as { result: { messages: string[] } }
+  expect(result.messages.slice(0, 7)).toEqual([
+    'store-words: $.store.get takes a non-empty string key',
+    'store-words: $.store.set takes a non-empty string key',
+    'store-words: $.store.delete takes a non-empty string key',
+    'store-words: $.store.set: value is not JSON data (undefined)',
+    'store-words: $.store.set: value is not JSON data (a function)',
+    'store-words: $.store.set: value is not JSON data (undefined)',
+    'store-words: $.store.set: the value is 4194306 characters, over the 4194304 limit',
+  ])
+  expect(result.messages[7]).toStartWith('store-words: $.store.set: value is not JSON data (')
 })
 
 test('Worker store.set normalizes JSON in the author realm before crossing the host bridge', async () => {

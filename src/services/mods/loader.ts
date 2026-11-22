@@ -49,6 +49,8 @@ const scanOnlyEvents = new Set([
   'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
   'tool.register', 'tool.list',
 ])
+// Nouns whose events the engine dispatches itself; an event on any other noun needs a loaded plugin to provide it.
+export const engineEventNouns = new Set([...coreNouns, ...[...supportedEvents, ...scanOnlyEvents].map(event => event.split('.')[0]!), 'classic', 'theme'])
 const supportedCalls = new Set([...supportedEvents].filter(event => ![
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
   'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
