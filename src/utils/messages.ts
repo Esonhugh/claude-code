@@ -432,10 +432,13 @@ function baseCreateAssistantMessage({
     uuid: randomUUID(),
     timestamp: new Date().toISOString(),
     message: {
+      // @ts-ignore - not in the SDK's message type; official 2.1.329 sends both as null
+      diagnostics: null,
       id: randomUUID(),
       container: null,
       model: SYNTHETIC_MODEL,
       role: 'assistant',
+      stop_details: null,
       stop_reason: 'stop_sequence',
       stop_sequence: '',
       type: 'message',

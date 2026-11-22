@@ -135,6 +135,31 @@ test('a switch to the fallback model is sent as system/model_fallback', () => {
   })
 })
 
+test('the line before a refusal nothing is tried after is sent as system/model_refusal_no_fallback', () => {
+  const message = {
+    ...createSystemMessage('', 'info'),
+    modelRefusalNoFallback: {
+      originalModel: 'claude-opus-5-5',
+      requestId: null,
+      category: 'cyber',
+      explanation: 'fake refusal',
+      refusedUserMessageUuid: '00000000-0000-4000-8000-000000000002',
+    },
+  }
+  expect(toSDKSystemNotice(message)).toEqual({
+    type: 'system',
+    subtype: 'model_refusal_no_fallback',
+    original_model: 'claude-opus-5-5',
+    request_id: null,
+    api_refusal_category: 'cyber',
+    api_refusal_explanation: 'fake refusal',
+    refused_user_message_uuid: '00000000-0000-4000-8000-000000000002',
+    content: '',
+    uuid: message.uuid,
+    session_id: expect.any(String),
+  })
+})
+
 test("a hook's systemMessage is sent as a notice naming the hook", () => {
   const uuid = '00000000-0000-4000-8000-000000000001'
   expect(

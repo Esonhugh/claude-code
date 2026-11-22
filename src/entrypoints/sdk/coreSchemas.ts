@@ -1820,6 +1820,11 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
       .describe('Description of the subagent task that produced this message.'),
     timestamp: z.string().optional(),
     error: SDKAssistantMessageErrorSchema().optional(),
+    is_api_error_message: z.literal(true).optional().describe('Set when the message reports an API error instead of a model response.'),
+    api_error_status: z.number().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional().describe("The `error.type` of the API error body, such as 'invalid_request_error'."),
+    refused_message_id: z.string().optional().describe('On a refusal error: the id of the API message the safety classifier stopped.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     request_id: z.string().optional(),
@@ -1908,6 +1913,8 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     ttft_ms: z.number().optional(),
     is_error: z.boolean(),
     api_error_status: z.number().nullable().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional(),
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
@@ -2097,6 +2104,23 @@ export const SDKModelFallbackMessageSchema = lazySchema(() =>
       session_id: z.string(),
     })
     .describe('The turn switched to the fallback model.'),
+)
+
+export const SDKModelRefusalNoFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_refusal_no_fallback'),
+      original_model: z.string(),
+      request_id: z.string().nullable(),
+      api_refusal_category: z.string().nullable(),
+      api_refusal_explanation: z.string().nullable(),
+      refused_user_message_uuid: z.string().optional(),
+      content: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The safety classifier stopped the response and no other model is tried; the error follows.'),
 )
 
 export const SDKNotificationMessageSchema = lazySchema(() =>
@@ -2698,6 +2722,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUILogMessageSchema(),
     SDKInformationalMessageSchema(),
     SDKModelFallbackMessageSchema(),
+    SDKModelRefusalNoFallbackMessageSchema(),
     SDKNotificationMessageSchema(),
     SDKSessionTitleChangedMessageSchema(),
     SDKUIToastMessageSchema(),

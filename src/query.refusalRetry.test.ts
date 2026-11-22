@@ -127,7 +127,13 @@ test('a second refusal in the same query ends it with the error', async () => {
   const { events, requests } = await run([[refusal()], [refusal()]])
   expect(requests).toHaveLength(2)
   expect(events.at(-1)).toMatchObject({ type: 'assistant', isApiErrorMessage: true })
-  expect(events.filter(event => event.type === 'system')).toHaveLength(1)
+  // The retry notice, then the announcement that nothing is tried after this one.
+  expect(events.filter(event => event.type === 'system')).toHaveLength(2)
+  expect(events.at(-2)).toMatchObject({
+    type: 'system',
+    content: '',
+    modelRefusalNoFallback: { originalModel: 'claude-sonnet-4-6', requestId: null, category: null, explanation: null },
+  })
 })
 
 test('a tool call the stopped response had started gets an Interrupted result, and the note says so', async () => {
@@ -149,6 +155,7 @@ test.each([
   if (disabled) process.env.CLAUDE_CODE_DISABLE_REFUSAL_RETRY = disabled
   const { events, requests } = await run([[refusal()]], querySource)
   expect(requests).toHaveLength(1)
-  expect(events.map(event => event.type)).toEqual(['assistant'])
-  expect(events[0]).toMatchObject({ isApiErrorMessage: true })
+  expect(events.map(event => event.type)).toEqual(['system', 'assistant'])
+  expect(events[0]).toMatchObject({ modelRefusalNoFallback: { originalModel: 'claude-sonnet-4-6' } })
+  expect(events[1]).toMatchObject({ isApiErrorMessage: true })
 })

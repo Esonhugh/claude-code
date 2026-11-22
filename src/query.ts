@@ -1584,6 +1584,20 @@ async function* queryLoop(
             if (refusalRetryAllowed && isRefusalMessage(message)) {
               withheld = true
               withheldRefusal = message
+            } else if (isRefusalMessage(message)) {
+              // Official 2.1.329 announces a refusal nothing is tried after.
+              const details = message.message.stop_details as { category?: string | null; explanation?: string | null } | null | undefined
+              yield {
+                ...createSystemMessage('', 'info'),
+                modelRefusalNoFallback: {
+                  originalModel: message.refusingModel ?? currentModel,
+                  requestId: message.requestId ?? null,
+                  category: details?.category ?? null,
+                  explanation: details?.explanation?.trimEnd() ?? null,
+                  refusedUserMessageUuid: messagesForQuery.findLast(message =>
+                    message.type === 'user' && !message.isMeta && message.toolUseResult === undefined)?.uuid,
+                },
+              }
             }
             if (message.type === 'assistant')
               updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })

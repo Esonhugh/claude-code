@@ -10,6 +10,7 @@ import type {
   SDKCompactBoundaryMessage,
   SDKInformationalMessage,
   SDKModelFallbackMessage,
+  SDKModelRefusalNoFallbackMessage,
   SDKMessage,
   SDKRateLimitInfo,
   SDKToolResultMeta,
@@ -126,8 +127,22 @@ type SDKCompactMetadata = SDKCompactBoundaryMessage['compact_metadata']
  */
 export function toSDKSystemNotice(
   message: SystemInformationalMessage,
-): SDKInformationalMessage | SDKModelFallbackMessage {
+): SDKInformationalMessage | SDKModelFallbackMessage | SDKModelRefusalNoFallbackMessage {
   const base = { uuid: message.uuid, session_id: getSessionId() }
+  const refusal = message.modelRefusalNoFallback
+  if (refusal) {
+    return {
+      type: 'system' as const,
+      subtype: 'model_refusal_no_fallback' as const,
+      original_model: refusal.originalModel,
+      request_id: refusal.requestId,
+      api_refusal_category: refusal.category,
+      api_refusal_explanation: refusal.explanation,
+      ...(refusal.refusedUserMessageUuid && { refused_user_message_uuid: refusal.refusedUserMessageUuid }),
+      content: '',
+      ...base,
+    }
+  }
   if (message.modelFallback) {
     return {
       type: 'system' as const,

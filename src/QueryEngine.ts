@@ -1255,6 +1255,8 @@ export class QueryEngine {
     // message, api_error_status the status of a trailing API error message.
     let firstAssistantAt: number | undefined
     let lastApiErrorStatus: number | null = null
+    let lastApiErrorType: string | undefined
+    let lastApiErrorCode: string | undefined
     let requestStartedAt: number | undefined
     let thinkingEstimate = 0
     // The API message the stream events being forwarded belong to.
@@ -1370,6 +1372,8 @@ export class QueryEngine {
           lastApiErrorStatus = message.isApiErrorMessage
             ? (message.apiErrorStatus ?? null)
             : null
+          lastApiErrorType = message.apiErrorType
+          lastApiErrorCode = message.apiErrorCode
           // Capture stop_reason if already set (synthetic messages). For
           // streamed responses, this is null at content_block_stop time;
           // the real value arrives via message_delta (handled below).
@@ -1396,6 +1400,7 @@ export class QueryEngine {
           break
         case 'user':
           lastApiErrorStatus = null
+          lastApiErrorType = lastApiErrorCode = undefined
           this.permissionDenials.push(
             ...toolDenialsIn(
               message,
@@ -1826,6 +1831,8 @@ export class QueryEngine {
       subtype: 'success',
       is_error: isApiError,
       api_error_status: lastApiErrorStatus,
+      ...(lastApiErrorCode !== undefined && { api_error_code: lastApiErrorCode }),
+      ...(lastApiErrorType !== undefined && { api_error_type: lastApiErrorType }),
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
       ...(firstAssistantAt !== undefined && {

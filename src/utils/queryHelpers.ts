@@ -119,6 +119,17 @@ function withToolResultMeta(
   return meta.length > 0 ? { tool_result_meta: meta } : {}
 }
 
+/** What official 2.1.329 adds to the assistant row of an API error. */
+function apiErrorFields(message: AssistantMessage) {
+  return {
+    ...(message.isApiErrorMessage === true && { is_api_error_message: true as const }),
+    ...(message.apiErrorStatus !== undefined && { api_error_status: message.apiErrorStatus }),
+    ...(message.apiErrorCode !== undefined && { api_error_code: message.apiErrorCode }),
+    ...(message.apiErrorType !== undefined && { api_error_type: message.apiErrorType }),
+    ...(message.refusedMessageId !== undefined && { refused_message_id: message.refusedMessageId }),
+  }
+}
+
 /**
  * SDK messages for one message of a subagent, tagged with the Agent tool_use
  * that spawned it (parent_tool_use_id).
@@ -156,6 +167,7 @@ export function* normalizeSubagentMessage(
           timestamp: _.timestamp,
           // @ts-ignore - recovered code
           error: _.error,
+          ...apiErrorFields(message as AssistantMessage),
         }
         break
       case 'user':
@@ -205,6 +217,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           error: _.error,
           timestamp: _.timestamp,
           ...(_.requestId !== undefined && { request_id: _.requestId }),
+          ...apiErrorFields(message),
         }
       }
       return

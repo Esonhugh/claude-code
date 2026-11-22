@@ -176,6 +176,8 @@ export interface AssistantMessage {
   timestamp: string
   /** On a refusal error: the id of the API message the safety classifier stopped. */
   refusedMessageId?: string
+  /** On a refusal error: the model whose response was stopped. */
+  refusingModel?: string
   message: {
     id: string
     role: 'assistant'
@@ -202,6 +204,9 @@ export interface AssistantMessage {
   isVirtual?: boolean
   isApiErrorMessage?: boolean
   apiErrorStatus?: number
+  /** The API error body's `error.type` and `error.details.error_code`. */
+  apiErrorType?: string
+  apiErrorCode?: string
   apiError?: {
     status: number
     type: string
@@ -269,6 +274,14 @@ export interface SystemInformationalMessage extends SystemBase {
   preventContinuation?: boolean
   /** Set on the line that reports a switch to the fallback model. */
   modelFallback?: { trigger: 'overloaded'; originalModel: string; fallbackModel: string }
+  /** Set on the contentless line that precedes a refusal no model is tried after. */
+  modelRefusalNoFallback?: {
+    originalModel: string
+    requestId: string | null
+    category: string | null
+    explanation: string | null
+    refusedUserMessageUuid?: string
+  }
   /** Set on the line that reports how a UserPromptSubmit hook ended the prompt. */
   promptSubmitEnding?: {
     ending: { kind: 'blocked_by_hook'; reason?: string }
@@ -445,6 +458,9 @@ export interface NormalizedAssistantMessage<T = BetaContentBlock> {
   isVirtual?: boolean
   isApiErrorMessage?: boolean
   apiErrorStatus?: number
+  /** The API error body's `error.type` and `error.details.error_code`. */
+  apiErrorType?: string
+  apiErrorCode?: string
   apiError?: {
     status: number
     type: string
