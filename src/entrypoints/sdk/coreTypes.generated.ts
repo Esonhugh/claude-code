@@ -249,7 +249,7 @@ export type SdkPluginConfig = { type: 'local'; path: string }
 export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number; skippedLinks?: number }
 
 // SDK Error type
-export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
+export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'overloaded' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
 export type SDKStatus = 'compacting' | 'requesting' | null
 
 // Rate Limit
@@ -331,8 +331,8 @@ export type SDKRateLimitEvent = {
   session_id: string
 }
 export type SDKResultMessage =
-  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
-  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
 export type SDKSystemMessage = {
   type: 'system'
   subtype: 'init'
@@ -371,6 +371,54 @@ export type SDKUILogMessage = {
   uuid: string
   session_id: string
 }
+export type SDKInformationalMessage = {
+  type: 'system'
+  subtype: 'informational'
+  content: string
+  level?: 'info' | 'notice' | 'warning' | 'error' | 'suggestion'
+  tool_use_id?: string
+  prevent_continuation?: boolean
+  prompt_submit_outcome?: {
+    kind: 'blocked_by_hook'
+    prompt_kept: boolean
+    reason?: string
+  }
+  tag?: 'hook_no_verdict'
+  hook_no_verdict?: {
+    hook_event: 'PreToolUse'
+    tool_use_id: string
+    timed_out: boolean
+  }
+  uuid: string
+  session_id: string
+}
+export type SDKModelFallbackMessage = {
+  type: 'system'
+  subtype: 'model_fallback'
+  trigger: 'overloaded'
+  original_model: string
+  fallback_model: string
+  content?: string
+  uuid: string
+  session_id: string
+}
+export type SDKNotificationMessage = {
+  type: 'system'
+  subtype: 'notification'
+  key: string
+  text: string
+  priority: 'immediate' | 'high'
+  color?: 'warning'
+  uuid: string
+  session_id: string
+}
+export type SDKSessionTitleChangedMessage = {
+  type: 'system'
+  subtype: 'session_title_changed'
+  title: string
+  uuid: string
+  session_id: string
+}
 export type SDKUIToastMessage = {
   type: 'system'
   subtype: 'ui_toast'
@@ -401,6 +449,7 @@ export type SDKPartialAssistantMessage = {
   uuid: string
   session_id: string
   ttft_ms?: number
+  api_message_id?: string
 }
 export type SDKThinkingTokensMessage = {
   type: 'system'
@@ -742,6 +791,10 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKInformationalMessage
+  | SDKModelFallbackMessage
+  | SDKNotificationMessage
+  | SDKSessionTitleChangedMessage
   | SDKUIToastMessage
   | SDKUIStatusMessage
   | SDKScheduledTaskFireMessage

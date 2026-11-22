@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import type { UUID } from 'node:crypto'
 import { join } from 'node:path'
 
 const childFlag = 'CLAUDE_CODE_PRINT_SDK_EVENT_FLUSH_TEST_CHILD'
@@ -63,11 +64,10 @@ if (process.env[childFlag] !== '1') {
   const storage = await import('../utils/sessionStorage.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
 
-  // A background agent that finishes while the lead runs a long tool must not
-  // wait for that tool: ask() yields nothing until the tool returns.
-  test('a task event queued while a tool runs is written before the turn goes on', async () => {
+  type Write = { type: string; subtype?: string; title?: string; at: number }
+  async function runTurn(ask: () => AsyncGenerator<import('../entrypoints/agentSdkTypes.js').SDKMessage>) {
     bootstrap.setIsInteractive(false)
-    const writes: { type: string; subtype?: string; at: number }[] = []
+    const writes: Write[] = []
     const mocks = [
       spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
       spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
@@ -81,14 +81,10 @@ if (process.env[childFlag] !== '1') {
       spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
       spyOn(storage, 'recordQueueOperation').mockResolvedValue(undefined),
       spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => {
-        writes.push({ type: message.type, subtype: (message as { subtype?: string }).subtype, at: Date.now() })
+        const { subtype, title } = message as { subtype?: string; title?: string }
+        writes.push({ type: message.type, subtype, title, at: Date.now() })
       }),
-      spyOn(engine, 'ask').mockImplementation(async function* () {
-        sdkEvents.enqueueSdkEvent({ type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'completed', output_file: '', summary: 'bg done' })
-        // The lead's tool keeps running.
-        await Bun.sleep(600)
-        yield { type: 'result', subtype: 'success', is_error: false, result: 'done' } as import('../entrypoints/agentSdkTypes.js').SDKMessage
-      }),
+      spyOn(engine, 'ask').mockImplementation(ask),
     ]
     async function* input() {
       yield JSON.stringify({ type: 'user', message: { role: 'user', content: 'FIRST' } }) + '\n'
@@ -98,14 +94,40 @@ if (process.env[childFlag] !== '1') {
       await runHeadless(input(), () => state, updater => { state = updater(state) }, [], [], {}, [], {
         outputFormat: 'stream-json', verbose: true, sessionStartHooksPromise: Promise.resolve([]),
       } as Parameters<typeof runHeadless>[7])
-      const event = writes.find(w => w.subtype === 'task_notification')
-      const result = writes.find(w => w.type === 'result')
-      expect(event).toBeDefined()
-      expect(result).toBeDefined()
-      expect(result!.at - event!.at).toBeGreaterThan(400)
+      return writes
     } finally {
       queue.resetCommandQueue()
       for (const mock of mocks) mock.mockRestore()
     }
+  }
+  const done = { type: 'result', subtype: 'success', is_error: false, result: 'done' } as import('../entrypoints/agentSdkTypes.js').SDKMessage
+
+  // A background agent that finishes while the lead runs a long tool must not
+  // wait for that tool: ask() yields nothing until the tool returns.
+  test('a task event queued while a tool runs is written before the turn goes on', async () => {
+    const writes = await runTurn(async function* () {
+      sdkEvents.enqueueSdkEvent({ type: 'system', subtype: 'task_notification', task_id: 'bg1', status: 'completed', output_file: '', summary: 'bg done' })
+      // The lead's tool keeps running.
+      await Bun.sleep(600)
+      yield done
+    })
+    const event = writes.find(w => w.subtype === 'task_notification')
+    const result = writes.find(w => w.type === 'result')
+    expect(event).toBeDefined()
+    expect(result).toBeDefined()
+    expect(result!.at - event!.at).toBeGreaterThan(400)
+  })
+
+  // Official 2.1.329 sends the session's name at startup and after each rename.
+  test('a named session sends session_title_changed at startup and on rename', async () => {
+    storage.cacheSessionTitle('t1')
+    const writes = await runTurn(async function* () {
+      await storage.saveCustomTitle(bootstrap.getSessionId() as UUID, 't2')
+      yield done
+    })
+    expect(
+      writes.filter(w => w.subtype === 'session_title_changed').map(w => w.title),
+    ).toEqual(['t1', 't2'])
+    expect(writes[0]).toMatchObject({ subtype: 'session_title_changed', title: 't1' })
   })
 }

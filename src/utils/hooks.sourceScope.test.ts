@@ -90,7 +90,8 @@ function fixture() {
   >()
   const calls: { command: string; input: Record<string, unknown> }[] = []
   // Commands listed here exit with the given code instead of printing JSON.
-  const exits = new Map<string, { code: number; stderr?: string }>()
+  const exits = new Map<string, { code: number | null; stderr?: string }>()
+  const sdkEvents: Record<string, unknown>[] = []
   // Commands listed here exit after printing, but a background child they
   // started keeps stdout/stderr open (`sleep 300 & echo ...`), so the streams
   // never end and the shell's kill cannot close them. A `drip` keeps that
@@ -291,6 +292,9 @@ function fixture() {
       },
     },
     './gracefulShutdown.js': { endModsSessions },
+    './sdkEventQueue.js': {
+      enqueueSdkEvent: (event: Record<string, unknown>) => sdkEvents.push(event),
+    },
     './file.js': { pathExists: async () => true },
     './plugins/pluginOptionsStorage.js': {
       loadPluginOptions: () => ({ token: 'x; touch pwned' }),
@@ -505,6 +509,7 @@ function fixture() {
     registered,
     commands,
     exits,
+    sdkEvents,
     lingering,
     envs,
     spawns,
@@ -1730,6 +1735,70 @@ describe('onFailure', () => {
       blocked: true,
       output: 'failed; blocking because onFailure is "block"\naudit down',
     })
+  })
+})
+
+describe('hook_no_verdict notice (official 2.1.329)', () => {
+  const noVerdict = (timedOut: boolean) => ({
+    type: 'system',
+    subtype: 'informational',
+    content: `A hook ${timedOut ? "didn't answer in time" : 'gave no usable answer'}, so it didn't check this action.`,
+    level: 'warning',
+    tag: 'hook_no_verdict',
+    hook_no_verdict: {
+      hook_event: 'PreToolUse',
+      tool_use_id: 'tool',
+      timed_out: timedOut,
+    },
+  })
+
+  test('a PreToolUse hook that times out is reported to SDK hosts', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+    })
+    f.commands.set('slow', () => new Promise(() => {}))
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([noVerdict(true)])
+  })
+
+  test('a PreToolUse hook that could not run or was killed is reported', async () => {
+    for (const code of [127, 126, 137, null]) {
+      const f = fixture()
+      f.add('userSettings', 'PreToolUse', `missing-${code}`)
+      f.exits.set(`missing-${code}`, { code })
+      await collect(pre(f))
+      expect(f.sdkEvents).toEqual([noVerdict(false)])
+    }
+  })
+
+  test('the same hook is reported once per session', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'missing-twice')
+    f.exits.set('missing-twice', { code: 127 })
+    await collect(pre(f))
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([noVerdict(false)])
+  })
+
+  test('a hook that ran and exited 1 is not reported', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'exit-one')
+    f.exits.set('exit-one', { code: 1, stderr: 'nope' })
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([])
+  })
+
+  test('other events are not reported', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PostToolUse', 'post-missing')
+    f.exits.set('post-missing', { code: 127 })
+    await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.sdkEvents).toEqual([])
   })
 })
 

@@ -229,3 +229,9 @@ test('Bedrock stops after two credential refreshes when no AWS credentials load'
   )
   expect(refreshed.result).toBe('ok')
 })
+
+test('retry delays are whole milliseconds, as api_retry.retry_delay_ms is an integer', () => {
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    expect(Number.isInteger(getRetryDelay(attempt))).toBe(true)
+  }
+})

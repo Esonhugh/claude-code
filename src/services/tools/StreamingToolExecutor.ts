@@ -177,6 +177,11 @@ export class StreamingToolExecutor {
     }
   }
 
+  /** The tool calls that had begun to run, whether or not they finished. */
+  getStartedToolUseIds(): string[] {
+    return this.tools.filter(tool => tool.status !== 'queued').map(tool => tool.id)
+  }
+
   private releaseModsSnapshot(): void {
     if (
       !this.admissionClosed ||

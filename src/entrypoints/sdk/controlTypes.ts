@@ -403,6 +403,7 @@ export const SDK_CONTROL_ERROR_CODES = [
   'workspace_diff_pending',
   'stale_worker_epoch',
   'invalid_worker_epoch',
+  'unsupported_request',
 ] as const
 export type SDKControlErrorCode = (typeof SDK_CONTROL_ERROR_CODES)[number]
 

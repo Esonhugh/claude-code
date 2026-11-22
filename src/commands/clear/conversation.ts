@@ -33,6 +33,7 @@ import {
   getSessionEndHookTimeoutMs,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { resetSafetyStops } from '../../services/api/errors.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
 import { notifyTasksUpdated } from '../../utils/tasks.js'
@@ -222,6 +223,7 @@ export async function clearConversation({
   // Clear cached session metadata (title, tag, agent name/color)
   // so the new session doesn't inherit the previous session's identity
   clearSessionMetadata()
+  resetSafetyStops()
 
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking

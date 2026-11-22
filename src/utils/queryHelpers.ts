@@ -173,6 +173,8 @@ export function* normalizeSubagentMessage(
           // @ts-ignore - recovered code
           isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
           // @ts-ignore - recovered code
+          ...(_.refusedMessageId && { refused_message_id: _.refusedMessageId }),
+          // @ts-ignore - recovered code
           tool_use_result: _.mcpMeta
             // @ts-ignore - recovered code
             ? { content: _.toolUseResult, ..._.mcpMeta }
@@ -289,6 +291,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           uuid: _.uuid,
           timestamp: _.timestamp,
           isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
+          // @ts-ignore - recovered code
+          ...(_.refusedMessageId && { refused_message_id: _.refusedMessageId }),
           tool_use_result: _.mcpMeta
             ? { content: _.toolUseResult, ..._.mcpMeta }
             : _.toolUseResult,

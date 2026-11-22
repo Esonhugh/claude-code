@@ -325,7 +325,7 @@ describe('processUserInput Diff Ask admission', () => {
       return next({ ...event, text: 'accepted' })
     }])
     const ask = armAsk(f.context)
-    f.classicResults.push({ blockingError: 'denied' })
+    f.classicResults.push({ blockingError: { blockingError: 'denied', command: 'hook' } })
     const result = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
     expect(result.shouldQuery).toBe(true)
     expect(admissions.map(settled => settled.shouldQuery)).toEqual([false, true])
@@ -472,7 +472,7 @@ describe('processUserInput Diff Ask admission', () => {
       const ask = armAsk(f.context)
       const admissions: any[] = []
       if (failure === 'throw') f.classicHook.run = () => { throw new Error('classic failure') }
-      else f.classicResults.push(failure === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+      else f.classicResults.push(failure === 'block' ? { blockingError: { blockingError: 'denied', command: 'hook' } } : { preventContinuation: true })
       const pending = f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
       if (failure === 'throw') {
         await expect(pending).rejects.toThrow('classic failure')
@@ -869,7 +869,7 @@ describe('processUserInput prompt.submit', () => {
       ])
       f.classicResults.push(
         kind === 'block'
-          ? { blockingError: 'denied' }
+          ? { blockingError: { blockingError: 'denied', command: 'hook' } }
           : { preventContinuation: true, stopReason: 'stop' },
       )
       const result = await f.run()
@@ -890,7 +890,7 @@ describe('processUserInput prompt.submit', () => {
       const f = fixture([async (event, next) => next(event)])
       f.classicResults.push(
         kind === 'block'
-          ? { blockingError: 'denied' }
+          ? { blockingError: { blockingError: 'denied', command: 'hook' } }
           : { preventContinuation: true, stopReason: 'stop' },
       )
       const result = await f.run()
@@ -1370,7 +1370,7 @@ describe('processUserInput prompt.submit', () => {
       expect(receipt.drop).toContain(kind === 'block' ? 'Blocked by classic hook' : 'Operation stopped')
       return { text: 'synthetic success' }
     }])
-    f.classicResults.push(kind === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+    f.classicResults.push(kind === 'block' ? { blockingError: { blockingError: 'denied', command: 'hook' } } : { preventContinuation: true })
     const result = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
     expect(admissions).toHaveLength(1)
     expect(admissions[0].shouldQuery).toBe(false)
@@ -1405,7 +1405,7 @@ describe('UserPromptSubmit runs before a skill or custom command expands (offici
 
   test.each(['block', 'stop'] as const)('a %s hook stops the command before it expands', async kind => {
     const f = fixture([], true, promptCommand)
-    f.classicResults.push(kind === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+    f.classicResults.push(kind === 'block' ? { blockingError: { blockingError: 'denied', command: 'hook' } } : { preventContinuation: true })
     const result = await f.run({ input: '/skill run' })
     expect(f.calls.slash).toBe(0)
     expect(f.classicInputs).toEqual(['/skill run'])
@@ -1425,7 +1425,7 @@ describe('UserPromptSubmit runs before a skill or custom command expands (offici
 
   test('non-prompt commands keep running hooks after the command', async () => {
     const f = fixture([], true, { findCommand: () => ({ type: 'local', name: 'status' }) })
-    f.classicResults.push({ blockingError: 'denied' })
+    f.classicResults.push({ blockingError: { blockingError: 'denied', command: 'hook' } })
     await f.run({ input: '/status' })
     expect(f.calls.slash).toBe(1)
     expect(f.classicInputs).toEqual(['/status'])

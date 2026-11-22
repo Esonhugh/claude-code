@@ -45,7 +45,7 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
-import { categorizeRetryableAPIError } from './services/api/errors.js'
+import { categorizeRetryableAPIError, getSafetyStops } from './services/api/errors.js'
 import {
   callMCPToolForMod,
   findMCPConnectionForMod,
@@ -127,8 +127,10 @@ const messageSelector =
     require('src/components/MessageSelector.js')
 
 import {
+  hookSystemMessageToSDK,
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
+  toSDKSystemNotice,
 } from './utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
@@ -1081,7 +1083,7 @@ export class QueryEngine {
     }
 
     // Like official 2.1.311, every result carries the fast mode state and,
-    // when fast mode is unavailable, why.
+    // when fast mode is unavailable, why; like 2.1.329, also safety_stops.
     const resultFastMode = () => {
       const reason = getFastModeDisabledReason()
       return {
@@ -1090,6 +1092,7 @@ export class QueryEngine {
           initialAppState.fastMode,
         ),
         ...(reason !== null && { fast_mode_disabled_reason: reason }),
+        safety_stops: getSafetyStops(),
       }
     }
 
@@ -1152,6 +1155,10 @@ export class QueryEngine {
             // @ts-ignore - recovered code
             compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
           } as SDKCompactBoundaryMessage
+        }
+
+        if (msg.type === 'system' && msg.subtype === 'informational') {
+          yield toSDKSystemNotice(msg)
         }
       }
 
@@ -1250,6 +1257,8 @@ export class QueryEngine {
     let lastApiErrorStatus: number | null = null
     let requestStartedAt: number | undefined
     let thinkingEstimate = 0
+    // The API message the stream events being forwarded belong to.
+    let apiMessageId: string | undefined
 
     for await (const message of trackTerminal(query({
       messages,
@@ -1416,6 +1425,8 @@ export class QueryEngine {
           }
           // @ts-ignore - recovered code
           if (message.event.type === 'message_start') {
+            // @ts-ignore - recovered code
+            apiMessageId = message.event.message.id
             // Reset current message usage for new message
             currentMessageUsage = EMPTY_USAGE
             currentMessageUsage = updateUsage(
@@ -1457,6 +1468,7 @@ export class QueryEngine {
               session_id: getSessionId(),
               parent_tool_use_id: null,
               uuid: randomUUID(),
+              ...(apiMessageId && { api_message_id: apiMessageId }),
               // @ts-ignore - recovered code
               ...(message.event.type === 'message_start' &&
                 requestStartedAt !== undefined && {
@@ -1530,6 +1542,9 @@ export class QueryEngine {
           }
           else if (replayUserMessages && message.attachment.type === 'teammate_mailbox') {
             yield* teammateMailboxReplays(message)
+          }
+          else if (message.attachment.type === 'hook_system_message') {
+            yield hookSystemMessageToSDK(message.attachment, message.uuid)
           }
           // Yield queued_command attachments as SDK user message replays
           else if (
@@ -1631,6 +1646,9 @@ export class QueryEngine {
               session_id: getSessionId(),
               uuid: message.uuid,
             }
+          }
+          if (message.subtype === 'informational') {
+            yield toSDKSystemNotice(message)
           }
           // Don't yield other system messages in headless mode
           break

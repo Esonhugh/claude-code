@@ -1673,6 +1673,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
     'authentication_failed',
     'billing_error',
     'rate_limit',
+    'overloaded',
     'invalid_request',
     'server_error',
     'unknown',
@@ -1925,6 +1926,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1955,6 +1957,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2048,6 +2051,80 @@ export const SDKUILogMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKInformationalMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('informational'),
+      content: z.string(),
+      level: z
+        .enum(['info', 'notice', 'warning', 'error', 'suggestion'])
+        .optional(),
+      tool_use_id: z.string().optional(),
+      prevent_continuation: z.boolean().optional(),
+      prompt_submit_outcome: z
+        .object({
+          kind: z.literal('blocked_by_hook'),
+          prompt_kept: z.boolean(),
+          reason: z.string().optional(),
+        })
+        .optional(),
+      tag: z.literal('hook_no_verdict').optional(),
+      hook_no_verdict: z
+        .object({
+          hook_event: z.literal('PreToolUse'),
+          tool_use_id: z.string(),
+          timed_out: z.boolean(),
+        })
+        .optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('An informational line of the conversation, such as a hook notice.'),
+)
+
+export const SDKModelFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_fallback'),
+      trigger: z.literal('overloaded'),
+      original_model: z.string(),
+      fallback_model: z.string(),
+      content: z.string().optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The turn switched to the fallback model.'),
+)
+
+export const SDKNotificationMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('notification'),
+      key: z.string(),
+      text: z.string(),
+      priority: z.enum(['immediate', 'high']),
+      color: z.literal('warning').optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('A notice the terminal UI shows in its footer.'),
+)
+
+export const SDKSessionTitleChangedMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('session_title_changed'),
+      title: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The session name, sent at startup when set and on each rename.'),
+)
+
 export const SDKUIToastMessageSchema = lazySchema(() =>
   z
     .object({
@@ -2094,6 +2171,7 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    api_message_id: z.string().optional(),
   }),
 )
 
@@ -2617,6 +2695,10 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKInformationalMessageSchema(),
+    SDKModelFallbackMessageSchema(),
+    SDKNotificationMessageSchema(),
+    SDKSessionTitleChangedMessageSchema(),
     SDKUIToastMessageSchema(),
     SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),
