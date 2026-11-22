@@ -56,6 +56,15 @@ test('result.usage leaves out a cut request that nothing followed', () => {
   expect(usageOf([start('msg_cut'), start('msg_cut_again')])).toEqual([10, 1])
 })
 
+// Official: a cut request that was retried counts even when the retry fails
+// before it streams anything.
+test('result.usage counts a cut request once its retry is announced', () => {
+  const retry = { type: 'system', subtype: 'api_error' } as never
+  expect(usageOf([start('msg_cut'), retry])).toEqual([10, 1])
+  expect(usageOf([start('msg_cut'), retry, start('msg_cut_again'), retry, retry])).toEqual([20, 2])
+  expect(usageOf([retry, start('msg_ok'), ...finish, retry])).toEqual([10, 5])
+})
+
 // A non-streaming fallback reply has no stream events, only its own usage.
 test('result.usage counts a reply that did not stream', () => {
   const reply = createAssistantMessage({ content: 'FAKE_OK' })

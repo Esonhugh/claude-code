@@ -94,6 +94,8 @@ let nonStreamingOmitsUsage = false
 let streamInterrupted = false
 let streamInterruptedOnce = false
 let streamHangsAfterText = false
+// Requests whose connection drops while text streams, as a socket error with a code.
+let streamSocketCuts = 0
 let streamCutAfterToolUse = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
@@ -226,6 +228,21 @@ const client = new Anthropic({
       },
       { type: 'message_stop' },
     ]
+    if (request.stream === true && streamSocketCuts > 0) {
+      streamSocketCuts--
+      const encoder = new TextEncoder()
+      const sent = events.slice(0, 3)
+      return new Response(new ReadableStream({
+        pull(controller) {
+          const event = sent.shift()
+          if (event) {
+            controller.enqueue(encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`))
+          } else {
+            controller.error(Object.assign(new Error('The socket connection was closed unexpectedly'), { code: 'ECONNRESET' }))
+          }
+        },
+      }), { headers: { 'content-type': 'text/event-stream', 'request-id': 'req_test' } })
+    }
     if (streamHangsAfterText) {
       // Text has started streaming and the model is still writing when the user aborts.
       const encoder = new TextEncoder()
@@ -403,6 +420,7 @@ afterEach(() => {
   streamInterrupted = false
   streamInterruptedOnce = false
   streamHangsAfterText = false
+  streamSocketCuts = 0
   streamCutAfterToolUse = false
   overflowRequest = 0
   overloadedModel = undefined
@@ -1991,8 +2009,7 @@ test.each([
   expect(getTotalInputTokens() - inputBefore).toBe(1)
 })
 
-test('with the non-streaming fallback off a stream cut before any block finished is retried as a stream', async () => {
-  process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = '1'
+test('a connection dropped before any block finished is streamed again while attempts remain, like 2.1.329', async () => {
   const events: Array<{ type: string; subtype?: string; isApiErrorMessage?: boolean; message?: { content: unknown } }> = []
   const run = async (maxRetries: number) => {
     events.length = 0
@@ -2008,43 +2025,62 @@ test('with the non-streaming fallback off a stream cut before any block finished
         getToolPermissionContext: async () => getEmptyToolPermissionContext(),
       },
     })) events.push(event as (typeof events)[number])
-    return events.filter(event => event.type === 'assistant')
+    return {
+      streamed: requests.map(request => request.stream === true),
+      retries: events.filter(event => event.type === 'system' && event.subtype === 'api_error')
+        .map(event => (event as { retryAttempt?: number }).retryAttempt),
+      replies: events.filter(event => event.type === 'assistant'),
+    }
   }
+  const ok = [expect.objectContaining({ message: expect.objectContaining({ content: [{ type: 'text', text: 'OK' }] }) })]
+
+  streamSocketCuts = 1
+  expect(await run(2)).toEqual({ streamed: [true, true], retries: [1], replies: ok })
+  // Out of attempts, the request is sent once more without streaming.
+  streamSocketCuts = 3
+  expect(await run(2)).toEqual({ streamed: [true, true, true, false], retries: [1, 2], replies: ok })
+
+  process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = '1'
   try {
-    streamInterruptedOnce = true
-    const replies = await run(2)
-    expect(requests.map(request => request.stream === true)).toEqual([true, true])
-    expect(events.filter(event => event.type === 'system' && event.subtype === 'api_error')).toHaveLength(1)
-    expect(replies).toEqual([
-      expect.objectContaining({ message: expect.objectContaining({ content: [{ type: 'text', text: 'OK' }] }) }),
-    ])
-    streamInterruptedOnce = false
+    streamSocketCuts = 1
+    expect(await run(2)).toEqual({ streamed: [true, true], retries: [1], replies: ok })
+    streamSocketCuts = 2
+    expect(await run(1)).toEqual({
+      streamed: [true, true], retries: [1], replies: [expect.objectContaining({ isApiErrorMessage: true })],
+    })
+    // An error the API sent down the stream is not a dropped connection: it fails at once.
     streamInterrupted = true
-    const failed = await run(1)
-    expect(requests.map(request => request.stream === true)).toEqual([true, true])
-    expect(failed).toEqual([expect.objectContaining({ isApiErrorMessage: true })])
+    expect(await run(2)).toEqual({
+      streamed: [true], retries: [], replies: [expect.objectContaining({ isApiErrorMessage: true })],
+    })
   } finally {
     delete process.env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK
   }
 })
 
-test('a stream cut before message_delta is billed along with its non-streaming fallback', async () => {
-  streamInterrupted = true
+test('a stream cut before message_delta is billed along with its non-streaming fallback, an error the API sent is not (2.1.329)', async () => {
   const { getTotalInputTokens, getTotalOutputTokens } = await import('../../cost-tracker.js')
-  const before = [getTotalInputTokens(), getTotalOutputTokens()]
-  for await (const _ of queryModelWithStreaming({
-    messages: [createUserMessage({ content: 'cut' })],
-    systemPrompt: asSystemPrompt(['SYSTEM']),
-    thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
-    options: {
-      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
-      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
-      isNonInteractiveSession: true, enablePromptCaching: true,
-      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
-    },
-  })) void _
-  expect(requests.map(request => request.stream === true)).toEqual([true, false])
-  expect([getTotalInputTokens() - before[0]!, getTotalOutputTokens() - before[1]!]).toEqual([2, 2])
+  const billed = async () => {
+    requests.length = 0
+    const before = [getTotalInputTokens(), getTotalOutputTokens()]
+    for await (const _ of queryModelWithStreaming({
+      messages: [createUserMessage({ content: 'cut' })],
+      systemPrompt: asSystemPrompt(['SYSTEM']),
+      thinkingConfig: { type: 'disabled' }, tools: [], signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread', maxRetries: 0,
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })) void _
+    expect(requests.map(request => request.stream === true)).toEqual([true, false])
+    return [getTotalInputTokens() - before[0]!, getTotalOutputTokens() - before[1]!]
+  }
+  streamSocketCuts = 1
+  expect(await billed()).toEqual([2, 2])
+  streamInterrupted = true
+  expect(await billed()).toEqual([1, 1])
 })
 
 test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {

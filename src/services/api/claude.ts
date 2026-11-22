@@ -283,6 +283,7 @@ import {
   getAssistantMessageFromError,
   getErrorMessageIfRefusal,
 } from './errors.js'
+import { extractConnectionErrorDetails } from './errorUtils.js'
 import {
   EMPTY_USAGE,
   type GlobalCacheStrategy,
@@ -865,8 +866,8 @@ export type Options = {
   taskBudget?: { total: number; remaining?: number }
   /** Internal: this request retries one whose tool search the endpoint refused. */
   toolSearchRefused?: true
-  /** Internal: how many times this request was sent again after its stream was cut. */
-  streamCutRetries?: number
+  /** Internal: attempts already spent on this request by streams that were cut. */
+  streamCutAttempts?: number
   /** The request continues a parent's prompt as a fork, so it may keep the parent's advisor. */
   forkAdvisor?: true
   /** Called once when the server refused this conversation's advisor, before the retry. */
@@ -1012,6 +1013,12 @@ function getNonstreamingFallbackTimeoutMs(): number {
  * Encapsulates the common pattern of creating a withRetry generator,
  * iterating to yield system messages, and returning the final BetaMessage.
  */
+// Like official: the request that replaces a failed stream has the retries the
+// stream left, and counts its attempts from 1 again.
+function retriesLeft(maxRetries: number | undefined, attempt: number): number {
+  return Math.max(0, (maxRetries ?? getDefaultMaxRetries()) - attempt)
+}
+
 export async function* executeNonStreamingRequest(
   clientOptions: {
     model: string
@@ -1101,6 +1108,7 @@ export async function* executeNonStreamingRequest(
       ...(isFastModeEnabled() && { fastMode: retryOptions.fastMode }),
       signal: retryOptions.signal,
       initialConsecutive529Errors: retryOptions.initialConsecutive529Errors,
+      isNonStreamingRequest: true,
       querySource: retryOptions.querySource,
       maxRetries: retryOptions.maxRetries,
     },
@@ -3116,6 +3124,12 @@ async function* queryModelRequest(
     } catch (streamingError) {
       // Clear the idle timeout watchdog on error path too
       clearStreamIdleTimers()
+      const connectionDropped =
+        extractConnectionErrorDetails(streamingError) !== null
+      // Like official: an error the API itself sent down the stream is not billed.
+      if (streamingError instanceof APIError && !connectionDropped) {
+        usageBilled = true
+      }
       billCutRequest()
 
       // Instrumentation: if the watchdog had already fired and the for-await
@@ -3236,46 +3250,49 @@ async function* queryModelRequest(
           false,
         )
 
+      // Like official: a connection that drops before any block finished left
+      // nothing to keep, so the request is streamed again with the retries
+      // that remain. An error the API sent, or a stream without events, is not.
+      const maxRetries = options.maxRetries ?? getDefaultMaxRetries()
+      const spentAttempts = options.streamCutAttempts ?? 0
+      if (
+        connectionDropped &&
+        newMessages.length === 0 &&
+        attemptNumber <= maxRetries
+      ) {
+        const delayMs = getRetryDelay(attemptNumber)
+        logForDebugging(
+          `Stream connection error — retrying streaming (${spentAttempts + attemptNumber}/${spentAttempts + maxRetries}): ${errorMessage(streamingError)}`,
+          { level: 'warn' },
+        )
+        releaseStreamResources()
+        yield createSystemAPIErrorMessage(
+          streamingError instanceof APIError
+            ? streamingError
+            : new APIConnectionError({
+                cause: streamingError instanceof Error ? streamingError : undefined,
+              }),
+          delayMs,
+          spentAttempts + attemptNumber,
+          spentAttempts + maxRetries,
+        )
+        await sleep(delayMs, signal, { abortError: () => new APIUserAbortError() })
+        yield* queryModelRequest(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          tools,
+          signal,
+          {
+            ...options,
+            maxRetries: retriesLeft(maxRetries, attemptNumber),
+            streamCutAttempts: spentAttempts + attemptNumber,
+          },
+        )
+        return
+      }
+
       if (disableFallback) {
-        // Like official: a connection that drops before any block finished
-        // left nothing to keep, so the request is streamed again within the
-        // retry budget instead of failing the turn.
-        const retry = (options.streamCutRetries ?? 0) + 1
-        const maxRetries = options.maxRetries ?? getDefaultMaxRetries()
-        if (
-          newMessages.length === 0 &&
-          retry <= maxRetries &&
-          (!(streamingError instanceof APIError) ||
-            streamingError.status === undefined ||
-            streamingError.status >= 500)
-        ) {
-          const delayMs = getRetryDelay(retry)
-          logForDebugging(
-            `Stream connection error — retrying streaming (${retry}/${maxRetries}): ${errorMessage(streamingError)}`,
-            { level: 'warn' },
-          )
-          releaseStreamResources()
-          yield createSystemAPIErrorMessage(
-            streamingError instanceof APIError
-              ? streamingError
-              : new APIConnectionError({
-                  cause: streamingError instanceof Error ? streamingError : undefined,
-                }),
-            delayMs,
-            retry,
-            maxRetries,
-          )
-          await sleep(delayMs, signal, { abortError: () => new APIUserAbortError() })
-          yield* queryModelRequest(
-            messages,
-            systemPrompt,
-            thinkingConfig,
-            tools,
-            signal,
-            { ...options, streamCutRetries: retry },
-          )
-          return
-        }
         logForDebugging(
           `Error streaming (non-streaming fallback disabled): ${errorMessage(streamingError)}`,
           { level: 'error' },
@@ -3364,7 +3381,7 @@ async function* queryModelRequest(
           signal,
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
-          maxRetries: options.maxRetries,
+          maxRetries: retriesLeft(options.maxRetries, attemptNumber),
         },
         paramsForAttempt,
         (attempt, _startTime, tokens) => {
@@ -3468,7 +3485,7 @@ async function* queryModelRequest(
             thinkingConfig,
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
-            maxRetries: options.maxRetries,
+            maxRetries: retriesLeft(options.maxRetries, attemptNumber),
           },
           paramsForAttempt,
           (attempt, _startTime, tokens) => {
@@ -3518,6 +3535,9 @@ async function* queryModelRequest(
         let error = fallbackError
         let errorModel = options.model
         if (fallbackError instanceof CannotRetryError) {
+          if (fallbackError.lastResortFallback) {
+            throw fallbackError.lastResortFallback
+          }
           error = fallbackError.originalError
           errorModel = fallbackError.retryContext.model
         }
@@ -3622,6 +3642,14 @@ async function* queryModelRequest(
           : null
       if (toolSearchRefusal) {
         throw new ToolSearchRefusedError(error as APIError, toolSearchRefusal)
+      }
+
+      // Only once no recovery above applies does the fallback model take over.
+      if (
+        errorFromRetry instanceof CannotRetryError &&
+        errorFromRetry.lastResortFallback
+      ) {
+        throw errorFromRetry.lastResortFallback
       }
 
       // Extract quota status from error headers if it's a rate limit error

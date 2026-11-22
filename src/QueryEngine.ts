@@ -263,8 +263,9 @@ type UsageTally = {
 
 /**
  * result.usage after `message`. A streamed request counts at message_stop, or
- * once a later request shows its stream was cut (official counts a cut request
- * that was retried, not the one a turn is interrupted in or gives up on). A
+ * once a retry notice or a later request shows its stream was cut (official
+ * counts a cut request that was retried, not the one a turn is interrupted in
+ * or gives up on). A
  * reply that did not stream (the non-streaming fallback) has no stream events
  * and counts by its own usage.
  */
@@ -285,6 +286,13 @@ export function usageAfterMessage(
       // @ts-ignore - recovered code
       total: accumulateUsage(total, updateUsage(EMPTY_USAGE, reply.usage)),
     }
+  }
+  // The notice that a request is sent again: the one it replaces was cut.
+  if (
+    message.type === 'system' &&
+    (message as { subtype?: string }).subtype === 'api_error'
+  ) {
+    return tally.open ? { ...tally, total, open: false } : tally
   }
   if (message.type !== 'stream_event') return tally
   const event = message.event as BetaRawMessageStreamEvent
