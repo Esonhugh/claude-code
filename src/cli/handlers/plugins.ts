@@ -17,6 +17,7 @@ import {
   disablePlugin,
   enablePlugin,
   installPlugin,
+  prunePlugins,
   uninstallPlugin,
   updatePluginCli,
   VALID_INSTALLABLE_SCOPES,
@@ -1215,7 +1216,13 @@ export async function pluginInstallHandler(
 // plugin uninstall (lines 5738–5769)
 export async function pluginUninstallHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean; keepData?: boolean },
+  options: {
+    scope?: string
+    cowork?: boolean
+    keepData?: boolean
+    prune?: boolean
+    yes?: boolean
+  },
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const scope = options.scope || 'user'
@@ -1245,7 +1252,32 @@ export async function pluginUninstallHandler(
     plugin,
     scope as 'user' | 'project' | 'local',
     options.keepData,
+    options.prune,
+    options.yes,
   )
+}
+
+export async function pluginPruneHandler(options: {
+  scope?: string
+  dryRun?: boolean
+  yes?: boolean
+  cowork?: boolean
+}): Promise<void> {
+  if (options.cowork) setUseCoworkPlugins(true)
+  const scope = options.scope || 'user'
+  if (options.cowork && scope !== 'user') {
+    cliError('--cowork can only be used with user scope')
+  }
+  if (
+    !VALID_INSTALLABLE_SCOPES.includes(
+      scope as (typeof VALID_INSTALLABLE_SCOPES)[number],
+    )
+  ) {
+    cliError(
+      `Unknown scope "${scope}". Use one of: ${VALID_INSTALLABLE_SCOPES.join(', ')}.`,
+    )
+  }
+  await prunePlugins(scope as 'user' | 'project' | 'local', options)
 }
 
 // plugin enable (lines 5783–5818)
