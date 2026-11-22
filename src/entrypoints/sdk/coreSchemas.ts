@@ -2106,6 +2106,20 @@ export const SDKModelFallbackMessageSchema = lazySchema(() =>
     .describe('The turn switched to the fallback model.'),
 )
 
+export const SDKConversationResetMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('conversation_reset'),
+      new_conversation_id: z.string(),
+      uuid: UUIDPlaceholder(),
+      trigger: z.literal('clear'),
+      user_message_uuid: z.string().optional(),
+      timestamp: z.string(),
+      session_id: z.string(),
+    })
+    .describe('/clear began a new conversation; session_id is the session it left.'),
+)
+
 export const SDKModelRefusalNoFallbackMessageSchema = lazySchema(() =>
   z
     .object({
@@ -2723,6 +2737,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKInformationalMessageSchema(),
     SDKModelFallbackMessageSchema(),
     SDKModelRefusalNoFallbackMessageSchema(),
+    SDKConversationResetMessageSchema(),
     SDKNotificationMessageSchema(),
     SDKSessionTitleChangedMessageSchema(),
     SDKUIToastMessageSchema(),
