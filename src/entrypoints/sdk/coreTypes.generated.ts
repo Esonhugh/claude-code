@@ -288,6 +288,7 @@ export type SDKUserMessage = {
   subagent_type?: string
   task_description?: string
   isSynthetic?: boolean
+  refused_message_id?: string
   tool_use_result?: unknown
   tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
@@ -303,6 +304,7 @@ export type SDKUserMessageReplay = {
   subagent_type?: string
   task_description?: string
   isSynthetic?: boolean
+  refused_message_id?: string
   tool_use_result?: unknown
   tool_result_meta?: SDKToolResultMeta[]
   priority?: 'now' | 'next' | 'later'
