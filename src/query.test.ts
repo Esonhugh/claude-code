@@ -371,6 +371,45 @@ describe('query model fallback', () => {
       modelFallback: { trigger: 'overloaded', originalModel: 'claude-opus-5-5', fallbackModel: 'claude-sonnet-5-5' },
     })
   })
+
+  test('the notice names why the model was replaced, with the wording of 2.1.329', async () => {
+    const notice = async (...args: ConstructorParameters<typeof FallbackTriggeredError>) => {
+      let calls = 0
+      const { events } = await drainQuery({
+        messages: [userMessage('hello')],
+        systemPrompt: asSystemPrompt([]),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        toolUseContext: createToolUseContext(),
+        querySource: 'repl_main_thread' as QuerySource,
+        fallbackModel: 'claude-sonnet-5-5',
+        deps: {
+          uuid: () => '00000000-0000-4000-8000-000000000097',
+          microcompact: async messages => ({ messages }),
+          autocompact: async messages => ({ messages, wasCompacted: false }),
+          callModel: async function* () {
+            if (++calls === 1) throw new FallbackTriggeredError(...args)
+            yield createAssistantMessage({ content: 'FAKE_OK' })
+          },
+        },
+      })
+      const event = events.find(event => event.type === 'system') as { content: string; modelFallback: { trigger: string } }
+      return [event.modelFallback.trigger, event.content]
+    }
+    const models = ['claude-opus-5-5', 'claude-sonnet-5-5'] as const
+
+    expect(await notice(...models, 'server_error')).toEqual(
+      ['server_error', 'Switched to Sonnet 5.5 due to high demand for Opus 5.5'])
+    expect(await notice(...models, 'last_resort', new Error('400 bad request'))).toEqual(
+      ['last_resort', 'Switched to Sonnet 5.5 because Opus 5.5 returned an error that could not be retried (400 bad request)'])
+    expect((await notice(...models, 'last_resort', new Error('x'.repeat(400))))[1]).toEndWith(`(${'x'.repeat(300)}…)`)
+    // The API naming the model says enough; any other 404 is quoted.
+    expect(await notice(...models, 'model_not_found', new Error('404 not_found_error model: claude-opus-5-5'))).toEqual(
+      ['model_not_found', 'Switched to Sonnet 5.5 because Opus 5.5 is not available'])
+    expect(await notice(...models, 'model_not_found', new Error('404 no such route'))).toEqual(
+      ['model_not_found', 'Switched to Sonnet 5.5 because Opus 5.5 is not available (404 no such route)'])
+  })
 })
 
 describe('query background task notifications', () => {

@@ -249,7 +249,7 @@ export type SdkPluginConfig = { type: 'local'; path: string }
 export type RewindFilesResult = { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number; skippedLinks?: number }
 
 // SDK Error type
-export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'overloaded' | 'invalid_request' | 'server_error' | 'unknown' | 'max_output_tokens'
+export type SDKAssistantMessageError = 'authentication_failed' | 'billing_error' | 'rate_limit' | 'overloaded' | 'invalid_request' | 'model_not_found' | 'server_error' | 'unknown' | 'max_output_tokens'
 export type SDKStatus = 'compacting' | 'requesting' | null
 
 // Rate Limit
@@ -402,7 +402,7 @@ export type SDKInformationalMessage = {
 export type SDKModelFallbackMessage = {
   type: 'system'
   subtype: 'model_fallback'
-  trigger: 'overloaded' | 'server_error' | 'model_not_found'
+  trigger: 'overloaded' | 'server_error' | 'model_not_found' | 'last_resort'
   original_model: string
   fallback_model: string
   content?: string

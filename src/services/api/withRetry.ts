@@ -47,7 +47,10 @@ import {
   checkMockRateLimitError,
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
-import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
+import {
+  isRequestOrAccountRejection,
+  REPEATED_529_ERROR_MESSAGE,
+} from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 import { isAnt, userType } from 'src/utils/userType.js'
 
@@ -192,12 +195,15 @@ interface RetryOptions {
    * regardless of which request mode hit the overload.
    */
   initialConsecutive529Errors?: number
+  isNonStreamingRequest?: boolean
 }
 
 export class CannotRetryError extends Error {
   constructor(
     public readonly originalError: unknown,
     public readonly retryContext: RetryContext,
+    /** Set when the fallback model may take over once no other recovery applies. */
+    public readonly lastResortFallback?: FallbackTriggeredError,
   ) {
     const message = errorMessage(originalError)
     super(message)
@@ -217,11 +223,48 @@ export class FallbackTriggeredError extends Error {
     public readonly reason:
       | 'overloaded'
       | 'server_error'
-      | 'model_not_found' = 'overloaded',
+      | 'model_not_found'
+      | 'last_resort' = 'overloaded',
+    public readonly originalError?: unknown,
   ) {
     super(`Model fallback triggered: ${originalModel} -> ${fallbackModel}`)
     this.name = 'FallbackTriggeredError'
   }
+}
+
+const NO_LAST_RESORT_STATUSES = new Set([401, 403, 407, 413, 429])
+
+// 2.1.329: a rejection that cannot be retried goes to the fallback model,
+// unless another model would be refused for the same account, credentials
+// or request. A streaming 404 is retried without streaming first.
+function lastResortFallback(
+  error: unknown,
+  options: RetryOptions,
+): FallbackTriggeredError | undefined {
+  const { model, fallbackModel } = options
+  if (
+    !fallbackModel ||
+    fallbackModel === model ||
+    !(error instanceof APIError) ||
+    error.status === undefined
+  ) {
+    return undefined
+  }
+  if (
+    NO_LAST_RESORT_STATUSES.has(error.status) ||
+    (error.status === 404 && !options.isNonStreamingRequest) ||
+    isRequestOrAccountRejection(error)
+  ) {
+    return undefined
+  }
+  return new FallbackTriggeredError(
+    model,
+    fallbackModel,
+    error.status === 404 && error.message.includes('"type":"not_found_error"')
+      ? 'model_not_found'
+      : 'last_resort',
+    error,
+  )
 }
 
 export async function* withRetry<T>(
@@ -482,7 +525,11 @@ export async function* withRetry<T>(
         !handledCloudAuthError &&
         (!(error instanceof APIError) || !shouldRetry(error))
       ) {
-        throw new CannotRetryError(caught, retryContext)
+        throw new CannotRetryError(
+          caught,
+          retryContext,
+          lastResortFallback(error, options),
+        )
       }
 
       // Handle max tokens context overflow errors by adjusting max_tokens for the next attempt

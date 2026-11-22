@@ -5,6 +5,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
+import { errorMessage } from './utils/errors.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
@@ -340,6 +341,24 @@ function modAgentTurnText(messages: readonly Message[]): string {
   return typeof content === 'string' ? content : content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
+
+// Wording of 2.1.329. A missing model the API named needs no further detail.
+function modelFallbackNotice(
+  { reason, originalError }: FallbackTriggeredError,
+  fallback: string,
+  original: string,
+): string {
+  if (reason === 'overloaded' || reason === 'server_error') {
+    return `Switched to ${fallback} due to high demand for ${original}`
+  }
+  const text = originalError === undefined ? '' : errorMessage(originalError)
+  const detail = text
+    ? ` (${text.length > 300 ? `${text.slice(0, 300)}…` : text})`
+    : ''
+  return reason === 'last_resort'
+    ? `Switched to ${fallback} because ${original} returned an error that could not be retried${detail}`
+    : `Switched to ${fallback} because ${original} is not available${text.includes('model:') ? '' : detail}`
+}
 
 export async function* query(
   params: QueryParams,
@@ -1738,9 +1757,11 @@ async function* queryLoop(
             // users see the notification without needing verbose mode
             yield {
               ...createSystemMessage(
-                innerError.reason === 'model_not_found'
-                  ? `Switched to ${renderModelName(innerError.fallbackModel)} because ${renderModelName(innerError.originalModel)} is not available`
-                  : `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
+                modelFallbackNotice(
+                  innerError,
+                  renderModelName(innerError.fallbackModel),
+                  renderModelName(innerError.originalModel),
+                ),
                 'warning',
               ),
               modelFallback: {

@@ -274,3 +274,52 @@ test('retry delays are whole milliseconds, as api_retry.retry_delay_ms is an int
     expect(Number.isInteger(getRetryDelay(attempt))).toBe(true)
   }
 })
+
+test('a rejection nothing else recovers from offers the fallback model as a last resort, like 2.1.329', async () => {
+  const rejection = (status: number, type: string, message: string) => () =>
+    APIError.generate(status, { type: 'error', error: { type, message } }, undefined, new Headers())
+  const lastResort = async (fail: () => unknown, options: { maxRetries?: number; isNonStreamingRequest?: boolean } = {}) => {
+    const gen = withRetry(async () => ({}) as never, async () => { throw fail() }, {
+      model: 'claude-sonnet-4-6',
+      fallbackModel: 'claude-haiku-4-5',
+      thinkingConfig: { type: 'disabled' },
+      querySource: 'sdk',
+      maxRetries: 2,
+      ...options,
+    })
+    try {
+      let step = await gen.next()
+      while (!step.done) step = await gen.next()
+    } catch (error) {
+      expect(error).toBeInstanceOf(CannotRetryError)
+      return (error as CannotRetryError).lastResortFallback
+    }
+    throw new Error('expected the request to fail')
+  }
+
+  for (const [status, type] of [[400, 'invalid_request_error'], [422, 'api_error']] as const) {
+    const fallback = await lastResort(rejection(status, type, 'nope'))
+    expect(fallback).toMatchObject({ fallbackModel: 'claude-haiku-4-5', reason: 'last_resort' })
+    expect((fallback?.originalError as APIError).status).toBe(status)
+  }
+
+  // Only the non-streaming request reports a 404 this way; the streaming one retries without streaming first.
+  expect(await lastResort(rejection(404, 'not_found_error', 'no such route'))).toBeUndefined()
+  expect(await lastResort(rejection(404, 'not_found_error', 'no such route'), { isNonStreamingRequest: true }))
+    .toMatchObject({ reason: 'model_not_found' })
+  // The non-streaming request has the retries the streaming one left, so it can already be out of them.
+  expect(await lastResort(rejection(404, 'not_found_error', 'no such route'), { isNonStreamingRequest: true, maxRetries: 0 }))
+    .toBeUndefined()
+
+  // Another model does not fix the account, the credentials or the request itself.
+  for (const fail of [
+    rejection(401, 'authentication_error', 'bad key'),
+    rejection(403, 'permission_error', 'no'),
+    rejection(413, 'request_too_large', 'too big'),
+    rejection(400, 'billing_error', 'pay up'),
+    rejection(400, 'invalid_request_error', 'prompt is too long: 250000 tokens > 200000 maximum'),
+    rejection(400, 'invalid_request_error', 'Your credit balance is too low to access the Anthropic API'),
+    rejection(400, 'invalid_request_error', 'This organization has been disabled.'),
+    rejection(400, 'policy_blocked', 'blocked'),
+  ]) expect(await lastResort(fail)).toBeUndefined()
+})

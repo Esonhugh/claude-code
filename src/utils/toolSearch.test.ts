@@ -127,6 +127,8 @@ test('tool search refusal classification follows 2.1.311', () => {
     expect(getToolSearchRefusal(error(400, 'prompt is too long: 210000 tokens > 200000 maximum'))).toBeNull()
     // An account without credits is refused whatever the request declares.
     expect(getToolSearchRefusal(error(400, 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'))).toBeNull()
+    expect(getToolSearchRefusal(error(400, 'This organization has been disabled.'))).toBeNull()
+    expect(getToolSearchRefusal(error(400, 'input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000'))).toBeNull()
   } finally {
     if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL
     else process.env.ANTHROPIC_BASE_URL = previous
