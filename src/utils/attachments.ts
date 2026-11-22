@@ -33,6 +33,7 @@ import { codeModeHidesTools } from '../tools/REPLTool/codeModeGate.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import type { TodoList } from './todo/types.js'
+import type { PermissionMode } from '../types/permissions.js'
 import {
   type Task,
   listTasks,
@@ -388,6 +389,12 @@ export type AsyncHookResponseAttachment = {
   exitCode?: number
 }
 
+/** Transcript marker of a call that a PreToolUse hook deferred. */
+export type DeferredToolMarker = Extract<
+  HookAttachment,
+  { type: 'hook_deferred_tool' }
+>
+
 export type HookAttachment =
   | HookCancelledAttachment
   | {
@@ -407,6 +414,17 @@ export type HookAttachment =
       hookEvent: HookEvent
     }
   | HookSuccessAttachment
+  | {
+      // A PreToolUse hook answered "defer" in print mode: the call is left
+      // open and `-p --resume` runs it through PreToolUse again.
+      type: 'hook_deferred_tool'
+      toolUseID: string
+      toolName: string
+      toolInput: Record<string, unknown>
+      hookName: string
+      hookEvent: 'PreToolUse'
+      permissionMode: PermissionMode
+    }
   | {
       type: 'hook_additional_context'
       content: string[]

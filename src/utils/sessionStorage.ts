@@ -79,7 +79,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { isFsInaccessible } from './errors.js'
+import { isENOENT, isFsInaccessible } from './errors.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -98,8 +98,10 @@ import {
   LITE_READ_BUF_SIZE,
   readHeadAndTail,
   readTranscriptForLoad,
+  resolveSessionFilePath,
   SKIP_PRECOMPACT_THRESHOLD,
 } from './sessionStoragePortable.js'
+import { enqueueSdkEvent } from './sdkEventQueue.js'
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
@@ -478,7 +480,10 @@ export async function listRemoteAgentMetadata(): Promise<
 }
 
 export function sessionIdExists(sessionId: string): boolean {
-  const projectDir = getProjectDir(getOriginalCwd())
+  const projectDir =
+    sessionId === getSessionId()
+      ? dirname(getTranscriptPath())
+      : getProjectDir(getOriginalCwd())
   const sessionFile = join(projectDir, `${sessionId}.jsonl`)
   const fs = getFsImplementation()
   try {
@@ -1708,6 +1713,31 @@ export function adoptResumedSessionFile(): void {
 }
 
 /**
+ * Moves the current session's transcript to cwd's project directory. A session
+ * that leaves its worktree on exit stays resumable from the directory it was
+ * launched in, also once the worktree is removed.
+ */
+export async function relocateSessionTranscript(cwd: string): Promise<void> {
+  const project = getProject()
+  const from = project.sessionFile
+  const sessionId = getSessionId()
+  const toDir = getProjectDir(cwd)
+  const to = join(toDir, `${sessionId}.jsonl`)
+  if (from === null || from === to) return
+  await project.flush()
+  await mkdir(toDir, { recursive: true, mode: 0o700 })
+  await rename(from, to)
+  // Subagent transcripts and tool results sit next to the transcript.
+  try {
+    await rename(join(dirname(from), sessionId), join(toDir, sessionId))
+  } catch (e) {
+    if (!isENOENT(e)) throw e
+  }
+  switchSession(sessionId, toDir)
+  project.sessionFile = to
+}
+
+/**
  * Append a context-collapse commit entry to the transcript. One entry per
  * commit, in commit order. On resume these are collected into an ordered
  * array and handed to restoreFromEntries() which rebuilds the commit log.
@@ -2837,6 +2867,11 @@ export async function saveCustomTitle(
   // Cache for current session only (for immediate visibility)
   if (sessionId === getSessionId()) {
     getProject().currentSessionTitle = customTitle
+    enqueueSdkEvent({
+      type: 'system',
+      subtype: 'session_title_changed',
+      title: customTitle,
+    })
   }
   logEvent('tengu_session_renamed', {
     source:
@@ -4184,11 +4219,27 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 }> {
+  return loadTranscriptFile(await findSessionFile(sessionId))
+}
+
+/**
+ * The transcript of a session of this project. A session started with
+ * --worktree keeps its transcript under the worktree's project directory, so
+ * when the file is not where this session writes, look in the repository's
+ * other worktrees.
+ */
+async function findSessionFile(sessionId: UUID): Promise<string> {
   const sessionFile = join(
     getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
     `${sessionId}.jsonl`,
   )
-  return loadTranscriptFile(sessionFile)
+  try {
+    await stat(sessionFile)
+    return sessionFile
+  } catch {
+    const found = await resolveSessionFilePath(sessionId, getOriginalCwd())
+    return found?.filePath ?? sessionFile
+  }
 }
 
 /**
@@ -4229,6 +4280,7 @@ export async function doesMessageExistInSession(
 export async function getLastSessionLog(
   sessionId: UUID,
 ): Promise<LogOption | null> {
+  const sessionFile = await findSessionFile(sessionId)
   // Single read: load all session data at once instead of reading the file twice
   const {
     messages,
@@ -4248,7 +4300,7 @@ export async function getLastSessionLog(
     contentReplacements,
     contextCollapseCommits,
     contextCollapseSnapshot,
-  } = await loadSessionFile(sessionId)
+  } = await loadTranscriptFile(sessionFile)
   if (messages.size === 0) return null
   // Prime getSessionMessages cache so recordTranscript (called after REPL
   // mount on --resume) skips a second full file load. -170~227ms on large sessions.
@@ -4281,7 +4333,7 @@ export async function getLastSessionLog(
       customTitle,
       buildFileHistorySnapshotChain(fileHistorySnapshots, transcript),
       tag,
-      getTranscriptPathForSession(sessionId),
+      sessionFile,
       buildAttributionSnapshotChain(attributionSnapshots, transcript),
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
@@ -4716,6 +4768,54 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
     )
     .map(d => d.name.slice('agent-'.length, -'.jsonl'.length))
   return loadSubagentTranscripts(agentIds)
+}
+
+export type RecordedSubagent = {
+  agentId: string
+  agentType?: string
+  description?: string
+  name?: string
+  stoppedByUser: boolean
+  startedAt?: number
+  lastActivityAt?: number
+}
+
+/** The subagents this session has run, oldest first, read from their transcripts on disk. */
+export async function listRecordedSubagents(): Promise<RecordedSubagent[]> {
+  const subagentsDir = join(
+    getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
+    getSessionId(),
+    'subagents',
+  )
+  let entries: Dirent[]
+  try {
+    entries = await readdir(subagentsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const buf = Buffer.alloc(LITE_READ_BUF_SIZE)
+  const recorded: RecordedSubagent[] = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('agent-') || !entry.name.endsWith('.jsonl')) continue
+    const filePath = join(subagentsDir, entry.name)
+    const meta = await readAgentMetadataFile(filePath.replace(/\.jsonl$/, '.meta.json')).catch(() => null)
+    if (meta?.taskKind !== undefined) continue
+    const size = await stat(filePath).then(s => s.size, () => 0)
+    const { head, tail } = await readHeadAndTail(filePath, size, buf)
+    const time = (value: string | undefined) => (value && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : undefined)
+    recorded.push({
+      agentId: entry.name.slice('agent-'.length, -'.jsonl'.length),
+      agentType: meta?.agentType,
+      description: meta?.description,
+      name: meta?.name,
+      stoppedByUser: meta?.stoppedByUser === true,
+      startedAt: time(extractJsonStringField(head, 'timestamp')),
+      lastActivityAt: time(extractLastJsonStringField(tail, 'timestamp')),
+    })
+  }
+  return recorded.sort(
+    (a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.agentId.localeCompare(b.agentId),
+  )
 }
 
 // Exported so useLogMessages can sync-compute the last loggable uuid

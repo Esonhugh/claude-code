@@ -52,6 +52,7 @@ export const SDKHookCallbackMatcherSchema = lazySchema(() =>
       matcher: z.string().optional(),
       hookCallbackIds: z.array(z.string()),
       timeout: z.number().optional(),
+      onFailure: z.enum(['continue', 'block']).optional(),
     })
     .describe('Configuration for matching and routing hook callbacks.'),
 )
@@ -94,6 +95,10 @@ export const SDKControlInitializeResponseSchema = lazySchema(() =>
   z
     .object({
       plugins_applied: z.boolean().optional(),
+      hook_on_failure_supported: z
+        .boolean()
+        .optional()
+        .describe('Whether onFailure on hook matchers is honored.'),
       commands: z.array(SlashCommandSchema()),
       agents: z.array(AgentInfoSchema()),
       output_style: z.string(),

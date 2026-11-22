@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
+  deleteTranscript,
   forkSession,
   getInfo,
   getSettings as getWebSettings,
@@ -209,6 +210,7 @@ export function App() {
   const [keyDialog, setKeyDialog] = useState<AuthProvider>()
   const [webSettings, setWebSettings] = useState<WebSettings>()
   const [projects, setProjects] = useState<Project[]>([])
+  const [archivedProjects, setArchivedProjects] = useState<Project[]>([])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
   // The project shown in place of the chat; its coordinator is `state.view`.
@@ -497,7 +499,9 @@ export function App() {
       if (untitled && untitledRetries.current.count < 5) {
         setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current.count++)
       }
-      setProjects(await listProjects())
+      const all = await listProjects()
+      setProjects(all.filter(p => !p.archived_at))
+      setArchivedProjects(all.filter(p => p.archived_at))
       setSidebarLoaded(true)
     } catch {
       // The sidebar keeps what it has; the next refresh retries.
@@ -1261,6 +1265,9 @@ export function App() {
       if (createdId && stateRef.current.chats[createdId]?.mode === 'connecting') {
         dispatch({ type: 'mode', id: createdId, mode: 'readonly' })
       }
+      // Its files could not be prepared, so the session never reached the page: stop it,
+      // or it keeps running where nothing lists it.
+      if (createdId && !stateRef.current.chats[createdId]) void deleteTranscript(createdId).catch(() => {})
     }
   }
 
@@ -2165,6 +2172,11 @@ export function App() {
         onProjectSettings={p => {
           setSidebarOpen(false)
           setProjectDialog(p)
+        }}
+        archivedProjects={archivedProjects}
+        onProjectRestored={restored => {
+          setArchivedProjects(list => list.filter(x => x.id !== restored.id))
+          setProjects(list => [restored, ...list])
         }}
         onProjectChanged={(id, changed) => {
           setProjects(list => (changed ? list.map(x => (x.id === id ? changed : x)) : list.filter(x => x.id !== id)))

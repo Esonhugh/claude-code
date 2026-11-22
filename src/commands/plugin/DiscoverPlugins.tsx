@@ -349,8 +349,7 @@ export function DiscoverPlugins({
     // Handle installation results
     if (failureCount === 0) {
       const message =
-        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}. ` +
-        `Run /reload-plugins to activate.`
+        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}.`
       setResult(message)
     } else if (successCount === 0) {
       setError(
@@ -359,8 +358,7 @@ export function DiscoverPlugins({
     } else {
       const message =
         `✓ Installed ${successCount} of ${successCount + failureCount} plugins. ` +
-        `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` +
-        `Run /reload-plugins to activate successfully installed plugins.`
+        `Failed: ${formatFailureDetails(newFailedPlugins, false)}.`
       setResult(message)
     }
 
@@ -627,12 +625,12 @@ export function DiscoverPlugins({
           switch (outcome) {
             case 'configured':
               finish(
-                `✓ Installed and configured ${plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Installed and configured ${plugin.name}.`,
               )
               break
             case 'skipped':
               finish(
-                `✓ Installed ${plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Installed ${plugin.name}.`,
               )
               break
             case 'error':

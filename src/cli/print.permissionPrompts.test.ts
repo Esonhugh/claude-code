@@ -50,7 +50,7 @@ if (process.env[childFlag] !== '1') {
 
   async function runOnce(permissionPrompts: 'host' | 'none' | undefined) {
     const store = createStore(getDefaultAppState(), onChangeAppState)
-    const decisions: { behavior: string; avoidPrompts: boolean | undefined }[] = []
+    const decisions: { behavior: string; avoidPrompts: boolean | undefined; message?: string }[] = []
     let shutdownCode: number | undefined
     const mocks = [
       spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
@@ -74,7 +74,7 @@ if (process.env[childFlag] !== '1') {
         } as unknown as import('../Tool.js').ToolUseContext
         try {
           const decision = await options.canUseTool(promptingTool, {}, toolUseContext, { message: { id: 'msg_test' } } as never, 'toolu_test')
-          decisions.push({ behavior: decision.behavior, avoidPrompts: options.getAppState().toolPermissionContext.shouldAvoidPermissionPrompts })
+          decisions.push({ behavior: decision.behavior, avoidPrompts: options.getAppState().toolPermissionContext.shouldAvoidPermissionPrompts, message: 'message' in decision ? decision.message : undefined })
         } catch {
           decisions.push({ behavior: 'error', avoidPrompts: options.getAppState().toolPermissionContext.shouldAvoidPermissionPrompts })
         }
@@ -100,7 +100,10 @@ if (process.env[childFlag] !== '1') {
 
   test('none answers prompts with a local deny instead of the --permission-prompt-tool', async () => {
     const { decisions } = await runOnce('none')
-    expect(decisions).toEqual([{ behavior: 'deny', avoidPrompts: true }])
+    expect(decisions).toMatchObject([{ behavior: 'deny', avoidPrompts: true }])
+    // Official 2.1.329 words this denial the same as permissions.denyInsteadOfPrompting.
+    expect(decisions[0]!.message).toContain('this session has no approval surface')
+    expect(decisions[0]!.message).toEndWith("What required approval: Claude requested permissions to use NeedsApproval, but you haven't granted it yet.")
   })
 
   test('host (the default) still routes prompts to the --permission-prompt-tool', async () => {

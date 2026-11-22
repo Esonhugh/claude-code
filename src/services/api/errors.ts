@@ -28,9 +28,10 @@ import {
 import {
   getDefaultMainLoopModelSetting,
   isNonCustomOpusModel,
+  renderModelName,
 } from 'src/utils/model/model.js'
 import { getModelStrings } from 'src/utils/model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from 'src/utils/model/providers.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
@@ -447,6 +448,16 @@ export function getAssistantMessageFromError(
     // Preserve HTTP metadata without copying provider error bodies.
     message.apiError = {status:error.status,type:'api_error',message:''}
   }
+  if (error instanceof APIError) {
+    // Official 2.1.329: the body's error type and error code are reported as
+    // they are when they look like identifiers.
+    const body = (error.error as { error?: { type?: unknown; details?: { error_code?: unknown } } } | undefined)?.error
+    const identifier = (value: unknown) => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? value : undefined
+    const code = identifier(body?.details?.error_code)
+    if (code !== undefined) message.apiErrorCode = code
+    const type = body?.details?.error_code === 'dlp_request_denied' ? undefined : identifier(body?.type)
+    if (type !== undefined) message.apiErrorType = type
+  }
   return message
 }
 
@@ -590,15 +601,12 @@ function formatAssistantMessageFromError(
         error: 'rate_limit',
       })
     }
-    // SDK's APIError.makeMessage prepends "429 " and JSON-stringifies the body
-    // when there's no top-level .message — extract the inner error.message.
-    const stripped = error.message.replace(/^429\s+/, '')
-    const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
-    const detail = innerMessage || stripped
-    return createAssistantAPIErrorMessage({
-      content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
-      error: 'rate_limit',
-    })
+    return createRequestRejectedMessage(error)
+  }
+
+  // Official 2.1.329: a 429 outside subscription limits reads the same way.
+  if (error instanceof APIError && error.status === 429) {
+    return createRequestRejectedMessage(error)
   }
 
   // Handle prompt too long errors (Vertex returns 413, direct API returns 400)
@@ -922,8 +930,8 @@ function formatAssistantMessageFromError(
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
       content: getIsNonInteractiveSession()
-        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`
-        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${error.message}`,
+        ? `Failed to authenticate. ${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`
+        : `Please run /login · ${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
     })
   }
 
@@ -966,8 +974,22 @@ function formatAssistantMessageFromError(
     })
   }
 
-  // Connection errors (non-timeout) — use formatAPIError for detailed messages
-  if (error instanceof APIConnectionError) {
+  // Official 2.1.329: a 5xx names the API's message and says where to look next.
+  if (
+    error instanceof APIError &&
+    typeof error.status === 'number' &&
+    error.status >= 500
+  ) {
+    const detail = formatAPIError(error).replace(/[.!?…]+$/, '')
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: ${detail}. This is a server-side issue, usually temporary — try again in a moment.${getServerErrorHint()}`,
+      error: 'server_error',
+    })
+  }
+
+  // Connection errors (non-timeout) and API errors whose message the SDK built
+  // from the JSON body — use formatAPIError for detailed messages
+  if (error instanceof APIError) {
     return createAssistantAPIErrorMessage({
       content: `${API_ERROR_MESSAGE_PREFIX}: ${formatAPIError(error)}`,
       error: 'unknown',
@@ -984,6 +1006,27 @@ function formatAssistantMessageFromError(
     content: API_ERROR_MESSAGE_PREFIX,
     error: 'unknown',
   })
+}
+
+function createRequestRejectedMessage(error: APIError): AssistantMessage {
+  // SDK's APIError.makeMessage prepends "429 " and JSON-stringifies the body
+  // when there's no top-level .message — extract the inner error.message.
+  const stripped = error.message.replace(/^429\s+/, '')
+  const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
+  const detail = innerMessage || stripped
+  return createAssistantAPIErrorMessage({
+    content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
+    error: 'rate_limit',
+  })
+}
+
+function getServerErrorHint(): string {
+  if (getAPIProvider() !== 'firstParty') return ''
+  if (isFirstPartyAnthropicBaseUrl()) {
+    return ' If it persists, check https://status.claude.com.'
+  }
+  const baseUrl = process.env.ANTHROPIC_BASE_URL ?? ''
+  return ` If it persists, check your inference gateway (${URL.parse(baseUrl)?.host || baseUrl}).`
 }
 
 /**
@@ -1220,7 +1263,7 @@ export function categorizeRetryableAPIError(
     error.status === 529 ||
     error.message?.includes('"type":"overloaded_error"')
   ) {
-    return 'rate_limit'
+    return 'overloaded'
   }
   if (error.status === 429) {
     return 'rate_limit'
@@ -1234,27 +1277,75 @@ export function categorizeRetryableAPIError(
   return 'unknown'
 }
 
+// How many responses a safety classifier has stopped since this session
+// started in this process (SDK result.safety_stops).
+let safetyStops = 0
+
+export function getSafetyStops(): number {
+  return safetyStops
+}
+
+export function resetSafetyStops(): void {
+  safetyStops = 0
+}
+
+const REFUSAL_AUP_URL = 'https://www.anthropic.com/legal/aup'
+const REFUSAL_CYBER_URL = 'https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude'
+
+/** The article official 2.1.329 points to for a refusal of `model`. */
+function refusalHelpUrl(model: string): string {
+  return /^claude-opus-5(\[1m\])?$/i.test(model)
+    ? 'https://support.claude.com/en/articles/16049681'
+    : 'https://support.claude.com/en/articles/8106465'
+}
+
+/**
+ * The error a response stopped by the safety classifier ends with, in the
+ * words of official 2.1.329. Official picks the longer wording for models it
+ * can route a refusal away from; that routing does not exist here, so the
+ * choice is made on the model families official names for it.
+ */
 export function getErrorMessageIfRefusal(
   stopReason: BetaStopReason | null,
   model: string,
+  refusedMessageId?: string,
+  stopDetails?: { category?: string | null; explanation?: string | null } | null,
+  requestId?: string | null,
 ): AssistantMessage | undefined {
   if (stopReason !== 'refusal') {
     return
   }
 
   logEvent('tengu_refusal_api_response', {})
+  safetyStops++
 
-  const baseMessage = getIsNonInteractiveSession()
-    ? `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request or attempting a different approach.`
-    : `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for Claude Code to assist with a different task.`
-
-  const modelSuggestion =
-    model !== 'claude-sonnet-4-20250514'
-      ? ' If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.'
-      : ''
-
-  return createAssistantAPIErrorMessage({
-    content: baseMessage + modelSuggestion,
+  const headless = getIsNonInteractiveSession()
+  const name = renderModelName(model)
+  const category = typeof stopDetails?.category === 'string' ? stopDetails.category : undefined
+  let text: string
+  if (category === 'cyber') {
+    text = `${name}'s safeguards flagged this message. Our intentionally broad safeguards allow us to deliver more capabilities faster, but can sometimes flag legitimate cybersecurity work. Learn more: ${REFUSAL_CYBER_URL}`
+  } else if (/^claude-(opus-5-5|opus-5|sonnet-5-5)(\[1m\])?$/i.test(model)) {
+    const url = refusalHelpUrl(model)
+    text = `${name}'s safeguards flagged this message (${REFUSAL_AUP_URL}). This sometimes happens with safe, normal conversations. Claude Code can't respond to this message with ${name}.\n\n` +
+      (headless
+        ? `Try rephrasing the request in a new session or change your model.\n\nLearn more: ${url}`
+        : `Double press esc to edit your last message, or try a different model with /model.\n\nYou can learn more: ${url}`)
+  } else {
+    text = `${name} can't help with this. Start a new session to continue.\n\nLearn more: ${REFUSAL_AUP_URL}`
+  }
+  const details = category?.replace(/[`[\]]/g, '')
+  const message = createAssistantAPIErrorMessage({
+    content: `${API_ERROR_MESSAGE_PREFIX}: ${text}` +
+      (details ? `\n\nDetails: \`[${details}]\`` : '') +
+      (requestId ? `\n\nRequest ID: ${requestId}` : '') +
+      (refusedMessageId ? `\n\nMessage ID: ${refusedMessageId}` : ''),
     error: 'invalid_request',
   })
+  message.message.stop_reason = 'refusal'
+  if (stopDetails) (message.message as { stop_details?: unknown }).stop_details = stopDetails
+  if (requestId) message.requestId = requestId
+  message.refusedMessageId = refusedMessageId
+  message.refusingModel = model
+  return message
 }

@@ -704,7 +704,7 @@ export function getRetryDelay(
     maxDelayMs,
   )
   const jitter = Math.random() * 0.25 * baseDelay
-  return baseDelay + jitter
+  return Math.round(baseDelay + jitter)
 }
 
 export function parseMaxTokensContextOverflowError(error: APIError):

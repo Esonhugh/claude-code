@@ -431,8 +431,7 @@ export function BrowseMarketplace({
     if (failureCount === 0) {
       // All succeeded
       const message =
-        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}. ` +
-        `Run /reload-plugins to activate.`
+        `✓ Installed ${successCount} ${plural(successCount, 'plugin')}.`
 
       setResult(message)
     } else if (successCount === 0) {
@@ -444,8 +443,7 @@ export function BrowseMarketplace({
       // Mixed results - show partial success
       const message =
         `✓ Installed ${successCount} of ${successCount + failureCount} plugins. ` +
-        `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` +
-        `Run /reload-plugins to activate successfully installed plugins.`
+        `Failed: ${formatFailureDetails(newFailedPlugins, false)}.`
 
       setResult(message)
     }
@@ -698,12 +696,12 @@ export function BrowseMarketplace({
           switch (outcome) {
             case 'configured':
               finish(
-                `✓ Installed and configured ${plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Installed and configured ${plugin.name}.`,
               )
               break
             case 'skipped':
               finish(
-                `✓ Installed ${plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Installed ${plugin.name}.`,
               )
               break
             case 'error':

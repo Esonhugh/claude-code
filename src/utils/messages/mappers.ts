@@ -8,6 +8,9 @@ import {
 import type {
   SDKAssistantMessage,
   SDKCompactBoundaryMessage,
+  SDKInformationalMessage,
+  SDKModelFallbackMessage,
+  SDKModelRefusalNoFallbackMessage,
   SDKMessage,
   SDKRateLimitInfo,
   SDKToolResultMeta,
@@ -18,8 +21,10 @@ import type {
   AssistantMessage,
   CompactMetadata,
   Message,
+  SystemInformationalMessage,
   UserMessage,
 } from 'src/types/message.js'
+import type { HookSystemMessageAttachment } from '../attachments.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
 import { createAssistantMessage } from '../messages.js'
@@ -114,6 +119,73 @@ export function toInternalMessages(
 }
 
 type SDKCompactMetadata = SDKCompactBoundaryMessage['compact_metadata']
+
+/**
+ * Like official 2.1.329, an informational line of the conversation is sent to
+ * SDK hosts as system/informational; the switch to the fallback model has its
+ * own subtype.
+ */
+export function toSDKSystemNotice(
+  message: SystemInformationalMessage,
+): SDKInformationalMessage | SDKModelFallbackMessage | SDKModelRefusalNoFallbackMessage {
+  const base = { uuid: message.uuid, session_id: getSessionId() }
+  const refusal = message.modelRefusalNoFallback
+  if (refusal) {
+    return {
+      type: 'system' as const,
+      subtype: 'model_refusal_no_fallback' as const,
+      original_model: refusal.originalModel,
+      request_id: refusal.requestId,
+      api_refusal_category: refusal.category,
+      api_refusal_explanation: refusal.explanation,
+      ...(refusal.refusedUserMessageUuid && { refused_user_message_uuid: refusal.refusedUserMessageUuid }),
+      content: '',
+      ...base,
+    }
+  }
+  if (message.modelFallback) {
+    return {
+      type: 'system' as const,
+      subtype: 'model_fallback' as const,
+      trigger: message.modelFallback.trigger,
+      original_model: message.modelFallback.originalModel,
+      fallback_model: message.modelFallback.fallbackModel,
+      content: message.content,
+      ...base,
+    }
+  }
+  const ending = message.promptSubmitEnding
+  return {
+    type: 'system' as const,
+    subtype: 'informational' as const,
+    content: stripAnsi(message.content ?? ''),
+    level: message.level,
+    ...(message.toolUseID && { tool_use_id: message.toolUseID }),
+    ...(message.preventContinuation && { prevent_continuation: true }),
+    ...(ending && {
+      prompt_submit_outcome: {
+        kind: ending.ending.kind,
+        prompt_kept: ending.promptKept,
+        ...(ending.ending.reason !== undefined && { reason: ending.ending.reason }),
+      },
+    }),
+    ...base,
+  }
+}
+
+export function hookSystemMessageToSDK(
+  attachment: HookSystemMessageAttachment,
+  uuid: UUID,
+): SDKInformationalMessage {
+  return {
+    type: 'system' as const,
+    subtype: 'informational' as const,
+    content: `${attachment.hookName} says: ${attachment.content}`,
+    level: 'notice' as const,
+    uuid,
+    session_id: getSessionId(),
+  }
+}
 
 export function toSDKCompactMetadata(
   meta: CompactMetadata,

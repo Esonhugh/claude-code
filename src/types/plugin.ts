@@ -6,6 +6,7 @@ import type {
   PluginAuthor,
   PluginManifest,
 } from '../utils/plugins/schemas.js'
+import { pluginCliCommand } from '../utils/plugins/pluginIdentifier.js'
 import type { HooksSettings } from '../utils/settings/types.js'
 
 export type { PluginAuthor, PluginManifest, CommandMetadata }
@@ -394,10 +395,11 @@ export function getPluginErrorMessage(error: PluginError): string {
       }
       return `Marketplace '${error.marketplace}' is not in the allowed marketplace list`
     case 'dependency-unsatisfied': {
+      const install = pluginCliCommand('install', error.dependency)
       const hint =
         error.reason === 'not-enabled'
           ? 'disabled — enable it or remove the dependency'
-          : 'not found in any configured marketplace'
+          : `not installed — ${install ? `run \`${install}\`, or ` : ''}check that its marketplace is added`
       return `Dependency "${error.dependency}" is ${hint}`
     }
     case 'plugin-cache-miss':

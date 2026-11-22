@@ -651,7 +651,7 @@ export function ManagePlugins({
       setViewState('plugin-list')
       setSelectedPlugin(null)
       setResult(
-        'Plugin enabled. Configuration skipped — run /reload-plugins to apply.',
+        'Plugin enabled. Configuration skipped.',
       )
       if (onManageComplete) {
         void onManageComplete()
@@ -679,13 +679,9 @@ export function ManagePlugins({
     ) {
       setViewState({ type: 'mcp-tools', client: viewState.client })
     } else {
-      if (pendingToggles.size > 0) {
-        setResult('Run /reload-plugins to apply plugin changes.')
-        return
-      }
       setParentViewState({ type: 'menu' })
     }
-  }, [viewState, setParentViewState, pendingToggles, setResult])
+  }, [viewState, setParentViewState, setResult, onManageComplete])
 
   // Escape when not in search mode - go back.
   // Excludes confirm-project-uninstall (has its own confirm:no handler in
@@ -1468,7 +1464,7 @@ export function ManagePlugins({
         reverseDependents && reverseDependents.length > 0
           ? ` · required by ${reverseDependents.join(', ')}`
           : ''
-      const message = `✓ ${operationName} ${selectedPlugin.plugin.name}${depWarn}. Run /reload-plugins to apply.`
+      const message = `✓ ${operationName} ${selectedPlugin.plugin.name}${depWarn}.`
       setResult(message)
 
       if (onManageComplete) {
@@ -1533,6 +1529,7 @@ export function ManagePlugins({
                 throw new Error(result.message)
               }
               clearAllCaches()
+              if (onManageComplete) void onManageComplete()
             } catch (err) {
               setPendingToggles(prev => {
                 const next = new Map(prev)
@@ -1558,6 +1555,7 @@ export function ManagePlugins({
                 throw new Error(result.message)
               }
               clearAllCaches()
+              if (onManageComplete) void onManageComplete()
             } catch (err) {
               setPendingToggles(prev => {
                 const next = new Map(prev)
@@ -1584,6 +1582,7 @@ export function ManagePlugins({
     pluginStates,
     toggleMcpServer,
     updateCodexAppEnabled,
+    onManageComplete,
   ])
 
   // Handle accept (Enter) in plugin-list
@@ -2063,7 +2062,7 @@ export function ManagePlugins({
         }
         clearAllCaches()
         setResult(
-          `✓ Disabled ${selectedPlugin.plugin.name} in .claude/settings.local.json. Run /reload-plugins to apply.`,
+          `✓ Disabled ${selectedPlugin.plugin.name} in .claude/settings.local.json.`,
         )
         if (onManageComplete) void onManageComplete()
         setParentViewState({ type: 'menu' })
@@ -2206,8 +2205,8 @@ export function ManagePlugins({
     function finish(msg: string): void {
       setResult(msg)
       // Plugin is enabled regardless of whether config was saved or
-      // skipped — onManageComplete → markPluginsChanged → the
-      // persistent "run /reload-plugins" notice.
+      // skipped — onManageComplete → markPluginsChanged, applied when the
+      // menu closes.
       if (onManageComplete) {
         void onManageComplete()
       }
@@ -2221,12 +2220,12 @@ export function ManagePlugins({
           switch (outcome) {
             case 'configured':
               finish(
-                `✓ Enabled and configured ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Enabled and configured ${selectedPlugin.plugin.name}.`,
               )
               break
             case 'skipped':
               finish(
-                `✓ Enabled ${selectedPlugin.plugin.name}. Run /reload-plugins to apply.`,
+                `✓ Enabled ${selectedPlugin.plugin.name}.`,
               )
               break
             case 'error':
@@ -2255,9 +2254,8 @@ export function ManagePlugins({
           try {
             savePluginOptions(pluginId, values, viewState.schema)
             clearAllCaches()
-            setResult(
-              'Configuration saved. Run /reload-plugins for changes to take effect.',
-            )
+            setResult('Configuration saved.')
+            if (onManageComplete) void onManageComplete()
           } catch (err) {
             setProcessError(
               `Failed to save configuration: ${errorMessage(err)}`,
@@ -2315,9 +2313,8 @@ export function ManagePlugins({
         setProcessError(null)
         setConfigNeeded(null)
         setViewState('plugin-details')
-        setResult(
-          'Configuration saved. Run /reload-plugins for changes to take effect.',
-        )
+        setResult('Configuration saved.')
+        if (onManageComplete) void onManageComplete()
       } catch (err) {
         const errorMsg = errorMessage(err)
         setProcessError(`Failed to save configuration: ${errorMsg}`)
@@ -3165,7 +3162,7 @@ export function ManagePlugins({
       {pendingToggles.size > 0 && (
         <Box marginLeft={1}>
           <Text dimColor italic>
-            Run /reload-plugins to apply changes
+            Changes apply when you close this menu
           </Text>
         </Box>
       )}

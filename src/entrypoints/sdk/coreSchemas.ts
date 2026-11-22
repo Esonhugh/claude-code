@@ -1088,7 +1088,7 @@ export const AsyncHookJSONOutputSchema = lazySchema(() =>
 export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PreToolUse'),
-    permissionDecision: PermissionBehaviorSchema().optional(),
+    permissionDecision: z.enum(['allow', 'deny', 'ask', 'defer']).optional(),
     permissionDecisionReason: z.string().optional(),
     updatedInput: z.record(z.string(), z.unknown()).optional(),
     additionalContext: z.string().optional(),
@@ -1673,6 +1673,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
     'authentication_failed',
     'billing_error',
     'rate_limit',
+    'overloaded',
     'invalid_request',
     'server_error',
     'unknown',
@@ -1702,6 +1703,7 @@ const SDKUserMessageContentSchema = lazySchema(() =>
       .optional()
       .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
+    refused_message_id: z.string().optional(),
     tool_use_result: z.unknown().optional(),
     tool_result_meta: z
       .array(
@@ -1818,6 +1820,11 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
       .describe('Description of the subagent task that produced this message.'),
     timestamp: z.string().optional(),
     error: SDKAssistantMessageErrorSchema().optional(),
+    is_api_error_message: z.literal(true).optional().describe('Set when the message reports an API error instead of a model response.'),
+    api_error_status: z.number().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional().describe("The `error.type` of the API error body, such as 'invalid_request_error'."),
+    refused_message_id: z.string().optional().describe('On a refusal error: the id of the API message the safety classifier stopped.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     request_id: z.string().optional(),
@@ -1906,6 +1913,8 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     ttft_ms: z.number().optional(),
     is_error: z.boolean(),
     api_error_status: z.number().nullable().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional(),
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
@@ -1914,10 +1923,18 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
+    deferred_tool_use: z
+      .object({
+        id: z.string(),
+        name: z.string(),
+        input: z.record(z.string(), z.unknown()),
+      })
+      .optional(),
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1948,6 +1965,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2041,6 +2059,111 @@ export const SDKUILogMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKInformationalMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('informational'),
+      content: z.string(),
+      level: z
+        .enum(['info', 'notice', 'warning', 'error', 'suggestion'])
+        .optional(),
+      tool_use_id: z.string().optional(),
+      prevent_continuation: z.boolean().optional(),
+      prompt_submit_outcome: z
+        .object({
+          kind: z.literal('blocked_by_hook'),
+          prompt_kept: z.boolean(),
+          reason: z.string().optional(),
+        })
+        .optional(),
+      tag: z.literal('hook_no_verdict').optional(),
+      hook_no_verdict: z
+        .object({
+          hook_event: z.literal('PreToolUse'),
+          tool_use_id: z.string(),
+          timed_out: z.boolean(),
+        })
+        .optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('An informational line of the conversation, such as a hook notice.'),
+)
+
+export const SDKModelFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_fallback'),
+      trigger: z.enum(['overloaded', 'server_error', 'model_not_found']),
+      original_model: z.string(),
+      fallback_model: z.string(),
+      content: z.string().optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The turn switched to the fallback model.'),
+)
+
+export const SDKConversationResetMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('conversation_reset'),
+      new_conversation_id: z.string(),
+      uuid: UUIDPlaceholder(),
+      trigger: z.literal('clear'),
+      user_message_uuid: z.string().optional(),
+      timestamp: z.string(),
+      session_id: z.string(),
+    })
+    .describe('/clear began a new conversation; session_id is the session it left.'),
+)
+
+export const SDKModelRefusalNoFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_refusal_no_fallback'),
+      original_model: z.string(),
+      request_id: z.string().nullable(),
+      api_refusal_category: z.string().nullable(),
+      api_refusal_explanation: z.string().nullable(),
+      refused_user_message_uuid: z.string().optional(),
+      content: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The safety classifier stopped the response and no other model is tried; the error follows.'),
+)
+
+export const SDKNotificationMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('notification'),
+      key: z.string(),
+      text: z.string(),
+      priority: z.enum(['immediate', 'high']),
+      color: z.literal('warning').optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('A notice the terminal UI shows in its footer.'),
+)
+
+export const SDKSessionTitleChangedMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('session_title_changed'),
+      title: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The session name, sent at startup when set and on each rename.'),
+)
+
 export const SDKUIToastMessageSchema = lazySchema(() =>
   z
     .object({
@@ -2087,6 +2210,7 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    api_message_id: z.string().optional(),
   }),
 )
 
@@ -2610,6 +2734,12 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
+    SDKInformationalMessageSchema(),
+    SDKModelFallbackMessageSchema(),
+    SDKModelRefusalNoFallbackMessageSchema(),
+    SDKConversationResetMessageSchema(),
+    SDKNotificationMessageSchema(),
+    SDKSessionTitleChangedMessageSchema(),
     SDKUIToastMessageSchema(),
     SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),
