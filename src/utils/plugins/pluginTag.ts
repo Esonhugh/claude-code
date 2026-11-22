@@ -193,6 +193,9 @@ export async function preparePluginTag(
       'status',
       '--porcelain',
       '--ignore-submodules=dirty',
+      // The tag points at HEAD, so a new file must count whatever the user's
+      // status.showUntrackedFiles says.
+      '--untracked-files=normal',
       '--',
       ...paths.map(p => relative(gitRoot, p) || '.'),
     ])

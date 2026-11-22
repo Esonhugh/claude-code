@@ -130,3 +130,44 @@ test('plugin tag keeps the local tag when the remote name is invalid', async () 
   })
   expect(git('tag', '-l')).toBe('demo--v1.2.3')
 })
+
+test('plugin tag refuses a name that is not a plain git ref', async () => {
+  manifest({ name: 'demo;id', version: '1.0.0' })
+  commit()
+  expect(await preparePluginTag(join(repo, 'p'))).toMatchObject({
+    ok: false,
+    error: expect.stringContaining(
+      'Computed tag name "demo;id--v1.0.0" is not a valid git ref.',
+    ),
+  })
+})
+
+test('plugin tag reads a marketplace.json that starts with a BOM', async () => {
+  manifest({ name: 'demo', version: '1.2.3' })
+  mkdirSync(join(repo, '.claude-plugin'))
+  writeFileSync(
+    join(repo, '.claude-plugin', 'marketplace.json'),
+    '\uFEFF' +
+      JSON.stringify({
+        name: 'mk',
+        owner: { name: 'o' },
+        plugins: [{ name: 'demo', source: './p', version: '1.2.4' }],
+      }),
+  )
+  commit()
+  expect(await preparePluginTag(join(repo, 'p'))).toMatchObject({
+    ok: false,
+    error: expect.stringContaining('Version mismatch'),
+  })
+})
+
+test('plugin tag sees untracked plugin files when status.showUntrackedFiles is no', async () => {
+  manifest({ name: 'demo', version: '1.2.3' })
+  commit()
+  git('config', 'status.showUntrackedFiles', 'no')
+  writeFileSync(join(repo, 'p', 'new.md'), 'x')
+  expect(await preparePluginTag(join(repo, 'p'))).toMatchObject({
+    ok: false,
+    error: expect.stringContaining('(or use --force):\n  p/new.md'),
+  })
+})
