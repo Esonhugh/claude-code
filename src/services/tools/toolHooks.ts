@@ -1100,11 +1100,11 @@ export async function* runPreToolUseHooks(
   | { type: 'stop'; stopReason?: string }
 > {
   const hookStartTime = Date.now()
-  // A rewrite that fails validation denies the call; later hook results in
-  // the same run must not replace that deny with their allow/ask.
-  let rewriteDeny: PermissionResult | undefined
-  let deferHook: string | undefined
+  // A deny (a hook's decision, its blocking error, or a rewrite that fails
+  // validation) stands: later hook results in the same run, and the allow
+  // executeHooks repeats after each of them, must not replace it.
   let hookDeny: PermissionResult | undefined
+  let deferHook: string | undefined
   try {
     const appState = toolUseContext.getAppState()
 
@@ -1172,9 +1172,8 @@ export async function* runPreToolUseHooks(
             hookSource: result.hookSource,
           })
           if (checked.deny) {
-            rewriteDeny = checked.deny
-            hookDeny = rewriteDeny
-            yield { type: 'hookPermissionResult', hookPermissionResult: rewriteDeny }
+            hookDeny = checked.deny
+            yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
             continue
           }
           updatedInput = checked.input
@@ -1205,7 +1204,7 @@ export async function* runPreToolUseHooks(
           } else if (result.permissionBehavior === 'allow') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: rewriteDeny ?? {
+              hookPermissionResult: hookDeny ?? {
                 behavior: 'allow',
                 updatedInput,
                 decisionReason,
@@ -1214,7 +1213,7 @@ export async function* runPreToolUseHooks(
           } else if (result.permissionBehavior === 'ask') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: rewriteDeny ?? {
+              hookPermissionResult: hookDeny ?? {
                 behavior: 'ask',
                 updatedInput,
                 message:

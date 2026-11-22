@@ -1490,6 +1490,33 @@ describe('PreToolUse defer and unanswered SDK callbacks (official 2.1.329)', () 
       toolUseResult: `Error: ${PRE_TOOL_HOOK_TIMEOUT_MESSAGE}`,
     })
   })
+
+  test.each([
+    ['allow first', true],
+    ['failure first', false],
+  ] as const)('an onFailure:"block" callback failure refuses the call despite another hook\'s allow, %s', async (_name, allowFirst) => {
+    const failing = {
+      type: 'callback' as const,
+      onFailure: 'block' as const,
+      callback: async () => {
+        if (allowFirst) await new Promise(resolve => setTimeout(resolve, 20))
+        throw new Error('host failed')
+      },
+    }
+    const allowing = {
+      type: 'callback' as const,
+      callback: async () => {
+        if (!allowFirst) await new Promise(resolve => setTimeout(resolve, 20))
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const } }
+      },
+    }
+    registerHookCallbacks({ PreToolUse: [{ hooks: [allowing, failing] }] })
+    const { updates, calls } = await run(fixture())
+    expect(calls()).toBe(0)
+    expect(updates.find(u => u.message?.type === 'user')?.message).toMatchObject({
+      message: { content: [{ type: 'tool_result', is_error: true, tool_use_id: 'defer-id' }] },
+    })
+  })
 })
 
 describe('C17 native permission provenance', () => {
