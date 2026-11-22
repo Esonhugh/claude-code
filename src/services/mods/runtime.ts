@@ -3168,6 +3168,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     replacements = new Map<Activation, Activation>(),
     refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
     order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
+    // A cold start builds $ before every plugin is loaded; a plugin still to come can provide the event.
+    checkRegistrations = true,
   ): Promise<{ modules: Activation[]; table: Nouns }> {
     const previousTable = refresh?.table ?? nouns
     const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
@@ -3285,7 +3287,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           },
         }) as Nouns
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.
-        for (const owner of failed ? [] : modules) {
+        for (const owner of failed || !checkRegistrations ? [] : modules) {
           if (owner.declaration.isNative) continue
           let reason: string | undefined
           for (const { event } of owner.environment.registrations) {
@@ -3573,14 +3575,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
       loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
-    async function buildBootstrap() {
+    let registrationsChecked = false
+    async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
-      if (bootstrap && !changed.size) return
+      if (bootstrap && !changed.size && (!isLast || registrationsChecked)) return
       // Keep newly admitted providers barred during their own bootstrap fold.
       for (const owner of changed) owner.state = 'candidate'
       bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
         previous: bootstrap.modules, changed, table: bootstrap.table,
-      }, foldOrder)
+      }, foldOrder, isLast)
+      registrationsChecked = isLast
       ensureLive()
       candidates = [...bootstrap.modules]
       for (const owner of candidates) owner.state = 'active'
@@ -3681,7 +3685,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
     const refresh = previous.length ? { previous, changed } : undefined
-    if (cold) await buildBootstrap()
+    if (cold) await buildBootstrap(true)
     const built = cold ? bootstrap! : await build(candidates, replacements, refresh, foldOrder)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'

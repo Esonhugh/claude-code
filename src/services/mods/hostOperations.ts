@@ -342,25 +342,32 @@ export function createModHostOperations({
   const storeError = (message: string, code?: string) =>
     Object.assign(new Error(message), { name: 'HooksError', ...(code !== undefined && { code }) })
 
-  async function readStore(path: string): Promise<Record<string, unknown>> {
-    let text: string
+  /** The text of a store file, or undefined when there is none. Official reads it whole: indentation can make a store within the limit many times larger on disk. */
+  async function readStoreFile(path: string): Promise<string | undefined> {
     try {
-      // Allow UTF-8 expansion and the indentation of the file format.
-      text = await readText(path, signal, 4 * MAX_STORE_CHARACTERS)
+      return await readText(path, signal, Infinity)
     } catch (error) {
       signal.throwIfAborted()
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return readLegacyStore()
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
       throw storeError(
         `${storageId}: store file ${path} is unreadable (${errorMessage(error)})`,
         (error as NodeJS.ErrnoException).code,
       )
     }
-    let data: unknown
+  }
+
+  function parseStoreFile(path: string, text: string): unknown {
     try {
-      data = JSON.parse(text)
+      return JSON.parse(text)
     } catch (error) {
       throw storeError(`${storageId}: store file ${path} is malformed (${errorMessage(error)})`)
     }
+  }
+
+  async function readStore(path: string): Promise<Record<string, unknown>> {
+    const text = await readStoreFile(path)
+    if (text === undefined) return readLegacyStore()
+    const data = parseStoreFile(path, text)
     if (typeof data !== 'object' || data === null || Array.isArray(data))
       throw storeError(`${storageId}: store file ${path} is malformed (the JSON is not an object)`)
     // Official sweeps stores nobody read for the cleanup period; a read keeps this one.
@@ -371,15 +378,16 @@ export function createModHostOperations({
     return data as Record<string, unknown>
   }
 
+  // A legacy file that cannot be read or understood fails the call: writing a
+  // new store over it would hide the data it still holds.
   async function readLegacyStore(): Promise<Record<string, unknown>> {
-    try {
-      const entries: unknown = JSON.parse(await readText(legacyStorePath(), signal, 4 * MAX_STORE_CHARACTERS))
-      if (Array.isArray(entries) && entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string'))
-        return Object.fromEntries(entries)
-    } catch {
-      signal.throwIfAborted()
-    }
-    return {}
+    const path = legacyStorePath()
+    const text = await readStoreFile(path)
+    if (text === undefined) return {}
+    const entries = parseStoreFile(path, text)
+    if (!Array.isArray(entries) || !entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string'))
+      throw storeError(`${storageId}: store file ${path} is malformed (the JSON is not a list of key/value entries)`)
+    return Object.fromEntries(entries)
   }
 
   async function updateStore(
