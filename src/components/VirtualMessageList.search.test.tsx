@@ -35,9 +35,9 @@ class Output extends Writable {
 
 // "foo" in every tenth message; `extra` stands in for the Code Mode script
 // text Ctrl+E adds to (or removes from) the searchable text.
-const messages = Array.from({ length: 50 }, (_, i) => createUserMessage({ content: `row ${i}` }))
+const messages = Array.from({ length: 50 }, (_, i) => createUserMessage({ content: `row ${i}` })) as unknown as RenderableMessage[]
 const searchText = (extra: Set<number>, without: Set<number> = new Set()) => (msg: RenderableMessage) => {
-  const i = messages.indexOf(msg as never)
+  const i = messages.indexOf(msg)
   return (i % 10 === 0 && !without.has(i)) || extra.has(i) ? `row ${i} foo` : `row ${i}`
 }
 
