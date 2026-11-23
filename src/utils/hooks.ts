@@ -150,6 +150,7 @@ import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
+import { SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../constants/xml.js'
 import {
   escapeSystemReminderTags,
   extractTextContent,
@@ -267,13 +268,21 @@ function executeInBackground({
         outcome: result.code === 0 ? 'success' : 'error',
       })
       if (result.code === 2) {
-        enqueuePendingNotification({
-          value: wrapInSystemReminder(
-            escapeSystemReminderTags(
-              `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
-            ),
+        // Official 2.1.329 shows the user "⏺ Stop hook feedback" and gives the
+        // model the hook output in a system-reminder after the notification.
+        const reminder = wrapInSystemReminder(
+          escapeSystemReminderTags(
+            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
           ),
+        ).replaceAll(
+          new RegExp(`<(?=\\s*/\\s*${TASK_NOTIFICATION_TAG}\\b)`, 'gi'),
+          '&lt;',
+        )
+        enqueuePendingNotification({
+          value: `<${TASK_NOTIFICATION_TAG}>\n<${SUMMARY_TAG}>Stop hook feedback</${SUMMARY_TAG}>\n</${TASK_NOTIFICATION_TAG}>\n${reminder}`,
           mode: 'task-notification',
+          priority: 'next',
+          skipAttachments: true,
         })
       }
     })
