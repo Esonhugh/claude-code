@@ -1138,7 +1138,8 @@ export async function runAsyncAgentLifecycle({
       // but only this catch handler has agentMessages, so the notification
       // must fire unconditionally. Transition status BEFORE worktree cleanup
       // so TaskOutput unblocks even if git hangs (gh-20236).
-      killAsyncAgent(taskId, rootSetAppState)
+      // Official 2.1.329 counts an abort nothing else claimed as the user's.
+      killAsyncAgent(taskId, rootSetAppState, 'system', 'user')
       logEvent('tengu_agent_tool_terminated', {
         agent_type:
           metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

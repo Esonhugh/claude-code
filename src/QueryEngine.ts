@@ -71,7 +71,9 @@ import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
+import { AGENT_TOOL_NAME } from './tools/AgentTool/constants.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
+import { subagentStats } from './tools/AgentTool/subagentStats.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
 import { formatTeammateMessages } from './utils/teammateMailbox.js'
@@ -1207,7 +1209,9 @@ export class QueryEngine {
     }
 
     // Like official 2.1.311, every result carries the fast mode state and,
-    // when fast mode is unavailable, why; like 2.1.329, also safety_stops.
+    // when fast mode is unavailable, why; like 2.1.329, also safety_stops and,
+    // with the Agent tool, subagent_stats.
+    const hasAgentTool = tools.some(tool => toolMatchesName(tool, AGENT_TOOL_NAME))
     const resultFastMode = () => {
       const reason = getFastModeDisabledReason()
       return {
@@ -1217,6 +1221,7 @@ export class QueryEngine {
         ),
         ...(reason !== null && { fast_mode_disabled_reason: reason }),
         safety_stops: getSafetyStops(),
+        ...(hasAgentTool && { subagent_stats: subagentStats().snapshot() }),
       }
     }
 
