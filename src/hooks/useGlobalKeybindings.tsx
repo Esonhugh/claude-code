@@ -25,7 +25,7 @@ type Props = {
   messageCount: number
   onEnterTranscript?: () => void
   onExitTranscript?: () => void
-  virtualScrollActive?: boolean
+  canToggleTranscriptDetails: boolean
   searchBarOpen?: boolean
 }
 
@@ -44,7 +44,7 @@ export function GlobalKeybindingHandlers({
   messageCount,
   onEnterTranscript,
   onExitTranscript,
-  virtualScrollActive,
+  canToggleTranscriptDetails,
   searchBarOpen = false,
 }: Props): null {
   const expandedView = useAppState(s => s.expandedView)
@@ -213,7 +213,7 @@ export function GlobalKeybindingHandlers({
   const isInTranscript = screen === 'transcript'
   useKeybinding('transcript:toggleShowAll', handleToggleShowAll, {
     context: 'Transcript',
-    isActive: isInTranscript && !virtualScrollActive,
+    isActive: isInTranscript && canToggleTranscriptDetails && !searchBarOpen,
   })
   useKeybinding('transcript:exit', handleExitTranscript, {
     context: 'Transcript',
