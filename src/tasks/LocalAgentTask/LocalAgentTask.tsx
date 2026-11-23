@@ -18,6 +18,7 @@ import type { Tools } from '../../Tool.js'
 import { findToolByName } from '../../Tool.js'
 import type { AgentToolResult } from '../../tools/AgentTool/agentToolUtils.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import type { SubagentKillReason, SubagentOutcome } from '../../tools/AgentTool/subagentStats.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { asAgentId, type AgentId } from '../../types/ids.js'
 import type { Message, MessageOrigin } from '../../types/message.js'
@@ -244,6 +245,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   /** The owner was told this run stopped with its own background work still running. */
   waitingNotice?: boolean
   spawnDepth: number
+  /** The Agent tool spawn this task counts toward in result.subagent_stats. */
+  spawnedSubagent?: SubagentOutcome
   model?: string
   abortController?: AbortController
   unregisterCleanup?: () => void
@@ -565,6 +568,8 @@ export function killAsyncAgent(
   taskId: string,
   setAppState: SetAppState,
   source: 'system' | 'user' | 'parent' = 'system',
+  /** The kill reason subagent_stats records, when it is not the source. */
+  countAs: SubagentKillReason = source,
 ): void {
   let killed = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
@@ -572,6 +577,7 @@ export function killAsyncAgent(
       return task
     }
     killed = true
+    task.spawnedSubagent?.killed(countAs)
     if (source === 'user') {
       void markAgentMetadataStoppedByUser(asAgentId(taskId), task.agentType).catch(error => {
         logForDebugging(`[AgentCancellation] failed to persist user stop agent_id=${taskId}: ${error}`, { level: 'warn' })
@@ -742,6 +748,7 @@ export function completeAgentTask(
 
     const waiting = task.isBackgrounded && (task.keepaliveReasons?.size ?? 0) > 0
     if (!waiting) task.unregisterCleanup?.()
+    task.spawnedSubagent?.completed()
 
     return {
       ...task,
@@ -790,6 +797,7 @@ export function failAgentTask(
     }
 
     task.unregisterCleanup?.()
+    task.spawnedSubagent?.failed()
 
     return {
       ...task,
@@ -829,6 +837,7 @@ export function registerAsyncAgent({
   spawnedBy,
   forkedSkillName,
   spawnDepth,
+  spawnedSubagent,
 }: {
   agentId: string
   description: string
@@ -842,6 +851,7 @@ export function registerAsyncAgent({
   spawnedBy?: string
   forkedSkillName?: string
   spawnDepth: number
+  spawnedSubagent?: SubagentOutcome
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(
     agentId,
@@ -866,6 +876,7 @@ export function registerAsyncAgent({
     spawnedBy,
     forkedSkillName,
     spawnDepth,
+    spawnedSubagent,
     abortController,
     retrieved: false,
     lastReportedToolCount: 0,
@@ -911,6 +922,7 @@ export function registerAgentForeground({
   parentAgentId,
   ownerAgentId,
   spawnDepth,
+  spawnedSubagent,
 }: {
   agentId: string
   description: string
@@ -922,6 +934,7 @@ export function registerAgentForeground({
   parentAgentId?: string
   ownerAgentId?: string
   spawnDepth: number
+  spawnedSubagent?: SubagentOutcome
 }): {
   taskId: string
   backgroundSignal: Promise<void>
@@ -949,6 +962,7 @@ export function registerAgentForeground({
     parentAgentId,
     ownerAgentId,
     spawnDepth,
+    spawnedSubagent,
     abortController,
     unregisterCleanup,
     retrieved: false,

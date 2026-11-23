@@ -4,7 +4,8 @@ import { expect, test } from 'bun:test'
   VERSION: 'test',
 }
 
-const { streamEventThinkingDisplay } = await import('./claude.js')
+const claude = await import('./claude.js')
+const { streamEventThinkingDisplay } = claude
 
 const event = (value: Record<string, unknown>) => value as never
 
@@ -32,4 +33,12 @@ test('the request display rides on the events of a thinking block only', () => {
 
 test('no display in the request body leaves every event without one', () => {
   expect(streamEventThinkingDisplay(event({ type: 'message_start', message: { id: 'msg_1' } }), undefined)).toBeUndefined()
+})
+
+test('the assistant message keeps the display for a thinking block only', () => {
+  const { blockThinkingDisplay } = claude
+  expect(blockThinkingDisplay({ type: 'thinking' }, 'summarized')).toBe('summarized')
+  expect(blockThinkingDisplay({ type: 'redacted_thinking' }, 'summarized')).toBeUndefined()
+  expect(blockThinkingDisplay({ type: 'text' }, 'summarized')).toBeUndefined()
+  expect(blockThinkingDisplay({ type: 'thinking' }, undefined)).toBeUndefined()
 })

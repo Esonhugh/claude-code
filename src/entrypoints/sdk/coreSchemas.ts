@@ -1826,6 +1826,12 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
     api_error_code: z.string().optional(),
     api_error_type: z.string().optional().describe("The `error.type` of the API error body, such as 'invalid_request_error'."),
     refused_message_id: z.string().optional().describe('On a refusal error: the id of the API message the safety classifier stopped.'),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        "@internal The thinking.display Claude Code put in the API request body for the response that streamed this frame's thinking block, as on a stream event. Sent only on a frame whose one content block is a streamed thinking block, and only when the body had a display.",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     request_id: z.string().optional(),
@@ -1905,6 +1911,48 @@ export const TerminalReasonSchema = lazySchema(() =>
   ]),
 )
 
+export const SDKSubagentStatsSchema = lazySchema(() =>
+  z
+    .object({
+      spawned: z
+        .number()
+        .int()
+        .describe('Subagents actually started; a refused or failed launch is not counted.'),
+      requested: z
+        .object({ background: z.number().int(), foreground: z.number().int(), unset: z.number().int() })
+        .describe(
+          'Spawns by the run_in_background value the model passed; unset when the parameter is omitted or not offered.',
+        ),
+      started_in_background: z
+        .number()
+        .int()
+        .describe('Spawns that started in the background after defaults; the rest blocked the spawning tool call.'),
+      by_type: z.record(z.string(), z.number().int()).describe('Spawns by agent type.'),
+      max_depth: z
+        .number()
+        .int()
+        .describe('Deepest spawn: 1 = started by the main thread, 2 = by a depth-1 subagent.'),
+      spawned_by_subagents: z.number().int().describe('Spawns made from inside another subagent (depth > 1).'),
+      completed: z.number().int(),
+      failed: z.number().int(),
+      killed: z
+        .object({ parent: z.number().int(), user: z.number().int(), system: z.number().int() })
+        .describe(
+          'Stopped before finishing: parent = by another agent through TaskStop; system = by Claude Code itself; user = any other stop, including a foreground subagent cancelled just as it finished (counted here, not as completed).',
+        ),
+      refused: z
+        .object({
+          depth_limit: z.number().int(),
+          concurrency_limit: z.number().int(),
+          budget: z.number().int(),
+        })
+        .describe('Agent tool calls turned down because one of these limits was reached; other denials are not counted.'),
+    })
+    .describe(
+      '@internal Subagents started through the Agent tool in this session, as running totals (forked skills, workflows, teammates and other internal agents are not counted). Cumulative like modelUsage: a resumed session starts fresh and /clear zeroes it, though a background subagent that outlives the /clear still records its outcome. Omitted by hosts without a local Agent tool; all zeros until the Agent tool starts or refuses a subagent. A remote launch counts as spawned but never reports an outcome.',
+    ),
+)
+
 export const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
@@ -1958,6 +2006,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
       ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
+    subagent_stats: SDKSubagentStatsSchema().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1995,6 +2044,7 @@ export const SDKResultErrorSchema = lazySchema(() =>
       ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
+    subagent_stats: SDKSubagentStatsSchema().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),

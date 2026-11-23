@@ -71,7 +71,9 @@ import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
+import { AGENT_TOOL_NAME } from './tools/AgentTool/constants.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
+import { subagentStats } from './tools/AgentTool/subagentStats.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
 import { formatTeammateMessages } from './utils/teammateMailbox.js'
@@ -362,6 +364,16 @@ export function resultStreamTimings(
     ...(toRequest !== undefined && { time_to_request_ms: toRequest }),
     ...(firstFrame !== undefined && { first_content_frame_ms: firstFrame }),
   }
+}
+
+// Official 2.1.329 leaves ttft_ms off a result that ends on an API error.
+export function resultTtft(
+  firstAssistantAt: number | undefined,
+  startTime: number,
+  isApiError: boolean,
+): { ttft_ms?: number } {
+  if (isApiError || firstAssistantAt === undefined) return {}
+  return { ttft_ms: Math.max(0, firstAssistantAt - startTime) }
 }
 
 /**
@@ -1197,7 +1209,9 @@ export class QueryEngine {
     }
 
     // Like official 2.1.311, every result carries the fast mode state and,
-    // when fast mode is unavailable, why; like 2.1.329, also safety_stops.
+    // when fast mode is unavailable, why; like 2.1.329, also safety_stops and,
+    // with the Agent tool, subagent_stats.
+    const hasAgentTool = tools.some(tool => toolMatchesName(tool, AGENT_TOOL_NAME))
     const resultFastMode = () => {
       const reason = getFastModeDisabledReason()
       return {
@@ -1207,6 +1221,7 @@ export class QueryEngine {
         ),
         ...(reason !== null && { fast_mode_disabled_reason: reason }),
         safety_stops: getSafetyStops(),
+        ...(hasAgentTool && { subagent_stats: subagentStats().snapshot() }),
       }
     }
 
@@ -1944,9 +1959,7 @@ export class QueryEngine {
       ...(lastApiErrorType !== undefined && { api_error_type: lastApiErrorType }),
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
-      ...(firstAssistantAt !== undefined && {
-        ttft_ms: Math.max(0, firstAssistantAt - startTime),
-      }),
+      ...resultTtft(firstAssistantAt, startTime, isApiError),
       ...resultStreamTimings(
         streamTimings,
         startTime,
