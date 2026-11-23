@@ -165,11 +165,7 @@ export type ToolUseConfirm<Input extends AnyObject = AnyObject> = {
   recheckPermission(): Promise<void>
 }
 
-function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
-  const toolName = toolUseConfirm.tool.userFacingName(
-    toolUseConfirm.input as never,
-  )
-
+export function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
   if (toolUseConfirm.tool === ExitPlanModeV2Tool) {
     return 'Claude Code needs your approval for the plan'
   }
@@ -185,11 +181,8 @@ function getNotificationMessage(toolUseConfirm: ToolUseConfirm): string {
     return 'Claude needs your approval for a review artifact'
   }
 
-  if (!toolName || toolName.trim() === '') {
-    return 'Claude Code needs your attention'
-  }
-
-  return `Claude needs your permission to use ${toolName}`
+  // Official 2.1.329 names no tool in the interactive permission notification.
+  return 'Claude needs your permission'
 }
 
 // TODO: Move this to Tool.renderPermissionRequest
