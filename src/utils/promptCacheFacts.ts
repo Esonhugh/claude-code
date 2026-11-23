@@ -1,7 +1,8 @@
 import { getCacheControl } from '../services/api/claude.js'
 import type { Message } from '../types/message.js'
 import { SYNTHETIC_MODEL } from './messages.js'
-import { getModelCosts } from './modelCost.js'
+import { getCanonicalName, normalizeModelStringForAPI } from './model/model.js'
+import { getModelCosts, MODEL_COSTS } from './modelCost.js'
 
 export type PromptCacheFacts = {
   secondsSinceLastResponse: number
@@ -43,17 +44,64 @@ export function getPromptCacheFacts(
         ? '1h'
         : '5m'
   const secondsSinceLastResponse = Math.max(0, Math.round((now - repliedAt) / 1000))
-  const costs = getModelCosts(model ?? last.message.model, usage as Parameters<typeof getModelCosts>[1])
-  // A 1h cache write costs 2x input; the 5m rate is the catalog's cache-write price.
-  const perMillion =
-    cacheTtl === '1h' ? costs.inputTokens * 2 : costs.promptCacheWriteTokens
   return {
     secondsSinceLastResponse,
     contextTokens,
     cacheTtl,
     promptCacheLikelyExpired:
       secondsSinceLastResponse >= (cacheTtl === '1h' ? 3600 : 300),
-    estimatedCacheWriteUsd:
-      Math.round((contextTokens / 1_000_000) * perMillion * 1e4) / 1e4,
+    estimatedCacheWriteUsd: cacheWriteUsd(
+      model ?? last.message.model,
+      contextTokens,
+      cacheTtl,
+      usage,
+    ),
   }
+}
+
+export type ModelSwitchCacheFacts = {
+  promptCacheWarm: boolean
+  cacheTtl: '5m' | '1h'
+  estimatedCacheWriteUsd: number
+  pricing: 'configured' | 'catalog' | 'default'
+}
+
+// What official 2.1.329 tells PreModelSwitch/PostModelSwitch hooks: whether the
+// current cache is still warm (a switch forfeits it) and the cost of writing
+// contextTokens to toModel's cache. There is no managed modelPricing here, so
+// pricing is never "configured".
+export function getModelSwitchCacheFacts(
+  messages: readonly Message[],
+  toModel: string,
+  contextTokens: number,
+  now: number = Date.now(),
+): ModelSwitchCacheFacts {
+  const facts = getPromptCacheFacts(messages, toModel, now)
+  const cacheTtl =
+    facts?.cacheTtl ??
+    (getCacheControl({ querySource: 'repl_main_thread' }).ttl === '1h'
+      ? '1h'
+      : '5m')
+  return {
+    promptCacheWarm: facts !== undefined && !facts.promptCacheLikelyExpired,
+    cacheTtl,
+    estimatedCacheWriteUsd: cacheWriteUsd(toModel, contextTokens, cacheTtl),
+    pricing:
+      getCanonicalName(normalizeModelStringForAPI(toModel)) in MODEL_COSTS
+        ? 'catalog'
+        : 'default',
+  }
+}
+
+function cacheWriteUsd(
+  model: string,
+  tokens: number,
+  cacheTtl: '5m' | '1h',
+  usage: object = {},
+): number {
+  const costs = getModelCosts(model, usage as Parameters<typeof getModelCosts>[1])
+  // A 1h cache write costs 2x input; the 5m rate is the catalog's cache-write price.
+  const perMillion =
+    cacheTtl === '1h' ? costs.inputTokens * 2 : costs.promptCacheWriteTokens
+  return Math.round((tokens / 1_000_000) * perMillion * 1e4) / 1e4
 }

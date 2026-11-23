@@ -3,7 +3,10 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
-import type { PromptCacheFacts } from './promptCacheFacts.js'
+import type {
+  ModelSwitchCacheFacts,
+  PromptCacheFacts,
+} from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { z } from 'zod/v4'
 import { basename } from 'path'
@@ -5134,14 +5137,23 @@ export type ModelSwitchHookInfo = {
   toModel: string
   requestedModel: string | null
   contextTokens: number
+  cache: ModelSwitchCacheFacts
 }
 
-function createModelSwitchHookFields(info: ModelSwitchHookInfo) {
+function createModelSwitchHookFields<S extends string>(
+  info: ModelSwitchHookInfo,
+  source: S,
+) {
   return {
     from_model: info.fromModel,
     to_model: info.toModel,
     requested_model: info.requestedModel,
+    source,
     context_tokens: info.contextTokens,
+    prompt_cache_warm: info.cache.promptCacheWarm,
+    cache_ttl: info.cache.cacheTtl,
+    estimated_cache_write_usd: info.cache.estimatedCacheWriteUsd,
+    pricing: info.cache.pricing,
   }
 }
 
@@ -5162,8 +5174,7 @@ export async function executePreModelSwitchHooks(
   const hookInput: PreModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PreModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   let blockReason: string | undefined
   let ask = false
@@ -5208,8 +5219,7 @@ export async function executePostModelSwitchHooks(
   const hookInput: PostModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PostModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   const contexts: string[] = []
   for await (const result of executeHooks({

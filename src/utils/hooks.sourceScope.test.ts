@@ -2079,6 +2079,12 @@ describe('model switch hooks', () => {
     toModel: 'model-b',
     requestedModel: 'b',
     contextTokens: 1234,
+    cache: {
+      promptCacheWarm: true,
+      cacheTtl: '1h' as const,
+      estimatedCacheWriteUsd: 0.0123,
+      pricing: 'catalog' as const,
+    },
   }
 
   test('PreModelSwitch receives the switch and proceeds by default', async () => {
@@ -2095,8 +2101,12 @@ describe('model switch hooks', () => {
       from_model: 'model-a',
       to_model: 'model-b',
       requested_model: 'b',
-      context_tokens: 1234,
       source: 'command',
+      context_tokens: 1234,
+      prompt_cache_warm: true,
+      cache_ttl: '1h',
+      estimated_cache_write_usd: 0.0123,
+      pricing: 'catalog',
     })
   })
 
@@ -2233,6 +2243,12 @@ test('model switch hooks match on to_model', async () => {
     toModel: 'model-b',
     requestedModel: null,
     contextTokens: 0,
+    cache: {
+      promptCacheWarm: false,
+      cacheTtl: '5m',
+      estimatedCacheWriteUsd: 0,
+      pricing: 'default',
+    },
     source: 'sdk',
   })
   expect(f.calls.map((call) => call.command)).toEqual(['mine'])
