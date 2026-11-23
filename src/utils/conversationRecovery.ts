@@ -346,10 +346,14 @@ export function deserializeMessagesWithInterruptDetection(
         ? { kind: 'interrupted_turn' }
         : detectTurnInterruption(filteredMessages)
 
-    // Transform mid-turn interruptions into interrupted_prompt by appending
-    // a synthetic continuation message. This unifies both interruption kinds
-    // so the consumer only needs to handle interrupted_prompt.
+    // Transform mid-turn interruptions into interrupted_prompt with a
+    // synthetic continuation message. This unifies both interruption kinds
+    // so the consumer only needs to handle interrupted_prompt. Like official,
+    // the message joins the history only when the turn is auto-resumed
+    // (print.ts re-enqueues it); otherwise the user's next prompt follows the
+    // interrupted turn directly.
     let turnInterruptionState: TurnInterruptionState
+    let continuationSkipped = false
     if (internalState.kind === 'interrupted_turn') {
       const [continuationMessage] = normalizeMessages([
         createUserMessage({
@@ -357,7 +361,11 @@ export function deserializeMessagesWithInterruptDetection(
           isMeta: true,
         }),
       ])
-      filteredMessages.push(continuationMessage!)
+      if (process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN) {
+        filteredMessages.push(continuationMessage!)
+      } else {
+        continuationSkipped = true
+      }
       turnInterruptionState = {
         kind: 'interrupted_prompt',
         message: continuationMessage!,
@@ -370,14 +378,16 @@ export function deserializeMessagesWithInterruptDetection(
     // the conversation is API-valid if no resume action is taken. Skip past
     // trailing system/progress messages and insert right after the user
     // message so removeInterruptedMessage's splice(idx, 2) removes the
-    // correct pair.
+    // correct pair. A trailing attachment also gets one when no continuation
+    // was appended after it.
     const lastRelevantIdx = filteredMessages.findLastIndex(
       m => m.type !== 'system' && m.type !== 'progress',
     )
+    const lastRelevant = filteredMessages[lastRelevantIdx]
     if (
-      lastRelevantIdx !== -1 &&
-      filteredMessages[lastRelevantIdx]!.type === 'user' &&
-      !isLocalCommandOutput(filteredMessages[lastRelevantIdx]!)
+      lastRelevant &&
+      ((lastRelevant.type === 'user' && !isLocalCommandOutput(lastRelevant)) ||
+        (continuationSkipped && lastRelevant.type === 'attachment'))
     ) {
       filteredMessages.splice(
         lastRelevantIdx + 1,
