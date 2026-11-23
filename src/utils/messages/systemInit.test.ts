@@ -90,3 +90,11 @@ test('lists the manifest version of each plugin when it declares one', () => {
     { name: 'bare', path: '/p/bare', source: 'bare@inline' },
   ])
 })
+
+// Official 2.1.329 sends both whenever per-turn effort is decided; this
+// build's ultrathink never raises the request to xhigh.
+test('reports ultrathink as not raising the turn', () => {
+  const message = buildSystemInitMessage({ ...baseInputs, commands: [] }) as SDKSystemMessage
+  expect(message.ultrathink_available).toBe(false)
+  expect(message.ultrathink_typed_raises).toBe(false)
+})

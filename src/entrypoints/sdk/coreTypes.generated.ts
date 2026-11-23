@@ -364,6 +364,8 @@ export type SDKSystemMessage = {
   original_cwd?: string
   additional_directories?: string[]
   per_turn_effort_active?: boolean
+  ultrathink_available?: boolean
+  ultrathink_typed_raises?: boolean
   view_mode?: 'focus' | 'default'
   analytics_disabled?: boolean
   product_feedback_disabled?: boolean

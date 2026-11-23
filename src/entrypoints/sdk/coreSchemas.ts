@@ -2041,6 +2041,18 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       .describe('@internal Working directory the session started in.'),
     additional_directories: z.array(z.string()).optional(),
     per_turn_effort_active: z.boolean().optional(),
+    ultrathink_available: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when typing `ultrathink` runs the turn at xhigh effort on this frame's `model`.",
+      ),
+    ultrathink_typed_raises: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when a user message that carries `ultrathink_typed: true` runs its turn at xhigh effort on this frame's `model`.",
+      ),
     view_mode: z.enum(['focus', 'default']).optional(),
     analytics_disabled: z.boolean().optional(),
     product_feedback_disabled: z.boolean().optional(),

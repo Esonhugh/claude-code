@@ -159,6 +159,12 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   // This build sends effort only as the top-level parameter and has no
   // focus view.
   initMessage.per_turn_effort_active = false
+  // Official 2.1.329 reports whether `ultrathink` (typed, or sent as
+  // `ultrathink_typed`) runs the turn at xhigh effort. This build's ultrathink
+  // adds an effort attachment, never raises the request's effort, and does not
+  // read `ultrathink_typed`.
+  initMessage.ultrathink_available = false
+  initMessage.ultrathink_typed_raises = false
   initMessage.view_mode = 'default'
   initMessage.analytics_disabled = isAnalyticsDisabled()
   initMessage.product_feedback_disabled = !isPolicyAllowed(
