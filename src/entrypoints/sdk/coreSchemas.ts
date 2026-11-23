@@ -1934,6 +1934,12 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
@@ -1965,6 +1971,12 @@ export const SDKResultErrorSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
