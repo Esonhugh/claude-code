@@ -15,6 +15,7 @@ export function createRemoteShellTranscript(
   const messages: Message[] = [
     createSyntheticUserCaveatMessage(),
     createUserMessage({
+      isTerminalCommand: true,
       content: `<bash-input>${command}</bash-input>`,
     }),
   ]
@@ -22,6 +23,7 @@ export function createRemoteShellTranscript(
   if ('error' in outcome) {
     messages.push(
       createUserMessage({
+        isTerminalCommand: true,
         content: `<bash-stderr>Command failed: ${escapeXml(outcome.error)}</bash-stderr>`,
       }),
     )
@@ -31,6 +33,7 @@ export function createRemoteShellTranscript(
   if (outcome.stdout || outcome.stderr || !outcome.interrupted) {
     messages.push(
       createUserMessage({
+        isTerminalCommand: true,
         content: `<bash-stdout>${options?.modelStdout ?? escapeXml(outcome.stdout)}</bash-stdout><bash-stderr>${escapeXml(outcome.stderr)}</bash-stderr>`,
       }),
     )

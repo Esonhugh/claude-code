@@ -527,6 +527,7 @@ export function createUserMessage({
   imagePasteIds,
   sourceToolAssistantUUID,
   permissionMode,
+  isTerminalCommand,
   origin,
 }: {
   content: string | ContentBlockParam[]
@@ -551,6 +552,7 @@ export function createUserMessage({
   sourceToolAssistantUUID?: UUID
   // Permission mode when message was sent (for rewind restoration)
   permissionMode?: PermissionMode
+  isTerminalCommand?: boolean
   summarizeMetadata?: {
     messagesSummarized: number
     userContext?: string
@@ -582,6 +584,7 @@ export function createUserMessage({
     imagePasteIds,
     sourceToolAssistantUUID,
     permissionMode,
+    ...(isTerminalCommand !== undefined && { isTerminalCommand }),
     origin,
   }
   return m
