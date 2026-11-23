@@ -136,6 +136,10 @@ async function poll(context: ToolUseContext) {
 
 /** A dispatched script returns at once: give it time to make its calls before stopping it. */
 const calling = () => new Promise(r => setTimeout(r, 50))
+async function until(check: () => boolean, ms = 5000): Promise<void> {
+  for (const end = Date.now() + ms; !check(); await new Promise(r => setTimeout(r, 10)))
+    if (Date.now() > end) throw new Error('timed out')
+}
 const sleepCode = (ms: number, value: string) => `await new Promise(r => setTimeout(r, ${ms})); ${JSON.stringify(value)}`
 
 setReplAsyncTimingForTesting({ detachMs: 100 })
@@ -723,6 +727,7 @@ describe('a dispatched script as a background task (official 2.1.325 registerScr
     process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '1'
     try {
       await dispatch("await Promise.all([Waiter({ id: 'running' }), Waiter({ id: 'queued' })])", context)
+      await until(() => entered.length > 0)
       await calling()
       expect(entered).toEqual(['running'])
       resetMainReplSession()
@@ -744,7 +749,7 @@ describe('a dispatched script as a background task (official 2.1.325 registerScr
         asking.addEventListener('abort', () => resolve({ behavior: 'deny', message: 'withdrawn', decisionReason: { type: 'other', reason: 'withdrawn' } }))
       })
     await REPLTool.call({ code: "await Waiter({ id: 'asked' })" }, context, prompt, undefined as never, undefined as never)
-    await calling()
+    await until(() => asking !== undefined)
     expect(asking?.aborted).toBe(false)
     resetMainReplSession()
     expect(asking?.aborted).toBe(true)
