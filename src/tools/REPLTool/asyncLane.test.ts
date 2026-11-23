@@ -177,7 +177,7 @@ describe('REPL async lane (official NUe)', () => {
     const context = contextFor()
     await run(sleepCode(400, 'done'), context)
     const session = findReplSession(context.agentId!)!
-    await new Promise(r => setTimeout(r, 150))
+    await until(() => replLedger(session)[0]?.state === 'detached')
     expect(replLedger(session).map(row => [row.id, row.state])).toEqual([[1, 'detached']])
     expect(session.depth).toBe(1)
     expect((await poll(context)).text).toContain('<result>done</result>')
@@ -216,6 +216,9 @@ describe('REPL async lane (official NUe)', () => {
 
   test('running() lists the session\u2019s evals and marks the caller; abort() cancels one still waiting', async () => {
     const context = contextFor()
+    // Not detached, #2 and #3 wait for #1 to end: the 100 ms detach could pass
+    // before a cold worker ran #1's first line, letting them run out of the ledger.
+    setReplAsyncTimingForTesting({ detachMs: REPL_ASYNC_WALL_CAP_MS })
     await run(
       // Waits for the next two evals to queue; a fixed sleep lost that race on a slow runner.
       'for (let i = 0; i < 1000 && running().length < 3; i++) await sleep(5); const rows = running(); rows[2].abort(); ' +
@@ -237,7 +240,7 @@ describe('REPL async lane (official NUe)', () => {
   test('without Poll the outcome is queued as a waking repl-eval event for its thread', async () => {
     const context = contextFor('auto')
     await run(sleepCode(50, 'later'), context)
-    await new Promise(r => setTimeout(r, 150))
+    await until(() => getCommandQueueSnapshot().length > 0)
     const queued = getCommandQueueSnapshot()
     expect(queued).toHaveLength(1)
     expect(queued[0]).toMatchObject({ mode: 'poll-event', agentId: context.agentId, priority: 'next' })
@@ -260,7 +263,7 @@ describe('REPL async lane (official NUe)', () => {
     await REPLTool.call({ code: sleepCode(5_000, 'never'), timeout: 60_000 }, context, allow, undefined as never, undefined as never)
     await REPLTool.call({ code: '"second"' }, context, allow, undefined as never, undefined as never)
     context.abortController.abort('user-cancel')
-    await new Promise(r => setTimeout(r, 100))
+    await until(() => queuedEvalEvents().length === 2)
     const events = queuedEvalEvents()
     expect(events.map(cmd => cmd.pollEvent!.startsTurn)).toEqual([false, false])
     expect(events[1]!.pollEvent!.envelope).toContain(
@@ -276,7 +279,7 @@ describe('REPL async lane (official NUe)', () => {
     session.statusLineGiven = true
     interruptReplSession(session)
     expect(session.statusLineGiven).toBe(false)
-    await new Promise(r => setTimeout(r, 100))
+    await until(() => queuedEvalEvents().length === 2)
     const events = queuedEvalEvents()
     expect(events.map(cmd => cmd.pollEvent!.startsTurn)).toEqual([false, false])
     expect(events[0]!.pollEvent!.envelope).toContain('<error>The user interrupted this script, so it stopped.')
@@ -687,7 +690,7 @@ describe('a dispatched script as a background task (official 2.1.325 registerScr
     const { context, scripts } = interactiveContext()
     await dispatch(sleepCode(100, 'built'), context)
     expect(scripts()).toMatchObject([{ status: 'running', description: 'Run the slow build', toolUseId: 'toolu_current' }])
-    await new Promise(r => setTimeout(r, 250))
+    await until(() => scripts()[0]?.status === 'completed')
     expect(scripts()).toMatchObject([{ status: 'completed', notified: true }])
   })
 
@@ -704,7 +707,7 @@ describe('a dispatched script as a background task (official 2.1.325 registerScr
     const { ScriptTask } = await import('../../tasks/ScriptTask/ScriptTask.js')
     await ScriptTask.kill(running.id, context.setAppState)
     expect(scripts().find(task => task.id === running.id)!.status).toBe('killed')
-    await new Promise(r => setTimeout(r, 50))
+    await until(() => findReplSession(MAIN_REPL_SESSION)?.ledger.size === 0)
     expect(findReplSession(MAIN_REPL_SESSION)!.ledger.size).toBe(0)
   })
 
