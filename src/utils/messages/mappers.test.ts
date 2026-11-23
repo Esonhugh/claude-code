@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
-import { createSystemMessage, createUserMessage, normalizeMessages } from '../messages.js'
-import { hookSystemMessageToSDK, toolResultMeta, toSDKMessages, toSDKSystemNotice } from './mappers.js'
+import { createAttachmentMessage } from '../attachments.js'
+import { createCompactBoundaryMessage, createSystemMessage, createUserMessage, normalizeMessages } from '../messages.js'
+import { hookSystemMessagesToSDK, hookSystemMessageToSDK, toolResultMeta, toSDKMessages, toSDKSystemNotice } from './mappers.js'
 
 function toolResult(id: string) {
   return {
@@ -175,4 +176,32 @@ test("a hook's systemMessage is sent as a notice naming the hook", () => {
     uuid,
     session_id: expect.any(String),
   })
+})
+
+// Official 2.1.329 prefixes every line and drops ANSI codes and control characters.
+test("each line of a hook's systemMessage names the hook", () => {
+  const uuid = '00000000-0000-4000-8000-000000000001'
+  expect(
+    hookSystemMessageToSDK(
+      { type: 'hook_system_message', content: 'line1\nline2\r\nline3\u001b[31mred\u0007', hookName: 'PreToolUse:Bash', toolUseID: 'toolu_1', hookEvent: 'PreToolUse' },
+      uuid,
+    ).content,
+  ).toBe('PreToolUse:Bash says: line1\nPreToolUse:Bash says: line2\nPreToolUse:Bash says: line3red ')
+})
+
+// A UserPromptSubmit hook's systemMessage is among the prompt's own messages,
+// not the query loop's; official sends it after system/init.
+test("a prompt's hook messages are sent, except the ones a compaction kept", () => {
+  const hook = (content: string) =>
+    createAttachmentMessage({ type: 'hook_system_message', content, hookName: 'UserPromptSubmit', toolUseID: 'toolu_1', hookEvent: 'UserPromptSubmit' })
+  const kept = hook('old')
+  const fresh = hook('new')
+  const boundary = {
+    ...createCompactBoundaryMessage('manual', 100),
+    compactMetadata: { trigger: 'manual' as const, preTokens: 100, preservedMessages: { anchorUuid: kept.uuid, uuids: [kept.uuid] } },
+  }
+  expect(hookSystemMessagesToSDK([createUserMessage({ content: 'hi' }), fresh]).map(m => [m.uuid, m.content])).toEqual([
+    [fresh.uuid, 'UserPromptSubmit says: new'],
+  ])
+  expect(hookSystemMessagesToSDK([boundary, kept, fresh]).map(m => m.uuid)).toEqual([fresh.uuid])
 })
