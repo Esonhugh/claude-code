@@ -2,6 +2,8 @@ import type { LocalJSXCommandContext } from '../../types/command.js'
 import type { AdditionalWorkingDirectory } from '../../types/permissions.js'
 import { getCwd } from '../../utils/cwd.js'
 import { changeSessionCwd } from '../../utils/cwdChange.js'
+import { logError } from '../../utils/log.js'
+import { relocateSessionTranscript } from '../../utils/sessionStorage.js'
 
 type ExecuteCdOptions = Parameters<typeof changeSessionCwd>[1]
 
@@ -67,10 +69,21 @@ export function addCwdToAdditionalWorkingDirectories(
 }
 
 export async function call(args: string, context: LocalJSXCommandContext) {
+  const oldCwd = getCwd()
   const result = executeCd(args)
   const cwd = getCwd()
   if (result.message === `Changed directory to ${cwd}`) {
     addCwdToAdditionalWorkingDirectories(context, cwd)
+    // The transcript and its <session id>/ folder follow the session into
+    // cwd's project directory, so it is resumed from there.
+    if (cwd !== oldCwd) {
+      try {
+        await relocateSessionTranscript(cwd)
+      } catch (error) {
+        // The session still moves; its transcript stays where it was.
+        logError(error)
+      }
+    }
   }
   return { type: 'text' as const, value: result.message }
 }
