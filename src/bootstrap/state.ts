@@ -69,6 +69,9 @@ type State = {
   hasUnknownModelCost: boolean
   cwd: string
   modelUsage: { [modelName: string]: ModelUsage }
+  // Per-model usage since the last result was written; undefined until a
+  // stream-json host asks for it.
+  modelUsageSinceLastResult: { [modelName: string]: ModelUsage } | undefined
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
   sessionFallbackModels: string[]
@@ -321,6 +324,7 @@ function getInitialState(): State {
     hasUnknownModelCost: false,
     cwd: resolvedCwd,
     modelUsage: {},
+    modelUsageSinceLastResult: undefined,
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
     sessionFallbackModels: [],
@@ -910,6 +914,24 @@ export function getModelUsage(): { [modelName: string]: ModelUsage } {
 
 export function getUsageForModel(model: string): ModelUsage | undefined {
   return STATE.modelUsage[model]
+}
+
+export function trackModelUsageSinceLastResult(): void {
+  STATE.modelUsageSinceLastResult ??= {}
+}
+
+export function getModelUsageSinceLastResult():
+  | { [modelName: string]: ModelUsage }
+  | undefined {
+  return STATE.modelUsageSinceLastResult
+}
+
+export function takeModelUsageSinceLastResult():
+  | { [modelName: string]: ModelUsage }
+  | undefined {
+  const usage = STATE.modelUsageSinceLastResult
+  if (usage !== undefined) STATE.modelUsageSinceLastResult = {}
+  return usage
 }
 
 /**

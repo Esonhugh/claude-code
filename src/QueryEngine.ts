@@ -312,6 +312,59 @@ export function usageAfterMessage(
 }
 
 /**
+ * Official 2.1.329: when the turn's first message_start and first content
+ * frame (content_block_start or content_block_delta) arrived, and when the
+ * request that first message_start belongs to was dispatched.
+ */
+export type StreamTimings = {
+  firstStreamAt?: number
+  requestSentAt?: number
+  firstContentFrameAt?: number
+}
+
+export function streamTimingsAfterEvent(
+  timings: StreamTimings,
+  message: { event?: unknown; requestSentAtMs?: number },
+  now: number,
+): StreamTimings {
+  const { type } = message.event as BetaRawMessageStreamEvent
+  if (type === 'message_start') {
+    return {
+      ...timings,
+      firstStreamAt: timings.firstStreamAt ?? now,
+      requestSentAt: timings.requestSentAt ?? message.requestSentAtMs,
+    }
+  }
+  if (
+    timings.firstContentFrameAt === undefined &&
+    (type === 'content_block_start' || type === 'content_block_delta')
+  ) {
+    return { ...timings, firstContentFrameAt: now }
+  }
+  return timings
+}
+
+// Official 2.1.329 reports these only on a successful result that is not an
+// API error and did not stop for a deferred tool.
+export function resultStreamTimings(
+  timings: StreamTimings,
+  startTime: number,
+  reported: boolean,
+): { ttft_stream_ms?: number; time_to_request_ms?: number; first_content_frame_ms?: number } {
+  if (!reported) return {}
+  const since = (at: number | undefined) =>
+    at === undefined ? undefined : Math.max(0, at - startTime)
+  const ttft = since(timings.firstStreamAt)
+  const toRequest = since(timings.requestSentAt)
+  const firstFrame = since(timings.firstContentFrameAt)
+  return {
+    ...(ttft !== undefined && { ttft_stream_ms: ttft }),
+    ...(toRequest !== undefined && { time_to_request_ms: toRequest }),
+    ...(firstFrame !== undefined && { first_content_frame_ms: firstFrame }),
+  }
+}
+
+/**
  * The message the turn's result is read from. Stop hooks append progress,
  * attachments and meta feedback after the assistant reply; a turn that ends
  * on the consecutive Stop-hook block cap ends on that meta feedback, which
@@ -1327,6 +1380,7 @@ export class QueryEngine {
     let lastApiErrorType: string | undefined
     let lastApiErrorCode: string | undefined
     let requestStartedAt: number | undefined
+    let streamTimings: StreamTimings = {}
     let thinkingEstimate = 0
     // The API message the stream events being forwarded belong to.
     let apiMessageId: string | undefined
@@ -1483,6 +1537,7 @@ export class QueryEngine {
           yield* normalizeMessage(message)
           break
         case 'stream_event': {
+          streamTimings = streamTimingsAfterEvent(streamTimings, message, Date.now())
           const thinking = nextThinkingEstimate(
             thinkingEstimate,
             // @ts-ignore - recovered code
@@ -1530,6 +1585,9 @@ export class QueryEngine {
                 requestStartedAt !== undefined && {
                   ttft_ms: Date.now() - requestStartedAt,
                 }),
+              ...(message.thinkingDisplay !== undefined && {
+                thinking_display: message.thinkingDisplay,
+              }),
             }
           }
 
@@ -1889,6 +1947,11 @@ export class QueryEngine {
       ...(firstAssistantAt !== undefined && {
         ttft_ms: Math.max(0, firstAssistantAt - startTime),
       }),
+      ...resultStreamTimings(
+        streamTimings,
+        startTime,
+        !isApiError && !deferredToolUseResult,
+      ),
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,

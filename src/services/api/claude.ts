@@ -2392,6 +2392,10 @@ async function* queryModelRequest(
 
   const newMessages: AssistantMessage[] = []
   let ttftMs = 0
+  let thinkingDisplay: string | undefined
+  // Official 2.1.329: when the first attempt's request was dispatched, carried
+  // on message_start for the result's time_to_request_ms.
+  let requestSentAt: number | undefined
   let partialMessage: BetaMessage | undefined = undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
   const stoppedBlockIndexes = new Set<number>()
@@ -2463,6 +2467,7 @@ async function* queryModelRequest(
 
         const params = await paramsForAttempt(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
+        thinkingDisplay = thinkingDisplayOf(params.thinking)
 
         maxOutputTokens = params.max_tokens
 
@@ -2472,6 +2477,7 @@ async function* queryModelRequest(
         queryCheckpoint('query_api_request_sent')
         if (!options.agentId) {
           headlessProfilerCheckpoint('api_request_sent')
+          if (attempt === 1) requestSentAt ??= Date.now()
         }
 
         // Generate and track client request ID so timeouts (which return no
@@ -3006,10 +3012,14 @@ async function* queryModelRequest(
             break
         }
 
+        const display = streamEventThinkingDisplay(part, thinkingDisplay)
         yield {
           type: 'stream_event',
           event: part,
-          ...(part.type === 'message_start' ? { ttftMs } : undefined),
+          ...(part.type === 'message_start'
+            ? { ttftMs, ...(requestSentAt !== undefined && { requestSentAtMs: requestSentAt }) }
+            : undefined),
+          ...(display !== undefined ? { thinkingDisplay: display } : undefined),
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
@@ -3794,6 +3804,26 @@ async function* queryModelRequest(
   releaseStreamResources()
 }
 
+// Official 2.1.329: the thinking.display put in the request body.
+function thinkingDisplayOf(thinking: unknown): string | undefined {
+  if (typeof thinking !== 'object' || thinking === null || !('display' in thinking)) return undefined
+  return typeof thinking.display === 'string' ? thinking.display : undefined
+}
+
+// Official 2.1.329 carries the request's display on message_start, on a
+// thinking block's content_block_start and on thinking_delta events only.
+export function streamEventThinkingDisplay(
+  event: BetaRawMessageStreamEvent,
+  display: string | undefined,
+): string | undefined {
+  if (display === undefined) return undefined
+  return event.type === 'message_start' ||
+    (event.type === 'content_block_start' && event.content_block.type === 'thinking') ||
+    (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta')
+    ? display
+    : undefined
+}
+
 /**
  * Cleans up stream resources to prevent memory leaks.
  * @internal Exported for testing
@@ -3894,6 +3924,9 @@ export function updateUsage(
     inference_geo: usage.inference_geo,
     iterations: partUsage.iterations ?? usage.iterations,
     speed: (partUsage as BetaUsage).speed ?? usage.speed,
+    fallback_credit:
+      (partUsage as { fallback_credit?: unknown }).fallback_credit ??
+      usage.fallback_credit,
   }
 }
 
@@ -3957,6 +3990,7 @@ export function accumulateUsage(
     inference_geo: messageUsage.inference_geo, // Use the most recent
     iterations: messageUsage.iterations, // Use the most recent
     speed: messageUsage.speed, // Use the most recent
+    fallback_credit: messageUsage.fallback_credit ?? totalUsage.fallback_credit,
   }
 }
 

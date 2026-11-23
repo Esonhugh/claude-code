@@ -5,6 +5,8 @@ import {
   setAdditionalDirectoriesForClaudeMd,
   setInlinePlugins,
   setInlinePluginsNoMcp,
+  takeModelUsageSinceLastResult,
+  trackModelUsageSinceLastResult,
 } from '../bootstrap/state.js'
 import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied, joinReloadAddPlugins } from '../entrypoints/sdk/launchInitialize.js'
@@ -1184,6 +1186,11 @@ export async function runHeadless(
       : null
 
   headlessProfilerCheckpoint('before_runHeadlessStreaming')
+  // Like official 2.1.329, a stream-json or SDK host gets each result's
+  // per-model usage since the previous result.
+  if (options.sdkUrl || options.outputFormat === 'stream-json') {
+    trackModelUsageSinceLastResult()
+  }
   let resultIndex = 0
   for await (const message of runHeadlessStreaming(
     structuredIO,
@@ -1203,6 +1210,10 @@ export async function runHeadless(
     // Like official 2.1.311: each written result is numbered in run order.
     if (message.type === 'result') {
       message.result_index = resultIndex++
+      const usageSinceLastResult = takeModelUsageSinceLastResult()
+      if (usageSinceLastResult) {
+        message.model_usage_since_last_result = usageSinceLastResult
+      }
       // User sends still waiting, so a host knows another result follows.
       message.queued_turn_count = getCommandQueueSnapshot().filter(
         command =>
