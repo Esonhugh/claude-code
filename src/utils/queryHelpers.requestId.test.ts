@@ -32,3 +32,19 @@ test('the assistant row of an API error says so and carries its status, type and
   for (const key of ['is_api_error_message', 'api_error_status', 'api_error_type', 'api_error_code', 'refused_message_id'])
     expect(plain).not.toHaveProperty(key)
 })
+
+// Official 2.1.329: thinking_display rides on the assistant frame of a streamed
+// thinking block, never on one whose block is anything else.
+test('the assistant frame of a streamed thinking block carries the request display', () => {
+  const thinking = {
+    ...createAssistantMessage({ content: [{ type: 'thinking', thinking: 'hm', signature: 's' }] as never }),
+    thinkingDisplay: 'summarized',
+  }
+  const [sdk] = [...normalizeMessage(thinking)]
+  expect(sdk).toMatchObject({ type: 'assistant', thinking_display: 'summarized' })
+  const text = { ...createAssistantMessage({ content: 'hi' }), thinkingDisplay: 'summarized' }
+  const [plain] = [...normalizeMessage(text)]
+  expect(plain).not.toHaveProperty('thinking_display')
+  const [bare] = [...normalizeMessage({ ...thinking, thinkingDisplay: undefined })]
+  expect(bare).not.toHaveProperty('thinking_display')
+})

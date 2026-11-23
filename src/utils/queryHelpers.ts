@@ -130,6 +130,12 @@ function apiErrorFields(message: AssistantMessage) {
   }
 }
 
+/** Official 2.1.329 sends thinking_display only on a frame whose one block is that thinking block. */
+function thinkingDisplayFields(message: AssistantMessage, content: readonly { type: string }[]) {
+  if (message.message.content.length !== 1 || content.length !== 1 || content[0]?.type !== 'thinking') return {}
+  return typeof message.thinkingDisplay === 'string' ? { thinking_display: message.thinkingDisplay } : {}
+}
+
 /**
  * SDK messages for one message of a subagent, tagged with the Agent tool_use
  * that spawned it (parent_tool_use_id).
@@ -218,6 +224,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           timestamp: _.timestamp,
           ...(_.requestId !== undefined && { request_id: _.requestId }),
           ...apiErrorFields(message),
+          ...thinkingDisplayFields(message, _.message.content),
         }
       }
       return

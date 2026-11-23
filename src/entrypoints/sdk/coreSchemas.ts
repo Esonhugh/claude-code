@@ -1826,6 +1826,12 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
     api_error_code: z.string().optional(),
     api_error_type: z.string().optional().describe("The `error.type` of the API error body, such as 'invalid_request_error'."),
     refused_message_id: z.string().optional().describe('On a refusal error: the id of the API message the safety classifier stopped.'),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        "@internal The thinking.display Claude Code put in the API request body for the response that streamed this frame's thinking block, as on a stream event. Sent only on a frame whose one content block is a streamed thinking block, and only when the body had a display.",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     request_id: z.string().optional(),

@@ -2894,6 +2894,7 @@ async function* queryModelRequest(
               throw new Error('Message not found')
             }
             stoppedBlockIndexes.add(part.index)
+            const blockDisplay = blockThinkingDisplay(contentBlock, thinkingDisplay)
             const m: AssistantMessage = {
               message: {
                 ...partialMessage,
@@ -2912,6 +2913,7 @@ async function* queryModelRequest(
               ...(isAnt() &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
+              ...(blockDisplay !== undefined && { thinkingDisplay: blockDisplay }),
             }
             newMessages.push(m)
             yield m
@@ -3822,6 +3824,15 @@ export function streamEventThinkingDisplay(
     (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta')
     ? display
     : undefined
+}
+
+// Official 2.1.329 keeps the request's display on the assistant message of a
+// streamed thinking block only (redacted thinking has none).
+export function blockThinkingDisplay(
+  block: { type: string },
+  display: string | undefined,
+): string | undefined {
+  return block.type === 'thinking' ? display : undefined
 }
 
 /**

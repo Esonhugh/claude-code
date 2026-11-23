@@ -327,6 +327,7 @@ export type SDKAssistantMessage = {
   api_error_code?: string
   api_error_type?: string
   refused_message_id?: string
+  thinking_display?: string
   uuid: string
   session_id: string
   request_id?: string
