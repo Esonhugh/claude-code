@@ -5760,6 +5760,10 @@ export async function executeElicitationHooks({
       elicitationResponse = parsed.response
     }
   }
+  // Official 2.1.329 answers a hook's cancel with empty content.
+  if (elicitationResponse?.action === 'cancel') {
+    elicitationResponse = { action: 'cancel', content: {} }
+  }
 
   return { elicitationResponse, blockingError }
 }

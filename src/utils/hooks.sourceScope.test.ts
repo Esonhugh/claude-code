@@ -2430,3 +2430,17 @@ test('Stop and SubagentStop hooks list in-flight background work and session cro
   expect(f.calls[0]?.input).toMatchObject({ hook_event_name: 'Stop', ...expected })
   expect(f.calls[1]?.input).toMatchObject({ hook_event_name: 'SubagentStop', ...expected })
 })
+
+test('an Elicitation hook that cancels answers the server with empty content', async () => {
+  const f = fixture()
+  f.add('userSettings', 'Elicitation', 'cancel')
+  f.commands.set('cancel', {
+    hookSpecificOutput: { hookEventName: 'Elicitation', action: 'cancel' },
+  })
+  const { elicitationResponse } = await f.hooks.executeElicitationHooks({
+    serverName: 'el',
+    message: 'Pick a color',
+    signal: new AbortController().signal,
+  })
+  expect(elicitationResponse).toEqual({ action: 'cancel', content: {} })
+})
