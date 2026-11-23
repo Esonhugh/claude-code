@@ -942,6 +942,22 @@ const ModelSwitchFieldsSchema = lazySchema(() =>
       .describe(
         "Prompt tokens the next request re-sends: the last main-thread response's input + cache_read + cache_creation + output tokens (0 before the first response)",
       ),
+    prompt_cache_warm: z
+      .boolean()
+      .describe(
+        "Whether the current model's prompt cache is likely still warm (a switch then forfeits it)",
+      ),
+    cache_ttl: z.enum(['5m', '1h']),
+    estimated_cache_write_usd: z
+      .number()
+      .describe(
+        'Estimated cost of re-caching context_tokens on to_model at its cache-write rate; excludes the response',
+      ),
+    pricing: z
+      .enum(['configured', 'catalog', 'default'])
+      .describe(
+        'configured: priced at the managed modelPricing setting; catalog: list price; default: to_model unknown, the default tier was assumed',
+      ),
   }),
 )
 

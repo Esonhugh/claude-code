@@ -11,6 +11,7 @@ import {
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import {
   checkModelSwitch,
+  describeBlockedModelSwitch,
   getModelSwitchHookInfo,
 } from '../../utils/model/modelSwitchHooks.js'
 import { validateModel } from '../../utils/model/validateModel.js'
@@ -56,9 +57,12 @@ export const call: LocalCommandCall = async (args, context) => {
     return {
       type: 'text',
       value:
-        verdict.decision === 'ask'
-          ? `Model switch needs confirmation${verdict.reason ? `: ${verdict.reason}` : ''} (run /model interactively to confirm)`
-          : `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+        describeBlockedModelSwitch(
+          requested,
+          verdict.decision === 'ask'
+            ? `${verdict.reason ?? 'confirmation required'} (run /model interactively to confirm)`
+            : verdict.reason,
+        ),
     }
   }
 

@@ -3,7 +3,10 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
-import type { PromptCacheFacts } from './promptCacheFacts.js'
+import type {
+  ModelSwitchCacheFacts,
+  PromptCacheFacts,
+} from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { z } from 'zod/v4'
 import { basename } from 'path'
@@ -150,6 +153,7 @@ import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
+import { SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../constants/xml.js'
 import {
   escapeSystemReminderTags,
   extractTextContent,
@@ -267,13 +271,21 @@ function executeInBackground({
         outcome: result.code === 0 ? 'success' : 'error',
       })
       if (result.code === 2) {
-        enqueuePendingNotification({
-          value: wrapInSystemReminder(
-            escapeSystemReminderTags(
-              `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
-            ),
+        // Official 2.1.329 shows the user "⏺ Stop hook feedback" and gives the
+        // model the hook output in a system-reminder after the notification.
+        const reminder = wrapInSystemReminder(
+          escapeSystemReminderTags(
+            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
           ),
+        ).replaceAll(
+          new RegExp(`<(?=\\s*/\\s*${TASK_NOTIFICATION_TAG}\\b)`, 'gi'),
+          '&lt;',
+        )
+        enqueuePendingNotification({
+          value: `<${TASK_NOTIFICATION_TAG}>\n<${SUMMARY_TAG}>Stop hook feedback</${SUMMARY_TAG}>\n</${TASK_NOTIFICATION_TAG}>\n${reminder}`,
           mode: 'task-notification',
+          priority: 'next',
+          skipAttachments: true,
         })
       }
     })
@@ -5125,14 +5137,23 @@ export type ModelSwitchHookInfo = {
   toModel: string
   requestedModel: string | null
   contextTokens: number
+  cache: ModelSwitchCacheFacts
 }
 
-function createModelSwitchHookFields(info: ModelSwitchHookInfo) {
+function createModelSwitchHookFields<S extends string>(
+  info: ModelSwitchHookInfo,
+  source: S,
+) {
   return {
     from_model: info.fromModel,
     to_model: info.toModel,
     requested_model: info.requestedModel,
+    source,
     context_tokens: info.contextTokens,
+    prompt_cache_warm: info.cache.promptCacheWarm,
+    cache_ttl: info.cache.cacheTtl,
+    estimated_cache_write_usd: info.cache.estimatedCacheWriteUsd,
+    pricing: info.cache.pricing,
   }
 }
 
@@ -5153,8 +5174,7 @@ export async function executePreModelSwitchHooks(
   const hookInput: PreModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PreModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   let blockReason: string | undefined
   let ask = false
@@ -5199,8 +5219,7 @@ export async function executePostModelSwitchHooks(
   const hookInput: PostModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PostModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   const contexts: string[] = []
   for await (const result of executeHooks({
@@ -5740,6 +5759,10 @@ export async function executeElicitationHooks({
     if (parsed.response) {
       elicitationResponse = parsed.response
     }
+  }
+  // Official 2.1.329 answers a hook's cancel with empty content.
+  if (elicitationResponse?.action === 'cancel') {
+    elicitationResponse = { action: 'cancel', content: {} }
   }
 
   return { elicitationResponse, blockingError }

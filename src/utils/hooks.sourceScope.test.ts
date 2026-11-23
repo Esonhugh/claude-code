@@ -92,6 +92,7 @@ function fixture() {
   // Commands listed here exit with the given code instead of printing JSON.
   const exits = new Map<string, { code: number | null; stderr?: string }>()
   const sdkEvents: Record<string, unknown>[] = []
+  const notifications: Record<string, unknown>[] = []
   // Commands listed here exit after printing, but a background child they
   // started keeps stdout/stderr open (`sleep 300 & echo ...`), so the streams
   // never end and the shell's kill cannot close them. A `drip` keeps that
@@ -295,6 +296,11 @@ function fixture() {
     './sdkEventQueue.js': {
       enqueueSdkEvent: (event: Record<string, unknown>) => sdkEvents.push(event),
     },
+    '../constants/xml.js': require('../constants/xml.js'),
+    './messageQueueManager.js': {
+      enqueuePendingNotification: (command: Record<string, unknown>) =>
+        notifications.push(command),
+    },
     './file.js': { pathExists: async () => true },
     './plugins/pluginOptionsStorage.js': {
       loadPluginOptions: () => ({ token: 'x; touch pwned' }),
@@ -310,7 +316,18 @@ function fixture() {
           child.stderr.end()
           child.emit('close', 143)
         })
-        return { cleanup: noop }
+        // An asyncRewake hook reads its output from the paused streams once
+        // the child closes.
+        return {
+          cleanup: noop,
+          result: new Promise((resolve) =>
+            child.once('close', (code: number | null) => resolve({ code })),
+          ),
+          taskOutput: {
+            getStdout: async () => String(child.stdout.read() ?? ''),
+            getStderr: () => String(child.stderr.read() ?? ''),
+          },
+        }
       },
     },
     './task/TaskOutput.js': { TaskOutput: class {} },
@@ -400,7 +417,12 @@ function fixture() {
       isAbortError: (error: unknown) =>
         error instanceof Error && error.name === 'AbortError',
     },
-    './messages.js': { getLastAssistantMessage: () => undefined },
+    './messages.js': {
+      getLastAssistantMessage: () => undefined,
+      escapeSystemReminderTags: (text: string) => text,
+      wrapInSystemReminder: (text: string) =>
+        `<system-reminder>\n${text}\n</system-reminder>`,
+    },
   }
   // Tracks concurrent evaluator calls; set `gate` to hold them.
   const model: { active: number; max: number; gate?: Promise<void> } = {
@@ -510,6 +532,7 @@ function fixture() {
     commands,
     exits,
     sdkEvents,
+    notifications,
     lingering,
     envs,
     spawns,
@@ -1915,6 +1938,23 @@ describe('asyncRewake command hooks', () => {
     expect(results.some((result) => result.blockingError)).toBe(false)
     expect(f.logs.some((log) => log.includes('backgrounding process'))).toBe(true)
   })
+
+  test('an exit 2 in the background wakes the model with a "Stop hook feedback" notification', async () => {
+    const f = fixture()
+    await run(f)
+    for (let i = 0; i < 50 && f.notifications.length === 0; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(f.notifications).toEqual([
+      {
+        value:
+          '<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n' +
+          '<system-reminder>\nStop hook blocking error from command "PostToolUse:Read": REWAKE_MSG\n</system-reminder>',
+        mode: 'task-notification',
+        priority: 'next',
+        skipAttachments: true,
+      },
+    ])
+  })
 })
 
 test('PreToolUse permissionDecision defer is accepted and outranks ask and allow, not deny', async () => {
@@ -2039,6 +2079,12 @@ describe('model switch hooks', () => {
     toModel: 'model-b',
     requestedModel: 'b',
     contextTokens: 1234,
+    cache: {
+      promptCacheWarm: true,
+      cacheTtl: '1h' as const,
+      estimatedCacheWriteUsd: 0.0123,
+      pricing: 'catalog' as const,
+    },
   }
 
   test('PreModelSwitch receives the switch and proceeds by default', async () => {
@@ -2055,8 +2101,12 @@ describe('model switch hooks', () => {
       from_model: 'model-a',
       to_model: 'model-b',
       requested_model: 'b',
-      context_tokens: 1234,
       source: 'command',
+      context_tokens: 1234,
+      prompt_cache_warm: true,
+      cache_ttl: '1h',
+      estimated_cache_write_usd: 0.0123,
+      pricing: 'catalog',
     })
   })
 
@@ -2193,6 +2243,12 @@ test('model switch hooks match on to_model', async () => {
     toModel: 'model-b',
     requestedModel: null,
     contextTokens: 0,
+    cache: {
+      promptCacheWarm: false,
+      cacheTtl: '5m',
+      estimatedCacheWriteUsd: 0,
+      pricing: 'default',
+    },
     source: 'sdk',
   })
   expect(f.calls.map((call) => call.command)).toEqual(['mine'])
@@ -2373,4 +2429,18 @@ test('Stop and SubagentStop hooks list in-flight background work and session cro
   expect(f.calls.map(call => call.command)).toEqual(['stop', 'substop'])
   expect(f.calls[0]?.input).toMatchObject({ hook_event_name: 'Stop', ...expected })
   expect(f.calls[1]?.input).toMatchObject({ hook_event_name: 'SubagentStop', ...expected })
+})
+
+test('an Elicitation hook that cancels answers the server with empty content', async () => {
+  const f = fixture()
+  f.add('userSettings', 'Elicitation', 'cancel')
+  f.commands.set('cancel', {
+    hookSpecificOutput: { hookEventName: 'Elicitation', action: 'cancel' },
+  })
+  const { elicitationResponse } = await f.hooks.executeElicitationHooks({
+    serverName: 'el',
+    message: 'Pick a color',
+    signal: new AbortController().signal,
+  })
+  expect(elicitationResponse).toEqual({ action: 'cancel', content: {} })
 })

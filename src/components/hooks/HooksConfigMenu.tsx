@@ -234,37 +234,15 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
   // users can edit settings.json or ask Claude instead.
   if (hooksDisabled) {
     return (
-      <Dialog
-        title="Hook Configuration - Disabled"
+      <HooksDisabledDialog
+        totalHooksCount={totalHooksCount}
+        disabledByPolicy={disabledByPolicy}
+        managedHooksStillRun={
+          !disabledByPolicy &&
+          Object.keys(getSettingsForSource('policySettings') ?? {}).length > 0
+        }
         onCancel={handleExit}
-        inputGuide={() => <Text>Esc to close</Text>}
-      >
-        <Box flexDirection="column" gap={1}>
-          <Box flexDirection="column">
-            <Text>
-              All hooks are currently <Text bold>disabled</Text>
-              {disabledByPolicy && ' by a managed settings file'}. You have{' '}
-              <Text bold>{totalHooksCount}</Text> configured{' '}
-              {plural(totalHooksCount, 'hook')} that{' '}
-              {plural(totalHooksCount, 'is', 'are')} not running.
-            </Text>
-            <Box marginTop={1}>
-              <Text dimColor>When hooks are disabled:</Text>
-            </Box>
-            <Text dimColor>· No hook commands will execute</Text>
-            <Text dimColor>· StatusLine will not be displayed</Text>
-            <Text dimColor>
-              · Tool operations will proceed without hook validation
-            </Text>
-          </Box>
-          {!disabledByPolicy && (
-            <Text dimColor>
-              To re-enable hooks, remove &quot;disableAllHooks&quot; from
-              settings.json or ask Claude.
-            </Text>
-          )}
-        </Box>
-      </Dialog>
+      />
     )
   }
 
@@ -369,4 +347,47 @@ export function HooksConfigMenu({ toolNames, onExit }: Props): React.ReactNode {
         />
       )
   }
+}
+
+/**
+ * The /hooks page while disableAllHooks is on, worded like official 2.1.329.
+ * The menu is read-only, so it offers no re-enable button.
+ */
+export function HooksDisabledDialog({
+  totalHooksCount,
+  disabledByPolicy,
+  managedHooksStillRun,
+  onCancel,
+}: {
+  totalHooksCount: number
+  disabledByPolicy: boolean
+  managedHooksStillRun: boolean
+  onCancel: () => void
+}): React.ReactNode {
+  const state = disabledByPolicy ? 'turned off by your organization' : 'off'
+  return (
+    <Dialog
+      title="Hooks"
+      subtitle={
+        totalHooksCount > 0
+          ? `${state} · ${totalHooksCount} ${plural(totalHooksCount, 'hook')} not running`
+          : state
+      }
+      onCancel={onCancel}
+      inputGuide={() => <Text>Esc to close</Text>}
+    >
+      <Text>
+        {
+          "While hooks are off, no hook command runs, the status line isn't shown, and tools run without hook checks."
+        }
+        {managedHooksStillRun && ' Hooks set by your organization still run.'}
+      </Text>
+      {!disabledByPolicy && (
+        <Text dimColor>
+          To turn hooks back on, remove &quot;disableAllHooks&quot; from
+          settings.json or ask Claude.
+        </Text>
+      )}
+    </Dialog>
+  )
 }

@@ -34,6 +34,7 @@ import {
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import {
   checkModelSwitch,
+  describeBlockedModelSwitch,
   getModelSwitchHookInfo,
   getPostModelSwitchContext,
 } from '../../utils/model/modelSwitchHooks.js'
@@ -109,7 +110,7 @@ async function preModelSwitch(
   const verdict = await checkModelSwitch(info, source, context)
   if (verdict.decision === 'block') {
     onDone(
-      `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+      describeBlockedModelSwitch(info.requestedModel, verdict.reason),
       { display: 'system' },
     )
     return false
