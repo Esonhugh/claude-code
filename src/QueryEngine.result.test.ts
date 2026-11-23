@@ -111,3 +111,10 @@ test('result stream timings come from the first events of the turn', () => {
   expect(engine.resultStreamTimings(timings, 1000, false)).toEqual({})
   expect(engine.resultStreamTimings({}, 1000, true)).toEqual({})
 })
+
+// Official 2.1.329: `ttft_ms: !isApiError && firstAssistantAt !== null ? ... : undefined`.
+test('result ttft_ms is left off a result that ends on an API error', () => {
+  expect(engine.resultTtft(1250, 1000, false)).toEqual({ ttft_ms: 250 })
+  expect(engine.resultTtft(1250, 1000, true)).toEqual({})
+  expect(engine.resultTtft(undefined, 1000, false)).toEqual({})
+})

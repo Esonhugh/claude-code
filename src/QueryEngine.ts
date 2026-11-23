@@ -364,6 +364,16 @@ export function resultStreamTimings(
   }
 }
 
+// Official 2.1.329 leaves ttft_ms off a result that ends on an API error.
+export function resultTtft(
+  firstAssistantAt: number | undefined,
+  startTime: number,
+  isApiError: boolean,
+): { ttft_ms?: number } {
+  if (isApiError || firstAssistantAt === undefined) return {}
+  return { ttft_ms: Math.max(0, firstAssistantAt - startTime) }
+}
+
 /**
  * The message the turn's result is read from. Stop hooks append progress,
  * attachments and meta feedback after the assistant reply; a turn that ends
@@ -1944,9 +1954,7 @@ export class QueryEngine {
       ...(lastApiErrorType !== undefined && { api_error_type: lastApiErrorType }),
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
-      ...(firstAssistantAt !== undefined && {
-        ttft_ms: Math.max(0, firstAssistantAt - startTime),
-      }),
+      ...resultTtft(firstAssistantAt, startTime, isApiError),
       ...resultStreamTimings(
         streamTimings,
         startTime,
