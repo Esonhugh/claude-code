@@ -5,7 +5,7 @@ import {mkdtemp, realpath, rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {Readable, Writable} from 'node:stream'
-import {ThemeProvider, render} from '../ink.js'
+import {Box, ThemeProvider, render} from '../ink.js'
 import instances from '../ink/instances.js'
 import type {DOMElement, DOMNode} from '../ink/dom.js'
 import useStdin from '../ink/hooks/use-stdin.js'
@@ -32,18 +32,18 @@ function contents(node:DOMNode):string{return node.nodeName==='#text'?node.nodeV
 function texts(node:DOMNode):DOMElement[]{return node.nodeName==='#text'?[]:[...(['ink-text','ink-virtual-text'].includes(node.nodeName)?[node]:[]),...node.childNodes.flatMap(texts)]}
 const options=Array.from({length:12},(_,i)=>({value:'v'+i,label:i===0?'Zero':i===1?'Beta':i===2?'Beta 2':'Item '+i}))
 async function mount(initial:Record<string,unknown>={},respond:(value?:string)=>Promise<unknown>=async value=>({element:'pick',value}),isWorking=false,oneRow=false){
- const stdin=new Input(),stdout=new Output(),owner={};let completed=0,reorder:()=>void=()=>{};let props={value:'v0',options,...initial};const events:{kind:string;value?:string}[]=[]
+ const stdin=new Input(),stdout=new Output(),owner={},leaked:string[]=[];let completed=0,reorder:()=>void=()=>{};let props={value:'v0',options,...initial};const events:{kind:string;value?:string}[]=[]
  let pane:ModUiPane={id:'select',plugin:'fixture',owner,title:'Select',visible:true,shown:true,placement:'dock',focused:true,focusedElement:'pick',closeOnEscape:true,holdToasts:false,scrollOffset:0,bodyRows:34,bodyColumns:71,revision:0,contentRows:1,drawing:1}
  function Observer(){const {internal_eventEmitter}=useStdin();useLayoutEffect(()=>{const observe=()=>queueMicrotask(()=>{completed++});reorder=()=>{internal_eventEmitter.removeListener('input',observe);internal_eventEmitter.prependListener('input',observe)};reorder();return()=>{internal_eventEmitter.removeListener('input',observe)}},[internal_eventEmitter]);return null}
- const draw=()=> <><Observer/><ModsPane isWorking={isWorking} pane={{...pane,tree:{type:'Box',props:{flexDirection:'column'},children:[oneRow?{type:'Box',props:{flexDirection:'row',height:1},children:[{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}}]}:{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}},{type:'Button',props:{key:'tail',label:'Tail',hotkey:'b'},press:{plugin:'fixture',handle:2}}]}}}
+ const draw=()=> <><Observer/><Box onKeyDown={event=>{if(!event.defaultPrevented&&event.text!==undefined)leaked.push(event.text)}}><ModsPane isWorking={isWorking} pane={{...pane,tree:{type:'Box',props:{flexDirection:'column'},children:[oneRow?{type:'Box',props:{flexDirection:'row',height:1},children:[{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}}]}:{type:'Select',props:{key:'pick',label:'Rich',...props},press:{plugin:'fixture',handle:1}},{type:'Button',props:{key:'tail',label:'Tail',hotkey:'b'},press:{plugin:'fixture',handle:2}}]}}}
   onFocus={async(_pane,element)=>({focused:element!==undefined,element,revision:pane.revision})} onClose={async()=>({})} onScroll={async()=>({})}
-  onInteract={async(_pane,_drawing,_callback,kind,_element,value)=>{events.push({kind,value});return respond(value)}}/></>
+  onInteract={async(_pane,_drawing,_callback,kind,_element,value)=>{events.push({kind,value});return respond(value)}}/></Box></>
  const instance=await render(draw(),{stdin:stdin as never,stdout:stdout as never,exitOnCtrlC:false,patchConsole:false})
  const dom=()=>(instances.get(stdout as never) as unknown as {rootNode:DOMElement}).rootNode
  await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))
  const find=(text:string)=>texts(dom()).find(node=>contents(node)===text)
  const raw=async(value:string,count=1)=>{const before=completed;reorder();stdin.push(value);await until(()=>completed===before+count)}
- return {stdin,stdout,dom,find,raw,events,dispose:()=>instance.unmount(),redraw:async(next:Record<string,unknown>)=>{props={...props,...next};pane={...pane,drawing:pane.drawing!+1,revision:pane.revision+1};instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>);await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))}}
+ return {stdin,stdout,dom,find,raw,events,leaked,dispose:()=>instance.unmount(),redraw:async(next:Record<string,unknown>)=>{props={...props,...next};pane={...pane,drawing:pane.drawing!+1,revision:pane.revision+1};instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>);await until(()=>texts(dom()).some(node=>contents(node).includes('Rich:')))}}
 }
 test('Select opens on focus with official label, eight rows and remaining count',async()=>{
  const h=await mount()
@@ -80,6 +80,10 @@ test('Select closed arrows or Enter open without moving or submitting',async()=>
 test('Select cycles case-insensitive prefix labels and consumes Space without selecting or Button hotkeys',async()=>{
  const h=await mount()
  try{await h.raw('b');await until(()=>h.find('  Beta')?.textStyles?.inverse===true);await h.raw('B');await until(()=>h.find('  Beta 2')?.textStyles?.inverse===true);await h.raw('b');await until(()=>h.find('  Beta')?.textStyles?.inverse===true);await h.raw(' ');expect(h.events).toEqual([]);await h.raw('\r');await until(()=>h.events.length===1);expect(h.events).toEqual([{kind:'select',value:'v1'}])}finally{h.dispose()}
+})
+test('Select consumes text arriving several characters at once without moving, so Enter still picks',async()=>{
+ const h=await mount()
+ try{await until(()=>h.find('  Zero')?.textStyles?.inverse===true);await h.raw('beta');expect(h.leaked).toEqual([]);expect(h.find('  Zero')?.textStyles?.inverse).toBe(true);expect(h.find(' ▴')).toBeDefined();await h.raw('\r');await until(()=>h.events.length===1);expect(h.events).toEqual([{kind:'select',value:'v0'}])}finally{h.dispose()}
 })
 test('Select scroll window follows highlight and clamps when options shorten',async()=>{
  const h=await mount()

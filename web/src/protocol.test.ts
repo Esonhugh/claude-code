@@ -101,6 +101,39 @@ describe('reduce', () => {
     expect(state.items.at(-1)).toMatchObject({ kind: 'user', text: 'what does <channel source="x"> mean?' })
   })
 
+  it('takes back the messages still queued on the server after a reload, once', () => {
+    const waiting = (uuid: string, text: string) => ({
+      type: 'user',
+      uuid,
+      isQueued: true,
+      message: { role: 'user', content: [{ type: 'text', text }] },
+    })
+    let state = [waiting('u2', 'B'), waiting('u3', 'C'), waiting('u2', 'B')].reduce(reduce, initialState)
+    expect(state.queued.map(q => [q.id, q.text])).toEqual([['u2', 'B'], ['u3', 'C']])
+    expect(state.items).toEqual([])
+    // The engine runs both as one prompt: the first echo is one message, the second holds both.
+    const echo = (uuid: string, text: string) => ({ type: 'user', uuid, isReplay: true, message: { role: 'user', content: text } })
+    state = [echo('u2', 'B'), echo('u3', 'B\nC')].reduce(reduce, state)
+    expect(state.queued).toEqual([])
+    expect(state.items.map(i => i.kind === 'user' && i.text)).toEqual(['B', 'C'])
+    // One already shown is not queued again.
+    expect(reduce(state, waiting('u3', 'C')).queued).toEqual([])
+  })
+
+  it('shows the teammate messages of a prompt once when the server sends it again after a reload', () => {
+    const delivered = {
+      type: 'user',
+      isReplay: true,
+      uuid: 't1',
+      message: {
+        role: 'user',
+        content: '<teammate-message teammate_id="alice">\none\n</teammate-message>\n<teammate-message teammate_id="bob">\ntwo\n</teammate-message>',
+      },
+    }
+    const state = [delivered, delivered].reduce(reduce, initialState)
+    expect(state.items.map(i => i.id)).toEqual(['t1-0', 't1-1'])
+  })
+
   it('runs a queued message the turn did not take as the next turn', () => {
     let state = addUserMessage(initialState, 'first', [], 'u1')
     state = queueUserMessage(state, 'later', 'u2')

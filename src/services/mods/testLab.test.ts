@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { LocalJSXCommandContext } from '../../types/command.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
 import type { ModUiCallback, ModUiInteraction, ModUiPane } from './ui.js'
@@ -62,7 +61,8 @@ if (!process.env[childFlag]) {
   const { resetSettingsCache } = await import('../../utils/settings/settingsCache.js')
   const { getSettingsForSource } = await import('../../utils/settings/settings.js')
   const { disablePluginOp, enablePluginOp } = await import('../plugins/pluginOperations.js')
-  const { pluginDataDirPath } = await import('../../utils/plugins/pluginDirectories.js')
+  const { getPluginsDirectory } = await import('../../utils/plugins/pluginDirectories.js')
+  const { storeFileName } = await import('./hostOperations.js')
   const home = process.env.HOME!
   const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR']
   let saved: (string | undefined)[]
@@ -232,10 +232,10 @@ if (!process.env[childFlag]) {
     }
   }
   function storePath(id = pluginId) {
-    return join(pluginDataDirPath(id), `mod-store-${createHash('sha256').update(id).digest('hex')}.json`)
+    return join(getPluginsDirectory(), 'store', storeFileName(id))
   }
   async function store() {
-    return Object.fromEntries(JSON.parse(await readFile(storePath(), 'utf8')))
+    return JSON.parse(await readFile(storePath(), 'utf8'))
   }
 
   test('discovers the actual manifest and module, admits capabilities, and starts without a pane', async () => {
@@ -422,8 +422,8 @@ if (!process.env[childFlag]) {
   test('bounds events and input, resets only its own counters, and retains activation identity', async () => {
     await activate()
     const other = storePath('other-plugin@inline')
-    await mkdir(pluginDataDirPath('other-plugin@inline'), { recursive: true })
-    await writeFile(other, '[["unrelated",17]]')
+    await mkdir(dirname(other), { recursive: true })
+    await writeFile(other, '{"unrelated": 17}')
     await runImmediate('open')
     await interact('input', 'input.change', 'x'.repeat(300))
     await painted(pane => control(pane, 'input').props?.value === 'x'.repeat(256))
@@ -453,7 +453,7 @@ if (!process.env[childFlag]) {
     expect(control(runtime.ui.getSnapshot()[0]!, 'selection').props?.value).toBe('ascii')
     expect(control(runtime.ui.getSnapshot()[0]!, 'count').props?.label).toBe('Count: 0')
     expect(await store()).toEqual({ counters: state(reset).persistent })
-    expect(await readFile(other, 'utf8')).toBe('[["unrelated",17]]')
+    expect(await readFile(other, 'utf8')).toBe('{"unrelated": 17}')
     expect(logs).toEqual([])
     expect(diagnostics).toEqual([])
   })

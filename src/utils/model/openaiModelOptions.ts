@@ -15,7 +15,8 @@ import {
 import { CACHE_PATHS } from '../cachePaths.js'
 import { checkHasTrustDialogAccepted, getGlobalConfig } from '../config.js'
 import { logForDebugging } from '../debug.js'
-import { isEnvDefinedFalsy } from '../envUtils.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
+import { isEssentialTrafficOnly } from '../privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../userAgent.js'
 import type { EffortLevel } from '../effort.js'
 import type { ModelOption } from './modelOptions.js'
@@ -380,6 +381,15 @@ export function getGatewayModelOptions(): ModelOption[] {
 export async function fetchGatewayModels(): Promise<void> {
   if (!isGatewayModelDiscoveryEnabled()) {
     logForDebugging('[Gateway discovery] Skipped: not enabled')
+    return
+  }
+  // Like official, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC leaves only an
+  // explicitly requested discovery; the default-on one is not essential.
+  if (
+    isEssentialTrafficOnly() &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY)
+  ) {
+    logForDebugging('[Gateway discovery] Skipped: nonessential traffic disabled')
     return
   }
   const baseUrl = process.env.ANTHROPIC_BASE_URL

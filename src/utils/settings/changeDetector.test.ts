@@ -537,6 +537,18 @@ const scenarios: Record<
     expect(h.reviews[0]!.path).toBe(h.path)
     expect(h.settings.getInitialSettings().disableAllHooks).toBe(false)
   },
+  async 'an updater that returns null leaves the settings file as it is'(h) {
+    const before = readFileSync(h.path, 'utf8')
+    let seen: unknown
+    expect(
+      h.settings.updateSettingsForSource('userSettings', existing => {
+        seen = existing.disableAllHooks
+        return null
+      }).error,
+    ).toBeNull()
+    expect(seen).toBe(true)
+    expect(readFileSync(h.path, 'utf8')).toBe(before)
+  },
   async 'external writes without internal markers use native events'(h) {
     await h.detector.initialize()
     await h.ready()

@@ -1,8 +1,9 @@
 import { randomUUID, type UUID } from 'crypto'
-import { readdir, readFile, writeFile } from 'fs/promises'
-import { dirname, join } from 'path'
+import { cp, readdir, readFile, rm, writeFile } from 'fs/promises'
+import { dirname, join, sep } from 'path'
 import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
 import type { Message } from '../types/message.js'
+import { isENOENT } from '../utils/errors.js'
 import { listSessionsImpl } from '../utils/listSessionsImpl.js'
 import type { TranscriptMessage } from '../types/logs.js'
 import {
@@ -362,8 +363,9 @@ export async function findAgentIssuers(
  * A new session holding the conversation up to and including the assistant
  * message `messageId` (an API `msg_` id), like `/branch`: same folder, new
  * session id, each entry marked with where it came from. Resume it to continue.
+ * It gets its own copy of the session's uploads, which go when the original is deleted.
  */
-export async function forkSession(id: string, messageId: string): Promise<string | undefined> {
+export async function forkSession(id: string, messageId: string, uploadsDir?: string): Promise<string | undefined> {
   const found = await resolveSessionFilePath(id)
   if (!found) return undefined
   const log = await loadTranscriptFile(found.filePath)
@@ -377,6 +379,22 @@ export async function forkSession(id: string, messageId: string): Promise<string
     .slice(0, end + 1)
     .filter(m => !m.isSidechain)
     .map(m => JSON.stringify({ ...m, sessionId: forkId, forkedFrom: { sessionId: id, messageUuid: m.uuid } }))
+  if (uploadsDir !== undefined) {
+    const inJson = (text: string) => JSON.stringify(text).slice(1, -1)
+    const from = inJson(join(uploadsDir, id) + sep)
+    const to = inJson(join(uploadsDir, forkId) + sep)
+    try {
+      await cp(join(uploadsDir, id), join(uploadsDir, forkId), { recursive: true })
+      // The page's `@"path"` mention escapes the path once more than a tool's input does.
+      for (const [i, line] of lines.entries()) lines[i] = line.replaceAll(inJson(from), inJson(to)).replaceAll(from, to)
+    } catch (err) {
+      // Most sessions have no uploads; a copy that failed halfway would lose them with the original.
+      if (!isENOENT(err)) {
+        await rm(join(uploadsDir, forkId), { recursive: true, force: true })
+        throw err
+      }
+    }
+  }
   await writeFile(join(dirname(found.filePath), `${forkId}.jsonl`), lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' })
   return forkId
 }

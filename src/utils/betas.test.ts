@@ -61,6 +61,14 @@ try {
   })
 
   process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+  getAllModelBetas.cache.clear?.()
+  assert.equal(
+    getAllModelBetas('claude-sonnet-4-6').includes(
+      THINKING_TOKEN_COUNT_BETA_HEADER,
+    ),
+    false,
+  )
+  getAllModelBetas.cache.clear?.()
   assert.equal(getExtendedCacheTtlEnabled('side_question'), false)
   assert.deepEqual(getCacheControl({ querySource: 'side_question' }), {
     type: 'ephemeral',

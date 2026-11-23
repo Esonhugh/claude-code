@@ -50,6 +50,7 @@ import {
   takeSubagentHandbackBounce,
 } from '../utils/subagentHandback.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
+import { enqueueSdkEvent } from '../utils/sdkEventQueue.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
@@ -467,17 +468,24 @@ export async function* handleStopHooks(
         stopHookToolUseID,
       )
 
-      // Send notification about errors (shown in verbose/transcript mode via ctrl+o)
-      if (hookErrors.length > 0) {
+      // Send notification about errors (shown in verbose/transcript mode via ctrl+o);
+      // once per turn, not again on each continuation a Stop hook forced.
+      if (hookErrors.length > 0 && !stopHookActive) {
         const expandShortcut = getShortcutDisplay(
           'app:toggleTranscript',
           'Global',
           'ctrl+o',
         )
-        toolUseContext.addNotification?.({
+        const notification = {
           key: 'stop-hook-error',
-          text: `Stop hook error occurred \u00b7 ${expandShortcut} to see`,
-          priority: 'immediate',
+          text: `stop hook problem \u00b7 ${expandShortcut} to see`,
+          priority: 'immediate' as const,
+        }
+        toolUseContext.addNotification?.(notification)
+        enqueueSdkEvent({
+          type: 'system',
+          subtype: 'notification',
+          ...notification,
         })
       }
     }

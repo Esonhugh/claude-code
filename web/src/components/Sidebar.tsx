@@ -8,6 +8,7 @@ import {
   type Project,
   removeProject,
   type SessionMetaPatch,
+  unarchiveProject,
 } from '../api'
 import { tilde } from '../files'
 import type { Lang } from '../i18n'
@@ -88,6 +89,8 @@ export function Sidebar({
   onNewProject,
   onProjectSettings,
   onProjectChanged,
+  archivedProjects,
+  onProjectRestored,
 }: {
   t: T
   lang: Lang
@@ -118,6 +121,9 @@ export function Sidebar({
   onProjectSettings: (project: Project) => void
   /** A project was renamed (`project`), or archived or deleted (none). */
   onProjectChanged: (id: string, project?: Project) => void
+  /** Listed only while searching, where they can be unarchived. */
+  archivedProjects: Project[]
+  onProjectRestored: (project: Project) => void
 }) {
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => readStored(COLLAPSED_KEY, {}))
@@ -258,6 +264,11 @@ export function Sidebar({
         () => flash(t('flashArchived', { name: entry.title })),
         fail,
       )
+    } else if (action === 'unarchive') {
+      patch(entry, { archived: false }, { archived: undefined }).then(
+        () => flash(t('flashUnarchived', { name: entry.title })),
+        fail,
+      )
     } else if (action === 'really-delete') {
       deleteTranscript(entry.id).then(() => {
         onDeleted(entry.id)
@@ -276,7 +287,12 @@ export function Sidebar({
     closeMenu()
     if (action === 'rename') setRenaming(project.id)
     else if (action === 'settings') onProjectSettings(project)
-    else if (action === 'archive' || action === 'really-delete') {
+    else if (action === 'unarchive') {
+      unarchiveProject(project.id).then(restored => {
+        onProjectRestored(restored)
+        flash(t('flashUnarchived', { name: project.name }))
+      }, fail)
+    } else if (action === 'archive' || action === 'really-delete') {
       const purge = action === 'really-delete'
       removeProject(project.id, purge).then(() => {
         onProjectChanged(project.id)
@@ -304,8 +320,10 @@ export function Sidebar({
       if (menu.step !== 'main' || e.metaKey || e.ctrlKey || e.altKey) return
       const keys: Record<string, string> =
         menu.kind === 'pj'
-          ? { r: 'rename', s: 'settings', a: 'archive', d: 'delete' }
-          : { u: 'unread', p: 'pin', r: 'rename', a: 'archive', d: 'delete' }
+          ? menu.project.archived_at
+            ? { a: 'unarchive' }
+            : { r: 'rename', s: 'settings', a: 'archive', d: 'delete' }
+          : { u: 'unread', p: 'pin', r: 'rename', a: menu.entry.archived ? 'unarchive' : 'archive', d: 'delete' }
       const action = keys[e.key.toLowerCase()]
       if (!action) return
       e.preventDefault()
@@ -459,6 +477,29 @@ export function Sidebar({
     )
   }
 
+  /** An archived project cannot be opened: its row only offers to bring it back. */
+  const archivedRow = (p: Project) => (
+    <div className="srow" key={p.id}>
+      <button
+        className="sess pjrow archived"
+        type="button"
+        data-pj={p.id}
+        {...tipAttr({ t: p.name, rows: [{ k: t('tipFolder'), v: tilde(p.cwd) }] })}
+        onClick={e => {
+          // The menu's own outside-click listener must not see this click.
+          e.stopPropagation()
+          openMenu(e, { kind: 'pj', project: p })
+        }}
+        onContextMenu={e => openMenu(e, { kind: 'pj', project: p })}
+      >
+        <span className="t">
+          <span className="lead" aria-hidden="true"><span className="pjico">▣</span></span>
+          {p.name}
+        </span>
+      </button>
+    </div>
+  )
+
   const section = (key: string, label: string, body: ReactNode, extra?: ReactNode) => {
     const opened = isOpen(`#${key}`, true)
     return (
@@ -478,7 +519,10 @@ export function Sidebar({
   }
 
   const pins = groups.pinned.map(e => sessRow(e, !!tempRoot && !!e.cwd?.startsWith(tempRoot), true))
-  const projectRows = projects.filter(p => !q || `${p.name}${p.cwd}`.toLowerCase().includes(q)).map(projectRow)
+  const projectRows = [
+    ...projects.filter(p => !q || `${p.name}${p.cwd}`.toLowerCase().includes(q)).map(projectRow),
+    ...(q ? archivedProjects.filter(p => `${p.name}${p.cwd}`.toLowerCase().includes(q)).map(archivedRow) : []),
+  ]
   const tempRows = groups.temporary.map(e => sessRow(e, true))
   const dirs = groups.folders.map((g, i) => {
     const opened = !!q || isOpen(g.cwd, i < OPEN_FOLDERS)
@@ -575,6 +619,7 @@ export function Sidebar({
       )
     }
     if (menu.kind === 'pj') {
+      if (menu.project.archived_at) return menuItem('unarchive', '▣', t('unarchive'), 'A')
       return (
         <>
           {menuItem('rename', '✎', t('renameLabel'), 'R')}
@@ -603,7 +648,7 @@ export function Sidebar({
           <span className="chev">›</span>
         </button>
         <hr />
-        {menuItem('archive', '▣', t('archive'), 'A')}
+        {entry.archived ? menuItem('unarchive', '▣', t('unarchive'), 'A') : menuItem('archive', '▣', t('archive'), 'A')}
         {menuItem('delete', '⌫', t('deleteLabel'), 'D', true)}
       </>
     )

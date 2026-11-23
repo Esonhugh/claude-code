@@ -2885,9 +2885,11 @@ function ModSelect({
       event.preventDefault()
       event.stopPropagation()
       select()
-    } else if (!event.isPasted && event.text !== undefined && [...event.text].length === 1) {
+    } else if (!event.isPasted && event.text) {
       event.preventDefault()
       event.stopPropagation()
+      // Official 2.1.329 keeps text that arrives several characters at once, without matching it.
+      if ([...event.text].length !== 1) return
       const from = openRef.current ? indexRef.current : -1
       const query = event.text.toLowerCase()
       for (let offset = 1; offset <= options.length; offset++) {

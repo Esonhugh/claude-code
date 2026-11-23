@@ -7,7 +7,7 @@ const modules = Object.fromEntries(Object.entries({
   bootstrap: '../../bootstrap/state.ts', config: '../../utils/config.ts', app: '../../state/AppStateStore.ts',
   tool: '../../Tool.ts', files: '../../utils/fileStateCache.ts', messages: '../../utils/messages.ts',
   runner: '../AgentTool/runAgent.ts', storage: '../../utils/sessionStorage.ts', sender: './SendMessageTool.ts',
-  tasks: '../../tasks/LocalAgentTask/LocalAgentTask.tsx', stop: '../../tasks/stopTask.ts',
+  tasks: '../../tasks/LocalAgentTask/LocalAgentTask.tsx', stop: '../../tasks/stopTask.ts', resume: '../AgentTool/resumeAgent.ts',
 }).map(([key, path]) => [key, new URL(path, import.meta.url).href]))
 
 const source = `
@@ -38,6 +38,19 @@ if(variant==='race'){
  pendingReply=SendMessageTool.call({to:name,message:'FOLLOW-UP'},context,permit,undefined)
  await entered.promise
  tasks.killAsyncAgent(id,set,'user');await storage.readAgentMetadata(id);release.resolve()
+}else if(variant==='user-race'){
+ // A stop made after the user's message is newer than it, and wins.
+ set(s=>({...s,tasks:{...s.tasks,[id]:{...s.tasks[id],status:'completed',keepaliveReasons:new Set(['agent:pending'])}}}))
+ const entered=Promise.withResolvers(),release=Promise.withResolvers(),read=storage.getAgentTranscript
+ mock.module(m.storage,()=>({...storage,async getAgentTranscript(agentId){entered.resolve();await release.promise;return read(agentId)}}))
+ const {resumeAgentBackground}=await import(m.resume)
+ const resumed=resumeAgentBackground({agentId:id,prompt:'USER-FOLLOW-UP',fromUser:true,toolUseContext:context,canUseTool:permit})
+ await entered.promise
+ tasks.killAsyncAgent(id,set,'user');await storage.readAgentMetadata(id);release.resolve()
+ await assert.rejects(resumed,{name:'AgentStoppedByUserError'})
+ assert.equal(executions.length,0);assert.equal(state.tasks[id].stoppedByUser,true)
+ assert.equal((await storage.readAgentMetadata(id)).stoppedByUser,true)
+ console.log('owned cancellation fixture passed '+variant);process.exit(0)
 }else if(variant==='model-stop'||variant==='sdk-stop'){
  const {stopTask}=await import(m.stop);await stopTask(id,{getAppState:()=>state,setAppState:set,source:variant==='sdk-stop'?'user':'model'})
 }else if(variant==='bulk-user')tasks.killAllRunningAgentTasks(state.tasks,set)
@@ -52,12 +65,38 @@ if(variant==='sticky-write'){
  await storage.writeAgentMetadata(id,{agentType:'fork',name,model:'claude-sonnet-4-6',spawnDepth:2})
  assert.equal((await storage.readAgentMetadata(id)).stoppedByUser,true,'a later metadata write must not lose cancellation')
 }
+if(variant==='user-retry'){
+ // The stop stays in place until its durable record is gone, so a failed write can be retried.
+ let failures=1
+ const clear=storage.clearAgentMetadataStoppedByUser
+ mock.module(m.storage,()=>({...storage,async clearAgentMetadataStoppedByUser(...args){if(failures-->0)throw new Error('disk full');return clear(...args)}}))
+ const {resumeAgentBackground}=await import(m.resume)
+ const resume=()=>resumeAgentBackground({agentId:id,prompt:'USER-FOLLOW-UP',fromUser:true,toolUseContext:context,canUseTool:permit})
+ await assert.rejects(resume(),/disk full/)
+ assert.equal(state.tasks[id].stoppedByUser,true);assert.equal(executions.length,0)
+ await resume()
+ for(let i=0;i<200&&state.tasks[id].status==='running';i++)await new Promise(r=>setTimeout(r,10))
+ assert.equal(executions.length,1);assert.notEqual((await storage.readAgentMetadata(id)).stoppedByUser,true)
+ console.log('owned cancellation fixture passed '+variant);process.exit(0)
+}
+if(variant==='user-resume'){
+ // Like 2.1.329: the user who stopped an agent can message it back to work, which lifts the stop.
+ const {resumeAgentBackground}=await import(m.resume)
+ await resumeAgentBackground({agentId:id,prompt:'USER-FOLLOW-UP',fromUser:true,toolUseContext:context,canUseTool:permit})
+ for(let i=0;i<200&&state.tasks[id].status==='running';i++)await new Promise(r=>setTimeout(r,10))
+ assert.equal(executions.length,1);assert.equal(state.tasks[id].status,'completed')
+ assert.notEqual(state.tasks[id].stoppedByUser,true);assert.notEqual((await storage.readAgentMetadata(id)).stoppedByUser,true)
+ const {SendMessageTool}=await import(m.sender)
+ const reply=await SendMessageTool.call({to:name,message:'FOLLOW-UP'},context,permit,undefined)
+ assert.equal(reply.data.success,true);assert.equal(executions.length,2)
+ console.log('owned cancellation fixture passed '+variant);process.exit(0)
+}
 if(variant==='cold'){set(s=>({...s,tasks:{}}))}
 const target=variant==='raw'?id:name
 const {SendMessageTool}=await import(m.sender)
 const reply=await (pendingReply??SendMessageTool.call({to:target,message:'FOLLOW-UP'},context,permit,undefined))
 if(cancelled){
- const message=['cold','race'].includes(variant)?'Agent '+id+" was stopped by the user and won't be resumed. Treat its work as cancelled; only launch a new agent if the user explicitly asks.":'Agent "'+target+'" was stopped by the user and was not resumed. Treat its work as cancelled; only start a new agent for it if the user explicitly asks.'
+ const message=['cold','race'].includes(variant)?'Agent '+id+" was stopped and won't be resumed. Treat its work as cancelled; only launch a new agent if the user explicitly asks.":'Agent "'+target+'" was stopped and was not resumed. Treat its work as cancelled; only start a new agent for it if the user explicitly asks.'
  assert.deepEqual(reply.data,{success:false,message})
  assert.equal(executions.length,0);assert.equal(state.runningSubagents,0)
  if(variant!=='cold'){assert.equal(state.tasks[id].status,'killed');assert.deepEqual(state.tasks[id].pendingMessages,[])}
@@ -68,7 +107,7 @@ if(cancelled){
 console.log('owned cancellation fixture passed '+variant)
 `
 
-for (const variant of ['user','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
+for (const variant of ['user','user-resume','user-retry','user-race','raw','cold','race','sdk-stop','bulk-user','sticky-write','model-stop','system-kill','completed','failed']) {
   test('SendMessage respects the stop source and persisted cancellation: '+variant, async () => {
     const dir=await realpath(await mkdtemp(join(tmpdir(),'send-cancel-')))
     const child=Bun.spawn([process.execPath,'--no-env-file','--eval',source],{

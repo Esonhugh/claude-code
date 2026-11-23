@@ -285,14 +285,145 @@ export function getEnabledPluginIdsForScope(
   )
 }
 
+const MAX_LISTED_DEPENDENCIES = 5
+
+function listPluginNames(ids: readonly string[]): string {
+  const names = ids
+    .slice(0, MAX_LISTED_DEPENDENCIES)
+    .map(id => parsePluginIdentifier(id).name)
+    .join(', ')
+  return ids.length <= MAX_LISTED_DEPENDENCIES ? names : `${names}, \u2026`
+}
+
 /**
- * Format the "(+ N dependencies)" suffix for install success messages.
+ * Format the "(+ N dependencies: a, b)" suffix for install success messages.
  * Returns empty string when `installedDeps` is empty.
  */
 export function formatDependencyCountSuffix(installedDeps: string[]): string {
   if (installedDeps.length === 0) return ''
   const n = installedDeps.length
-  return ` (+ ${n} ${n === 1 ? 'dependency' : 'dependencies'})`
+  return ` (+ ${n} ${n === 1 ? 'dependency' : 'dependencies'}: ${listPluginNames(installedDeps)})`
+}
+
+/**
+ * Every enabled plugin that stops loading when `pluginId` goes away, as
+ * plugin IDs, dependents of dependents first.
+ */
+export function findTransitiveReverseDependents(
+  pluginId: PluginId,
+  plugins: readonly LoadedPlugin[],
+): PluginId[] {
+  const seen = new Set([pluginId])
+  const result: PluginId[] = []
+  const visit = (id: PluginId): void => {
+    for (const p of plugins) {
+      if (
+        !p.enabled ||
+        seen.has(p.source) ||
+        !(p.manifest.dependencies ?? []).some(d =>
+          dependencyMatchesPlugin(qualifyDependency(d, p.source), id),
+        )
+      )
+        continue
+      seen.add(p.source)
+      visit(p.source)
+      result.push(p.source)
+    }
+  }
+  visit(pluginId)
+  return result
+}
+
+/**
+ * Walk the dependencies of `pluginId` over the loaded plugins. `closure` holds
+ * the installed dependencies (without the plugin itself), `missing` the ones
+ * no loaded plugin provides.
+ */
+export function resolveEnableClosure(
+  pluginId: PluginId,
+  plugins: readonly LoadedPlugin[],
+): { closure: PluginId[]; missing: PluginId[] } {
+  const find = (id: string) =>
+    plugins.find(p => p.source === id && p.enabled) ??
+    plugins.find(p => p.source === id) ??
+    plugins.find(p => p.enabled && dependencyMatchesPlugin(id, p.source)) ??
+    plugins.find(p => dependencyMatchesPlugin(id, p.source))
+  const closure: PluginId[] = []
+  const missing: PluginId[] = []
+  const root = find(pluginId)
+  const seen = new Set([pluginId, ...(root ? [root.source] : [])])
+  const queue = (root?.manifest.dependencies ?? []).map(d =>
+    qualifyDependency(d, root!.source),
+  )
+  for (let dep = queue.shift(); dep !== undefined; dep = queue.shift()) {
+    const found = find(dep)
+    if (!found) {
+      if (!seen.has(dep)) {
+        seen.add(dep)
+        missing.push(dep)
+      }
+      continue
+    }
+    if (seen.has(found.source)) continue
+    seen.add(found.source)
+    closure.push(found.source)
+    for (const d of found.manifest.dependencies ?? [])
+      queue.push(qualifyDependency(d, found.source))
+  }
+  return { closure, missing }
+}
+
+/**
+ * Auto-installed dependencies at `scope` that no manually installed plugin at
+ * that scope still reaches. When a recorded plugin did not load, its
+ * dependencies are unknown and nothing is reported as orphaned.
+ */
+export function findOrphanedAutoDependencies(
+  installed: Record<
+    string,
+    readonly { scope: string; projectPath?: string; auto?: boolean }[]
+  >,
+  plugins: readonly LoadedPlugin[],
+  scope: string,
+  projectPath?: string,
+): { orphans: PluginId[]; unloadable: PluginId[]; autoCount: number } {
+  const manual: PluginId[] = []
+  const auto: PluginId[] = []
+  for (const [id, records] of Object.entries(installed)) {
+    const record = records.find(
+      r => r.scope === scope && r.projectPath === projectPath,
+    )
+    if (record) (record.auto === true ? auto : manual).push(id)
+  }
+  if (auto.length === 0) return { orphans: [], unloadable: [], autoCount: 0 }
+  const bySource = new Map(plugins.map(p => [p.source, p]))
+  const unloadable = [...manual, ...auto].filter(id => !bySource.has(id))
+  if (unloadable.length > 0)
+    return { orphans: [], unloadable, autoCount: auto.length }
+  const needed = new Set<PluginId>()
+  const mark = (id: PluginId): void => {
+    if (needed.has(id)) return
+    needed.add(id)
+    const p = bySource.get(id)
+    for (const d of p?.manifest.dependencies ?? [])
+      mark(qualifyDependency(d, p!.source))
+  }
+  manual.forEach(mark)
+  return {
+    orphans: auto.filter(id => !needed.has(id)),
+    unloadable: [],
+    autoCount: auto.length,
+  }
+}
+
+/** Line appended to an uninstall result when it left orphaned dependencies. */
+export function formatOrphanedDependenciesNote(
+  orphans: readonly PluginId[],
+  scope: string,
+): string {
+  if (orphans.length === 0) return ''
+  const n = orphans.length
+  return `\n${n} auto-installed ${n === 1 ? 'dependency' : 'dependencies'} no longer needed: ${listPluginNames(orphans)}. Run \`claude plugin prune${scope === 'user' ? '' : ` --scope ${scope}`}\` to remove.`
 }
 
 /**

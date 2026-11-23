@@ -88,6 +88,18 @@ export const PermissionsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe('Additional directories to include in the permission scope'),
+      blockWritesOutsideWorkingDirectories: z
+        .boolean()
+        .optional()
+        .describe(
+          'Make the file tools refuse writes outside the working directories in every permission mode; allow rules do not lift it. True in any settings source wins. Shell commands are not restricted.',
+        ),
+      denyInsteadOfPrompting: z
+        .boolean()
+        .optional()
+        .describe(
+          "Never wait for a person to answer a tool permission prompt: a call that would prompt is denied at once, the model is told, and the turn carries on. This is what --permission-prompts none does for -p, in every kind of session, subagents and agent teams included. Allow rules, the permission mode, auto mode's classifier and PermissionRequest hooks decide first; it only ever denies. Claude's questions and plan mode's tools are not offered to the model. Read from user settings, --settings and managed settings; project and local settings are ignored, and true in any of those sources wins.",
+        ),
     })
     .passthrough(),
 )

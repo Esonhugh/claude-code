@@ -7,7 +7,12 @@ import {
   checkEnabledPlugins,
   getPluginEditableScopes,
 } from './pluginStartupCheck.js'
-import { setAllowedSettingSources, setFlagSettingsInline } from '../../bootstrap/state.js'
+import {
+  getAllowedSettingSources,
+  getFlagSettingsInline,
+  setAllowedSettingSources,
+  setFlagSettingsInline,
+} from '../../bootstrap/state.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
 
 const childFlag = 'CLAUDE_CODE_INLINE_PLUGIN_TEST_CHILD'
@@ -92,13 +97,22 @@ if (!process.env[childFlag]) {
 
 describe('enabled plugin settings', () => {
   test('treats version constraint arrays as enabled', async () => {
-    setAllowedSettingSources(['flagSettings'])
-    setFlagSettingsInline({
-      enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
-    })
-    resetSettingsCache()
-    expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
-    expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+    const allowedSources = getAllowedSettingSources()
+    const flagSettings = getFlagSettingsInline()
+    try {
+      setAllowedSettingSources(['flagSettings'])
+      setFlagSettingsInline({
+        enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
+      })
+      resetSettingsCache()
+      expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
+      expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+    } finally {
+      // Later test files in the same process read user settings again.
+      setAllowedSettingSources(allowedSources)
+      setFlagSettingsInline(flagSettings)
+      resetSettingsCache()
+    }
   })
 })
 
@@ -121,5 +135,14 @@ describe('plugin module declarations', () => {
   test('rejects an empty declaration and more than one module', () => {
     expect(PluginHooksSchema().safeParse({}).success).toBe(false)
     expect(PluginHooksSchema().safeParse({ modules: ['./first.ts', './second.ts'] }).success).toBe(false)
+  })
+  test('rejects modules: [] unless hooks is also declared', () => {
+    // Official 2.1.329 keeps the loaded version rather than reading an empty list as "unload".
+    const empty = PluginHooksSchema().safeParse({ modules: [] })
+    expect(empty.success).toBe(false)
+    expect(empty.error?.issues[0]?.message).toBe(
+      "hooks.json must have 'hooks' (the hook matchers) or 'modules' (hooks modules), or both",
+    )
+    expect(PluginHooksSchema().safeParse({ hooks: {}, modules: [] }).success).toBe(true)
   })
 })

@@ -1070,7 +1070,7 @@ async function getMessagesForSlashCommand(
         try {
           const syntheticCaveatMessage = createSyntheticUserCaveatMessage()
           const mod = await command.load()
-          const result = await mod.call(args, context)
+          const result = await mod.call(args, { ...context, commandMessageUuid: uuid ?? userMessage.uuid })
 
           if (result.type === 'skip') {
             return {

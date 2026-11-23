@@ -27,8 +27,12 @@ import {
   markPluginVersionOrphaned,
 } from '../../utils/plugins/cacheUtils.js'
 import {
+  findOrphanedAutoDependencies,
   findReverseDependents,
+  findTransitiveReverseDependents,
   formatReverseDependentsSuffix,
+  getEnabledPluginIdsForScope,
+  resolveEnableClosure,
 } from '../../utils/plugins/dependencyResolver.js'
 import {
   loadInstalledPluginsFromDisk,
@@ -45,6 +49,7 @@ import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { getPluginIdsForDataCleanup } from '../../utils/plugins/pluginFolderCollision.js'
 import {
   parsePluginIdentifier,
+  pluginCliCommand,
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
 import {
@@ -74,6 +79,7 @@ import {
   getSettingsForSource,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { plural } from '../../utils/stringUtils.js'
 
 /** Valid installable scopes (excludes 'managed' which can only be installed from managed-settings.json) */
@@ -613,6 +619,74 @@ export async function uninstallPluginOp(
 }
 
 /**
+ * Auto-installed dependencies at `scope` that no manually installed plugin
+ * there still needs.
+ */
+export async function findPrunablePlugins(scope: InstallableScope) {
+  const { enabled, disabled } = await loadAllPlugins()
+  return findOrphanedAutoDependencies(
+    loadInstalledPluginsFromDisk().plugins,
+    [...enabled, ...disabled],
+    scope,
+    getProjectPathForScope(scope),
+  )
+}
+
+/**
+ * Remove the auto-installed dependencies `findPrunablePlugins` reports.
+ * Returns the text to show. Without `yes` it asks through `confirm`, and
+ * only describes what it would remove when there is no terminal to ask on.
+ */
+export async function prunePluginsOp(
+  scope: InstallableScope = 'user',
+  {
+    dryRun = false,
+    yes = false,
+    deleteDataDir = true,
+    confirm,
+  }: {
+    dryRun?: boolean
+    yes?: boolean
+    deleteDataDir?: boolean
+    confirm?: (listing: string) => Promise<boolean>
+  } = {},
+): Promise<string> {
+  const { orphans, unloadable, autoCount } = await findPrunablePlugins(scope)
+  if (unloadable.length > 0) {
+    return `Skipped \u2014 cannot determine orphans: ${unloadable.join(', ')} failed to load. Fix or uninstall, then retry.`
+  }
+  if (orphans.length === 0) {
+    return autoCount === 0
+      ? `Nothing to prune (no auto-installed plugins at ${scope} scope).`
+      : `Nothing to prune (${autoCount} auto-installed ${plural(autoCount, 'plugin')} at ${scope} scope, all still needed).`
+  }
+  const installed = loadInstalledPluginsFromDisk().plugins
+  const projectPath = getProjectPathForScope(scope)
+  const listing = `${orphans.length} auto-installed ${plural(orphans.length, 'plugin')} no longer needed at ${scope} scope:\n${orphans
+    .map(id => {
+      const version = installed[id]?.find(
+        i => i.scope === scope && i.projectPath === projectPath,
+      )?.version
+      return `  ${id}${version ? ` (${version})` : ''}`
+    })
+    .join('\n')}`
+  if (dryRun) return `${listing}\n(dry run \u2014 nothing removed)`
+  if (!yes) {
+    if (!confirm || !process.stdin.isTTY || !process.stdout.isTTY) {
+      return `${listing}\nNot a TTY \u2014 run \`claude plugin prune${scope === 'user' ? '' : ` --scope ${scope}`} -y\` to remove.`
+    }
+    if (!(await confirm(listing))) return 'Aborted.'
+  }
+  const removed: string[] = []
+  for (const id of orphans) {
+    const result = await uninstallPluginOp(id, scope, deleteDataDir)
+    if (result.success) removed.push(id)
+    else logForDebugging(`plugin prune: ${id} was kept: ${result.message}`)
+  }
+  return `Removed ${removed.length} auto-installed ${plural(removed.length, 'plugin')}: ${removed.map(id => parsePluginIdentifier(id).name).join(', ')}`
+}
+
+/**
  * Set plugin enabled/disabled status (settings-first).
  *
  * Resolves the plugin ID and scope from settings — does NOT pre-gate on
@@ -629,6 +703,7 @@ export async function setPluginEnabledOp(
   plugin: string,
   enabled: boolean,
   scope?: InstallableScope,
+  options?: { bypassDependentsBlock?: boolean },
 ): Promise<PluginOperationResult> {
   const operation = enabled ? 'enable' : 'disable'
 
@@ -797,23 +872,65 @@ export async function setPluginEnabledOp(
     }
   }
 
-  // On disable: capture reverse dependents from the PRE-disable snapshot,
-  // before we write settings and clear the memoized plugin cache.
+  const { name: pluginName } = parsePluginIdentifier(pluginId)
+  const loaded = await loadAllPlugins()
+  const allPlugins = [...loaded.enabled, ...loaded.disabled]
+
+  // On disable: reverse dependents come from the PRE-disable snapshot, before
+  // we write settings and clear the memoized plugin cache. A plugin that
+  // enabled plugins still need is not disabled on its own.
   let reverseDependents: string[] | undefined
+  const alsoEnabled: string[] = []
   if (!enabled) {
-    const { enabled: loadedEnabled, disabled } = await loadAllPlugins()
-    const rdeps = findReverseDependents(pluginId, [
-      ...loadedEnabled,
-      ...disabled,
-    ])
+    const rdeps = findReverseDependents(pluginId, allPlugins)
+    if (rdeps.length > 0 && !options?.bypassDependentsBlock) {
+      const commands = [
+        ...findTransitiveReverseDependents(pluginId, allPlugins),
+        pluginId,
+      ].map(id => pluginCliCommand('disable', id))
+      return {
+        success: false,
+        message: `${pluginName} is still required by ${rdeps.join(', ')}. Disable ${plural(rdeps.length, 'that plugin', 'those plugins')} first${
+          commands.every(command => command !== null)
+            ? `, or disable everything together: ${commands.join(' && ')}`
+            : ', or disable them together in /plugin.'
+        }`,
+        reverseDependents: rdeps,
+      }
+    }
     if (rdeps.length > 0) reverseDependents = rdeps
+  } else {
+    // On enable: the plugin does not load without its dependencies, so the
+    // installed ones are enabled with it.
+    const { closure, missing } = resolveEnableClosure(pluginId, allPlugins)
+    if (missing.length > 0) {
+      const commands = missing.map(id => pluginCliCommand('install', id))
+      return {
+        success: false,
+        message: `${pluginName} depends on ${missing.join(', ')}, which ${plural(missing.length, 'is', 'are')} not installed. Install ${plural(missing.length, 'it', 'them')} first${
+          commands.every(command => command !== null)
+            ? `: ${commands.join(' && ')}`
+            : ' from /plugin.'
+        }`,
+      }
+    }
+    const enabledAtScope = getEnabledPluginIdsForScope(settingSource)
+    alsoEnabled.push(
+      ...closure.filter(
+        id => !id.endsWith('@inline') && !enabledAtScope.has(id),
+      ),
+    )
   }
 
   // ── ACTION: write settings ──
-  // Only this plugin's key: the write merges it onto the file as it is on
-  // disk, keeping what other processes changed since this one read it.
+  // Only the keys this operation changes: the write merges them onto the file
+  // as it is on disk, keeping what other processes changed since this one
+  // read it.
   const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: { [pluginId]: enabled },
+    enabledPlugins: {
+      [pluginId]: enabled,
+      ...Object.fromEntries(alsoEnabled.map(id => [id, true])),
+    },
   })
   if (error) {
     return {
@@ -824,11 +941,14 @@ export async function setPluginEnabledOp(
 
   clearAllCaches()
 
-  const { name: pluginName } = parsePluginIdentifier(pluginId)
   const depWarn = formatReverseDependentsSuffix(reverseDependents)
+  const alsoNote =
+    alsoEnabled.length > 0
+      ? ` (also enabled ${alsoEnabled.length} ${plural(alsoEnabled.length, 'dependency', 'dependencies')}: ${alsoEnabled.map(id => parsePluginIdentifier(id).name).join(', ')})`
+      : ''
   return {
     success: true,
-    message: `Successfully ${operation}d plugin: ${pluginName} (scope: ${resolvedScope})${depWarn}`,
+    message: `Successfully ${operation}d plugin: ${pluginName} (scope: ${resolvedScope})${depWarn}${alsoNote}`,
     pluginId,
     pluginName,
     scope: resolvedScope,
@@ -880,7 +1000,9 @@ export async function disableAllPluginsOp(): Promise<PluginOperationResult> {
   const errors: string[] = []
 
   for (const [pluginId] of enabledPlugins) {
-    const result = await setPluginEnabledOp(pluginId, false)
+    const result = await setPluginEnabledOp(pluginId, false, undefined, {
+      bypassDependentsBlock: true,
+    })
     if (result.success) {
       disabled.push(pluginId)
     } else {

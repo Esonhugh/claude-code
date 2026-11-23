@@ -23,7 +23,7 @@ const recognizedModels = new Set<string>([
   'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-mythos-preview',
 ])
 
-function isNative1MModel(canonical: string): boolean {
+export function isNative1MModel(canonical: string): boolean {
   return canonical.startsWith('claude-fable-5') ||
     canonical.startsWith('claude-mythos-5') ||
     canonical === 'claude-mythos-preview' ||

@@ -13,6 +13,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { isRequestOrAccountRejection } from '../services/api/errors.js'
 import type { Tool } from '../Tool.js'
 import type { ModToolDescription } from '../services/mods/toolCatalog.js'
 import {
@@ -370,9 +371,7 @@ export function getToolSearchRefusal(error: unknown): ToolSearchRefusal | null {
     getAPIProvider() === 'firstParty' &&
     isFirstPartyAnthropicBaseUrl() &&
     !process.env.ANTHROPIC_UNIX_SOCKET
-  if (directApi || message.toLowerCase().includes('prompt is too long')) {
-    return null
-  }
+  if (directApi || isRequestOrAccountRejection(error)) return null
   return 'unattributed'
 }
 

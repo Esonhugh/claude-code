@@ -133,6 +133,8 @@ async function runChild(): Promise<void> {
   state.setCwdState(process.cwd())
   // Interactive session: .mcp.json servers are not auto-approved.
   state.setIsInteractive(true)
+  // The folder is trusted; before that settings.local.json approves nothing.
+  state.setSessionTrustAccepted(true)
   const { enableConfigs } = await import('../../utils/config.js')
   enableConfigs()
   const { mcpLoginHandler, mcpLogoutHandler } = await import('./mcp.js')
