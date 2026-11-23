@@ -1,5 +1,10 @@
 import { z } from 'zod/v4'
-import { getSessionId, setOriginalCwd } from '../../bootstrap/state.js'
+import { dirname } from 'path'
+import {
+  getSessionId,
+  setOriginalCwd,
+  switchSession,
+} from '../../bootstrap/state.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { Tool } from '../../Tool.js'
@@ -8,9 +13,14 @@ import { clearMemoryFileCaches } from '../../utils/claudemd.js'
 import { getCwd } from '../../utils/cwd.js'
 import { findCanonicalGitRoot } from '../../utils/git.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { logError } from '../../utils/log.js'
 import { getPlanSlug, getPlansDirectory } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
-import { saveWorktreeState } from '../../utils/sessionStorage.js'
+import {
+  getTranscriptPath,
+  relocateSessionTranscript,
+  saveWorktreeState,
+} from '../../utils/sessionStorage.js'
 import {
   createWorktreeForSession,
   enterExistingWorktree,
@@ -126,6 +136,9 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
       throw new Error('Already in a worktree session')
     }
 
+    // Where the transcript is before originalCwd moves to the worktree.
+    const transcriptDir = dirname(getTranscriptPath())
+
     let worktreeSession
     if (input.path) {
       worktreeSession = await enterExistingWorktree(getSessionId(), input.path)
@@ -152,6 +165,18 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
     process.chdir(worktreeSession.worktreePath)
     setCwd(worktreeSession.worktreePath)
     setOriginalCwd(getCwd())
+    // The transcript follows the session into the worktree's project slot.
+    // A hook-made worktree may be anywhere, so its session stays put.
+    if (worktreeSession.hookBased) {
+      switchSession(getSessionId(), transcriptDir)
+    } else {
+      try {
+        await relocateSessionTranscript(getCwd())
+      } catch (error) {
+        // The session still enters the worktree; its transcript stays put.
+        logError(error)
+      }
+    }
     saveWorktreeState(worktreeSession)
     // Clear cached system prompt sections so env_info_simple recomputes with worktree context
     clearSystemPromptSections()

@@ -72,6 +72,7 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
+import { remapFormerSessionPath } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { getDefaultFileReadingLimits } from './limits.js'
@@ -383,7 +384,7 @@ export const FileReadTool = buildTool({
     // hooks.mdx documents file_path as absolute; expand so hook allowlists
     // can't be bypassed via ~ or relative paths.
     if (typeof input.file_path === 'string') {
-      input.file_path = expandPath(input.file_path)
+      input.file_path = remapFormerSessionPath(expandPath(input.file_path))
     }
   },
   // Like 2.1.311: a one-element array, a negative offset, a limit of 0 or
@@ -559,8 +560,9 @@ export const FileReadTool = buildTool({
 
     const ext = path.extname(file_path).toLowerCase().slice(1)
     // Use expandPath for consistent path normalization with FileEditTool/FileWriteTool
-    // (especially handles whitespace trimming and Windows path separators)
-    const fullFilePath = expandPath(file_path)
+    // (especially handles whitespace trimming and Windows path separators).
+    // A tool result saved before the transcript moved is read where it is now.
+    const fullFilePath = remapFormerSessionPath(expandPath(file_path))
 
     // Dedup: if we've already read this exact range and the file hasn't
     // changed on disk, return a stub instead of re-sending the full content.

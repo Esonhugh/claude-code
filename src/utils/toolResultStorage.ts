@@ -4,8 +4,8 @@
 
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { mkdir, writeFile } from 'fs/promises'
-import { join } from 'path'
-import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
+import { dirname, join } from 'path'
+import { getSessionId } from '../bootstrap/state.js'
 import {
   BYTES_PER_TOKEN,
   DEFAULT_MAX_RESULT_SIZE_CHARS,
@@ -20,7 +20,7 @@ import { logForDebugging } from './debug.js'
 import { getErrnoCode, toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
-import { getProjectDir } from './sessionStorage.js'
+import { getTranscriptPath } from './sessionStorage.js'
 import { jsonStringify } from './slowOperations.js'
 
 // Subdirectory name for tool results within a session
@@ -92,10 +92,10 @@ export type PersistToolResultError = {
 }
 
 /**
- * Get the session directory (projectDir/sessionId)
+ * Get the session directory (projectDir/sessionId), next to the transcript.
  */
 function getSessionDir(): string {
-  return join(getProjectDir(getOriginalCwd()), getSessionId())
+  return join(dirname(getTranscriptPath()), getSessionId())
 }
 
 /**
