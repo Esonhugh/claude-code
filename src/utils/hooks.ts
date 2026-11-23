@@ -6186,12 +6186,20 @@ export async function executeWorktreeCreateHook(
   )
 
   if (!successfulResult) {
+    if (results.length === 0) {
+      throw new Error(
+        'WorktreeCreate hook failed: hook is configured but did not run (workspace not trusted or matcher mismatch)',
+      )
+    }
     const failedOutputs = results
       .filter(r => !r.succeeded)
       .map(r => `${r.command}: ${r.output.trim() || 'no output'}`)
-    throw new Error(
-      `WorktreeCreate hook failed: ${failedOutputs.join('; ') || 'no successful output'}`,
-    )
+    if (failedOutputs.length === 0) {
+      throw new Error(
+        'WorktreeCreate hook failed: hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)',
+      )
+    }
+    throw new Error(`WorktreeCreate hook failed: ${failedOutputs.join('; ')}`)
   }
 
   const worktreePath = successfulResult.output.trim()
