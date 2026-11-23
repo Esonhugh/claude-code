@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path'
 const childKey = 'WORKTREE_TRANSCRIPT_TEST_CHILD'
 
 if (!process.env[childKey]) {
-  test.each(['resume-from-main', 'relocate', 'enter', 'enter-again'])(
+  test.each(['resume-from-main', 'relocate', 'enter', 'enter-again', 'resume-again', 'cd'])(
     'worktree session transcript: %s',
     async scenario => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), 'worktree-transcript-')))
@@ -208,6 +208,100 @@ if (!process.env[childKey]) {
       expect(lines.filter(l => l.includes('"type":"relocated"'))).toHaveLength(1)
       const log = await storage.getLastSessionLog(sessionId)
       expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
+    })
+  } else if (process.env[childKey] === 'resume-again') {
+    test('resuming and exiting again does not stack relocated or worktree-state entries', async () => {
+      const { getSessionId, setOriginalCwd } = await import('../bootstrap/state.js')
+      const storage = await import('./sessionStorage.js')
+      const { createUserMessage, createAssistantMessage } = await import('./messages.js')
+      const repo = process.cwd()
+      const worktree = join(repo, '.claude', 'worktrees', 'wtK')
+      setOriginalCwd(repo)
+      const sessionId = getSessionId() as UUID
+      await storage.recordTranscript([
+        createUserMessage({ content: 'one' }),
+        createAssistantMessage({ content: 'FAKE_OK' }),
+      ])
+      await storage.flushSessionStorage()
+      const worktreeSession = { originalCwd: repo, worktreePath: worktree, worktreeName: 'wtK', sessionId }
+      setOriginalCwd(worktree)
+      storage.saveWorktreeState(worktreeSession)
+      await storage.relocateSessionTranscript(worktree)
+      await storage.flushSessionStorage()
+      storage.reAppendSessionMetadata()
+
+      // Two resume-then-exit rounds, each starting from what is on disk.
+      for (let round = 0; round < 2; round++) {
+        storage.clearSessionMetadata()
+        const log = await storage.getLastSessionLog(sessionId)
+        storage.restoreSessionMetadata({ sessionId, worktreeSession: log?.worktreeSession })
+        storage.adoptResumedSessionFile()
+        storage.reAppendSessionMetadata()
+      }
+
+      const file = join(storage.getProjectDir(worktree), `${sessionId}.jsonl`)
+      const types = readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l).type)
+      expect(types.filter(t => t === 'relocated')).toHaveLength(1)
+      expect(types.filter(t => t === 'worktree-state')).toHaveLength(1)
+      const log = await storage.getLastSessionLog(sessionId)
+      expect(log?.worktreeSession).toEqual(worktreeSession)
+      expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
+
+      // A change is still written, once.
+      storage.saveWorktreeState(null)
+      storage.reAppendSessionMetadata()
+      const after = readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l).type)
+      expect(after.filter(t => t === 'worktree-state')).toHaveLength(2)
+      expect((await storage.getLastSessionLog(sessionId))?.worktreeSession).toBeNull()
+    })
+  } else if (process.env[childKey] === 'cd') {
+    test('/cd moves the transcript and its session folder to the new directory', async () => {
+      const { getSessionId, setOriginalCwd } = await import('../bootstrap/state.js')
+      const storage = await import('./sessionStorage.js')
+      const { getToolResultsDir } = await import('./toolResultStorage.js')
+      const { setCwd } = await import('./Shell.js')
+      const { getEmptyToolPermissionContext } = await import('../Tool.js')
+      const { call } = await import('../commands/cd/cd.js')
+      const { createUserMessage, createAssistantMessage } = await import('./messages.js')
+      const repo = process.cwd()
+      const target = join(repo, '.claude', 'worktrees', 'wtK')
+      setOriginalCwd(repo)
+      setCwd(repo)
+      const sessionId = getSessionId() as UUID
+      await storage.recordTranscript([
+        createUserMessage({ content: 'one' }),
+        createAssistantMessage({ content: 'FAKE_OK' }),
+      ])
+      await storage.flushSessionStorage()
+      const launchFile = storage.getTranscriptPath()
+      mkdirSync(getToolResultsDir(), { recursive: true })
+      writeFileSync(join(getToolResultsDir(), 'r1.txt'), 'saved output')
+
+      let permissionContext = getEmptyToolPermissionContext()
+      const context = {
+        getAppState: () => ({ toolPermissionContext: permissionContext }),
+        setAppState: (updater: (prev: unknown) => { toolPermissionContext: typeof permissionContext }) => {
+          permissionContext = updater({ toolPermissionContext: permissionContext }).toolPermissionContext
+        },
+      } as never
+      expect((await call(target, context)).value).toBe(`Changed directory to ${target}`)
+      // Again: already there, nothing more is written.
+      await call(target, context)
+      await storage.flushSessionStorage()
+
+      const moved = join(storage.getProjectDir(target), `${sessionId}.jsonl`)
+      expect(existsSync(launchFile)).toBe(false)
+      expect(storage.getTranscriptPath()).toBe(moved)
+      expect(readFileSync(join(storage.getProjectDir(target), sessionId, 'tool-results', 'r1.txt'), 'utf8')).toBe(
+        'saved output',
+      )
+      const lines = readFileSync(moved, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+      expect(lines.filter(l => l.type === 'relocated')).toEqual([
+        { type: 'relocated', sessionId, relocatedCwd: target },
+      ])
+      const log = await storage.getLastSessionLog(sessionId)
+      expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
+      expect(log?.fullPath).toBe(moved)
     })
   } else {
     test('leaving the worktree moves the transcript to the launch directory', async () => {

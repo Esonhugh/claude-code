@@ -1019,15 +1019,17 @@ class Project {
         sessionId,
       })
     }
+    // Not written again while the newest entry of the same type near EOF
+    // already says the same thing (resume adopt + exit would stack copies).
     if (this.currentSessionWorktree !== undefined) {
-      appendEntryToFile(this.sessionFile, {
+      appendUnlessLatestInTail(this.sessionFile, tailLines, {
         type: 'worktree-state',
         worktreeSession: this.currentSessionWorktree,
         sessionId,
       })
     }
-    if (this.currentSessionRelocatedCwd !== undefined) {
-      appendEntryToFile(this.sessionFile, {
+    if (this.currentSessionRelocatedCwd !== undefined && tail !== '') {
+      appendUnlessLatestInTail(this.sessionFile, tailLines, {
         type: 'relocated',
         sessionId,
         relocatedCwd: this.currentSessionRelocatedCwd,
@@ -2991,6 +2993,33 @@ function appendEntryToFile(
     fs.mkdirSync(dirname(fullPath), { mode: 0o700 })
     fs.appendFileSync(fullPath, line, { mode: 0o600 })
   }
+}
+
+/**
+ * Append unless the newest entry of the same type within the last half of the
+ * tail window is identical. Readers still find it there, so another copy only
+ * grows the file.
+ */
+function appendUnlessLatestInTail(
+  fullPath: string,
+  tailLines: string[],
+  entry: { type: string } & Record<string, unknown>,
+): void {
+  const prefix = `{"type":"${entry.type}"`
+  let bytes = 0
+  for (let i = tailLines.length - 1; i >= 0; i--) {
+    const line = tailLines[i]!
+    bytes += Buffer.byteLength(line, 'utf8') + 1
+    if (bytes > LITE_READ_BUF_SIZE / 2) break
+    if (!line.startsWith(prefix)) continue
+    try {
+      if (jsonStringify(JSON.parse(line)) === jsonStringify(entry)) return
+    } catch {
+      // Torn line: fall through and write a fresh copy.
+    }
+    break
+  }
+  appendEntryToFile(fullPath, entry)
 }
 
 /**
