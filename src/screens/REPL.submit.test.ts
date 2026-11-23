@@ -970,6 +970,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
   const diffSession = { current: 'same-id' }
   const restoredCosts: unknown[] = []
   const log = { sessionId: 'same-id', messages: [] }
+  let replResets = 0
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
     planCodeModeResume: () => ({ messages: [], replMode: undefined }), reportLostReplEvals: async () => [], isCodeModeEnabled: () => false,
@@ -981,6 +982,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    resetMainReplSession: () => { replResets++ },
     getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
     resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, saveCurrentSessionCosts: noop,
@@ -1001,6 +1003,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
   expect(restoredCosts[0]).toBe(log)
   expect(replaced).toBe(true)
   expect(resets).toBe(1)
+  expect(replResets).toBe(1)
   expect(state.diffSidebarVisible).toBe(false)
   expect(diffSession.current).toBe('same-id')
 })
@@ -2845,6 +2848,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    resetMainReplSession: noop,
     getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, saveCurrentSessionCosts: noop,
     restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },
