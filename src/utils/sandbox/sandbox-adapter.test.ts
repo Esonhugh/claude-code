@@ -264,6 +264,36 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('allowNestedUserNamespaces is honored only from trusted sources', () => {
+    const sources = ['userSettings', 'projectSettings', 'localSettings', 'flagSettings', 'policySettings'] as const
+    const run = (
+      m: Partial<Record<(typeof sources)[number], NonNullable<SettingsJson['sandbox']>>>,
+      merged: NonNullable<SettingsJson['sandbox']> = {},
+    ) => {
+      for (const source of sources) {
+        setCachedSettingsForSource(source, m[source] ? { sandbox: m[source] } : null)
+      }
+      return convertToSandboxRuntimeConfig({ sandbox: merged }).allowNestedUserNamespaces
+    }
+    try {
+      expect(run({})).toBeUndefined()
+      expect(run({ userSettings: { allowNestedUserNamespaces: true } }, { allowNestedUserNamespaces: true })).toBe(true)
+      expect(run({ flagSettings: { allowNestedUserNamespaces: true } }, { allowNestedUserNamespaces: true })).toBe(true)
+      expect(run({ policySettings: { allowNestedUserNamespaces: true } }, { allowNestedUserNamespaces: true })).toBe(true)
+      for (const repo of ['projectSettings', 'localSettings'] as const) {
+        expect(run({ [repo]: { allowNestedUserNamespaces: true } }, { allowNestedUserNamespaces: true })).toBeUndefined()
+        expect(
+          run(
+            { userSettings: { allowNestedUserNamespaces: true }, [repo]: { allowNestedUserNamespaces: false } },
+            { allowNestedUserNamespaces: false },
+          ),
+        ).toBe(false)
+      }
+    } finally {
+      for (const source of sources) setCachedSettingsForSource(source, null)
+    }
+  })
+
   test('a locked or strict sandbox takes network allowances only from trusted sources', () => {
     const user: SettingsJson = {
       sandbox: {

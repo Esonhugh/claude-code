@@ -744,6 +744,11 @@ export function convertToSandboxRuntimeConfig(
     }),
     ignoreViolations: settings.sandbox?.ignoreViolations,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
+    // Only a trusted source may turn it on; a merged `false` still wins.
+    allowNestedUserNamespaces:
+      settings.sandbox?.allowNestedUserNamespaces === false
+        ? false
+        : trustedSandboxValue(sb => sb.allowNestedUserNamespaces),
     enableWeakerNetworkIsolation:
       settings.sandbox?.enableWeakerNetworkIsolation,
     allowAppleEvents: settings.sandbox?.allowAppleEvents,
