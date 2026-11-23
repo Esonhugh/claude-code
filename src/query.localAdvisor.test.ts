@@ -9,7 +9,11 @@ import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { createAssistantMessage, extractTextContent } from './utils/messages.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
-import { resetStateForTests } from './bootstrap/state.js'
+import {
+  getSystemPromptSectionCache,
+  resetStateForTests,
+  setSystemPromptSectionCacheEntry,
+} from './bootstrap/state.js'
 import { resetAdvisorRefusalsForTesting, resolveAdvisorModelId } from './utils/advisor.js'
 import { type AdvisorRequest, getMainAdvisorCarrier } from './utils/advisorQuery.js'
 
@@ -220,7 +224,23 @@ test('a refusal reported by the request hands the conversation to the local tool
 test('subagent compaction leaves the main conversation on the local advisor after a refusal', async () => {
   await run('opus', { refusesFirst: true })
   expect(getMainAdvisorCarrier().held?.refused).toBe(true)
-  runPostCompactCleanup('agent:general-purpose')
+  setSystemPromptSectionCacheEntry('memory', 'main thread memory')
+  runPostCompactCleanup('agent:general-purpose', 'a1')
+  // The main thread's locked prompt sections are not the subagent's to drop.
+  expect(getSystemPromptSectionCache().get('memory')).toBe('main thread memory')
+
+  const { offered, serverAdvisors } = await run('opus', { earlier: announced() })
+  expect(serverAdvisors).toEqual([undefined, undefined])
+  expect(offered).toEqual([['Other', 'advisor'], ['Other', 'advisor']])
+})
+
+test('a backgrounded main session compacting refreshes prompt sections but keeps the refusal', async () => {
+  await run('opus', { refusesFirst: true })
+  expect(getMainAdvisorCarrier().held?.refused).toBe(true)
+  setSystemPromptSectionCacheEntry('memory', 'main thread memory')
+  // LocalMainSessionTask: a main-thread source with its own agentId and Advisor carrier.
+  runPostCompactCleanup('repl_main_thread', 'background-task')
+  expect(getSystemPromptSectionCache().size).toBe(0)
 
   const { offered, serverAdvisors } = await run('opus', { earlier: announced() })
   expect(serverAdvisors).toEqual([undefined, undefined])

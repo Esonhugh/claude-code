@@ -28,8 +28,17 @@ import { resetMicrocompactState } from './microCompact.js'
  * would corrupt the MAIN thread's state. All compaction callers should
  * pass querySource — undefined is only safe for callers that are
  * genuinely main-thread-only (/compact, /clear).
+ *
+ * agentId: pass the compacting query's agentId. A main-thread query with one
+ * (a main session sent to the background) keeps its own Advisor carrier
+ * (query.ts), so its compaction leaves the conversation's beta header latches
+ * and Advisor alone, as official `Ime` resets sticky betas only for a query
+ * that carries none of its own.
  */
-export function runPostCompactCleanup(querySource?: QuerySource): void {
+export function runPostCompactCleanup(
+  querySource?: QuerySource,
+  agentId?: string,
+): void {
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
   // (context-collapse, memory file cache) for main-thread compacts.
@@ -59,10 +68,8 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // clear so all compaction paths behave consistently.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
-    clearSystemPromptSections()
-  } else {
-    // Refresh prompt sections without resetting the main thread's beta latches or Advisor.
-    clearSystemPromptSectionState()
+    if (agentId === undefined) clearSystemPromptSections()
+    else clearSystemPromptSectionState()
   }
   clearClassifierApprovals()
   clearSpeculativeChecks()
