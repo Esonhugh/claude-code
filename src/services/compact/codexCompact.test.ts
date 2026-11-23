@@ -225,6 +225,17 @@ describe('selectRetainedMessagesForCodexCompact', () => {
       .toEqual([prompt])
   })
 
+  test('keeps a legacy prompt between two terminal envelopes', () => {
+    const prompts = [
+      '<bash-stdout>a</bash-stdout> compare with <bash-stdout>b</bash-stdout>',
+      '<bash-input>ls</bash-input> vs <bash-input>pwd</bash-input>',
+      '<local-command-stdout>a</local-command-stdout> why changed to <local-command-stdout>b</local-command-stdout>',
+      '<bash-stdout>a</bash-stdout><bash-stderr></bash-stderr> and <bash-stdout>b</bash-stdout><bash-stderr></bash-stderr>',
+    ].map((text, i) => userTextMessage(`00000000-0000-4000-8000-00000000001${i}`, text))
+    expect(selectRetainedMessagesForCodexCompact(prompts, 1000).messages)
+      .toEqual(prompts)
+  })
+
   test('charges one token per one-character reply', () => {
     const replies = ['a', 'b', 'c'].map((text, i) =>
       userTextMessage(`00000000-0000-4000-8000-00000000000${i}`, text),

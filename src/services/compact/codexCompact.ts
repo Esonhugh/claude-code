@@ -64,8 +64,10 @@ function isRetainableUserMessage(message: Message): message is UserMessage {
 
 // Legacy transcripts lack provenance. Only treat complete terminal envelopes
 // as terminal rows, not prompts that quote a tag and then ask a question.
+// A body never crosses its closing tag, so a prompt between two envelopes is kept.
+const envelope = (tag: string) => `<${tag}>(?:(?!</${tag}>)[\\s\\S])*</${tag}>`
 const LEGACY_TERMINAL_ROW = new RegExp(
-  `^(?:<bash-stdout>[\\s\\S]*?</bash-stdout>\\s*<bash-stderr>[\\s\\S]*?</bash-stderr>|${TERMINAL_OUTPUT_TAGS.map(tag => `<${tag}>[\\s\\S]*?</${tag}>`).join('|')})$`,
+  `^(?:${envelope('bash-stdout')}\\s*${envelope('bash-stderr')}|${TERMINAL_OUTPUT_TAGS.map(envelope).join('|')})$`,
 )
 
 function isTerminalRow(message: UserMessage, text: string): boolean {
