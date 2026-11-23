@@ -154,3 +154,20 @@ test('hiding the only matches clears the count without jumping back to the / anc
     list.close()
   }
 })
+
+test('the search index is warmed again for the new search text', async () => {
+  const list = await mount()
+  try {
+    await list.jump.warmSearchIndex()
+    let extracted = 0
+    const counted = searchText(new Set([25]))
+    const jump = await list.change(msg => {
+      extracted++
+      return counted(msg)
+    })
+    await jump.warmSearchIndex()
+    expect(extracted).toBe(messages.length)
+  } finally {
+    list.close()
+  }
+})

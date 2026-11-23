@@ -451,6 +451,10 @@ export function VirtualMessageList({
   // back here when matches drop to 0. -1 = no anchor (before first /).
   const searchAnchor = useRef(-1)
   const indexWarmed = useRef(false)
+  // New search text (Ctrl+E showing Code Mode scripts) is cold again.
+  useEffect(() => {
+    indexWarmed.current = false
+  }, [extractSearchText])
 
   // Scroll target for message i: land at MESSAGE TOP. est = top - HEADROOM
   // so lo = top - est = HEADROOM ≥ 0 (or lo = top if est clamped to 0).
