@@ -39,6 +39,7 @@ mock.module('../modelCost.js', () => ({
 mock.module('../context.js', () => ({
   has1mContext: (model: string) => /\[1m\]/i.test(model),
   is1mContextDisabled: () => false,
+  isNative1MModel: () => false,
   modelSupports1M: () => true,
 }))
 mock.module('./modelStrings.js', () => ({

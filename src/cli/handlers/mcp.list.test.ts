@@ -24,6 +24,7 @@ if (process.env[childEnv] === '1') {
           JSON.stringify({
             mcpServers: {
               pending: stdio('pending'),
+              dup: stdio('project-dup'),
               rejected: stdio('rejected'),
               disabled: stdio('disabled'),
               approved: stdio('approved'),
@@ -98,10 +99,15 @@ async function runChild(): Promise<void> {
   // `claude mcp list | cat` has no TTY, so it counts as non-interactive; it is
   // still not a -p session, so .mcp.json servers are not auto-approved.
   state.setIsInteractive(false)
-  const { enableConfigs, saveCurrentProjectConfig } = await import(
-    '../../utils/config.js'
-  )
+  // The folder is trusted; before that settings.local.json approves nothing.
+  state.setSessionTrustAccepted(true)
+  const { enableConfigs, saveCurrentProjectConfig, saveGlobalConfig } =
+    await import('../../utils/config.js')
   enableConfigs()
+  saveGlobalConfig(current => ({
+    ...current,
+    mcpServers: { dup: { type: 'stdio', ...stdio('user-dup') } },
+  }))
   saveCurrentProjectConfig(current => ({
     ...current,
     disabledMcpServers: ['disabled'],
@@ -120,13 +126,22 @@ async function runChild(): Promise<void> {
   const output = lines.join('\n')
 
   test('only approved, enabled servers are health-checked', () => {
-    expect(connected).toEqual(['approved'])
+    expect(connected.sort()).toEqual(['approved', 'dup'])
     expect(output).toContain(`approved: echo approved - ${figures.tick} Connected`)
   })
 
   test('pending servers are listed as pending approval', () => {
     expect(output).toContain(
       'pending: echo pending - ⏸ Pending approval (run `claude` to approve)',
+    )
+  })
+
+  // Official 2.1.329.
+  test('a pending .mcp.json server does not hide the user server of that name', () => {
+    expect(output).toContain(`dup: echo user-dup - ${figures.tick} Connected`)
+    expect(output).not.toContain('dup: echo project-dup')
+    expect(output.replace(/\s+/g, ' ')).toContain(
+      '[Conflicting scopes] ├ Server "dup" is defined in multiple scopes with different endpoints: user (echo user-dup), project (echo project-dup). OAuth tokens are stored per endpoint, so authenticating in one context will not carry over. └ Keep the correct endpoint and remove the others: `claude mcp remove dup -s user` or `claude mcp remove dup -s project`',
     )
   })
 

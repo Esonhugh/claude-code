@@ -18,7 +18,12 @@ import { STOP_AND_WAIT } from '../../tools/REPLTool/stopReport.js'
 import { isShuttingDown } from '../../utils/gracefulShutdown.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
-import { runToolUse, unknownToolSuffix } from './toolExecution.js'
+import {
+  findMcpServerConnection,
+  runToolUse,
+  unknownToolSuffix,
+} from './toolExecution.js'
+import { getToolListRefresh } from '../mcp/client.js'
 import type { ModSnapshot } from '../mods/runtime.js'
 import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 import { createModToolHost } from '../mods/toolHost.js'
@@ -172,6 +177,11 @@ export class StreamingToolExecutor {
     }
   }
 
+  /** The tool calls that had begun to run, whether or not they finished. */
+  getStartedToolUseIds(): string[] {
+    return this.tools.filter(tool => tool.status !== 'queued').map(tool => tool.id)
+  }
+
   private releaseModsSnapshot(): void {
     if (
       !this.admissionClosed ||
@@ -221,6 +231,18 @@ export class StreamingToolExecutor {
       }
     }
     const toolDefinition = findToolByName(this.toolDefinitions, block.name)
+    if (!toolDefinition && this.isNewlyListedMcpTool(block.name)) {
+      this.tools.push({
+        id: block.id,
+        block,
+        assistantMessage,
+        status: 'queued',
+        isConcurrencySafe: false,
+        pendingProgress: [],
+      })
+      void this.processQueue()
+      return
+    }
     if (!toolDefinition) {
       const error = `Error: No such tool available: ${block.name}${unknownToolSuffix(block.name, this.toolUseContext.getAppState().toolPermissionContext, this.toolDefinitions.map(t => t.name))}`
       this.tools.push({
@@ -270,6 +292,24 @@ export class StreamingToolExecutor {
     })
 
     void this.processQueue()
+  }
+
+  /**
+   * A server can announce a tool (tools/list_changed) after this turn's tool
+   * list was taken. runToolUse finds it in the refreshed pool, waiting for a
+   * refresh that is still running.
+   */
+  private isNewlyListedMcpTool(name: string): boolean {
+    const { refreshTools } = this.toolUseContext.options
+    const server = findMcpServerConnection(
+      name,
+      this.toolUseContext.getAppState().mcp.clients,
+    )
+    if (!refreshTools || !server) return false
+    return (
+      getToolListRefresh(server.name) !== undefined ||
+      findToolByName(refreshTools(), name) !== undefined
+    )
   }
 
   /**

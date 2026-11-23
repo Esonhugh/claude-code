@@ -48,6 +48,7 @@ import {
   applyPermissionModeToResult,
   checkRuleBasedPermissions,
   createPermissionRequestMessage,
+  denyAskWithoutApprovalSurface,
   hasPermissionsToUseTool,
   planModeHoldsWrite,
   toolAlwaysAllowedRule,
@@ -75,9 +76,10 @@ export function setModToolCheckPermissionHost(isHosted: boolean): void {
 }
 
 // Core's ask goes to the host only where a host would be asked: not under dontAsk or no-prompt loops.
-function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): { decider?: 'host' } {
+function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): { decider?: 'host' } {
   return behavior === 'ask' && permissionHost && permission !== undefined &&
-    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true ? { decider: 'host' } : {}
+    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true &&
+    permission.denyInsteadOfPrompting !== true ? { decider: 'host' } : {}
 }
 
 /** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
@@ -124,7 +126,7 @@ function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior:
   return undefined
 }
 
-export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): ModToolCheckResult {
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts' | 'denyInsteadOfPrompting'>): ModToolCheckResult {
   const why = decision.decisionReason
   const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
   const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??
@@ -406,6 +408,17 @@ async function* runClassicToolHooks(
               ) === answer.deny,
           )
         folded.hookSource = origin?.hookSource
+        // The Mods classic answer has no defer; take it from the hooks' own
+        // results. Like official, deny outranks defer and defer the rest.
+        const deferred =
+          answer.deny === undefined
+            ? observations.findLast(item => item.permissionBehavior === 'defer')
+            : undefined
+        if (deferred) {
+          folded.permissionBehavior = 'defer'
+          folded.hookPermissionDecisionReason = undefined
+          folded.hookSource = deferred.hookSource
+        }
       } else {
         if (answer.block !== undefined) {
           const origin = observations.findLast(
@@ -833,6 +846,9 @@ export async function resolveHookPermissionDecision(
   canUseTool: CanUseToolFn,
   assistantMessage: AssistantMessage,
   toolUseID: string,
+  // False for the pass that feeds tool.check: it keeps the hook's ask and its
+  // source, and the caller settles it after the plugin verdict.
+  settleHookAsk = true,
 ): Promise<{
   decision: PermissionDecision
   input: Record<string, unknown>
@@ -848,7 +864,7 @@ export async function resolveHookPermissionDecision(
       { ...toolUseContext, modsSnapshot: undefined },
       async (checkedTool, args, context, _assistant, _id, forced) =>
         forced ?? checkModToolPermission(checkedTool, args, context),
-      assistantMessage, toolUseID,
+      assistantMessage, toolUseID, false,
     )
     const core = declarative.decision
     const why = core.decisionReason
@@ -938,6 +954,8 @@ export async function resolveHookPermissionDecision(
         decision, tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
       )
     }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    decision = await denyAskWithoutApprovalSurface(decision, tool, declarative.input, toolUseContext, toolUseID)
     if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
       (requireCanUseTool || (requiresInteraction &&
         !(hookPermissionResult?.behavior === 'allow' && hookPermissionResult.updatedInput !== undefined))))) {
@@ -1040,6 +1058,13 @@ export async function resolveHookPermissionDecision(
         tool, askInput, toolUseContext, assistantMessage, toolUseID,
       )
     }
+    // A PreToolUse ask has no dialog to keep under denyInsteadOfPrompting.
+    const settled = settleHookAsk
+      ? await denyAskWithoutApprovalSurface(forceDecision, tool, askInput, toolUseContext, toolUseID)
+      : forceDecision
+    if (settled !== forceDecision) {
+      return { decision: settled, input: askInput }
+    }
   }
   return {
     decision: await canUseTool(
@@ -1053,6 +1078,9 @@ export async function resolveHookPermissionDecision(
     input: askInput,
   }
 }
+
+export const PRE_TOOL_HOOK_TIMEOUT_MESSAGE =
+  'PreToolUse hook did not respond before its timeout (host client may be unreachable). The tool call was not executed; other configured hooks may not have completed.'
 
 export async function* runPreToolUseHooks(
   toolUseContext: ToolUseContext,
@@ -1080,13 +1108,17 @@ export async function* runPreToolUseHooks(
       type: 'additionalContext'
       message: MessageUpdateLazy<AttachmentMessage>
     }
+  // the call is left open for `-p --resume`
+  | { type: 'defer'; hookName: string }
   // stop execution
-  | { type: 'stop' }
+  | { type: 'stop'; stopReason?: string }
 > {
   const hookStartTime = Date.now()
-  // A rewrite that fails validation denies the call; later hook results in
-  // the same run must not replace that deny with their allow/ask.
-  let rewriteDeny: PermissionResult | undefined
+  // A deny (a hook's decision, its blocking error, or a rewrite that fails
+  // validation) stands: later hook results in the same run, and the allow
+  // executeHooks repeats after each of them, must not replace it.
+  let hookDeny: PermissionResult | undefined
+  let deferHook: string | undefined
   try {
     const appState = toolUseContext.getAppState()
 
@@ -1131,18 +1163,16 @@ export async function* runPreToolUseHooks(
             `PreToolUse:${tool.name}`,
             result.blockingError,
           )
-          yield {
-            type: 'hookPermissionResult',
-            hookPermissionResult: {
-              behavior: 'deny',
-              message: denialMessage,
-              decisionReason: {
-                type: 'hook',
-                hookName: `PreToolUse:${tool.name}`,
-                reason: denialMessage,
-              },
+          hookDeny = {
+            behavior: 'deny',
+            message: denialMessage,
+            decisionReason: {
+              type: 'hook',
+              hookName: `PreToolUse:${tool.name}`,
+              reason: denialMessage,
             },
           }
+          yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
         }
         let updatedInput = result.updatedInput
         if (
@@ -1156,8 +1186,8 @@ export async function* runPreToolUseHooks(
             hookSource: result.hookSource,
           })
           if (checked.deny) {
-            rewriteDeny = checked.deny
-            yield { type: 'hookPermissionResult', hookPermissionResult: rewriteDeny }
+            hookDeny = checked.deny
+            yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
             continue
           }
           updatedInput = checked.input
@@ -1183,10 +1213,12 @@ export async function* runPreToolUseHooks(
             hookSource: result.hookSource,
             reason: result.hookPermissionDecisionReason,
           }
-          if (result.permissionBehavior === 'allow') {
+          if (result.permissionBehavior === 'defer') {
+            deferHook = result.hookSource || `PreToolUse:${tool.name}`
+          } else if (result.permissionBehavior === 'allow') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: rewriteDeny ?? {
+              hookPermissionResult: hookDeny ?? {
                 behavior: 'allow',
                 updatedInput,
                 decisionReason,
@@ -1195,7 +1227,7 @@ export async function* runPreToolUseHooks(
           } else if (result.permissionBehavior === 'ask') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: rewriteDeny ?? {
+              hookPermissionResult: hookDeny ?? {
                 behavior: 'ask',
                 updatedInput,
                 message:
@@ -1206,16 +1238,14 @@ export async function* runPreToolUseHooks(
             }
           } else {
             // deny - updatedInput is irrelevant since tool won't run
-            yield {
-              type: 'hookPermissionResult',
-              hookPermissionResult: {
-                behavior: result.permissionBehavior,
-                message:
-                  result.hookPermissionDecisionReason ||
-                  `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
-                decisionReason,
-              },
+            hookDeny = {
+              behavior: result.permissionBehavior,
+              message:
+                result.hookPermissionDecisionReason ||
+                `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
+              decisionReason,
             }
+            yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
           }
         }
 
@@ -1309,8 +1339,23 @@ export async function* runPreToolUseHooks(
       }
     }
   } catch (error) {
-    logError(error)
+    // The turn was not interrupted, so the abort is a hook's own timeout: an
+    // SDK callback its host never answered. The call must not go ahead.
+    if (isAbortError(error) && !toolUseContext.abortController.signal.aborted) {
+      logForDebugging('PreToolUse hook timed out (per-hook abort)')
+      if (hookDeny) {
+        yield { type: 'hookPermissionResult', hookPermissionResult: hookDeny }
+      } else {
+        yield { type: 'stop', stopReason: PRE_TOOL_HOOK_TIMEOUT_MESSAGE }
+      }
+      return
+    }
+    // An interrupt aborts the hooks too; that is not a hook failure.
+    if (!isAbortError(error)) logError(error)
     yield { type: 'stop' }
     return
+  }
+  if (deferHook && !hookDeny) {
+    yield { type: 'defer', hookName: deferHook }
   }
 }

@@ -505,6 +505,22 @@ try {
   delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), true)
   requests.length = 0
+  // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC keeps the default-on discovery
+  // off the network; an explicit =1 still asks the gateway (as official does).
+  const originalNonessential = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+  await openAIModelOptions.fetchGatewayModels()
+  assert.equal(requests.length, 0)
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
+  await openAIModelOptions.fetchGatewayModels()
+  assert.equal(requests.length, 1)
+  delete process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+  if (originalNonessential === undefined) {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  } else {
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = originalNonessential
+  }
+  requests.length = 0
   process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '0'
   assert.equal(openAIModelOptions.isModelDiscoveryEnabled(), false)
   assert.equal(await openAIModelOptions.fetchModelOptions(), null)

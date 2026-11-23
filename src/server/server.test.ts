@@ -406,6 +406,137 @@ describe('SessionManager mid-turn replay', () => {
   })
 })
 
+// One whole turn on each stdin line: the prompt's echo, a subagent's line, the reply, the result.
+const TURN_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+let turn = 0
+process.stdin.on('data', () => {
+  const n = ++turn
+  out({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+  out({ type: 'user', message: { role: 'user', content: 'q' + n }, parent_tool_use_id: null, uuid: 'u' + n, isReplay: true })
+  out({ type: 'assistant', message: { id: 'sub' + n, content: [] }, parent_tool_use_id: 'toolu_1', uuid: 's' + n })
+  out({ type: 'assistant', message: { id: 'm' + n, content: [] }, parent_tool_use_id: null, uuid: 'a' + n })
+  out({ type: 'result', subtype: 'success' })
+  out({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+})
+setInterval(() => {}, 1000)
+`
+
+describe('SessionManager finished-turn replay', () => {
+  it('gives a client that attaches right after a turn its messages again: the transcript may not have them yet', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', TURN_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { replayTasks: true },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    const uuids = (lines: Record<string, unknown>[]) => lines.map(l => l.uuid ?? l.type)
+    const realNow = Date.now
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, '{"type":"user"}\n')
+      for (let i = 0; i < 100 && first.lines.length < 6; i++) await Bun.sleep(20)
+      expect(first.lines).toHaveLength(6)
+      manager.detach(id, first)
+      // A reload: the page reads the transcript, then attaches.
+      const second = socket()
+      manager.attach(id, second)
+      expect(uuids(second.lines)).toEqual(['u1', 'a1'])
+      manager.detach(id, second)
+      // A turn with no page attached is held back whole, and given once.
+      manager.write(id, '{"type":"user"}\n')
+      await Bun.sleep(150)
+      const third = socket()
+      manager.attach(id, third)
+      expect(uuids(third.lines)).toEqual(['u1', 'a1', 'system', 'u2', 's2', 'a2', 'result', 'system'])
+      manager.detach(id, third)
+      // Long after the turn, the transcript has it all.
+      Date.now = () => realNow() + 60_000
+      const fourth = socket()
+      manager.attach(id, fourth)
+      expect(fourth.lines).toEqual([])
+    } finally {
+      Date.now = realNow
+      await manager.destroyAll()
+    }
+  })
+})
+
+// Runs the first prompt until told to "flush": the prompts written meanwhile wait, and can be cancelled.
+const QUEUE_CHILD = `
+const out = m => process.stdout.write(JSON.stringify(m) + '\\n')
+let held = []
+let started = false
+require('readline').createInterface({ input: process.stdin }).on('line', line => {
+  const m = JSON.parse(line)
+  if (m.type === 'control_request') {
+    held = held.filter(h => h.uuid !== m.request.message_uuid)
+    out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response: { cancelled: true } } })
+  } else if (!started) {
+    started = true
+    out({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+    out({ ...m, isReplay: true })
+  } else if (m.uuid === 'flush') {
+    out({ type: 'result', subtype: 'success' })
+    // Run as one prompt: each is echoed, the last with the text of all.
+    const all = held.map(h => h.message.content).join('\\n')
+    held.forEach((h, i) => out({ ...h, isReplay: true, ...(i === held.length - 1 && { message: { role: 'user', content: all } }) }))
+    out({ type: 'result', subtype: 'success' })
+    out({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+  } else held.push(m)
+})
+`
+
+describe('SessionManager queued prompts', () => {
+  it('tells a client that attaches mid-turn which prompts still wait behind the turn', async () => {
+    const manager = new SessionManager(
+      { spawn: opts => spawn(process.execPath, ['-e', QUEUE_CHILD], { cwd: opts.cwd, stdio: ['pipe', 'pipe', 'pipe'] }) },
+      { replayTasks: true },
+    )
+    const socket = () => {
+      const lines: Record<string, unknown>[] = []
+      return { lines, send: (data: string) => lines.push(JSON.parse(data)), close: () => {} }
+    }
+    const user = (uuid: string) =>
+      JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: uuid }, parent_tool_use_id: null }) + '\n'
+    const waiting = (lines: Record<string, unknown>[]) => lines.filter(l => l.isQueued).map(l => l.uuid)
+    try {
+      const { id } = manager.create({ cwd: '/' })
+      const first = socket()
+      manager.attach(id, first)
+      manager.write(id, user('u1'))
+      for (let i = 0; i < 100 && first.lines.length < 2; i++) await Bun.sleep(20)
+      manager.write(id, user('u2') + user('u3') + user('u4'))
+      manager.write(
+        id,
+        JSON.stringify({ type: 'control_request', request_id: 'c1', request: { subtype: 'cancel_async_message', message_uuid: 'u3' } }) + '\n',
+      )
+      for (let i = 0; i < 100 && first.lines.length < 3; i++) await Bun.sleep(20)
+      expect(waiting(first.lines)).toEqual([])
+      manager.detach(id, first)
+      const second = socket()
+      manager.attach(id, second)
+      // The running prompt was echoed and the cancelled one is gone.
+      expect(waiting(second.lines)).toEqual(['u2', 'u4'])
+      expect(second.lines.at(-1)).toMatchObject({ type: 'user', message: { content: 'u4' } })
+      manager.write(id, user('flush'))
+      for (let i = 0; i < 100 && second.lines.length < 8; i++) await Bun.sleep(20)
+      manager.detach(id, second)
+      const third = socket()
+      manager.attach(id, third)
+      expect(waiting(third.lines)).toEqual([])
+      // Of the prompts run as one, the transcript has the last only: the others' echoes are not given again.
+      expect(third.lines.map(l => [l.uuid, (l.message as { content: string }).content])).toEqual([['u1', 'u1'], ['u4', 'u2\nu4']])
+    } finally {
+      await manager.destroyAll()
+    }
+  })
+})
+
 describe('SessionManager approvals', () => {
   it('replays an unanswered permission request to a reattaching client, once', async () => {
     const manager = new SessionManager({

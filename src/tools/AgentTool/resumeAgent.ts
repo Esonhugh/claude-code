@@ -42,6 +42,7 @@ import {
   PLAN_MODE_DISABLED_MESSAGE,
 } from '../../utils/planModeV2.js'
 import {
+  clearAgentMetadataStoppedByUser,
   flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
@@ -127,6 +128,7 @@ async function startResume({
   delivery = 'notification',
   model: modelOverride,
   effort: effortOverride,
+  fromUser,
 }: ResumeAgentParams): Promise<ResumeAgentResult> {
   const refuseUserStop = () => {
     const task = toolUseContext.getAppState().tasks[agentId]
@@ -135,7 +137,6 @@ async function startResume({
       throw new AgentStoppedByUserError(agentId)
     }
   }
-  refuseUserStop()
   // Like official 2.1.311, a resumed agent reports time since it first started.
   const previous = toolUseContext.getAppState().tasks[agentId]
   const startTime = isLocalAgentTask(previous) ? previous.startTime : Date.now()
@@ -145,6 +146,10 @@ async function startResume({
   // reaches the root store so task registration/progress/kill stay visible.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
+  // A user stop bars everyone but the user, whose own message lifts the stop
+  // it was sent after (2.1.329). A stop made later still bars this resume.
+  const liftsUserStop = fromUser === true && (!isLocalAgentTask(previous) || previous.stoppedByUser === true)
+  if (!liftsUserStop) refuseUserStop()
 
   // A parked owner is woken as soon as its child reports, often while its own
   // last turn is still queued for disk; read the transcript after that write.
@@ -154,8 +159,19 @@ async function startResume({
     readAgentMetadata(asAgentId(agentId)),
   ])
   if (meta?.stoppedByUser) {
-    logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
-    throw new AgentStoppedByUserError(agentId)
+    if (!liftsUserStop) {
+      logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
+      throw new AgentStoppedByUserError(agentId)
+    }
+    await clearAgentMetadataStoppedByUser(asAgentId(agentId), meta)
+  }
+  // Only once the durable record is gone: a failed write leaves the stop for a retry to lift.
+  if (liftsUserStop) {
+    rootSetAppState(prev => {
+      const task = prev.tasks[agentId]
+      if (!isLocalAgentTask(task) || !task.stoppedByUser) return prev
+      return { ...prev, tasks: { ...prev.tasks, [agentId]: { ...task, stoppedByUser: undefined } } }
+    })
   }
   const savedScope = await readForkedSkillScope(asAgentId(agentId))
   const liveTask = appState.tasks[agentId]

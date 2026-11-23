@@ -36,6 +36,7 @@ import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, M
 import { createModAgents, listModAgents, restoreModAgentSpawnInput, validateModAgentSpawnInput } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
+import { engineEventNouns } from './loader.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { isDeepStrictEqual } from 'node:util'
 import { isProxy } from 'node:util/types'
@@ -107,6 +108,10 @@ export type ModPluginInput = {
   isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
+  /** Why the host could not read this plugin's declaration; the version already loaded stays. */
+  loadError?: string
+  /** The plugin directory is gone for now; the version already loaded stays without being read again. */
+  keepLoaded?: boolean
   /** Host-only author project dependencies; not sent to the hook Worker. */
   authorTypeDependencies?: readonly ModTypeDependency[]
   options?: ModInput
@@ -3163,6 +3168,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     replacements = new Map<Activation, Activation>(),
     refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
     order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
+    // A cold start builds $ before every plugin is loaded; a plugin still to come can provide the event.
+    checkRegistrations = true,
   ): Promise<{ modules: Activation[]; table: Nouns }> {
     const previousTable = refresh?.table ?? nouns
     const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
@@ -3279,6 +3286,28 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             diagnostic(plugin, 'engine.create', error)
           },
         }) as Nouns
+        // Official 2.1.329 unloads a module that registers an event the built $ does not have.
+        for (const owner of failed || !checkRegistrations ? [] : modules) {
+          if (owner.declaration.isNative) continue
+          let reason: string | undefined
+          for (const { event } of owner.environment.registrations) {
+            const negated = event.startsWith('!')
+            const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
+            if (method === undefined || engineEventNouns.has(noun)) continue
+            const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
+            if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
+            reason = negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
+              : methods ? `registered ${event}, but $.${noun} (${state.owners.get(noun)}) has no method ${method}`
+              : `registered ${event}, but no loaded plugin provides $.${noun}`
+            break
+          }
+          if (!reason) continue
+          failed = owner
+          if (!hostDead && !controller.signal.aborted)
+            unloadedSteps.set(owner.declaration.storageId, { declaration: owner.declaration, order: [...order] })
+          diagnostic(owner.declaration.name, 'load', `hooks module did not load: the $ build failed (${reason})`)
+          break
+        }
         if (!failed) {
           for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
           return { modules, table }
@@ -3458,7 +3487,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (staleDrawings && !stopped) await ui.render(services.uiPresentation?.())
   }
 
-  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>) {
+  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>, reloading?: ReadonlySet<string>) {
     if (recoveringOwners === undefined) unattributedCrashes = 0
     if (hostDead) {
       host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
@@ -3508,7 +3537,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
       try {
-        const declaration = recoveringOwners
+        if (input.loadError && !recoveringOwners) throw new Error(input.loadError)
+        const declaration = recoveringOwners || (input.keepLoaded && knownArgs.has(input.storageId))
           ? knownArgs.get(input.storageId)
           : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         if (!declaration) continue
@@ -3535,7 +3565,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (!recoveringOwners) {
       const pending = ordered.filter(input => !gated.has(input.storageId))
       const kept = active.filter(owner => !gated.has(owner.declaration.storageId))
-      const unchanged = !releasedWithholding && previouslyKnown.every(id => wanted.has(id)) &&
+      const unchanged = !releasedWithholding && !reloading?.size && previouslyKnown.every(id => wanted.has(id)) &&
         pending.length === kept.length && pending.every((input, index) =>
           input.storageId === kept[index]!.declaration.storageId && sameModDeclaration(kept[index]!.declaration, scanned.get(input)!))
       if (!unchanged) gated.clear()
@@ -3545,14 +3575,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
       loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
-    async function buildBootstrap() {
+    let registrationsChecked = false
+    async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
-      if (bootstrap && !changed.size) return
+      if (bootstrap && !changed.size && (!isLast || registrationsChecked)) return
       // Keep newly admitted providers barred during their own bootstrap fold.
       for (const owner of changed) owner.state = 'candidate'
       bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
         previous: bootstrap.modules, changed, table: bootstrap.table,
-      }, foldOrder)
+      }, foldOrder, isLast)
+      registrationsChecked = isLast
       ensureLive()
       candidates = [...bootstrap.modules]
       for (const owner of candidates) owner.state = 'active'
@@ -3568,7 +3600,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       try {
         const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         const refreshDeclarations = async () => {
-          if (declaration.isNative || declaration.tier === 'builtin') return
+          if (declaration.isNative || declaration.tier === 'builtin' || input.keepLoaded) return
           try {
             const project = await ensureModDeclarations(
               declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
@@ -3581,7 +3613,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
         }
         ensureLive()
-        if (old && sameModDeclaration(old.declaration, declaration)) {
+        if (old && !reloading?.has(input.storageId) && sameModDeclaration(old.declaration, declaration)) {
           await refreshDeclarations()
           ensureLive()
           continue
@@ -3653,7 +3685,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
     const refresh = previous.length ? { previous, changed } : undefined
-    if (cold) await buildBootstrap()
+    if (cold) await buildBootstrap(true)
     const built = cold ? bootstrap! : await build(candidates, replacements, refresh, foldOrder)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'
@@ -4082,7 +4114,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
       return beginRegisteredTurn(turnId, undefined, abort).release
     },
-    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)).catch(error => {
+    /** `reloading` names the storage ids to load again even when their declaration is unchanged. */
+    reconcile: (inputs: ModPluginInput[], reloading?: ReadonlySet<string>) => enqueue(() => reconcile(inputs, undefined, reloading)).catch(error => {
       const recovery = error instanceof Error ? workerRecoveries.get(error) : undefined
       if (recovery) return recovery
       throw error
@@ -4115,6 +4148,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }),
     stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
+    /** The loaded activation of a plugin, its module files and the events it hooks, in registration order. */
+    loaded(storageId: string): { activation: string; modules: string[]; events: string[] } | undefined {
+      const owner = active.find(owner => owner.declaration.storageId === storageId)
+      return owner && { activation: owner.suggestionOwner, modules: owner.declaration.modules.map(module => module.path), events: [...new Set(owner.environment.registrations.map(registration => registration.event))] }
+    },
     hasHooks: (event: string, known?: Record<string, unknown>) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
     dispose(): Promise<void> {
       if (disposal) return disposal

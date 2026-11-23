@@ -65,6 +65,13 @@ test('admits state helpers inside a helper that receives the engine (#845)', asy
   expect(declaration.state?.writes).toEqual([{ plugin: 'example', key: 'n' }])
 })
 
+// Wording of official 2.1.329.
+test('a module that does not parse is named with where parsing stopped', async () => {
+  const input = await plugin({ 'main.ts': 'export const register = on => { on("tool.call", \n' })
+  await expect(loadModDeclaration(input)).rejects.toThrow(
+    `${join(input.pluginRoot, 'main.ts')} does not parse: Unexpected end of file (line 1, column 49)`)
+})
+
 test('still rejects a state helper given a non-engine value (#845)', async () => {
   const input = await plugin({
     'main.ts': `import { atom, read } from 'claude-code'

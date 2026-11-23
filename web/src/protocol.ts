@@ -1062,8 +1062,8 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       const content = Array.isArray(message.content) ? message.content : []
       let next = state
       const uuid = str(raw.uuid)
-      // The echo of a message this page sent is already shown.
-      const echo = uuid !== undefined && state.items.some(i => i.id === uuid)
+      // The echo of a message this page sent is already shown; teammate messages are numbered under the uuid.
+      const echo = uuid !== undefined && state.items.some(i => i.id === uuid || i.id === `${uuid}-0`)
       const compact = next.items.findLast(i => i.kind === 'compact')
       if (
         compact?.kind === 'compact' &&
@@ -1076,6 +1076,14 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
         }
       }
       const queued = uuid === undefined ? undefined : state.queued.find(q => q.id === uuid)
+      if (raw.isQueued === true) {
+        // The server's copy of a prompt that still waits behind the turn, for a page that reloaded.
+        if (uuid === undefined || queued || echo) return state
+        const images = content
+          .map(part => (isObj(part) && part.type === 'image' ? imageDataUrl(part) : undefined))
+          .filter((u): u is string => !!u)
+        return queueUserMessage(state, contentText(message.content), uuid, images)
+      }
       if (raw.isReplay === true && queued) {
         // Fed to the model between tool calls.
         const rest = { ...next, queued: next.queued.filter(q => q !== queued) }

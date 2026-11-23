@@ -19,13 +19,17 @@ import { isApproveForMeAvailable } from './approveForMe.js'
 import { getAPIProvider } from '../model/providers.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import type { SettingSource } from '../settings/constants.js'
-import { SETTING_SOURCES } from '../settings/constants.js'
+import {
+  getEnabledSettingSources,
+  SETTING_SOURCES,
+} from '../settings/constants.js'
 import {
   getSettings_DEPRECATED,
   getSettingsFilePathForSource,
   getSettingsForSource,
   getUseAutoModeDuringPlan,
   isAutoModeClassifyAllShellEnabled,
+  isDenyInsteadOfPromptingEnabled,
 } from '../settings/settings.js'
 import { getGlobalConfig } from '../config.js'
 import {
@@ -1225,7 +1229,7 @@ export async function initializeToolPermissionContext({
   }
 
   let toolPermissionContext = applyPermissionRulesToPermissionContext(
-    {
+    applyRestrictivePermissionSettings({
       mode: permissionMode,
       additionalWorkingDirectories,
       alwaysAllowRules: { cliArg: parsedAllowedToolsCli },
@@ -1235,7 +1239,7 @@ export async function initializeToolPermissionContext({
       ...(feature('TRANSCRIPT_CLASSIFIER')
         ? { isAutoModeAvailable: isAutoModeGateEnabled() }
         : {}),
-    },
+    }),
     rulesFromDisk,
   )
 
@@ -1618,6 +1622,30 @@ export function shouldShowAutoModeEntryWarning(): boolean {
   return !(['policySettings', 'userSettings', 'flagSettings'] as const).some(
     source => getSettingsForSource(source)?.skipAutoPermissionPrompt === true,
   ) && !getGlobalConfig().hasSeenAutoModeEntryWarning
+}
+
+/**
+ * permissions.blockWritesOutsideWorkingDirectories and
+ * permissions.denyInsteadOfPrompting as session state (official 2.1.329).
+ * Both only tighten, so true in any source that may set them wins.
+ */
+export function applyRestrictivePermissionSettings(
+  context: ToolPermissionContext,
+): ToolPermissionContext {
+  return {
+    ...context,
+    // --permission-prompts none sets both flags on the print-mode context; a
+    // settings change must not take that away.
+    denyInsteadOfPrompting:
+      isDenyInsteadOfPromptingEnabled() ||
+      (context.shouldAvoidPermissionPrompts === true &&
+        context.denyInsteadOfPrompting === true),
+    blockWritesOutsideWorkingDirectories: getEnabledSettingSources().some(
+      source =>
+        getSettingsForSource(source)?.permissions
+          ?.blockWritesOutsideWorkingDirectories === true,
+    ),
+  }
 }
 
 /**

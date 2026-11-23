@@ -53,8 +53,10 @@ if (process.env[childFlag] !== '1') {
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
   const { readFileSync } = await import('node:fs')
 
+  let written: StdoutMessage[] = []
   async function run(requests: Record<string, unknown>[], store = createStore(getDefaultAppState(), onChangeAppState)) {
     const frames: StdoutMessage[] = []
+    written = frames
     const receipts = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
     const mocks = [
       spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
@@ -116,7 +118,8 @@ if (process.env[childFlag] !== '1') {
     expect(tasks.a1.pendingMessages).toEqual([{ text: 'also check the appendix', fromUser: true }])
     // Shown in its view from the queue until the agent reads it (#825).
     expect(tasks.a1.messages).toHaveLength(0)
-    expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: agent a2 was stopped by the user' })
+    // The host speaks for the user, who may resume an agent they stopped (2.1.329); this one has no transcript to resume from.
+    expect(stopped).toMatchObject({ subtype: 'error', error: 'send_task_message: No transcript found for agent ID: a2' })
     // A teammate's transcript is named by its agent id, which the web server keys sends by (#826).
     expect(injected.response).toEqual({ delivery: 'injected', agent_id: 'aalice-1' })
     expect(tasks.t1.pendingUserMessages).toEqual(['hello teammate'])
@@ -211,6 +214,14 @@ if (process.env[childFlag] !== '1') {
     expect(b64.response).toMatchObject({ contents: readFileSync('package.json').subarray(0, 3).toString('base64'), encoding: 'base64' })
     expect(outside).toMatchObject({ subtype: 'error', error: 'read_file: permission denied for /etc/hostname' })
     expect(missing).toMatchObject({ subtype: 'error', error: 'read_file: path is required' })
+  })
+
+  test('rename_session with no turn running reports the new title before it answers', async () => {
+    const [rename] = await run([{ subtype: 'rename_session', title: 'idle title' }])
+    expect(rename).toMatchObject({ subtype: 'success' })
+    expect(written.map(frame => frame.type === 'system' ? frame.subtype : frame.type).filter(kind => kind === 'session_title_changed' || kind === 'control_response'))
+      .toEqual(['session_title_changed', 'control_response'])
+    expect(written.find(frame => frame.type === 'system' && frame.subtype === 'session_title_changed')).toMatchObject({ title: 'idle title' })
   })
 
   test('update_settings writes only the allowlisted key', async () => {
@@ -380,5 +391,15 @@ if (process.env[childFlag] !== '1') {
     expect(badRating.subtype).toBe('error')
     expect(badCleared).toMatchObject({ subtype: 'error', error: expect.stringContaining('and cleared a boolean') })
     expect(feedback.response).toMatchObject({ feedback_id: null, unavailable_reason: expect.any(String) })
+  })
+
+  test('a control request this build does not know is refused as unsupported_request (official 2.1.329)', async () => {
+    const [unknown] = await run([{ subtype: 'bogus_subtype_x' }])
+    expect(unknown).toEqual({
+      subtype: 'error',
+      request_id: '0',
+      error: 'Unsupported control request subtype: bogus_subtype_x',
+      error_code: 'unsupported_request',
+    })
   })
 }

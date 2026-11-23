@@ -18,10 +18,10 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { lock } from '../../utils/lockfile.js'
-import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
+import { getPluginsDirectory, pluginDataDirPath } from '../../utils/plugins/pluginDirectories.js'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { createModHostOperations, getModHttpServices, type FsStat } from './hostOperations.js'
+import { createModHostOperations, getModHttpServices, storeFileName, type FsStat } from './hostOperations.js'
 import {
   getPolicySettingsOrigin,
   getSettingsForSource,
@@ -96,8 +96,10 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
+const storeDir = () => join(getPluginsDirectory(), 'store')
+
 async function storedFile(): Promise<string> {
-  const dir = getPluginDataDir('example@market')
+  const dir = storeDir()
   const files = (await readdir(dir)).filter((name) => name.endsWith('.json'))
   expect(files).toHaveLength(1)
   return join(dir, files[0])
@@ -593,6 +595,89 @@ describe('settings.read', () => {
 })
 
 describe('store', () => {
+  // Official 2.1.329 keeps <plugins>/store/<id>.json as an indented JSON object, private to the user.
+  test('the store file has the name, format and mode of official 2.1.329', async () => {
+    expect([storeFileName('example@market'), storeFileName('st@inline'), storeFileName('plain-id_1.2'), storeFileName('nul'), storeFileName('UPPER'), storeFileName('..'), storeFileName('@@'), storeFileName('a'.repeat(65))]).toEqual([
+      'example_market-' + createHash('sha256').update('example@market').digest('hex').slice(0, 12) + '.json',
+      'st_inline-9a59d0f12ebe.json',
+      'plain-id_1.2.json',
+      'nul-' + createHash('sha256').update('nul').digest('hex').slice(0, 12) + '.json',
+      'UPPER-' + createHash('sha256').update('UPPER').digest('hex').slice(0, 12) + '.json',
+      '__-' + createHash('sha256').update('..').digest('hex').slice(0, 12) + '.json',
+      '__-' + createHash('sha256').update('@@').digest('hex').slice(0, 12) + '.json',
+      'a'.repeat(64) + '-' + createHash('sha256').update('a'.repeat(65)).digest('hex').slice(0, 12) + '.json',
+    ])
+    await host.store.set('n', 2)
+    await host.store.set('obj', { deep: [1, 'two', null], s: 'x' })
+    const path = join(storeDir(), storeFileName('example@market'))
+    expect(await readFile(path, 'utf8')).toBe(
+      '{\n  "n": 2,\n  "obj": {\n    "deep": [\n      1,\n      "two",\n      null\n    ],\n    "s": "x"\n  }\n}\n',
+    )
+    if (process.platform !== 'win32') {
+      expect((await stat(path)).mode & 0o777).toBe(0o600)
+      expect((await stat(storeDir())).mode & 0o777).toBe(0o700)
+    }
+    await writeFile(path, '{"n": 41}')
+    expect(await host.store.get('n')).toBe(41)
+    expect(await host.store.get('toString')).toBeUndefined()
+  })
+
+  test('failures are worded as in official 2.1.329', async () => {
+    await host.store.set('n', 1)
+    const path = await storedFile()
+    await expect(host.store.get('k'.repeat(300))).rejects.toThrow('example@market: $.store.get: the key is 300 characters, over the 256 limit')
+    await expect(host.store.set('k'.repeat(300), 1)).rejects.toThrow('example@market: $.store.set: the key is 300 characters, over the 256 limit')
+    await writeFile(path, '[1,2]')
+    await expect(host.store.keys()).rejects.toThrow(`example@market: store file ${path} is malformed (the JSON is not an object)`)
+    await writeFile(path, '{"n": 1')
+    await expect(host.store.get('n')).rejects.toThrow(`example@market: store file ${path} is malformed (`)
+    await rm(path)
+    await mkdir(path)
+    await expect(host.store.get('n')).rejects.toThrow(`example@market: store file ${path} is unreadable (`)
+  })
+
+  // Before it used the official location this fork kept key/value entries under the plugin's data directory.
+  test('a store written by an earlier version of this fork is still read, and moves on the next write', async () => {
+    const legacy = join(pluginDataDirPath('example@market'), `mod-store-${createHash('sha256').update('example@market').digest('hex')}.json`)
+    await mkdir(pluginDataDirPath('example@market'), { recursive: true })
+    await writeFile(legacy, '[["n",7],["kept",{"a":1}]]')
+    expect(await host.store.get('n')).toBe(7)
+    expect(await host.store.keys()).toEqual(['n', 'kept'])
+    await host.store.set('n', 8)
+    expect(JSON.parse(await readFile(join(storeDir(), storeFileName('example@market')), 'utf8'))).toEqual({ n: 8, kept: { a: 1 } })
+    await writeFile(legacy, '[["n",99]]')
+    expect(await host.store.get('n')).toBe(8)
+  })
+
+  test('a legacy store that cannot be read or understood is not replaced by a new one', async () => {
+    const legacy = join(pluginDataDirPath('example@market'), `mod-store-${createHash('sha256').update('example@market').digest('hex')}.json`)
+    await mkdir(pluginDataDirPath('example@market'), { recursive: true })
+    for (const text of ['[["n",7]', '{"n": 7}']) {
+      await writeFile(legacy, text)
+      await expect(host.store.get('n')).rejects.toThrow(`example@market: store file ${legacy} is malformed (`)
+      await expect(host.store.set('other', 1)).rejects.toThrow(`example@market: store file ${legacy} is malformed (`)
+    }
+    await rm(legacy)
+    await mkdir(legacy)
+    await expect(host.store.set('other', 1)).rejects.toThrow(`example@market: store file ${legacy} is unreadable (`)
+    expect(await readdir(storeDir()).then(names => names.filter(name => name.endsWith('.json')), () => [])).toEqual([])
+    await rm(legacy, { recursive: true })
+    await writeFile(legacy, '[["n",7]]')
+    await host.store.set('other', 1)
+    expect(await host.store.keys()).toEqual(['n', 'other'])
+  })
+
+  // Indentation makes deep data far larger on disk than the compact JSON the limit counts.
+  test('a store within the limit stays readable however large its indented file is', async () => {
+    let deep: unknown = 1
+    for (let depth = 0; depth < 3000; depth++) deep = [deep]
+    await host.store.set('deep', deep)
+    expect((await stat(await storedFile())).size).toBeGreaterThan(16 * 1024 * 1024)
+    expect(JSON.stringify(await host.store.get('deep'))).toBe(JSON.stringify(deep))
+    await host.store.delete('deep')
+    expect(await host.store.keys()).toEqual([])
+  })
+
   test('requires nonempty keys of at most 256 UTF-16 code units without changing existing data', async () => {
     await host.store.set('original', 1)
     const path = await storedFile()
@@ -616,7 +701,7 @@ describe('store', () => {
     await host.store.set('original', 1)
     const path = await storedFile()
     const original = await readFile(path, 'utf8')
-    await chmod(getPluginDataDir('example@market'), 0o500)
+    await chmod(storeDir(), 0o500)
     try {
       await runWorker(`
         import {createModHostOperations} from ${JSON.stringify(workerModule)};
@@ -625,7 +710,7 @@ describe('store', () => {
       `)
       expect(await readFile(path, 'utf8')).toBe(original)
     } finally {
-      await chmod(getPluginDataDir('example@market'), 0o700)
+      await chmod(storeDir(), 0o700)
     }
     await host.store.set('recovered', 3)
     expect(await host.store.keys()).toEqual(['original', 'recovered'])
@@ -666,7 +751,7 @@ describe('store', () => {
       const error = await outcome
       if (error) throw error
       expect(
-        (await readdir(getPluginDataDir('example@market'))).filter(
+        (await readdir(storeDir())).filter(
           (name) => name.includes('.tmp.') || name.endsWith('.lock'),
         ),
       ).toEqual([])
@@ -719,14 +804,14 @@ describe('store', () => {
     })
     await host.store.set('same', 'first')
     await other.store.set('same', 'second')
-    expect(getPluginDataDir(a)).toBe(getPluginDataDir(b))
+    expect(storeFileName(a).slice(0, 'example_market'.length)).toBe(storeFileName(b).slice(0, 'example_market'.length))
     expect(await host.store.get('same')).toBe('first')
     expect(await other.store.get('same')).toBe('second')
-    const names = await readdir(getPluginDataDir(a))
+    const names = await readdir(storeDir())
     for (const id of [a, b])
       expect(
         names.some((name) =>
-          name.includes(createHash('sha256').update(id).digest('hex')),
+          name.includes(createHash('sha256').update(id).digest('hex').slice(0, 12)),
         ),
       ).toBe(true)
   })
@@ -739,8 +824,10 @@ describe('store', () => {
       expect(JSON.stringify({big: value}).length).toBe(LIMIT)
       await host.store.set('big', value)
       expect(await host.store.get('big')).toBe(value)
-      await expect(host.store.set('another', 1)).rejects.toThrow('4194304 characters')
-      await expect(host.store.set('big', value + 'a')).rejects.toThrow('4194304 characters')
+      await expect(host.store.set('another', 1)).rejects.toThrow(
+        `example@market: $.store.set: the store would be ${LIMIT + JSON.stringify({another: 1}).length - 1} characters, over the 4194304 limit`,
+      )
+      await expect(host.store.set('big', value + 'a')).rejects.toThrow('over the 4194304 limit')
       expect(await host.store.get('big')).toBe(value)
       expect(await host.store.keys()).toEqual(['big'])
     }
@@ -749,15 +836,14 @@ describe('store', () => {
     expect(await host.store.get('recovered')).toBe(true)
   })
 
-  test('rejects corrupt, duplicate, malformed and oversized stores without replacing them', async () => {
+  test('rejects corrupt, malformed and oversized stores without replacing them', async () => {
     await host.store.set('key', 1)
     const path = await storedFile()
     for (const text of [
       '{broken',
-      '{}',
-      '[["a",1],["a",2]]',
-      '[[1,2]]',
-      '[["a"]]',
+      '"text"',
+      'null',
+      '[["key",1]]',
       ' '.repeat(LIMIT + 1),
     ]) {
       await writeFile(path, text)
@@ -775,7 +861,9 @@ describe('store', () => {
     const before = await stat(path)
     await host.store.delete('absent')
     const after = await stat(path)
-    expect({ino:after.ino,mtimeMs:after.mtimeMs}).toEqual({ino:before.ino,mtimeMs:before.mtimeMs})
+    // The read touches the file (official keeps a store that is read from its cleanup sweep); it is not rewritten.
+    expect(after.ino).toBe(before.ino)
+    expect(await readFile(path, 'utf8')).toBe('{\n  "original": 1\n}\n')
     expect(await host.store.get('original')).toBe(1)
   })
 
@@ -827,7 +915,7 @@ describe('store', () => {
     await again.store.set('restored', 3)
     expect(await again.store.get('restored')).toBe(3)
     expect(
-      (await readdir(getPluginDataDir('example@market'))).filter(
+      (await readdir(storeDir())).filter(
         (name) => name.includes('.tmp.') || name.endsWith('.lock'),
       ),
     ).toEqual([])
@@ -867,7 +955,8 @@ describe('store', () => {
     }
   })
 
-  test('persists insertion order across reloads, overwrites and reinserts without prototype key collisions', async () => {
+  // The store is a JSON object, as in official 2.1.329: keys that are array indices come first, in numeric order.
+  test('persists object key order across reloads, overwrites and reinserts without prototype key collisions', async () => {
     expect(await host.store.get('missing')).toBeUndefined()
     expect(await host.store.keys()).toEqual([])
     for (const key of ['10', '2', '__proto__', 'constructor'])
@@ -879,8 +968,8 @@ describe('store', () => {
       signal: controller.signal,
     })
     expect(await again.store.keys()).toEqual([
-      '10',
       '2',
+      '10',
       '__proto__',
       'constructor',
     ])
@@ -889,7 +978,9 @@ describe('store', () => {
     await again.store.delete('2')
     await again.store.delete('absent')
     await again.store.set('2', 2)
-    const expected = ['10', '__proto__', 'constructor', '2']
+    await again.store.delete('__proto__')
+    await again.store.set('__proto__', 3)
+    const expected = ['2', '10', 'constructor', '__proto__']
     expect(await host.store.keys()).toEqual(expected)
     const reloaded = createModHostOperations({
       cwd: () => cwd,

@@ -57,6 +57,7 @@ const pinnedPlugin = {
 let disableMode: 'success' | 'success-false' | 'reject' = 'success-false'
 let loadBuiltinOnly = false
 const enableCalls: string[] = []
+let manageCompleteCalls = 0
 const uninstallCalls: string[] = []
 const installationLookups: string[] = []
 
@@ -303,7 +304,13 @@ async function renderAndToggle(
         plugins: { ...appState.plugins, errors: [] },
       }}
     >
-      <ManagePlugins setViewState={() => {}} setResult={() => {}} />
+      <ManagePlugins
+        setViewState={() => {}}
+        setResult={() => {}}
+        onManageComplete={() => {
+          manageCompleteCalls++
+        }}
+      />
     </AppStateProvider>,
     {
       stdout: stdout as unknown as NodeJS.WriteStream,
@@ -424,9 +431,12 @@ assert.deepEqual(uninstallCalls, [])
 loadBuiltinOnly = false
 
 disableMode = 'success'
+manageCompleteCalls = 0
 const successOutput = await renderAndToggle('will disable')
+// Reported at toggle time: switching tabs unmounts this list before Esc.
+assert.equal(manageCompleteCalls, 1)
 assert.match(successOutput, /will disable/)
-assert.match(successOutput, /Run \/reload-plugins to apply changes/)
+assert.match(successOutput, /Changes apply when you close this menu/)
 assert.doesNotMatch(successOutput, /Failed to disable/)
 
 for (const mode of ['success-false', 'reject'] as const) {
@@ -438,7 +448,8 @@ for (const mode of ['success-false', 'reject'] as const) {
   )
   assert.match(output, /enabled/)
   assert.doesNotMatch(output, /will disable/)
-  assert.doesNotMatch(output, /Run \/reload-plugins to apply changes/)
+  assert.doesNotMatch(output, /Changes apply when you close this menu/)
 }
+assert.equal(manageCompleteCalls, 1)
 
 console.log('ManagePlugins.toggleFailure.test.tsx passed')

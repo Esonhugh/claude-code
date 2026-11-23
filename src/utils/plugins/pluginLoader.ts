@@ -133,6 +133,7 @@ import {
 } from './marketplaceHelpers.js'
 import {
   getMarketplaceCacheOnly,
+  getTrustedExtraKnownMarketplaces,
   getPluginByIdCacheOnly,
   loadKnownMarketplacesForPluginLoading,
   loadKnownMarketplacesConfig,
@@ -2171,7 +2172,7 @@ async function loadPluginsFromMarketplaces({
 
       const inPlace = await getInPlacePluginSource(
         pluginId, getSettingsForSource('policySettings'), knownMarketplaces[marketplaceName!],
-        getSettingsWithErrors().settings.extraKnownMarketplaces?.[marketplaceName!]?.source,
+        getTrustedExtraKnownMarketplaces()?.[marketplaceName!]?.source,
       )
       if (inPlace) {
         logForDebugging(`[Mods] ${pluginId}: loading directory plugin in place from ${inPlace.path}; registered directory ${inPlace.source.path}; managed source ${inPlace.managedSource}`)

@@ -12,6 +12,7 @@ import {
 } from '../auth.js'
 import {
   has1mContext,
+  isNative1MModel,
   is1mContextDisabled,
   modelSupports1M,
 } from '../context.js'
@@ -569,6 +570,20 @@ export function getPublicModelName(model: ModelName): string {
  * @param modelInput The model alias or name provided by the user.
  */
 export function parseUserSpecifiedModel(
+  modelInput: ModelName | ModelAlias,
+): ModelName {
+  const model = resolveUserSpecifiedModel(modelInput)
+  // Official KJ: [1m] is dropped from a model that is 1M on its own, so it
+  // neither sends the context-1m beta nor splits the model's usage key.
+  const base = model.replace(/\[1m\]$/i, '')
+  return base !== model &&
+    !is1mContextDisabled() &&
+    isNative1MModel(getCanonicalName(base))
+    ? base
+    : model
+}
+
+function resolveUserSpecifiedModel(
   modelInput: ModelName | ModelAlias,
 ): ModelName {
   const modelInputTrimmed = modelInput.trim()
