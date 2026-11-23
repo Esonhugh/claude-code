@@ -41,14 +41,16 @@ export function runPostCompactCleanup(
 ): void {
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
-  // (context-collapse, memory file cache) for main-thread compacts.
+  // (cached microcompact, context-collapse, memory file cache, classifier
+  // approvals, beta tracing) for main-thread compacts; as in official `Ime`,
+  // the session messages cache is cleared for every compact.
   // Same startsWith pattern as isMainThread (index.ts:188).
   const isMainThreadCompact =
     querySource === undefined ||
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
 
-  resetMicrocompactState()
+  if (isMainThreadCompact) resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -70,10 +72,10 @@ export function runPostCompactCleanup(
     resetGetMemoryFilesCache('compact')
     if (agentId === undefined) clearSystemPromptSections()
     else clearSystemPromptSectionState()
+    clearClassifierApprovals()
+    clearSpeculativeChecks()
+    clearBetaTracingState()
   }
-  clearClassifierApprovals()
-  clearSpeculativeChecks()
-  clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
     void import('../../utils/attributionHooks.js').then(m =>
       // @ts-ignore - recovered code
