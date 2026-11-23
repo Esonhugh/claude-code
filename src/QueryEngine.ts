@@ -129,7 +129,7 @@ const messageSelector =
     require('src/components/MessageSelector.js')
 
 import {
-  hookSystemMessageToSDK,
+  hookSystemMessagesToSDK,
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
   toSDKSystemNotice,
@@ -1131,6 +1131,7 @@ export class QueryEngine {
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
+    yield* hookSystemMessagesToSDK(messagesFromUserInput)
 
     // A channel message is meta to the model, but a client that asked for
     // replays shows it, as the TUI does; before the reply, where it was read.
@@ -1599,7 +1600,7 @@ export class QueryEngine {
             yield* teammateMailboxReplays(message)
           }
           else if (message.attachment.type === 'hook_system_message') {
-            yield hookSystemMessageToSDK(message.attachment, message.uuid)
+            yield* hookSystemMessagesToSDK([message])
           }
           // Yield queued_command attachments as SDK user message replays
           else if (

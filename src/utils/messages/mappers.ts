@@ -27,8 +27,10 @@ import type {
 import type { HookSystemMessageAttachment } from '../attachments.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
-import { createAssistantMessage } from '../messages.js'
+import { logError } from '../log.js'
+import { createAssistantMessage, isCompactBoundaryMessage } from '../messages.js'
 import { getPlan } from '../plans.js'
+import { partiallySanitizeUnicode } from '../sanitization.js'
 
 /**
  * Like official 2.1.311, SDK tool_result_meta for a user message holding one
@@ -173,17 +175,59 @@ export function toSDKSystemNotice(
   }
 }
 
+// Like official 2.1.329, each line loses ANSI codes and invisible characters,
+// and any other control character becomes a space.
+function hookNoticeLines(text: string): string[] {
+  return text
+    .replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, '\n')
+    .split('\n')
+    .map(line =>
+      partiallySanitizeUnicode(stripAnsi(line)).replace(
+        /[\p{Cc}\p{Cf}\u2028\u2029]+/gu,
+        ' ',
+      ),
+    )
+}
+
 export function hookSystemMessageToSDK(
   attachment: HookSystemMessageAttachment,
   uuid: UUID,
 ): SDKInformationalMessage {
+  const prefix = `${hookNoticeLines(attachment.hookName).join(' ')} says: `
   return {
     type: 'system' as const,
     subtype: 'informational' as const,
-    content: `${attachment.hookName} says: ${attachment.content}`,
+    content: hookNoticeLines(attachment.content)
+      .map(line => prefix + line)
+      .join('\n'),
     level: 'notice' as const,
     uuid,
     session_id: getSessionId(),
+  }
+}
+
+/**
+ * Like official 2.1.329, the notices for the hook messages among a prompt's
+ * own messages (a UserPromptSubmit hook's systemMessage), sent after
+ * system/init. Messages a compaction kept from before are not sent again.
+ */
+export function hookSystemMessagesToSDK(
+  messages: readonly Message[],
+): SDKInformationalMessage[] {
+  try {
+    const kept = messages.find(isCompactBoundaryMessage)?.compactMetadata
+      ?.preservedMessages
+    const old = new Set<string>(kept?.uuids ?? [])
+    return messages.flatMap(message =>
+      message.type === 'attachment' &&
+      message.attachment.type === 'hook_system_message' &&
+      !old.has(message.uuid)
+        ? [hookSystemMessageToSDK(message.attachment, message.uuid)]
+        : [],
+    )
+  } catch (error) {
+    logError(error)
+    return []
   }
 }
 
