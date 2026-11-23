@@ -472,6 +472,7 @@ function wasBlockedTypedPrompt(
     result.messages.some(
       message =>
         message.type === 'system' &&
+        'promptSubmitEnding' in message &&
         message.promptSubmitEnding?.promptKept === false,
     )
   )

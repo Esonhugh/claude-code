@@ -377,8 +377,9 @@ export function HooksDisabledDialog({
       inputGuide={() => <Text>Esc to close</Text>}
     >
       <Text>
-        While hooks are off, no hook command runs, the status line isn't shown,
-        and tools run without hook checks.
+        {
+          "While hooks are off, no hook command runs, the status line isn't shown, and tools run without hook checks."
+        }
         {managedHooksStillRun && ' Hooks set by your organization still run.'}
       </Text>
       {!disabledByPolicy && (
