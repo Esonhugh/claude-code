@@ -217,7 +217,8 @@ describe('REPL async lane (official NUe)', () => {
   test('running() lists the session\u2019s evals and marks the caller; abort() cancels one still waiting', async () => {
     const context = contextFor()
     await run(
-      'await sleep(30); const rows = running(); rows[2].abort(); ' +
+      // Waits for the next two evals to queue; a fixed sleep lost that race on a slow runner.
+      'for (let i = 0; i < 1000 && running().length < 3; i++) await sleep(5); const rows = running(); rows[2].abort(); ' +
         '[rows.map(({ id, state, self, settled }) => [id, state, self, settled].join()), typeof rows[0].ageMs, self.running === running]',
       context,
     )
