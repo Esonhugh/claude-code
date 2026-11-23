@@ -1,14 +1,25 @@
 import { expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
 import type { UUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 const childKey = 'WORKTREE_TRANSCRIPT_TEST_CHILD'
 
 if (!process.env[childKey]) {
-  test.each(['resume-from-main', 'relocate'])(
+  test.each(['resume-from-main', 'relocate', 'enter', 'enter-again'])(
     'worktree session transcript: %s',
     async scenario => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), 'worktree-transcript-')))
@@ -106,6 +117,97 @@ if (!process.env[childKey]) {
       const log = await storage.getLastSessionLog(sessionId)
       expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
       expect(log?.fullPath).toBe(worktreeFile)
+    })
+  } else if (process.env[childKey] === 'enter') {
+    test('entering a worktree moves the transcript and its tool results there', async () => {
+      const { getSessionId, setOriginalCwd } = await import('../bootstrap/state.js')
+      const storage = await import('./sessionStorage.js')
+      const { getToolResultsDir } = await import('./toolResultStorage.js')
+      const { getTaskOutputDir } = await import('./task/diskOutput.js')
+      const { createUserMessage, createAssistantMessage } = await import('./messages.js')
+      const repo = process.cwd()
+      const worktree = join(repo, '.claude', 'worktrees', 'wtK')
+      setOriginalCwd(repo)
+      const sessionId = getSessionId() as UUID
+      await storage.recordTranscript([
+        createUserMessage({ content: 'one' }),
+        createAssistantMessage({ content: 'FAKE_OK' }),
+      ])
+      await storage.flushSessionStorage()
+      const launchFile = storage.getTranscriptPath()
+      const oldResult = join(getToolResultsDir(), 'r1.txt')
+      mkdirSync(dirname(oldResult), { recursive: true })
+      writeFileSync(oldResult, 'saved output')
+      const agentFile = join(dirname(launchFile), sessionId, 'subagents', 'agent-a1.jsonl')
+      mkdirSync(dirname(agentFile), { recursive: true })
+      writeFileSync(agentFile, '')
+      mkdirSync(getTaskOutputDir(), { recursive: true })
+      symlinkSync(agentFile, join(getTaskOutputDir(), 'a1.output'))
+
+      // As EnterWorktree does: originalCwd moves first, then the transcript.
+      setOriginalCwd(worktree)
+      // Appended right before the move and not flushed yet.
+      storage.saveWorktreeState({
+        originalCwd: repo,
+        worktreePath: worktree,
+        worktreeName: 'wtK',
+        sessionId,
+      })
+      await storage.relocateSessionTranscript(worktree)
+      await storage.flushSessionStorage()
+
+      const moved = join(storage.getProjectDir(worktree), `${sessionId}.jsonl`)
+      expect(existsSync(launchFile)).toBe(false)
+      expect(storage.getTranscriptPath()).toBe(moved)
+      const lines = readFileSync(moved, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+      expect(lines.filter(l => l.type === 'relocated')).toEqual([
+        { type: 'relocated', sessionId, relocatedCwd: worktree },
+      ])
+      expect(lines.some(l => l.type === 'worktree-state')).toBe(true)
+      // Tool results moved and new ones go next to the transcript.
+      expect(getToolResultsDir()).toBe(join(storage.getProjectDir(worktree), sessionId, 'tool-results'))
+      expect(readFileSync(join(getToolResultsDir(), 'r1.txt'), 'utf8')).toBe('saved output')
+      // A path the conversation already holds is read where the file is now.
+      expect(storage.remapFormerSessionPath(oldResult)).toBe(join(getToolResultsDir(), 'r1.txt'))
+      expect(storage.remapFormerSessionPath('/elsewhere/r1.txt')).toBe('/elsewhere/r1.txt')
+      expect(readlinkSync(join(getTaskOutputDir(), 'a1.output'))).toBe(
+        join(storage.getProjectDir(worktree), sessionId, 'subagents', 'agent-a1.jsonl'),
+      )
+      const log = await storage.getLastSessionLog(sessionId)
+      expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
+      expect(log?.fullPath).toBe(moved)
+    })
+  } else if (process.env[childKey] === 'enter-again') {
+    test('a transcript already at the destination is set aside, and a repeat move changes nothing', async () => {
+      const { getSessionId, setOriginalCwd } = await import('../bootstrap/state.js')
+      const storage = await import('./sessionStorage.js')
+      const { createUserMessage, createAssistantMessage } = await import('./messages.js')
+      const repo = process.cwd()
+      const worktree = join(repo, '.claude', 'worktrees', 'wtK')
+      setOriginalCwd(repo)
+      const sessionId = getSessionId() as UUID
+      await storage.recordTranscript([
+        createUserMessage({ content: 'one' }),
+        createAssistantMessage({ content: 'FAKE_OK' }),
+      ])
+      await storage.flushSessionStorage()
+      // Left behind by an earlier, interrupted move.
+      const toDir = storage.getProjectDir(worktree)
+      mkdirSync(toDir, { recursive: true })
+      writeFileSync(join(toDir, `${sessionId}.jsonl`), '{"type":"stale"}\n')
+
+      setOriginalCwd(worktree)
+      await storage.relocateSessionTranscript(worktree)
+      await storage.relocateSessionTranscript(worktree)
+      await storage.flushSessionStorage()
+
+      const asides = readdirSync(toDir).filter(n => n.startsWith(`${sessionId}.jsonl.superseded-`))
+      expect(asides).toHaveLength(1)
+      expect(readFileSync(join(toDir, asides[0]!), 'utf8')).toBe('{"type":"stale"}\n')
+      const lines = readFileSync(join(toDir, `${sessionId}.jsonl`), 'utf8').trim().split('\n')
+      expect(lines.filter(l => l.includes('"type":"relocated"'))).toHaveLength(1)
+      const log = await storage.getLastSessionLog(sessionId)
+      expect(log?.messages.map(m => m.type)).toEqual(['user', 'assistant'])
     })
   } else {
     test('leaving the worktree moves the transcript to the launch directory', async () => {
