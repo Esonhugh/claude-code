@@ -23,6 +23,8 @@ import type { SecureStorage, SecureStorageData } from './types.js'
 // accounting differences.
 const SECURITY_STDIN_LINE_LIMIT = 4096 - 64
 
+const KEYCHAIN_WRITE_CHECK_SERVICE = 'Claude Code-write-check'
+
 export const macOsKeychainStorage = {
   name: 'keychain',
   // @ts-ignore - recovered code
@@ -175,6 +177,40 @@ export const macOsKeychainStorage = {
       return true
     } catch (_e) {
       return false
+    }
+  },
+  // Whether the keychain holding the credentials takes a write, proven on a
+  // separate item in that same keychain file so the credentials are untouched.
+  // A Keychain can be readable but not writable (sandbox, locked, ACL).
+  async probeWrite(): Promise<{ success: boolean; exitCode?: number }> {
+    try {
+      const storageServiceName = getMacOsKeychainStorageServiceName(
+        CREDENTIALS_SERVICE_SUFFIX,
+      )
+      const username = getUsername()
+      const found = await execFileNoThrow(
+        'security',
+        ['find-generic-password', '-a', username, '-s', storageServiceName],
+        { useCwd: false, preserveOutputOnError: false },
+      )
+      if (found.code !== 0) {
+        return { success: false, exitCode: found.code }
+      }
+      const keychainPath = /^keychain: "(\/[^"\\\n]+)"(?:\n|$)/.exec(
+        found.stdout,
+      )?.[1]
+      if (!keychainPath) {
+        return { success: false }
+      }
+      const hexValue = Buffer.from('not a secret', 'utf-8').toString('hex')
+      const { code } = await execFileNoThrow('security', ['-i'], {
+        useCwd: false,
+        preserveOutputOnError: false,
+        input: `add-generic-password -U -a "${username}" -s "${KEYCHAIN_WRITE_CHECK_SERVICE}" -X "${hexValue}" "${keychainPath}"\n`,
+      })
+      return { success: code === 0, exitCode: code }
+    } catch (_e) {
+      return { success: false }
     }
   },
 } satisfies SecureStorage

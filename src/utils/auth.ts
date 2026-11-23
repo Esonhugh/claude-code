@@ -1452,6 +1452,15 @@ export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null>
 // In-flight promise for deduplicating concurrent calls
 let pendingRefreshCheck: Promise<boolean> | null = null
 
+// A refresh token held back because the credential store would not save its
+// replacement, and when to ask the store again.
+let heldBackRefresh: { refreshToken: string; retryAtMs: number } | null = null
+const HELD_BACK_REFRESH_RETRY_MS = 60_000
+
+export function _resetHeldBackRefreshForTesting(): void {
+  heldBackRefresh = null
+}
+
 export function checkAndRefreshOAuthTokenIfNeeded(
   retryCount = 0,
   force = false,
@@ -1576,6 +1585,34 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
       logEvent('tengu_oauth_token_refresh_race_resolved', {})
       return false
     }
+
+    // The server rotates the refresh token on use. If the new one cannot be
+    // saved where other sessions read, sending this one would leave them all
+    // with a dead token, so keep it unspent until the store takes a write.
+    if (
+      heldBackRefresh?.refreshToken === lockedTokens.refreshToken &&
+      Date.now() < heldBackRefresh.retryAtMs
+    ) {
+      return false
+    }
+    const proof = await (
+      getSecureStorage().proveWrites as
+        | (() => Promise<{ success: boolean }>)
+        | undefined
+    )?.()
+    if (proof && !proof.success) {
+      heldBackRefresh = {
+        refreshToken: lockedTokens.refreshToken,
+        retryAtMs: Date.now() + HELD_BACK_REFRESH_RETRY_MS,
+      }
+      logEvent('tengu_oauth_token_refresh_store_write_refused', {})
+      logForDebugging(
+        "auth: refresh not sent, can't save to the macOS Keychain. Unlock it, run claude outside any sandbox, retry, or sign in again",
+        { level: 'error' },
+      )
+      return false
+    }
+    heldBackRefresh = null
 
     logEvent('tengu_oauth_token_refresh_starting', {})
     const refreshedTokens = await refreshOAuthToken(lockedTokens.refreshToken, {
