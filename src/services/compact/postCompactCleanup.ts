@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { clearSystemPromptSectionState } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
@@ -27,18 +28,29 @@ import { resetMicrocompactState } from './microCompact.js'
  * would corrupt the MAIN thread's state. All compaction callers should
  * pass querySource — undefined is only safe for callers that are
  * genuinely main-thread-only (/compact, /clear).
+ *
+ * agentId: pass the compacting query's agentId. A main-thread query with one
+ * (a main session sent to the background) keeps its own Advisor carrier
+ * (query.ts), so its compaction leaves the conversation's beta header latches
+ * and Advisor alone, as official `Ime` resets sticky betas only for a query
+ * that carries none of its own.
  */
-export function runPostCompactCleanup(querySource?: QuerySource): void {
+export function runPostCompactCleanup(
+  querySource?: QuerySource,
+  agentId?: string,
+): void {
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
-  // (context-collapse, memory file cache) for main-thread compacts.
+  // (cached microcompact, context-collapse, memory file cache, classifier
+  // approvals, beta tracing) for main-thread compacts; as in official `Ime`,
+  // the session messages cache is cleared for every compact.
   // Same startsWith pattern as isMainThread (index.ts:188).
   const isMainThreadCompact =
     querySource === undefined ||
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
 
-  resetMicrocompactState()
+  if (isMainThreadCompact) resetMicrocompactState()
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -58,11 +70,12 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // clear so all compaction paths behave consistently.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
+    if (agentId === undefined) clearSystemPromptSections()
+    else clearSystemPromptSectionState()
+    clearClassifierApprovals()
+    clearSpeculativeChecks()
+    clearBetaTracingState()
   }
-  clearSystemPromptSections()
-  clearClassifierApprovals()
-  clearSpeculativeChecks()
-  clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
     void import('../../utils/attributionHooks.js').then(m =>
       // @ts-ignore - recovered code

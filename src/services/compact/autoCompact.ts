@@ -635,7 +635,7 @@ export async function autoCompactIfNeeded(
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
     setLastSummarizedMessageId(undefined)
-    runPostCompactCleanup(querySource)
+    runPostCompactCleanup(querySource, toolUseContext.agentId)
 
     return {
       wasCompacted: true,
