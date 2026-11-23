@@ -479,10 +479,15 @@ export function App() {
   const historyLimit = useRef(HISTORY_PAGE)
   const [sidebarLoaded, setSidebarLoaded] = useState(false)
   const untitledRetries = useRef({ ids: '', count: 0 })
+  // Bumped by each sidebar change made here (archive, pin, delete…): a listing
+  // read before one would put the row back as it was, so it is read again.
+  const sidebarEdits = useRef(0)
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
+      const edits = sidebarEdits.current
       const [data, running] = await Promise.all([loadSidebar(historyLimit.current), listRunning()])
+      if (edits !== sidebarEdits.current) return void refreshHistory()
       dispatch({ type: 'history', entries: data.sessions, folders: data.folders, more: data.more })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       // A running session listed by its id has no turn in its transcript yet. A page that is not
@@ -2150,8 +2155,12 @@ export function App() {
           setSidebarOpen(false)
           void openSession(entry)
         }}
-        onPatched={(id, patch) => dispatch({ type: 'meta', id, patch })}
+        onPatched={(id, patch) => {
+          sidebarEdits.current++
+          dispatch({ type: 'meta', id, patch })
+        }}
         onDeleted={id => {
+          sidebarEdits.current++
           sockets.current.get(id)?.close()
           sockets.current.delete(id)
           dispatch({ type: 'removed', id })
