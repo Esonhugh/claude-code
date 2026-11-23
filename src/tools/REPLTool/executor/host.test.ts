@@ -268,9 +268,11 @@ describe('REPL executor, async lane', () => {
     const { run } = setup()
     const detached: string[] = []
     const slow = run('await new Promise(r => setTimeout(r, 200)); 1', { detachAfterMs: 30, onDetach: () => detached.push('slow') })
-    const quick = run('2', { detachAfterMs: 30, onDetach: () => detached.push('quick') })
+    // Room for '2' to end before its timer on a slow runner (30 ms was not);
+    // its timer started before it ended, so it has fired once 200 ms more pass.
+    const quick = run('2', { detachAfterMs: 200, onDetach: () => detached.push('quick') })
     await Promise.all([slow, quick])
-    await new Promise(r => setTimeout(r, 60))
+    await new Promise(r => setTimeout(r, 200))
     expect(detached).toEqual(['slow'])
   })
 

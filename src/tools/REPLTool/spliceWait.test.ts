@@ -81,9 +81,11 @@ describe('waitForNews (official eYa)', () => {
     const source = newsSource()
     const timer = setInterval(() => source.push(0), 10)
     const started = Date.now()
-    await waitForNews({ ...source, signal: new AbortController().signal, debounceMs: 30, maxWaitMs: 120 })
+    // A debounce longer than the run: only the max wait can end it, however late a slow runner fires the timer.
+    await waitForNews({ ...source, signal: new AbortController().signal, debounceMs: 5_000, maxWaitMs: 120 })
     clearInterval(timer)
-    expect(Date.now() - started).toBeLessThan(200)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(115)
+    expect(Date.now() - started).toBeLessThan(5_000)
   })
 
   test('with no news it waits until the signal aborts', async () => {
