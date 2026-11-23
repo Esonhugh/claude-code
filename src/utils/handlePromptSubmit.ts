@@ -78,6 +78,8 @@ type BaseExecutionParams = {
     publicTurn?: { text: string },
   ) => Promise<void>
   setAppState: (updater: (prev: AppState) => AppState) => void
+  /** Puts a typed prompt that a UserPromptSubmit hook blocked back in the input box. */
+  onPromptHandedBack?: (command: QueuedCommand) => void
   onInputRun?: () => (() => void)
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
@@ -176,6 +178,7 @@ export async function handlePromptSubmit(
       onInputChange,
       skipLocalContext: params.skipLocalContext,
       onInputRun: params.onInputRun,
+      onPromptHandedBack: params.onPromptHandedBack,
     })
     return
   }
@@ -377,6 +380,7 @@ export async function handlePromptSubmit(
         params.onPromptAdmitted?.()
       } else if (result.messages.length) {
         params.setMessages?.(previous => [...previous, ...result.messages])
+        if (wasBlockedTypedPrompt(cmd, result)) params.onPromptHandedBack?.(cmd)
       }
     }
     const result = await processUserInput({
@@ -450,7 +454,27 @@ export async function handlePromptSubmit(
     onInputChange,
     skipLocalContext: params.skipLocalContext,
     onInputRun: params.onInputRun,
+    onPromptHandedBack: params.onPromptHandedBack,
   })
+}
+
+// Like official 2.1.329, a typed prompt that a UserPromptSubmit hook dropped
+// (not kept in the conversation) goes back to the input box.
+function wasBlockedTypedPrompt(
+  cmd: QueuedCommand,
+  result: ProcessUserInputBaseResult,
+): boolean {
+  return (
+    cmd.origin?.kind === 'human' &&
+    cmd.mode === 'prompt' &&
+    !cmd.isMeta &&
+    typeof cmd.value === 'string' &&
+    result.messages.some(
+      message =>
+        message.type === 'system' &&
+        message.promptSubmitEnding?.promptKept === false,
+    )
+  )
 }
 
 /**
@@ -618,6 +642,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           }
         }
         newMessages.push(...result.messages)
+        if (wasBlockedTypedPrompt(cmd, result)) params.onPromptHandedBack?.(cmd)
         if (result.admission?.text !== undefined) {
           admittedTexts.push(result.admission.text)
         }

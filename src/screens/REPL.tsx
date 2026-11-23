@@ -2578,6 +2578,16 @@ export function REPL({
     pastedContentsRef.current = next
     setPastedContentsState(next)
   }, [])
+  // A typed prompt a UserPromptSubmit hook blocked comes back to the input
+  // box, after anything typed since (official 2.1.329).
+  const handBackPrompt = useCallback((command: QueuedCommand) => {
+    if (typeof command.value !== 'string') return
+    const current = inputValueRef.current
+    setInputMode('prompt')
+    setInputValue(current.trim() === '' ? command.value : `${current}\n${command.value}`)
+    const images = command.pastedContents
+    if (images) setPastedContents(previous => ({ ...previous, ...images }))
+  }, [setInputMode, setInputValue, setPastedContents])
   const [submitCount, setSubmitCount] = useState(0)
   // Ref instead of state to avoid triggering React re-renders on every
   // streaming text_delta. The spinner reads this via its animation timer.
@@ -6049,6 +6059,7 @@ export function REPL({
           ...(submittedTurnId === undefined ? {} : { turnId: submittedTurnId }),
         },
         onInputChange: restoreInput,
+        onPromptHandedBack: handBackPrompt,
         setPastedContents,
         setToolJSX,
         getToolUseContext,
@@ -6116,6 +6127,7 @@ export function REPL({
       beginModSelectionRun,
       repinScroll,
       sendNow,
+      handBackPrompt,
     ],
   )
 
@@ -6525,6 +6537,7 @@ export function REPL({
         commands,
         onInputChange: () => {},
         setPastedContents: () => {},
+        onPromptHandedBack: handBackPrompt,
         setToolJSX,
         getToolUseContext,
         messages,
@@ -6560,6 +6573,7 @@ export function REPL({
       onBeforeQuery,
       isRemoteExecutionSession,
       beginModSelectionRun,
+      handBackPrompt,
     ],
   )
 
