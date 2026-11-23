@@ -200,6 +200,17 @@ export function computeEditsFromContents(
 }
 
 /**
+ * The file as the user saved it in the IDE. The editor's text never carries
+ * the UTF-8 BOM (VS Code treats it as the file's encoding), so it is put back
+ * when the proposed file had one.
+ */
+export function savedContents(proposed: string, saved: string): string {
+  return proposed.startsWith('\uFEFF') && !saved.startsWith('\uFEFF')
+    ? '\uFEFF' + saved
+    : saved
+}
+
+/**
  * Done if:
  *
  * 1. Tab is closed in IDE
@@ -300,7 +311,7 @@ async function showDiffInIDE(
       void cleanup()
       return {
         oldContent: oldContent,
-        newContent: data[1].text,
+        newContent: savedContents(updatedFile, data[1].text),
       }
     } else if (isClosedMessage(data)) {
       void cleanup()

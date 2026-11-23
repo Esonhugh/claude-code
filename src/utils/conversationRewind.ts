@@ -1,6 +1,7 @@
 import { randomUUID, type UUID } from 'node:crypto'
 import type { AppState } from '../state/AppStateStore.js'
 import type { SetAppState } from '../Task.js'
+import { dropRewoundReplEvals } from '../tools/REPLTool/sessions.js'
 import type { Message, UserMessage } from '../types/message.js'
 import { restoreSendMessagePins } from './sendMessagePins.js'
 
@@ -45,6 +46,7 @@ export function rewindConversationTo(message: UserMessage, host: {
   const plan = prepareConversationRewind(host.messages, message)
   if (!plan) return
   host.logEvent('tengu_conversation_rewind', plan.metrics)
+  dropRewoundReplEvals(host.messages.slice(plan.messages.length))
   host.setMessages(plan.messages)
   host.resetDiff()
   // Changing the conversation ID must follow replacing the transcript.
