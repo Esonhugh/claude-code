@@ -947,8 +947,10 @@ const MessagesImpl = ({
         hiddenMessageCount > 0 &&
         // disableRenderCap (e.g. [ dump-to-scrollback) means we're uncapped
         // as a one-shot escape hatch, not a toggle — ctrl+e is dead and
-        // nothing is actually "hidden" to restore.
-        !disableRenderCap && (
+        // nothing is actually "hidden" to restore. The virtual list never
+        // truncates either; there ctrl+e only reveals Code Mode scripts.
+        !disableRenderCap &&
+        !virtualScrollRuntimeGate && (
           <Divider
             title={`${toggleShowAllShortcut} to hide ${chalk.bold(hiddenMessageCount)} previous messages`}
             width={columns}
