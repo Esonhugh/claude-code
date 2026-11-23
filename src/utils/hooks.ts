@@ -996,6 +996,63 @@ function processHookJSONOutput({
   }
 }
 
+// Entrypoints whose non-interactive sessions still have someone watching.
+const ATTENDED_ENTRYPOINTS = new Set([
+  'claude-vscode',
+  'claude-desktop',
+  'claude-desktop-3p',
+  'local-agent',
+  'local_agent',
+  'remote',
+  'remote_desktop',
+  'remote_mobile',
+  'remote_projects',
+  'remote_cowork',
+  'ssh-remote',
+  'claude-in-slack',
+  'claude_in_slack',
+  'claude-in-teams',
+  'claude-coworker',
+  'claude-coworker-terminal',
+])
+
+function isAttendedSession(): boolean {
+  const kind = process.env.CLAUDE_CODE_SESSION_KIND
+  if (kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker') {
+    return false
+  }
+  if (!getIsNonInteractiveSession()) return true
+  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  return (
+    !process.env.CLAUDE_CODE_CHILD_SESSION &&
+    entrypoint !== undefined &&
+    ATTENDED_ENTRYPOINTS.has(entrypoint)
+  )
+}
+
+// What a hook process sees of the session that ran it. The packaged binary's
+// own CLAUDE_CODE_BUILTIN_* / CLAUDE_CODE_EMBEDDED_* locations stay out: they
+// point into this process and mean nothing to the hook.
+export function hookProcessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(subprocessEnv())) {
+    if (
+      !name.startsWith('CLAUDE_CODE_BUILTIN_') &&
+      !name.startsWith('CLAUDE_CODE_EMBEDDED_')
+    ) {
+      env[name] = value
+    }
+  }
+  return {
+    ...env,
+    CLAUDECODE: '1',
+    CLAUDE_CODE_SESSION_ID: getSessionId(),
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_SESSION_ATTENDED: isAttendedSession() ? '1' : '0',
+    CLAUDE_PID: String(process.pid),
+  }
+}
+
 /**
  * Execute a command-based hook using bash or PowerShell.
  *
@@ -1156,7 +1213,7 @@ async function execCommandHook(
 
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
-    ...subprocessEnv(),
+    ...hookProcessEnv(),
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
   }
 
