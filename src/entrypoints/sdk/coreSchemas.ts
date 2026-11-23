@@ -1912,6 +1912,22 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     duration_ms: z.number(),
     duration_api_ms: z.number(),
     ttft_ms: z.number().optional(),
+    ttft_stream_ms: z
+      .number()
+      .optional()
+      .describe('Milliseconds from the turn start to the first message_start.'),
+    time_to_request_ms: z
+      .number()
+      .optional()
+      .describe(
+        "Milliseconds from the turn start to dispatching that message_start's request.",
+      ),
+    first_content_frame_ms: z
+      .number()
+      .optional()
+      .describe(
+        'Milliseconds from the turn start to the first content_block_start or content_block_delta.',
+      ),
     is_error: z.boolean(),
     api_error_status: z.number().nullable().optional(),
     api_error_code: z.string().optional(),
@@ -1934,6 +1950,12 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
@@ -1965,6 +1987,12 @@ export const SDKResultErrorSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
     safety_stops: z.number().int().nonnegative().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
@@ -2041,9 +2069,27 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       .describe('@internal Working directory the session started in.'),
     additional_directories: z.array(z.string()).optional(),
     per_turn_effort_active: z.boolean().optional(),
+    ultrathink_available: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when typing `ultrathink` runs the turn at xhigh effort on this frame's `model`.",
+      ),
+    ultrathink_typed_raises: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when a user message that carries `ultrathink_typed: true` runs its turn at xhigh effort on this frame's `model`.",
+      ),
     view_mode: z.enum(['focus', 'default']).optional(),
     analytics_disabled: z.boolean().optional(),
     product_feedback_disabled: z.boolean().optional(),
+    served_by_anthropic: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when this session's model requests go to Anthropic's own API: the first-party provider, with no other base URL or socket. Absent where the process can't tell (an SSH child).",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -2211,6 +2257,12 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        '@internal The thinking.display Claude Code put in the API request body for the response this event belongs to. Set on `message_start`, on a thinking block\'s `content_block_start` and on `thinking_delta` events when the body had a display; absent on every other event.',
+      ),
     api_message_id: z.string().optional(),
   }),
 )

@@ -21,4 +21,7 @@ export const EMPTY_USAGE: Readonly<NonNullableUsage> = {
   inference_geo: '',
   iterations: [],
   speed: 'standard',
+  // Official 2.1.329: the outcome of a fallback-credit token the request
+  // presented; this build presents none.
+  fallback_credit: null,
 }

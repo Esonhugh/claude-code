@@ -8,4 +8,5 @@ export type NonNullableUsage = {
   [K in keyof BetaUsage]: NonNullable<BetaUsage[K]>
 } & {
   output_tokens_details: { thinking_tokens: number }
+  fallback_credit?: unknown
 }
