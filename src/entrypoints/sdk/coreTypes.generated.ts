@@ -264,6 +264,7 @@ export type SDKRateLimitInfo = {
   isUsingOverage?: boolean
   surpassedThreshold?: number
 }
+export type SDKSubagentStats = { spawned: number; requested: { background: number; foreground: number; unset: number }; started_in_background: number; by_type: Record<string, number>; max_depth: number; spawned_by_subagents: number; completed: number; failed: number; killed: { parent: number; user: number; system: number }; refused: { depth_limit: number; concurrency_limit: number; budget: number } }
 export type SDKPermissionDenial = { tool_name: string; tool_use_id: string; tool_input: Record<string, unknown> }
 
 // SDK Message Types
@@ -327,6 +328,7 @@ export type SDKAssistantMessage = {
   api_error_code?: string
   api_error_type?: string
   refused_message_id?: string
+  thinking_display?: string
   uuid: string
   session_id: string
   request_id?: string
@@ -338,8 +340,8 @@ export type SDKRateLimitEvent = {
   session_id: string
 }
 export type SDKResultMessage =
-  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; api_error_code?: string; api_error_type?: string; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
-  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; queued_turn_count?: number; safety_stops?: number; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'success'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; ttft_stream_ms?: number; time_to_request_ms?: number; first_content_frame_ms?: number; is_error: boolean; api_error_status?: number | null; api_error_code?: string; api_error_type?: string; num_turns: number; result: string; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; structured_output?: unknown; deferred_tool_use?: { id: string; name: string; input: Record<string, unknown> }; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; model_usage_since_last_result?: Record<string, ModelUsage>; queued_turn_count?: number; safety_stops?: number; subagent_stats?: SDKSubagentStats; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
+  | { type: 'result'; subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries'; duration_ms: number; duration_api_ms: number; ttft_ms?: number; is_error: boolean; api_error_status?: number | null; num_turns: number; stop_reason: string | null; total_cost_usd: number; usage: unknown; modelUsage: Record<string, ModelUsage>; permission_denials: SDKPermissionDenial[]; errors: string[]; fast_mode_state?: FastModeState; terminal_reason?: TerminalReason; result_index?: number; model_usage_since_last_result?: Record<string, ModelUsage>; queued_turn_count?: number; safety_stops?: number; subagent_stats?: SDKSubagentStats; fast_mode_disabled_reason?: FastModeDisabledReason; uuid: string; session_id: string }
 export type SDKSystemMessage = {
   type: 'system'
   subtype: 'init'
@@ -364,9 +366,12 @@ export type SDKSystemMessage = {
   original_cwd?: string
   additional_directories?: string[]
   per_turn_effort_active?: boolean
+  ultrathink_available?: boolean
+  ultrathink_typed_raises?: boolean
   view_mode?: 'focus' | 'default'
   analytics_disabled?: boolean
   product_feedback_disabled?: boolean
+  served_by_anthropic?: boolean
   uuid: string
   session_id: string
 }
@@ -477,6 +482,7 @@ export type SDKPartialAssistantMessage = {
   uuid: string
   session_id: string
   ttft_ms?: number
+  thinking_display?: string
   api_message_id?: string
 }
 export type SDKThinkingTokensMessage = {

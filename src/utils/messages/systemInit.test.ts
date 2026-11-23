@@ -90,3 +90,35 @@ test('lists the manifest version of each plugin when it declares one', () => {
     { name: 'bare', path: '/p/bare', source: 'bare@inline' },
   ])
 })
+
+// Official 2.1.329 sends both whenever per-turn effort is decided; this
+// build's ultrathink never raises the request to xhigh.
+test('reports ultrathink as not raising the turn', () => {
+  const message = buildSystemInitMessage({ ...baseInputs, commands: [] }) as SDKSystemMessage
+  expect(message.ultrathink_available).toBe(false)
+  expect(message.ultrathink_typed_raises).toBe(false)
+})
+
+test('reports served_by_anthropic from the provider, base URL and socket like official', () => {
+  const keys = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_UNIX_SOCKET', 'CLAUDE_CODE_USE_BEDROCK'] as const
+  const saved = keys.map(key => process.env[key])
+  const served = (env: Partial<Record<(typeof keys)[number], string>>) => {
+    for (const key of keys) {
+      if (env[key] === undefined) delete process.env[key]
+      else process.env[key] = env[key]
+    }
+    return (buildSystemInitMessage({ ...baseInputs, commands: [] }) as SDKSystemMessage).served_by_anthropic
+  }
+  try {
+    expect(served({})).toBe(true)
+    expect(served({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' })).toBe(true)
+    expect(served({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:8080' })).toBe(false)
+    expect(served({ CLAUDE_CODE_USE_BEDROCK: '1' })).toBe(false)
+    expect(served({ ANTHROPIC_UNIX_SOCKET: '/tmp/claude.sock' })).toBeUndefined()
+  } finally {
+    keys.forEach((key, i) => {
+      if (saved[i] === undefined) delete process.env[key]
+      else process.env[key] = saved[i]
+    })
+  }
+})

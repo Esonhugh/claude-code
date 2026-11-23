@@ -78,6 +78,8 @@ export interface StreamEvent {
   retryAttempt?: number
   maxRetries?: number
   retryInMs?: number
+  thinkingDisplay?: string
+  requestSentAtMs?: number
   [key: string]: unknown
 }
 
@@ -221,6 +223,8 @@ export interface AssistantMessage {
   advisorModel?: string
   /** Model the request named; responses may report a different id. */
   requestedModel?: string
+  /** On a streamed thinking block: the thinking.display the request body had. */
+  thinkingDisplay?: string
 }
 
 // ---------------------------------------------------------------------------

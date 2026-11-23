@@ -14,9 +14,13 @@ import { clearMemoryFileCaches } from '../../utils/claudemd.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { updateHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { logError } from '../../utils/log.js'
 import { getPlansDirectory } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
-import { saveWorktreeState } from '../../utils/sessionStorage.js'
+import {
+  relocateSessionTranscript,
+  saveWorktreeState,
+} from '../../utils/sessionStorage.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import {
   cleanupWorktree,
@@ -120,10 +124,10 @@ async function countWorktreeChanges(
  * keepWorktree()/cleanupWorktree() handle process.chdir and currentWorktreeSession;
  * this handles everything above the worktree utility layer.
  */
-function restoreSessionToOriginalCwd(
+async function restoreSessionToOriginalCwd(
   originalCwd: string,
   projectRootIsWorktree: boolean,
-): void {
+): Promise<void> {
   setCwd(originalCwd)
   // EnterWorktree sets originalCwd to the *worktree* path (intentional — see
   // state.ts getProjectRoot comment). Reset to the real original.
@@ -140,6 +144,12 @@ function restoreSessionToOriginalCwd(
     // so no-op there.)
     resetSettingsCache()
     updateHooksConfigSnapshot()
+  }
+  try {
+    await relocateSessionTranscript(originalCwd)
+  } catch (error) {
+    // The session still leaves; its transcript stays where it was.
+    logError(error)
   }
   saveWorktreeState(null)
   clearSystemPromptSections()
@@ -270,7 +280,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
 
     if (input.action === 'keep') {
       await keepWorktree()
-      restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
+      await restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
 
       logEvent('tengu_worktree_kept', {
         mid_session: true,
@@ -298,7 +308,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
       await killTmuxSession(tmuxSessionName)
     }
     await cleanupWorktree()
-    restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
+    await restoreSessionToOriginalCwd(originalCwd, projectRootIsWorktree)
 
     logEvent('tengu_worktree_removed', {
       mid_session: true,

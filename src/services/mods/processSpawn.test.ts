@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -11,7 +11,8 @@ let runtime: ReturnType<typeof createModsRuntime> | undefined
 const keys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_COWORK_PLUGINS']
 let saved: (string | undefined)[]
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mods-spawn-'))
+  // The child reports its cwd resolved (/private/var on macOS).
+  root = await realpath(await mkdtemp(join(tmpdir(), 'mods-spawn-')))
   saved = keys.map(key => process.env[key])
   process.env.HOME = root
   process.env.USERPROFILE = root
@@ -262,9 +263,12 @@ test('process.spawn catch resumes the retained real child after one chunk withou
 test('process.spawn catch has one total grace budget across its pieces and then starts the real fallback once', async () => {
   const child=join(root,'catch-child.mjs')
   await writeFile(child, `import {appendFileSync} from 'node:fs';appendFileSync('child.pid',String(process.pid)+'\\n');process.stdout.write('fallback-child');`)
+  // Pieces end at 300, 600 and 1500 ms of the 1000 ms grace: a slow runner's
+  // late timer gives the stall back (dispatch.ts), which 350 ms pieces (the
+  // third at 1050 ms) were within reach of.
   const observer=await plugin('catch-budget',`export function register(on){
     on('process.spawn',async function*($,e,next){throw Error('controlled entry failure')})
-    .catch(async function*($,e,next){for(let index=0;index<4;index++){const end=Date.now()+350;while(Date.now()<end){};yield {stream:'stdout',text:'catch-'+index}};return {value:{code:9,signal:null}}});
+    .catch(async function*($,e,next){for(let index=0;index<4;index++){const end=Date.now()+(index<2?300:900);while(Date.now()<end){};yield {stream:'stdout',text:'catch-'+index}};return {value:{code:9,signal:null}}});
   }`)
   const author=await plugin('catch-author',`export function register(on){on('tool.call',async $=>{const flow=$.process.spawn({argv:${JSON.stringify([process.execPath,child])}});let text='';for await(const c of flow)text+=c.text;return {result:{text,exit:await flow.result}}})}`)
   const diagnostics=await begin([observer,author])

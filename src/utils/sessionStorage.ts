@@ -4,7 +4,16 @@ import type { Dirent } from 'fs'
 // Sync fs primitives for readFileTailSync — separate from fs/promises
 // imports above. Named (not wildcard) per CLAUDE.md style; no collisions
 // with the async-suffixed names.
-import { closeSync, fstatSync, openSync, readSync } from 'fs'
+import {
+  closeSync,
+  cpSync,
+  fstatSync,
+  openSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'fs'
 import {
   appendFile as fsAppendFile,
   open as fsOpen,
@@ -17,7 +26,7 @@ import {
   writeFile,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, sep } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -79,7 +88,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { isENOENT, isFsInaccessible } from './errors.js'
+import { getErrnoCode, isENOENT, isFsInaccessible } from './errors.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -654,6 +663,8 @@ class Project {
   // object = currently in worktree. reAppendSessionMetadata writes null so
   // --resume knows the session exited (vs. crashed while inside).
   currentSessionWorktree: PersistedWorktreeSession | null | undefined
+  // Directory the transcript last moved to (relocateSessionTranscript).
+  currentSessionRelocatedCwd: string | undefined
   currentSessionPrNumber: number | undefined
   currentSessionPrUrl: string | undefined
   currentSessionPrRepository: string | undefined
@@ -713,6 +724,31 @@ class Project {
       return await fn()
     } finally {
       this.decrementPendingWrites()
+    }
+  }
+
+  /** Points entries still queued for one file at another (the transcript moved). */
+  retargetQueuedWrites(from: string, to: string): void {
+    const queued = this.writeQueues.get(from)
+    if (!queued) return
+    this.writeQueues.delete(from)
+    const existing = this.writeQueues.get(to)
+    this.writeQueues.set(to, existing ? [...existing, ...queued] : queued)
+  }
+
+  /** Records where the transcript moved, at the end of the file it is in now. */
+  stampRelocation(relocatedCwd: string): void {
+    if (this.currentSessionRelocatedCwd === relocatedCwd) return
+    this.currentSessionRelocatedCwd = relocatedCwd
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
+    try {
+      appendEntryToFile(this.sessionFile, {
+        type: 'relocated',
+        sessionId: getSessionId(),
+        relocatedCwd,
+      })
+    } catch (error) {
+      logForDebugging(`relocateSessionTranscript: relocated stamp failed: ${error}`)
     }
   }
 
@@ -895,6 +931,17 @@ class Project {
         }
       }
     }
+    if (this.currentSessionRelocatedCwd === undefined) {
+      const relocatedLine = tailLines.findLast(l =>
+        l.startsWith('{"type":"relocated"'),
+      )
+      if (relocatedLine) {
+        this.currentSessionRelocatedCwd = extractLastJsonStringField(
+          relocatedLine,
+          'relocatedCwd',
+        )
+      }
+    }
     const tagLine = tailLines.findLast(l => l.startsWith('{"type":"tag"'))
     if (tagLine) {
       const tailTag = extractLastJsonStringField(tagLine, 'tag')
@@ -977,6 +1024,13 @@ class Project {
         type: 'worktree-state',
         worktreeSession: this.currentSessionWorktree,
         sessionId,
+      })
+    }
+    if (this.currentSessionRelocatedCwd !== undefined) {
+      appendEntryToFile(this.sessionFile, {
+        type: 'relocated',
+        sessionId,
+        relocatedCwd: this.currentSessionRelocatedCwd,
       })
     }
     if (
@@ -1372,7 +1426,7 @@ class Project {
     ) {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
-    } else if (entry.type === 'worktree-state') {
+    } else if (entry.type === 'worktree-state' || entry.type === 'relocated') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'session-started-at' || entry.type === 'cost-state') {
       void this.enqueueWrite(sessionFile, entry)
@@ -1720,29 +1774,140 @@ export function adoptResumedSessionFile(): void {
   project.reAppendSessionMetadata(true)
 }
 
+// Project directories this session's transcript has moved out of. Paths the
+// conversation already holds under <old dir>/<session id>/ (persisted tool
+// results, subagent transcripts) are read from where the files are now.
+const formerSessionProjectDirs = new Set<string>()
+
+/** Maps a path under a former project directory of this session to its new place. */
+export function remapFormerSessionPath(path: string): string {
+  if (formerSessionProjectDirs.size === 0) return path
+  const sessionId = getSessionId()
+  const current = join(dirname(getTranscriptPath()), sessionId) + sep
+  for (const dir of formerSessionProjectDirs) {
+    const former = join(dir, sessionId) + sep
+    if (former !== current && path.startsWith(former)) {
+      return current + path.slice(former.length)
+    }
+  }
+  return path
+}
+
+// rename, or copy and delete when the two paths are on different devices.
+function moveSync(from: string, to: string): void {
+  try {
+    renameSync(from, to)
+  } catch (e) {
+    if (getErrnoCode(e) !== 'EXDEV') throw e
+    cpSync(from, to, { recursive: true, errorOnExist: true, force: false })
+    rmSync(from, { recursive: true, force: true })
+  }
+}
+
+// Keeps whatever already sits at path under a new name; undefined when nothing does.
+function setAsideSync(path: string): string | undefined {
+  const aside = `${path}.superseded-${Date.now()}`
+  try {
+    renameSync(path, aside)
+  } catch (e) {
+    if (isENOENT(e)) return undefined
+    throw e
+  }
+  logForDebugging(`relocateSessionTranscript: existing ${path} set aside at ${aside}`, { level: 'warn' })
+  return aside
+}
+
+function isSameFile(a: string, b: string): boolean {
+  try {
+    const sa = statSync(a)
+    const sb = statSync(b)
+    return sa.dev === sb.dev && sa.ino === sb.ino
+  } catch {
+    return false
+  }
+}
+
 /**
- * Moves the current session's transcript to cwd's project directory. A session
- * that leaves its worktree on exit stays resumable from the directory it was
- * launched in, also once the worktree is removed.
+ * Moves the current session's transcript, with its <session id>/ folder
+ * (subagent transcripts, tool results), to cwd's project directory, and
+ * stamps a `relocated` entry. A session that enters a worktree is resumed
+ * from the worktree's slot; one that leaves it stays resumable from the
+ * directory it was launched in, also once the worktree is removed.
+ *
+ * Safe to run again after an interruption: whatever already sits at the
+ * destination is set aside, not overwritten. On failure the session keeps
+ * writing where its transcript is.
  */
 export async function relocateSessionTranscript(cwd: string): Promise<void> {
   const project = getProject()
-  const from = project.sessionFile
   const sessionId = getSessionId()
   const toDir = getProjectDir(cwd)
   const to = join(toDir, `${sessionId}.jsonl`)
-  if (from === null || from === to) return
-  await project.flush()
-  await mkdir(toDir, { recursive: true, mode: 0o700 })
-  await rename(from, to)
-  // Subagent transcripts and tool results sit next to the transcript.
-  try {
-    await rename(join(dirname(from), sessionId), join(toDir, sessionId))
-  } catch (e) {
-    if (!isENOENT(e)) throw e
+  const from = project.sessionFile
+  if (from === null) {
+    // Nothing written yet: the file is created in cwd's project directory.
+    switchSession(sessionId, toDir)
+    project.currentSessionRelocatedCwd = cwd
+    return
   }
-  switchSession(sessionId, toDir)
-  project.sessionFile = to
+  if (from === to || isSameFile(from, to)) {
+    project.sessionFile = to
+    switchSession(sessionId, toDir)
+    project.stampRelocation(cwd)
+    return
+  }
+  try {
+    await mkdir(toDir, { recursive: true, mode: 0o700 })
+    await project.flush()
+    // No await from here on: entries appended meanwhile stay queued and are
+    // written to the new file.
+    const setAside = setAsideSync(to)
+    let fileMoved = true
+    try {
+      moveSync(from, to)
+    } catch (e) {
+      if (setAside !== undefined) {
+        try {
+          renameSync(setAside, to)
+        } catch (restoreError) {
+          logError(restoreError)
+        }
+      }
+      if (!isENOENT(e) || setAside !== undefined) throw e
+      logForDebugging(`relocateSessionTranscript: old file missing: ${e}`)
+      fileMoved = false
+    }
+    const fromSessionDir = join(dirname(from), sessionId)
+    const toSessionDir = join(toDir, sessionId)
+    let dirMoved = true
+    try {
+      try {
+        moveSync(fromSessionDir, toSessionDir)
+      } catch (e) {
+        const code = getErrnoCode(e)
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw e
+        setAsideSync(toSessionDir)
+        moveSync(fromSessionDir, toSessionDir)
+      }
+    } catch (e) {
+      dirMoved = false
+      if (!isENOENT(e)) logError(e)
+    }
+    project.retargetQueuedWrites(from, to)
+    project.sessionFile = to
+    switchSession(sessionId, toDir)
+    formerSessionProjectDirs.add(dirname(from))
+    if (fileMoved) project.stampRelocation(cwd)
+    else project.currentSessionRelocatedCwd = cwd
+    if (dirMoved) {
+      const { repointTaskOutputSymlinks } = await import('./task/diskOutput.js')
+      await repointTaskOutputSymlinks(fromSessionDir, toSessionDir).catch(logError)
+    }
+  } catch (e) {
+    // Keep writing where the transcript is, not where originalCwd now points.
+    switchSession(sessionId, dirname(project.sessionFile ?? from))
+    throw e
+  }
 }
 
 /**
@@ -3062,6 +3227,7 @@ export function clearSessionMetadata(): void {
   project.currentSessionPermissionMode = undefined
   project.currentSessionCodeMode = undefined
   project.currentSessionWorktree = undefined
+  project.currentSessionRelocatedCwd = undefined
   project.currentSessionPrNumber = undefined
   project.currentSessionPrUrl = undefined
   project.currentSessionPrRepository = undefined

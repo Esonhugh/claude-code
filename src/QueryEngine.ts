@@ -71,7 +71,9 @@ import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
+import { AGENT_TOOL_NAME } from './tools/AgentTool/constants.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
+import { subagentStats } from './tools/AgentTool/subagentStats.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
 import { formatTeammateMessages } from './utils/teammateMailbox.js'
@@ -309,6 +311,69 @@ export function usageAfterMessage(
   }
   if (event.type === 'message_stop') return { ...tally, total, open: false }
   return tally
+}
+
+/**
+ * Official 2.1.329: when the turn's first message_start and first content
+ * frame (content_block_start or content_block_delta) arrived, and when the
+ * request that first message_start belongs to was dispatched.
+ */
+export type StreamTimings = {
+  firstStreamAt?: number
+  requestSentAt?: number
+  firstContentFrameAt?: number
+}
+
+export function streamTimingsAfterEvent(
+  timings: StreamTimings,
+  message: { event?: unknown; requestSentAtMs?: number },
+  now: number,
+): StreamTimings {
+  const { type } = message.event as BetaRawMessageStreamEvent
+  if (type === 'message_start') {
+    return {
+      ...timings,
+      firstStreamAt: timings.firstStreamAt ?? now,
+      requestSentAt: timings.requestSentAt ?? message.requestSentAtMs,
+    }
+  }
+  if (
+    timings.firstContentFrameAt === undefined &&
+    (type === 'content_block_start' || type === 'content_block_delta')
+  ) {
+    return { ...timings, firstContentFrameAt: now }
+  }
+  return timings
+}
+
+// Official 2.1.329 reports these only on a successful result that is not an
+// API error and did not stop for a deferred tool.
+export function resultStreamTimings(
+  timings: StreamTimings,
+  startTime: number,
+  reported: boolean,
+): { ttft_stream_ms?: number; time_to_request_ms?: number; first_content_frame_ms?: number } {
+  if (!reported) return {}
+  const since = (at: number | undefined) =>
+    at === undefined ? undefined : Math.max(0, at - startTime)
+  const ttft = since(timings.firstStreamAt)
+  const toRequest = since(timings.requestSentAt)
+  const firstFrame = since(timings.firstContentFrameAt)
+  return {
+    ...(ttft !== undefined && { ttft_stream_ms: ttft }),
+    ...(toRequest !== undefined && { time_to_request_ms: toRequest }),
+    ...(firstFrame !== undefined && { first_content_frame_ms: firstFrame }),
+  }
+}
+
+// Official 2.1.329 leaves ttft_ms off a result that ends on an API error.
+export function resultTtft(
+  firstAssistantAt: number | undefined,
+  startTime: number,
+  isApiError: boolean,
+): { ttft_ms?: number } {
+  if (isApiError || firstAssistantAt === undefined) return {}
+  return { ttft_ms: Math.max(0, firstAssistantAt - startTime) }
 }
 
 /**
@@ -1144,7 +1209,9 @@ export class QueryEngine {
     }
 
     // Like official 2.1.311, every result carries the fast mode state and,
-    // when fast mode is unavailable, why; like 2.1.329, also safety_stops.
+    // when fast mode is unavailable, why; like 2.1.329, also safety_stops and,
+    // with the Agent tool, subagent_stats.
+    const hasAgentTool = tools.some(tool => toolMatchesName(tool, AGENT_TOOL_NAME))
     const resultFastMode = () => {
       const reason = getFastModeDisabledReason()
       return {
@@ -1154,6 +1221,7 @@ export class QueryEngine {
         ),
         ...(reason !== null && { fast_mode_disabled_reason: reason }),
         safety_stops: getSafetyStops(),
+        ...(hasAgentTool && { subagent_stats: subagentStats().snapshot() }),
       }
     }
 
@@ -1327,6 +1395,7 @@ export class QueryEngine {
     let lastApiErrorType: string | undefined
     let lastApiErrorCode: string | undefined
     let requestStartedAt: number | undefined
+    let streamTimings: StreamTimings = {}
     let thinkingEstimate = 0
     // The API message the stream events being forwarded belong to.
     let apiMessageId: string | undefined
@@ -1483,6 +1552,7 @@ export class QueryEngine {
           yield* normalizeMessage(message)
           break
         case 'stream_event': {
+          streamTimings = streamTimingsAfterEvent(streamTimings, message, Date.now())
           const thinking = nextThinkingEstimate(
             thinkingEstimate,
             // @ts-ignore - recovered code
@@ -1530,6 +1600,9 @@ export class QueryEngine {
                 requestStartedAt !== undefined && {
                   ttft_ms: Date.now() - requestStartedAt,
                 }),
+              ...(message.thinkingDisplay !== undefined && {
+                thinking_display: message.thinkingDisplay,
+              }),
             }
           }
 
@@ -1886,9 +1959,12 @@ export class QueryEngine {
       ...(lastApiErrorType !== undefined && { api_error_type: lastApiErrorType }),
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
-      ...(firstAssistantAt !== undefined && {
-        ttft_ms: Math.max(0, firstAssistantAt - startTime),
-      }),
+      ...resultTtft(firstAssistantAt, startTime, isApiError),
+      ...resultStreamTimings(
+        streamTimings,
+        startTime,
+        !isApiError && !deferredToolUseResult,
+      ),
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import figures from 'figures'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import type { AppState } from '../../state/AppStateStore.js'
@@ -30,6 +31,11 @@ const { call } = await import('./bridge.js')
 const toast = { key: 'bridge-failed', text: 'Remote Control failed', priority: 'immediate' as const }
 const UP = '\x1b[A'
 
+async function until(check: () => boolean, ms = 5000): Promise<void> {
+  for (const end = Date.now() + ms; !check(); await new Promise(r => setTimeout(r, 10)))
+    if (Date.now() > end) throw new Error('timed out')
+}
+
 // /remote-control while the bridge is enabled opens the disconnect dialog.
 async function open(patch: Partial<AppState>) {
   const stdout = Object.assign(new PassThrough(), { columns: 160, rows: 40, isTTY: false })
@@ -51,6 +57,8 @@ async function open(patch: Partial<AppState>) {
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false },
   )
   const settle = () => new Promise(resolve => setTimeout(resolve, 60))
+  // The dialog opens from an effect: a key sent before it is up is lost.
+  await until(() => stripAnsi(output).includes('Continue'))
   await settle()
   return {
     text: () => stripAnsi(output),
@@ -94,7 +102,9 @@ describe('/remote-control while Remote Control has failed (official 2.1.325)', (
     const d = await open({ replBridgeError: '/login', replBridgeErrorKind: 'auth', replBridgeExplicit: true })
     try {
       await d.press(UP)
+      await until(() => d.text().includes(`${figures.pointer} Disconnect this session`))
       await d.press('\r')
+      await until(() => d.done.length > 0)
       expect(d.done).toEqual(['Remote Control disconnected.'])
       expect(d.state()).toMatchObject({ replBridgeEnabled: false, replBridgeExplicit: false, replBridgeError: undefined, replBridgeErrorKind: undefined })
       expect(d.state().notifications.current).toBeNull()
