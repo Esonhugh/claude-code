@@ -2392,6 +2392,7 @@ async function* queryModelRequest(
 
   const newMessages: AssistantMessage[] = []
   let ttftMs = 0
+  let thinkingDisplay: string | undefined
   let partialMessage: BetaMessage | undefined = undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
   const stoppedBlockIndexes = new Set<number>()
@@ -2463,6 +2464,7 @@ async function* queryModelRequest(
 
         const params = await paramsForAttempt(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
+        thinkingDisplay = thinkingDisplayOf(params.thinking)
 
         maxOutputTokens = params.max_tokens
 
@@ -3006,10 +3008,12 @@ async function* queryModelRequest(
             break
         }
 
+        const display = streamEventThinkingDisplay(part, thinkingDisplay)
         yield {
           type: 'stream_event',
           event: part,
           ...(part.type === 'message_start' ? { ttftMs } : undefined),
+          ...(display !== undefined ? { thinkingDisplay: display } : undefined),
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
@@ -3792,6 +3796,26 @@ async function* queryModelRequest(
 
   // Defensive: also release on normal completion (no-op if finally already ran).
   releaseStreamResources()
+}
+
+// Official 2.1.329: the thinking.display put in the request body.
+function thinkingDisplayOf(thinking: unknown): string | undefined {
+  if (typeof thinking !== 'object' || thinking === null || !('display' in thinking)) return undefined
+  return typeof thinking.display === 'string' ? thinking.display : undefined
+}
+
+// Official 2.1.329 carries the request's display on message_start, on a
+// thinking block's content_block_start and on thinking_delta events only.
+export function streamEventThinkingDisplay(
+  event: BetaRawMessageStreamEvent,
+  display: string | undefined,
+): string | undefined {
+  if (display === undefined) return undefined
+  return event.type === 'message_start' ||
+    (event.type === 'content_block_start' && event.content_block.type === 'thinking') ||
+    (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta')
+    ? display
+    : undefined
 }
 
 /**

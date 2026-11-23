@@ -78,6 +78,7 @@ export interface StreamEvent {
   retryAttempt?: number
   maxRetries?: number
   retryInMs?: number
+  thinkingDisplay?: string
   [key: string]: unknown
 }
 

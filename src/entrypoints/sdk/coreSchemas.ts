@@ -2229,6 +2229,12 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        '@internal The thinking.display Claude Code put in the API request body for the response this event belongs to. Set on `message_start`, on a thinking block\'s `content_block_start` and on `thinking_delta` events when the body had a display; absent on every other event.',
+      ),
     api_message_id: z.string().optional(),
   }),
 )

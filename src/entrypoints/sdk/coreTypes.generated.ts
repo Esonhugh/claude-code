@@ -480,6 +480,7 @@ export type SDKPartialAssistantMessage = {
   uuid: string
   session_id: string
   ttft_ms?: number
+  thinking_display?: string
   api_message_id?: string
 }
 export type SDKThinkingTokensMessage = {

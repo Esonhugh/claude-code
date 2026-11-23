@@ -1530,6 +1530,9 @@ export class QueryEngine {
                 requestStartedAt !== undefined && {
                   ttft_ms: Date.now() - requestStartedAt,
                 }),
+              ...(message.thinkingDisplay !== undefined && {
+                thinking_display: message.thinkingDisplay,
+              }),
             }
           }
 
