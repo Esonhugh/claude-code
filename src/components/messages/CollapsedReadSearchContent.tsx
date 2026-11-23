@@ -102,27 +102,43 @@ function ToolUseError({
 }
 
 /**
- * A call the session ended during: no result and no longer running, or the
- * stand-in result resume records for it.
+ * How a call in a finished group fell short: 'not-run' when a permission
+ * rule, auto mode or the user's answer at the prompt stopped it before it
+ * ran; 'no-result' when the session ended during it (no result and no longer
+ * running, or the stand-in result resume records for it).
  */
-function isCutToolUse(
+function getCutToolUse(
   id: string,
   lookups: ReturnType<typeof buildMessageLookups>,
   inProgressToolUseIDs: Set<string>,
-): boolean {
+): 'no-result' | 'not-run' | undefined {
   const resultMsg = lookups.toolResultByToolUseID.get(id)
   if (!resultMsg) {
     return !lookups.resolvedToolUseIDs.has(id) && !inProgressToolUseIDs.has(id)
+      ? 'no-result'
+      : undefined
   }
   if (resultMsg.type !== 'user' || !Array.isArray(resultMsg.message.content)) {
-    return false
+    return undefined
   }
-  return resultMsg.message.content.some(
-    block =>
-      block.type === 'tool_result' &&
-      block.tool_use_id === id &&
-      block.content === TOOL_CALL_INTERRUPTED_MESSAGE,
+  const block = resultMsg.message.content.find(
+    b => b.type === 'tool_result' && b.tool_use_id === id,
   )
+  if (block?.type !== 'tool_result') return undefined
+  if (block.content === TOOL_CALL_INTERRUPTED_MESSAGE) return 'no-result'
+  if (block.is_error !== true) return undefined
+  const kind = resultMsg.toolDenialKind
+  if (
+    kind === 'permission-rule' ||
+    kind === 'automode-blocked' ||
+    kind === 'automode-unavailable' ||
+    kind === 'automode-parsing-error' ||
+    (kind === 'user-rejected' &&
+      resultMsg.permissionDecision?.source === 'user_reject')
+  ) {
+    return 'not-run'
+  }
+  return undefined
 }
 
 type Props = {
@@ -298,19 +314,23 @@ export function CollapsedReadSearchContent({
   }
 
   // Shell and MCP calls a finished group never got a result for (the session
-  // ended mid-call) are folded into "no result recorded for N calls" rather
-  // than counted as run (official 2.1.329).
+  // ended mid-call) are folded into "no result recorded for N calls", and
+  // ones stopped before they ran into "did not run N calls", rather than
+  // counted as run (official 2.1.329).
   const cutToolUseIds = new Set<string>()
+  let notRunCount = 0
   let cutBashCount = 0
   let cutMcpCount = 0
   if (!isActiveGroup) {
     for (const content of toolUses) {
-      if (!isCutToolUse(content.id, lookups, inProgressToolUseIDs)) continue
+      const cut = getCutToolUse(content.id, lookups, inProgressToolUseIDs)
+      if (!cut) continue
       const info = getSearchOrReadFromContent(content, tools, true)
       if (info?.mcpServerName) cutMcpCount++
       else if (info?.isBash) cutBashCount++
       else continue
       cutToolUseIds.add(content.id)
+      if (cut === 'not-run') notRunCount++
     }
   }
   const mcpCallCount = Math.max(0, maxMcpCountRef.current - cutMcpCount)
@@ -640,14 +660,18 @@ export function CollapsedReadSearchContent({
     )
   }
 
-  if (cutToolUseIds.size > 0) {
+  for (const [key, verb, total] of [
+    ['no-result', 'no result recorded for', cutToolUseIds.size - notRunCount],
+    ['not-run', 'did not run', notRunCount],
+  ] as const) {
+    if (total === 0) continue
     const other = nonMemParts.length > 0 ? 'other ' : ''
     pushPart(
-      'no-result',
-      'no result recorded for',
+      key,
+      verb,
       <>
-        <Text bold>{cutToolUseIds.size}</Text> {other}
-        {cutToolUseIds.size === 1 ? 'call' : 'calls'}
+        <Text bold>{total}</Text> {other}
+        {total === 1 ? 'call' : 'calls'}
       </>,
     )
   }
