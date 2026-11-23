@@ -21,6 +21,7 @@ import { getCwd } from '../cwd.js'
 import { isAnalyticsDisabled } from '../../services/analytics/config.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import { getFastModeDisabledReason, getFastModeState } from '../fastMode.js'
+import { getAPIProvider } from '../model/providers.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 
 // TODO(next-minor): remove this translation once SDK consumers have migrated
@@ -170,5 +171,26 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   initMessage.product_feedback_disabled = !isPolicyAllowed(
     'allow_product_feedback',
   )
+  const servedByAnthropic = isServedByAnthropic()
+  if (servedByAnthropic !== undefined) {
+    initMessage.served_by_anthropic = servedByAnthropic
+  }
   return initMessage
+}
+
+// Official 2.1.329: absent in a `claude ssh` child, whose requests go through
+// ANTHROPIC_UNIX_SOCKET; otherwise true for the first-party provider with no
+// base URL or one on api.anthropic.com. The official checks for hybrid
+// organizations, server tenants, workload identity and fetch-hooking mods have
+// nothing to check in this build.
+function isServedByAnthropic(): boolean | undefined {
+  if (process.env.ANTHROPIC_UNIX_SOCKET) return undefined
+  if (getAPIProvider() !== 'firstParty') return false
+  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  if (!baseUrl) return true
+  try {
+    return new URL(baseUrl).host === 'api.anthropic.com'
+  } catch {
+    return false
+  }
 }

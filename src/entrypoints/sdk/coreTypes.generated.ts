@@ -369,6 +369,7 @@ export type SDKSystemMessage = {
   view_mode?: 'focus' | 'default'
   analytics_disabled?: boolean
   product_feedback_disabled?: boolean
+  served_by_anthropic?: boolean
   uuid: string
   session_id: string
 }

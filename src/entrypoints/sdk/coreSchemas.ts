@@ -2056,6 +2056,12 @@ export const SDKSystemMessageSchema = lazySchema(() =>
     view_mode: z.enum(['focus', 'default']).optional(),
     analytics_disabled: z.boolean().optional(),
     product_feedback_disabled: z.boolean().optional(),
+    served_by_anthropic: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when this session's model requests go to Anthropic's own API: the first-party provider, with no other base URL or socket. Absent where the process can't tell (an SSH child).",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
