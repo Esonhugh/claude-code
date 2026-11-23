@@ -450,11 +450,9 @@ export function VirtualMessageList({
   // scrollTop at the moment / was pressed. Incsearch preview-jumps snap
   // back here when matches drop to 0. -1 = no anchor (before first /).
   const searchAnchor = useRef(-1)
-  const indexWarmed = useRef(false)
-  // New search text (Ctrl+E showing Code Mode scripts) is cold again.
-  useEffect(() => {
-    indexWarmed.current = false
-  }, [extractSearchText])
+  // The extractor the index was last warmed with: new search text (Ctrl+E
+  // showing Code Mode scripts) is cold again as soon as the handle sees it.
+  const indexWarmedFor = useRef<((msg: RenderableMessage) => string) | null>(null)
 
   // Scroll target for message i: land at MESSAGE TOP. est = top - HEADROOM
   // so lo = top - est = HEADROOM ≥ 0 (or lo = top if est clamped to 0).
@@ -807,7 +805,7 @@ export function VirtualMessageList({
         startPtrRef.current = -1
       },
       warmSearchIndex: async () => {
-        if (indexWarmed.current) return 0
+        if (indexWarmedFor.current === extractSearchText) return 0
         const msgs = jumpState.current.messages
         const CHUNK = 500
         let workMs = 0
@@ -825,7 +823,7 @@ export function VirtualMessageList({
         logForDebugging(
           `warmSearchIndex: ${msgs.length} msgs · work=${Math.round(workMs)}ms wall=${wallMs}ms chunks=${Math.ceil(msgs.length / CHUNK)}`,
         )
-        indexWarmed.current = true
+        indexWarmedFor.current = extractSearchText
         return Math.round(workMs)
       },
     }),
