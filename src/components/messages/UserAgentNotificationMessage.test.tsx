@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import * as React from 'react'
+import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { buildMonitorEventNotification } from '../../tools/MonitorTool/monitorEvents.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { UserAgentNotificationMessage } from './UserAgentNotificationMessage.js'
@@ -13,7 +14,7 @@ test('monitor events show the first event line before the description', async ()
   const drawn = await renderToString(
     <UserAgentNotificationMessage addMargin={false} param={{ type: 'text', text }} />,
   )
-  expect(drawn.trim()).toBe('● Monitor event: ERROR db connection refused · app.log errors')
+  expect(drawn.trim()).toBe(`${BLACK_CIRCLE} Monitor event: ERROR db connection refused · app.log errors`)
 })
 
 test('other task notifications show their summary', async () => {
@@ -21,7 +22,7 @@ test('other task notifications show their summary', async () => {
   const drawn = await renderToString(
     <UserAgentNotificationMessage addMargin={false} param={{ type: 'text', text }} />,
   )
-  expect(drawn.trim()).toBe('● Agent "scan" finished')
+  expect(drawn.trim()).toBe(`${BLACK_CIRCLE} Agent "scan" finished`)
 })
 
 test('task notifications with usage show their duration after the summary', async () => {
@@ -29,5 +30,5 @@ test('task notifications with usage show their duration after the summary', asyn
   const drawn = await renderToString(
     <UserAgentNotificationMessage addMargin={false} param={{ type: 'text', text }} />,
   )
-  expect(drawn.trim()).toBe('● Agent "scan" finished · 4s')
+  expect(drawn.trim()).toBe(`${BLACK_CIRCLE} Agent "scan" finished · 4s`)
 })

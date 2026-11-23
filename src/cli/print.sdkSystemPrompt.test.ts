@@ -39,6 +39,7 @@ if (process.env[childFlag] !== '1') {
   const processUtils = await import('../utils/process.js')
   const stdoutGuard = await import('../utils/streamJsonStdoutGuard.js')
   const modelStrings = await import('../utils/model/modelStrings.js')
+  const tokenEstimation = await import('../services/tokenEstimation.js')
   const toolPool = await import('../tools.js')
   const { SandboxManager } = await import('../utils/sandbox/sandbox-adapter.js')
   const engine = await import('../QueryEngine.js')
@@ -58,6 +59,9 @@ if (process.env[childFlag] !== '1') {
       spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
       spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
       spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      // get_context_usage counts with the local estimate: behind a proxy that never
+      // answers, the count_tokens call would outlast the test.
+      spyOn(tokenEstimation, 'countMessagesTokensWithAPI').mockResolvedValue(null),
       spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
       spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
       spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
