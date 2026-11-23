@@ -78,3 +78,12 @@ test('result.usage counts a reply that did not stream', () => {
   expect(usageOf([reply as never, createAssistantMessage({ content: 'local' }) as never, reply as never])).toEqual([1000, 200])
   expect(usageOf([start('msg_cut'), streamed as never, reply as never])).toEqual([1010, 201])
 })
+
+// Official 2.1.329: result.usage.fallback_credit is the outcome of a
+// fallback-credit token the request presented, null when it presented none.
+test('result.usage reports fallback_credit as null', () => {
+  let tally = { total: EMPTY_USAGE, current: EMPTY_USAGE, messageId: null as string | null, open: false }
+  for (const message of [start('msg_ok'), ...finish]) tally = engine.usageAfterMessage(tally, message)
+  expect(tally.total.fallback_credit).toBeNull()
+  expect(EMPTY_USAGE.fallback_credit).toBeNull()
+})

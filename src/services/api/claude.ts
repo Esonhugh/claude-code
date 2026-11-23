@@ -3918,6 +3918,9 @@ export function updateUsage(
     inference_geo: usage.inference_geo,
     iterations: partUsage.iterations ?? usage.iterations,
     speed: (partUsage as BetaUsage).speed ?? usage.speed,
+    fallback_credit:
+      (partUsage as { fallback_credit?: unknown }).fallback_credit ??
+      usage.fallback_credit,
   }
 }
 
@@ -3981,6 +3984,7 @@ export function accumulateUsage(
     inference_geo: messageUsage.inference_geo, // Use the most recent
     iterations: messageUsage.iterations, // Use the most recent
     speed: messageUsage.speed, // Use the most recent
+    fallback_credit: messageUsage.fallback_credit ?? totalUsage.fallback_credit,
   }
 }
 
