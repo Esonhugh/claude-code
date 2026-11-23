@@ -28,6 +28,9 @@ const actEnvironment = globalThis as typeof globalThis & {
 let savedActEnvironment: boolean | undefined
 beforeEach(() => {
   env.terminal = 'xterm'
+  // Not the multiplexer of the shell running the tests.
+  delete process.env.TMUX
+  delete process.env.STY
   savedActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
 })

@@ -5740,7 +5740,10 @@ export function REPL({
 
         const immediateContext = queryGuard.isActive && matchingCommand?.type === 'local-jsx' &&
           (matchingCommand.immediate || options?.fromKeybinding)
-          ? getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel)
+          ? {
+              ...getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel),
+              isMainQueryRunning: () => queryGuard.isActive,
+            }
           : undefined
         const shouldTreatAsImmediate = immediateContext && matchingCommand &&
           (options?.fromKeybinding || isCommandImmediate(matchingCommand, commandArgs, immediateContext))

@@ -45,6 +45,14 @@ test('preconnects to the Anthropic API by default', async () => {
   expect(calls).toEqual(['http://127.0.0.1:1/'])
 })
 
+test('skips the preconnect when nonessential traffic is disabled', async () => {
+  const calls = await preconnectWith({
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  })
+  expect(calls).toEqual([])
+})
+
 test('skips the preconnect for the OpenAI provider (#807)', async () => {
   const calls = await preconnectWith({
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/',

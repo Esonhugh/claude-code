@@ -255,7 +255,10 @@ export async function handlePromptSubmit(
     )
 
     const context = immediateCommand?.type === 'local-jsx'
-      ? getToolUseContext(messages, [], createAbortController(), mainLoopModel)
+      ? {
+          ...getToolUseContext(messages, [], createAbortController(), mainLoopModel),
+          isMainQueryRunning: () => queryGuard.isActive,
+        }
       : undefined
     if (
       immediateCommand?.type === 'local-jsx' && context &&

@@ -6,6 +6,7 @@ export interface PluginSettingsProps {
   onComplete: LocalJSXCommandOnDone
   args?: string
   showMcpRedirectMessage?: boolean
+  isMainQueryRunning?: () => boolean
 }
 
 export type ViewState =

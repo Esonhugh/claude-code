@@ -27,6 +27,7 @@ if (process.env[childFlag] !== '1') {
   ;(globalThis as typeof globalThis & { MACRO: { VERSION: string } }).MACRO = { VERSION: 'test' }
   const { runHeadless } = await import('./print.js')
   const { StructuredIO } = await import('./structuredIO.js')
+  const bootstrap = await import('../bootstrap/state.js')
   const { createModsSession } = await import('../services/mods/session.js')
   const { getDefaultAppState } = await import('../state/AppStateStore.js')
   const grove = await import('../services/api/grove.js')
@@ -81,7 +82,7 @@ if (process.env[childFlag] !== '1') {
     const wait = (name: string) => receipts.get(id(name))!.promise
     const values = new Map<string, SDKControlResponse['response']>()
     async function* input() {
-      yield send('init', {subtype:'initialize'})
+      yield send('init', {subtype:'initialize',hooks:{PreToolUse:[{matcher:'Bash',hookCallbackIds:[id('cb')],onFailure:'block'}]}})
       values.set('init', (await wait('init')).response)
       // Exercise the advertised protocol through runHeadless, not a replacement handler.
       yield send('attach', {subtype:'ui_attach',surface:'desktop',client_id:'probe'})
@@ -109,6 +110,9 @@ if (process.env[childFlag] !== '1') {
       const init = values.get('init')!
       expect(init.subtype).toBe('success')
       if (init.subtype !== 'success') throw new Error(init.error)
+      // Official 2.1.329: SDK hook matchers may ask for onFailure "block"; the SDK refuses to start without this flag.
+      expect(init.response).toMatchObject({hook_on_failure_supported:true})
+      expect(bootstrap.getRegisteredHooks()?.PreToolUse?.at(-1)).toMatchObject({matcher:'Bash',hooks:[{type:'callback',onFailure:'block'}]})
       // Advertise the protocol only when this connection can execute its UI controls.
       if (mode === 'available') {
         expect(init.response?.capabilities).toEqual(['ui_surface_v1'])

@@ -34,6 +34,7 @@ import {
   setModToolCheckPermissionHost,
   resolveHookPermissionDecision,
   runPreToolUseHooks,
+  PRE_TOOL_HOOK_TIMEOUT_MESSAGE,
   runPostToolUseHooks,
   runPostToolUseFailureHooks,
 } from './toolHooks.js'
@@ -299,14 +300,35 @@ describe('classic events at existing tool hook boundaries', () => {
     expect(contexts(results)).toEqual(['module'])
   })
 
-  test('identical real commands in managed and user sources each run exactly once around modules', async () => {
-    const marker = join(home, 'runs')
+  test('an identical managed and user matcher runs once, before modules (official 2.1.329)', async () => {
+    const marker = join(home, 'runs-identical')
     const hook = {
       type: 'command' as const,
       command: `printf x >> '${marker}'; printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'same' } })}'`,
     }
     const settings = { hooks: { PreToolUse: [{ hooks: [hook] }] } }
     configure(settings, settings)
+    let observedRuns = ''
+    const f = fixture(async (e, next) => {
+      observedRuns = readFileSync(marker, 'utf8')
+      return next(e)
+    })
+    const results = await Array.fromAsync(pre(f))
+    expect(observedRuns).toBe('x')
+    expect(readFileSync(marker, 'utf8')).toBe('x')
+    expect(contexts(results)).toEqual(['same'])
+  })
+
+  test('the same real command in differing managed and user matchers runs once each around modules', async () => {
+    const marker = join(home, 'runs')
+    const hook = {
+      type: 'command' as const,
+      command: `printf x >> '${marker}'; printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'same' } })}'`,
+    }
+    configure(
+      { hooks: { PreToolUse: [{ hooks: [hook] }] } },
+      { hooks: { PreToolUse: [{ hooks: [{ ...hook, timeout: 5 }] }] } },
+    )
     let observedRuns = ''
     const f = fixture(async (e, next) => {
       observedRuns = readFileSync(marker, 'utf8')
@@ -1381,6 +1403,121 @@ describe('classic events at existing tool hook boundaries', () => {
   })
 })
 
+
+describe('PreToolUse defer and unanswered SDK callbacks (official 2.1.329)', () => {
+  const decide = (permissionDecision: 'allow' | 'ask' | 'deny' | 'defer') => ({
+    type: 'callback' as const,
+    callback: async () => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision },
+    }),
+  })
+  // Runs the fixture tool through the real pipeline and counts its calls.
+  async function run(f: ReturnType<typeof fixture>, siblings = 0) {
+    let calls = 0
+    Object.assign(f.tool, {
+      call: async () => { calls++; return { data: 'ran' } },
+      mapToolResultToToolResultBlockParam: (data: string, id: string) => ({ type: 'tool_result', tool_use_id: id, content: data }),
+      checkPermissions: async () => ({ behavior: 'allow' }),
+    })
+    Object.assign(f.context, { setAppState: () => {}, setInProgressToolUseIDs: () => {} })
+    const block = (id: string) => ({ type: 'tool_use' as const, caller: { type: 'direct' as const }, id, name: f.tool.name, input: { value: 'x' } })
+    const blocks = [block('defer-id'), ...Array.from({ length: siblings }, (_, i) => block(`sibling-${i}`))]
+    const updates = await Array.fromAsync(runToolUse(blocks[0]!, createAssistantMessage({ content: blocks }), async () => ({ behavior: 'allow' }), f.context))
+    return { updates, calls: () => calls }
+  }
+  const markerOf = (updates: Awaited<ReturnType<typeof run>>['updates']) =>
+    updates.flatMap(u => u.message?.type === 'attachment' && u.message.attachment.type === 'hook_deferred_tool' ? [u.message.attachment] : [])
+
+  test.each([
+    ['without Mods', false],
+    ['through the Mods classic boundary', true],
+  ] as const)('defer is reported once all hooks ran, %s', async (_name, mods) => {
+    registerHookCallbacks({ PreToolUse: [{ hooks: [decide('allow'), decide('defer'), decide('ask')] }] })
+    const results = await Array.fromAsync(pre(mods ? fixture(async (e, next) => next(e)) : fixture()))
+    expect(results.at(-1)).toEqual({ type: 'defer', hookName: 'sdk' })
+  })
+
+  test('a deny outranks defer', async () => {
+    registerHookCallbacks({ PreToolUse: [{ hooks: [decide('defer'), decide('deny')] }] })
+    const results = await Array.fromAsync(pre(fixture(async (e, next) => next(e))))
+    expect(results.some(r => r.type === 'defer')).toBe(false)
+    expect(results.findLast(r => r.type === 'hookPermissionResult')?.hookPermissionResult.behavior).toBe('deny')
+  })
+
+  test('a deferred call leaves a marker instead of a tool result and does not run', async () => {
+    registerHookCallbacks({ PreToolUse: [{ hooks: [decide('defer')] }] })
+    const { updates, calls } = await run(fixture(async (e, next) => next(e)))
+    expect(markerOf(updates)).toEqual([{
+      type: 'hook_deferred_tool',
+      toolUseID: 'defer-id',
+      toolName: 'ClassicFixture',
+      toolInput: { value: 'x' },
+      hookName: 'sdk',
+      hookEvent: 'PreToolUse',
+      permissionMode: 'default',
+    }])
+    expect(updates.some(u => u.message?.type === 'user')).toBe(false)
+    expect(calls()).toBe(0)
+  })
+
+  test('defer is ignored in an interactive session and for a call with siblings', async () => {
+    registerHookCallbacks({ PreToolUse: [{ hooks: [decide('defer')] }] })
+    const interactiveSession = fixture()
+    Object.assign(interactiveSession.context.options, { isNonInteractiveSession: false })
+    for (const [f, siblings] of [[interactiveSession, 0], [fixture(), 1]] as const) {
+      const { updates, calls } = await run(f, siblings)
+      expect(markerOf(updates)).toEqual([])
+      expect(calls()).toBe(1)
+    }
+  })
+
+  test.each([
+    ['without Mods', false],
+    ['through the Mods classic boundary', true],
+  ] as const)('an unanswered SDK callback refuses the call with the timeout text, %s', async (_name, mods) => {
+    registerHookCallbacks({ PreToolUse: [{ hooks: [{
+      type: 'callback',
+      timeout: 0.05,
+      // Like StructuredIO.sendRequest: rejects once the hook's signal aborts.
+      callback: (_input, _id, abort) => new Promise((_resolve, reject) => {
+        abort!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+      }),
+    }] }] })
+    const { updates, calls } = await run(mods ? fixture(async (e, next) => next(e)) : fixture())
+    expect(calls()).toBe(0)
+    expect(updates.find(u => u.message?.type === 'user')?.message).toMatchObject({
+      message: { content: [{ type: 'tool_result', is_error: true, tool_use_id: 'defer-id', content: PRE_TOOL_HOOK_TIMEOUT_MESSAGE }] },
+      toolUseResult: `Error: ${PRE_TOOL_HOOK_TIMEOUT_MESSAGE}`,
+    })
+  })
+
+  test.each([
+    ['allow first', true],
+    ['failure first', false],
+  ] as const)('an onFailure:"block" callback failure refuses the call despite another hook\'s allow, %s', async (_name, allowFirst) => {
+    const failing = {
+      type: 'callback' as const,
+      onFailure: 'block' as const,
+      callback: async () => {
+        if (allowFirst) await new Promise(resolve => setTimeout(resolve, 20))
+        throw new Error('host failed')
+      },
+    }
+    const allowing = {
+      type: 'callback' as const,
+      callback: async () => {
+        if (!allowFirst) await new Promise(resolve => setTimeout(resolve, 20))
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const } }
+      },
+    }
+    registerHookCallbacks({ PreToolUse: [{ hooks: [allowing, failing] }] })
+    const { updates, calls } = await run(fixture())
+    expect(calls()).toBe(0)
+    expect(updates.find(u => u.message?.type === 'user')?.message).toMatchObject({
+      message: { content: [{ type: 'tool_result', is_error: true, tool_use_id: 'defer-id' }] },
+    })
+  })
+})
 
 describe('C17 native permission provenance', () => {
   test.each([

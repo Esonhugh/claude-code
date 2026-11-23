@@ -12,6 +12,7 @@ export type BackgroundTasksDialogScope = 'all' | 'terminal'
 export type BackgroundTasksDialogViewState =
   | { mode: 'list' }
   | { mode: 'detail'; itemId: string }
+  | { mode: 'confirmStop'; itemId: string }
 
 export function getScopedBackgroundTasks(
   tasks: Record<string, TaskState> | undefined,

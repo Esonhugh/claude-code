@@ -35,6 +35,7 @@ export type SDKHookCallbackMatcher = {
   matcher?: string
   hookCallbackIds: string[]
   timeout?: number
+  onFailure?: 'continue' | 'block'
 }
 
 // Control Request inner types - use `subtype` as discriminant (matches recovered code)
@@ -67,6 +68,8 @@ export type SDKControlInitializeResponse = {
   plugins_applied?: boolean
   /** Capabilities available on this initialized SDK connection. */
   capabilities?: string[]
+  /** Whether onFailure on hook matchers is honored. */
+  hook_on_failure_supported?: boolean
   commands: SlashCommand[]
   models: ModelInfo[]
   agents: AgentInfo[]
@@ -400,6 +403,7 @@ export const SDK_CONTROL_ERROR_CODES = [
   'workspace_diff_pending',
   'stale_worker_epoch',
   'invalid_worker_epoch',
+  'unsupported_request',
 ] as const
 export type SDKControlErrorCode = (typeof SDK_CONTROL_ERROR_CODES)[number]
 

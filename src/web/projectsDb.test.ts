@@ -68,6 +68,10 @@ describe('projects database', () => {
     expect(store.list().map(p => p.id)).toEqual([b.id])
     expect(store.update(a.id, { name: 'x' })).toBeUndefined()
     expect(store.get(a.id)?.name).toBe('A2')
+    expect(store.list(true).map(p => p.id).sort()).toEqual([a.id, b.id].sort())
+    expect(store.unarchive(b.id)).toBeUndefined()
+    expect(store.unarchive(a.id)).toMatchObject({ id: a.id, archived_at: null })
+    expect(store.update(a.id, { name: 'A3' })?.name).toBe('A3')
   })
 })
 

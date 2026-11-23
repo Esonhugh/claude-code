@@ -540,16 +540,29 @@ export async function processUserInput({
         const blockingMessage = getUserPromptSubmitHookBlockingMessage(
           hookResult.blockingError,
         )
+        // Like official 2.1.329, the result names the dropped prompt too, and
+        // the line says how the prompt ended (SDK prompt_submit_outcome).
+        const blockedText = `${blockingMessage}\n\nOriginal prompt: ${input}`
+        const { blockingError, command } = hookResult.blockingError
+        const commandPrefix = `[${command}]: `
+        const reason = (
+          blockingError.startsWith(commandPrefix)
+            ? blockingError.slice(commandPrefix.length)
+            : blockingError
+        ).trim()
         return {
           messages: [
             // TODO: Make this an attachment message
-            createSystemMessage(
-              `${blockingMessage}\n\nOriginal prompt: ${input}`,
-              'warning',
-            ),
+            {
+              ...createSystemMessage(blockedText, 'warning', undefined, true),
+              promptSubmitEnding: {
+                ending: { kind: 'blocked_by_hook', ...(reason && { reason }) },
+                promptKept: false,
+              },
+            },
           ],
           shouldQuery: false,
-          resultText: blockingMessage,
+          resultText: blockedText,
           allowedTools: result.allowedTools,
         }
       }

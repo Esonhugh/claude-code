@@ -165,6 +165,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
           spawn_depth: task.spawnDepth,
         }
       : {}),
+    ...(task.type === 'local_bash' && { is_backgrounded: task.isBackgrounded }),
     ...(parentTaskId && { parent_task_id: parentTaskId }),
     task_type: task.type,
     workflow_name:

@@ -106,6 +106,7 @@ import {
   buildClassifierUnavailableMessage,
   buildYoloRejectionMessage,
   DONT_ASK_REJECT_MESSAGE,
+  NO_APPROVAL_SURFACE_REJECT_MESSAGE,
   SUBAGENT_NO_PROMPT_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
@@ -769,6 +770,65 @@ export async function applyPermissionModeToResult(
   assistantMessage: AssistantMessage,
   toolUseID: string,
 ): Promise<PermissionDecision> {
+  const decision = await applyModeToResult(
+    result,
+    tool,
+    input,
+    context,
+    assistantMessage,
+    toolUseID,
+  )
+  return denyAskWithoutApprovalSurface(decision, tool, input, context, toolUseID)
+}
+
+/**
+ * permissions.denyInsteadOfPrompting / --permission-prompts none (official
+ * 2.1.329): whatever would still prompt is denied. PermissionRequest hooks
+ * answer first, except for asks only a person may approve.
+ */
+export async function denyAskWithoutApprovalSurface(
+  decision: PermissionDecision,
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  toolUseID: string,
+): Promise<PermissionDecision> {
+  const permission = context.getAppState().toolPermissionContext
+  if (decision.behavior !== 'ask' || !permission.denyInsteadOfPrompting) {
+    return decision
+  }
+  if (!requiresExplicitUserApproval(decision.decisionReason)) {
+    const hookDecision = await runPermissionRequestHooksForHeadlessAgent(
+      tool,
+      input,
+      toolUseID,
+      context,
+      permission.mode,
+      decision.suggestions,
+    )
+    if (hookDecision) {
+      return hookDecision
+    }
+  }
+  return {
+    behavior: 'deny',
+    decisionReason: {
+      type: 'asyncAgent',
+      reason:
+        'no approval surface in this session; permission request denied automatically',
+    },
+    message: NO_APPROVAL_SURFACE_REJECT_MESSAGE(decision.message),
+  }
+}
+
+async function applyModeToResult(
+  result: PermissionDecision,
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  assistantMessage: AssistantMessage,
+  toolUseID: string,
+): Promise<PermissionDecision> {
   const networkLists = COMMAND_NETWORK_LIST_TOOLS.has(tool.name)
     ? commandNetworkLists(input)
     : undefined
@@ -812,7 +872,10 @@ export async function applyPermissionModeToResult(
       }
     }
     if (requiresExplicitUserApproval(result.decisionReason)) {
-      if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+      if (
+        appState.toolPermissionContext.shouldAvoidPermissionPrompts &&
+        !appState.toolPermissionContext.denyInsteadOfPrompting
+      ) {
         return {
           behavior: 'deny',
           message: result.message,
@@ -1283,7 +1346,10 @@ export async function applyPermissionModeToResult(
     // When permission prompts should be avoided (e.g., background/headless agents),
     // run PermissionRequest hooks first to give them a chance to allow/deny.
     // Only auto-deny if no hook provides a decision.
-    if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+    if (
+      appState.toolPermissionContext.shouldAvoidPermissionPrompts &&
+      !appState.toolPermissionContext.denyInsteadOfPrompting
+    ) {
       const hookDecision = await runPermissionRequestHooksForHeadlessAgent(
         tool,
         input,
@@ -2026,19 +2092,15 @@ export function syncPermissionRulesFromDisk(
   // would leave the old rule in the context because convertRulesToUpdates
   // only generates replaceRules for source:behavior pairs that have rules —
   // an empty group produces no update, so stale rules persist.
-  const diskSources: Array<PermissionUpdateDestination | 'sshOverlay'> = [
-    'userSettings',
-    'projectSettings',
-    'localSettings',
-    'sshOverlay',
-  ]
-  for (const diskSource of diskSources) {
+  // flagSettings and policySettings are included: apply_flag_settings and
+  // managed settings can drop their rules mid-session too (official 2.1.329).
+  for (const diskSource of [...SETTING_SOURCES, 'sshOverlay'] as const) {
     for (const behavior of ['allow', 'deny', 'ask'] as PermissionBehavior[]) {
       context = applyPermissionUpdate(context, {
         type: 'replaceRules',
         rules: [],
         behavior,
-        destination: diskSource,
+        destination: diskSource as PermissionUpdateDestination | 'sshOverlay',
       })
     }
   }

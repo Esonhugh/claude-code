@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/client'
 import type { ConnectedMCPServer } from '../../services/mcp/types.js'
 import {
   createMcpSkillResourceRules,
@@ -155,6 +156,47 @@ describe('ReadMcpResourceTool MCP skill scope', () => {
     )
 
     assert.equal(decision.behavior, 'allow')
+  })
+
+  // Official 2.1.329.
+  it('reports a missing resource as a result that says how to recover', async () => {
+    const uri = 'resource://gone'
+    for (const code of [
+      ProtocolErrorCode.ResourceNotFound,
+      ProtocolErrorCode.InvalidParams,
+    ]) {
+      const server = connectedServer(async () => {
+        throw new ProtocolError(code, `Resource not found: ${uri}`)
+      })
+      const { data } = await ReadMcpResourceTool.call(
+        { server: 'skills', uri },
+        context(server, []),
+      )
+      assert.deepEqual(data, {
+        contents: [],
+        error: `Resource not found: ${uri} — it may have been deleted or the URI is stale. Re-run ListMcpResourcesTool to refresh.`,
+      })
+      const block = ReadMcpResourceTool.mapToolResultToToolResultBlockParam(
+        data,
+        'toolu_1',
+      )
+      assert.deepEqual(block, {
+        tool_use_id: 'toolu_1',
+        type: 'tool_result',
+        content: data.error,
+      })
+    }
+
+    const failing = connectedServer(async () => {
+      throw new ProtocolError(ProtocolErrorCode.InternalError, 'boom')
+    })
+    await assert.rejects(
+      ReadMcpResourceTool.call(
+        { server: 'skills', uri },
+        context(failing, []),
+      ),
+      /boom/,
+    )
   })
 
   it('verifies every returned text resource before exposing it', async () => {

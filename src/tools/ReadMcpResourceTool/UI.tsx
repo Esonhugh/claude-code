@@ -26,6 +26,9 @@ export function renderToolResultMessage(
   _progressMessagesForMessage: ProgressMessage<ToolProgressData>[],
   { verbose }: { verbose: boolean },
 ): React.ReactNode {
+  if (output?.error) {
+    return <OutputLine content={output.error} verbose={verbose} />
+  }
   if (!output || !output.contents || output.contents.length === 0) {
     return (
       <Box justifyContent="space-between" overflowX="hidden" width="100%">

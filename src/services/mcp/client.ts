@@ -2123,7 +2123,15 @@ export const connectToServer = memoize(
       if (inProcessServer) {
         inProcessServer.close().catch(() => {})
       }
-      const message = errorMessage(error)
+      let message = errorMessage(error)
+      if (error instanceof SdkHttpError) {
+        // Official 2.1.329 wording for these two answers to the first POST.
+        if (serverRef.type === 'http' && error.status === 404) {
+          message = `MCP endpoint not found at ${new URL(serverRef.url).origin}. Check the URL in your MCP config.`
+        } else if (error.code === SdkErrorCode.EraNegotiationFailed) {
+          message = `HTTP ${error.status}: ${POST_ERROR_PREFIX}${error.data.text ?? ''}`
+        }
+      }
       return {
         name,
         type: 'failed' as const,
@@ -2320,6 +2328,32 @@ export function getFetchToolsCacheKey(client: MCPServerConnection): string {
   return client.type === 'connected' && isHostOwnedCodexAppsConfig(client.config)
     ? `${client.name}${CODEX_APPS_FETCH_CACHE_SUFFIX}`
     : client.name
+}
+
+// tools/list_changed refreshes that have started but not yet reached app state.
+const toolListRefreshes = new Map<string, Promise<void>>()
+
+/**
+ * Remembers a tools/list_changed refresh while it runs, so a call to a tool
+ * the server has just announced can wait for it instead of failing.
+ */
+export function trackToolListRefresh(
+  serverName: string,
+  refresh: Promise<void>,
+): Promise<void> {
+  toolListRefreshes.set(serverName, refresh)
+  void refresh.finally(() => {
+    if (toolListRefreshes.get(serverName) === refresh) {
+      toolListRefreshes.delete(serverName)
+    }
+  })
+  return refresh
+}
+
+export function getToolListRefresh(
+  serverName: string,
+): Promise<void> | undefined {
+  return toolListRefreshes.get(serverName)
 }
 
 export function clearFetchToolsCache(name: string): void {
@@ -3522,10 +3556,22 @@ export async function processMCPResult(
 
   // Generate a unique ID for the persisted file (server__tool-timestamp)
   const timestamp = Date.now()
-  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${timestamp}`
+  const persistId = `mcp-${normalizeNameForMCP(name)}-${normalizeNameForMCP(tool)}-${timestamp}-${Math.random().toString(36).slice(2, 8)}`
+  // A lone text block is saved as its text, not as a JSON array (official 2.1.329).
+  const loneText =
+    typeof content !== 'string' &&
+    content.length === 1 &&
+    content[0]!.type === 'text' &&
+    !('annotations' in content[0]!) &&
+    !('_meta' in content[0]!)
+      ? content[0]!.text
+      : undefined
   // Convert to string for persistence (persistToolResult expects string or specific block types)
   const contentStr =
-    typeof content === 'string' ? content : jsonStringify(content, null, 2)
+    typeof content === 'string'
+      ? content
+      : (loneText ?? jsonStringify(content, null, 2))
+  const isPlainText = type === 'toolResult' || loneText !== undefined
   const persistResult = await persistToolResult(contentStr, persistId)
 
   if (isPersistError(persistResult)) {
@@ -3546,11 +3592,24 @@ export async function processMCPResult(
     persistedSizeChars: persistResult.originalSize,
   } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
 
-  const formatDescription = getFormatDescription(type, schema)
+  const formatDescription = isPlainText
+    ? getFormatDescription('toolResult')
+    : getFormatDescription(type, schema)
+  let lines: { count: number; maxLen: number } | undefined
+  if (isPlainText) {
+    const textLines = contentStr.split('\n')
+    if (textLines.length > 1 && textLines.at(-1) === '') textLines.pop()
+    lines = {
+      count: textLines.length,
+      maxLen: textLines.reduce((max, line) => Math.max(max, line.length), 0),
+    }
+  }
   return getLargeOutputInstructions(
     persistResult.filepath,
     persistResult.originalSize,
     formatDescription,
+    undefined,
+    lines,
   )
 }
 

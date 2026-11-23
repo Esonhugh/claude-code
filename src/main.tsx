@@ -131,6 +131,7 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
 import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
+import { getResumeHintLaunchFlags } from './utils/resumeHint.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
 import { initScreenReaderMode } from './utils/screenReader.js'
 import { isFocusViewConfigured } from './utils/focusView.js'
@@ -214,6 +215,7 @@ import {
   fetchToolsForClient,
   getMcpToolsCommandsAndResources,
   prefetchAllMcpResources,
+  trackToolListRefresh,
 } from './services/mcp/client.js'
 import {
   VALID_INSTALLABLE_SCOPES,
@@ -391,6 +393,7 @@ import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js'
 import {
   gracefulShutdown,
   gracefulShutdownSync,
+  setResumeHintLaunchFlags,
 } from 'src/utils/gracefulShutdown.js'
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
@@ -435,6 +438,7 @@ import {
   setStrictMcpConfig,
   setIsInteractive,
   setPrintOutputFormat,
+  setHasStreamingInput,
   setKairosActive,
   setOriginalCwd,
   setQuestionPreviewFormat,
@@ -1916,6 +1920,11 @@ async function run(): Promise<CommanderCommand> {
     .action(async (prompt, options) => {
       profileCheckpoint('action_handler_start')
       configureTuiRestart(program)
+      setResumeHintLaunchFlags(
+        _pendingSSH?.host || _pendingConnect?.url
+          ? ''
+          : getResumeHintLaunchFlags(program.options, process.argv.slice(2)),
+      )
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -2350,18 +2359,15 @@ async function run(): Promise<CommanderCommand> {
       // Handle system prompt options
       let systemPrompt = options.systemPrompt
       if (options.systemPromptFile) {
-        if (options.systemPrompt) {
-          process.stderr.write(
-            chalk.red(
-              'Error: Cannot use both --system-prompt and --system-prompt-file. Please use only one.\n',
-            ),
-          )
-          process.exit(1)
-        }
-
         try {
           const filePath = resolve(options.systemPromptFile)
-          systemPrompt = readFileSync(filePath, 'utf8')
+          const fromFile = readFileSync(filePath, 'utf8')
+          // Both given: the file comes first, then --system-prompt.
+          systemPrompt = !options.systemPrompt
+            ? fromFile
+            : fromFile
+              ? `${fromFile.replace(/\r?\n$/, '')}\n\n${options.systemPrompt}`
+              : options.systemPrompt
         } catch (error) {
           const code = getErrnoCode(error)
           if (code === 'ENOENT') {
@@ -3920,6 +3926,7 @@ async function run(): Promise<CommanderCommand> {
       }
 
       if (isNonInteractiveSession) setPrintOutputFormat(outputFormat ?? 'text')
+      setHasStreamingInput(inputFormat === 'stream-json')
       logForDiagnosticsNoPII('info', 'started', {
         version: MACRO.VERSION,
         is_native_binary: isInBundledMode(),
@@ -4200,28 +4207,32 @@ async function run(): Promise<CommanderCommand> {
               if (client.type === 'connected' && client.capabilities?.tools?.listChanged) {
                 client.client.setNotificationHandler(
                   'notifications/tools/list_changed',
-                  async () => {
-                    try {
-                      clearFetchToolsCache(client.name)
-                      const newTools = await fetchToolsForClient(client)
-                      headlessStore.setState(prev => ({
-                        ...prev,
-                        mcp: {
-                          ...prev.mcp,
-                          tools: [
-                            ...prev.mcp.tools.filter(
-                              t => t.mcpInfo?.serverName !== client.name,
-                            ),
-                            ...newTools,
-                          ],
-                        },
-                      }))
-                    } catch (err) {
-                      logForDebugging(
-                        `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
-                      )
-                    }
-                  },
+                  () =>
+                    trackToolListRefresh(
+                      client.name,
+                      (async () => {
+                        try {
+                          clearFetchToolsCache(client.name)
+                          const newTools = await fetchToolsForClient(client)
+                          headlessStore.setState(prev => ({
+                            ...prev,
+                            mcp: {
+                              ...prev.mcp,
+                              tools: [
+                                ...prev.mcp.tools.filter(
+                                  t => t.mcpInfo?.serverName !== client.name,
+                                ),
+                                ...newTools,
+                              ],
+                            },
+                          }))
+                        } catch (err) {
+                          logForDebugging(
+                            `[MCP] ${client.name} tools/list_changed refresh failed: ${err}`,
+                          )
+                        }
+                      })(),
+                    ),
                 )
               }
               headlessStore.setState(prev => ({
@@ -5962,11 +5973,7 @@ async function run(): Promise<CommanderCommand> {
     .command('serve')
     .description(`Start the Claude Code MCP server`)
     .option('-d, --debug', 'Enable debug mode', () => true)
-    .option(
-      '--verbose',
-      'Override verbose mode setting from config',
-      () => true,
-    )
+    .option('--verbose', 'Override the verbose setting', () => true)
     .action(
       async ({ debug, verbose }: { debug?: boolean; verbose?: boolean }) => {
         const { mcpServeHandler } = await import('./cli/handlers/mcp.js')
@@ -5986,7 +5993,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Remove an MCP server')
     .option(
       '-s, --scope <scope>',
-      'Configuration scope (local, user, or project) - if not specified, removes from whichever scope it exists in',
+      'Configuration scope (local, user, or project); if not set, removes it from whichever scope has it',
     )
     .action(async (name: string, options: { scope?: string }) => {
       const { mcpRemoveHandler } = await import('./cli/handlers/mcp.js')
@@ -6018,7 +6025,7 @@ async function run(): Promise<CommanderCommand> {
     .description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)')
     .option(
       '--no-browser',
-      'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
+      'Print the authorization URL instead of opening a browser (for SSH or no-browser sessions — paste the redirect URL back when prompted)',
     )
     .action(async (name: string, options: { browser?: boolean }) => {
       const { mcpLoginHandler } = await import('./cli/handlers/mcp.js')
@@ -6035,7 +6042,7 @@ async function run(): Promise<CommanderCommand> {
 
   mcp
     .command('add-json <name> <json>')
-    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string')
+    .description('Add an MCP server (stdio, SSE, HTTP, or WebSocket) with a JSON string, or - to read it from stdin')
     .option(
       '-s, --scope <scope>',
       'Configuration scope (local, user, or project)',
@@ -6448,6 +6455,74 @@ async function run(): Promise<CommanderCommand> {
     })
 
   pluginCmd
+    .command('tag [path]')
+    .description(
+      'Create a {name}--v{version} git tag for a plugin release, validating that plugin.json and any enclosing marketplace entry agree',
+    )
+    .option('--dry-run', 'Print what would be tagged without creating it')
+    .option(
+      '-f, --force',
+      'Skip the dirty-working-tree and tag-already-exists checks',
+    )
+    .option(
+      '-m, --message <msg>',
+      'Tag annotation message (use %s for the version)',
+    )
+    .option('--push', 'Push the tag to --remote after creating it')
+    .option('--remote <name>', 'Remote to push to with --push', 'origin')
+    .action(async (path: string | undefined, options) => {
+      const { pluginTagHandler } = await import('./cli/handlers/plugins.js')
+      await pluginTagHandler(path, options)
+    })
+
+  pluginCmd
+    .command('restore-set-aside <plugin>')
+    .description(
+      'Give a plugin id back the options and secrets set aside when a marketplace your organization declares replaced another source',
+    )
+    .option('--discard', 'Delete what is set aside instead of restoring it')
+    .allowExcessArguments()
+    .action(async (plugin: string, options: { discard?: boolean }) => {
+      const { pluginRestoreSetAsideHandler } = await import(
+        './cli/handlers/plugins.js'
+      )
+      await pluginRestoreSetAsideHandler(plugin, options)
+    })
+
+  pluginCmd
+    .command('configure <plugin>')
+    .description(
+      "Show a plugin's options and which are unset, or save values from stdin with --values-stdin",
+    )
+    .option('--json', 'Output as JSON')
+    .option(
+      '--values-stdin',
+      'Read option values from stdin as a JSON object of single-line strings; options left out keep their values',
+    )
+    .action(
+      async (
+        plugin: string,
+        options: { json?: boolean; valuesStdin?: boolean },
+      ) => {
+        const { pluginConfigureHandler } = await import(
+          './cli/handlers/plugins.js'
+        )
+        await pluginConfigureHandler(plugin, options)
+      },
+    )
+
+  pluginCmd
+    .command('details <name>')
+    .description(
+      "Show a plugin's component inventory and projected token cost",
+    )
+    .allowExcessArguments()
+    .action(async (name: string) => {
+      const { pluginDetailsHandler } = await import('./cli/handlers/plugins.js')
+      await pluginDetailsHandler(name)
+    })
+
+  pluginCmd
     .command('test [dir]')
     .description('Run plugin author tests')
     .option('--child <file>', undefined)
@@ -6588,16 +6663,58 @@ async function run(): Promise<CommanderCommand> {
       '--keep-data',
       "Preserve the plugin's persistent data directory (~/.claude/plugins/data/{id}/)",
     )
+    .option(
+      '--prune',
+      'Also remove auto-installed dependencies that are no longer needed (requires -y in non-interactive contexts)',
+    )
+    .option(
+      '-y, --yes',
+      'Skip the --prune confirmation prompt (required when input or output is piped or redirected)',
+    )
     .addOption(coworkOption())
     .action(
       async (
         plugin: string,
-        options: { scope?: string; cowork?: boolean; keepData?: boolean },
+        options: {
+          scope?: string
+          cowork?: boolean
+          keepData?: boolean
+          prune?: boolean
+          yes?: boolean
+        },
       ) => {
         const { pluginUninstallHandler } = await import(
           './cli/handlers/plugins.js'
         )
         await pluginUninstallHandler(plugin, options)
+      },
+    )
+
+  // Plugin prune command
+  pluginCmd
+    .command('prune')
+    .alias('autoremove')
+    .description('Remove auto-installed dependencies that are no longer needed')
+    .option('--dry-run', 'List what would be removed without removing')
+    .option(
+      '-s, --scope <scope>',
+      'Prune at scope: user, project, or local',
+      'user',
+    )
+    .option(
+      '-y, --yes',
+      'Skip the confirmation prompt (required when input or output is piped or redirected)',
+    )
+    .addOption(coworkOption())
+    .action(
+      async (options: {
+        scope?: string
+        dryRun?: boolean
+        yes?: boolean
+        cowork?: boolean
+      }) => {
+        const { pluginPruneHandler } = await import('./cli/handlers/plugins.js')
+        await pluginPruneHandler(options)
       },
     )
 

@@ -52,7 +52,7 @@ export function externalMetadataToAppState(
 }
 
 /** The background_tasks_changed list: backgrounded tasks still running or not yet notified. */
-function listSdkBackgroundTasks(state: AppState) {
+export function listSdkBackgroundTasks(state: AppState) {
   return Object.values(state.tasks)
     .filter(
       task =>
