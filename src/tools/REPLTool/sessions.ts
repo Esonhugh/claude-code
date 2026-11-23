@@ -66,8 +66,8 @@ export type ReplSession = {
   /** Eval numbers, as in `(dispatched #N)` and `<repl-output eval="N">`. */
   nextEvalId: number
   pending: Map<number, ReplPendingEval>
-  /** Virtual messages from dispatched scripts (inner calls, failure pairs) for the next REPL or Poll result. */
-  lateMessages: Message[]
+  /** Virtual messages from dispatched scripts (inner calls, failure pairs) for the next REPL or Poll result, by eval. */
+  lateMessages: Map<number, Message[]>
   /** Poll calls waiting for the next event. */
   waiters: Set<() => void>
   /** Async-lane evals from dispatch until they finished; a late one stays until its calls end. */
@@ -80,6 +80,10 @@ export type ReplSession = {
   undelivered: Set<number>
   /** A status line for the pending evals was given since the last dispatch. */
   statusLineGiven: boolean
+  /** The eval each REPL call dispatched, by its tool_use id (official `evalIdByToolUseId`). */
+  evalIdByToolUseId: Map<string, number>
+  /** Evals whose REPL call a rewind removed (official `rewoundToolUses`): they run on, their outcome goes nowhere. */
+  rewound: Set<number>
   ledgerListeners: Set<() => void>
   /** Which agent's queue the events go to (undefined: the main thread). */
   agentId: string | undefined
@@ -118,13 +122,15 @@ export function getReplSession(key: string): ReplSession {
     used: false,
     nextEvalId: 1,
     pending: new Map(),
-    lateMessages: [],
+    lateMessages: new Map(),
     waiters: new Set(),
     ledger: new Map(),
     depth: 0,
     unwaited: new Set(),
     undelivered: new Set(),
     statusLineGiven: false,
+    evalIdByToolUseId: new Map(),
+    rewound: new Set(),
     ledgerListeners: new Set(),
     agentId: key === MAIN_REPL_SESSION ? undefined : key,
     released: false,
@@ -187,9 +193,9 @@ export function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, mes
   const refused = (error: unknown) =>
     logForDebugging(`async REPL eval #${event.id} outcome not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
   try {
-    // A retired context's outcome goes nowhere, but its waits still end.
-    if (!isCurrent(session)) return
-    session.lateMessages.push(...messages)
+    // A retired context's or a rewound eval's outcome goes nowhere, but its waits still end.
+    if (!isCurrent(session) || session.rewound.has(event.id)) return
+    if (messages.length > 0) session.lateMessages.set(event.id, [...(session.lateMessages.get(event.id) ?? []), ...messages])
     enqueuePollEvent({
       kind: REPL_EVAL_EVENT_KIND,
       element: event.text,
@@ -261,7 +267,14 @@ export function abortReplEval(session: ReplSession, id: number): void {
 }
 
 /** Official `dispatch`: the eval is waiting for its turn, unwaited and undelivered until its outcome goes out. */
-export function dispatchReplEval(session: ReplSession, id: number, code: string, description?: string): ReplLedgerEval {
+export function dispatchReplEval(
+  session: ReplSession,
+  id: number,
+  code: string,
+  description?: string,
+  toolUseId?: string,
+): ReplLedgerEval {
+  if (toolUseId !== undefined) session.evalIdByToolUseId.set(toolUseId, id)
   const entry: ReplLedgerEval = {
     startedAt: undefined,
     detached: false,
@@ -398,9 +411,41 @@ export function isMainReplScriptRunning(): boolean {
 }
 
 export function takeReplLateMessages(session: ReplSession): Message[] {
-  const messages = session.lateMessages
-  session.lateMessages = []
+  const messages = [...session.lateMessages.values()].flat()
+  session.lateMessages.clear()
   return messages
+}
+
+/**
+ * Official `dropRewound`: the main thread's REPL calls among `removed` (what
+ * a rewind cut from the transcript) are rewound. Their scripts run on, but
+ * an outcome still to come goes nowhere, and one already queued for the next
+ * delivery is taken back with the inner-call messages it carried.
+ * INFERRED: the official caller is not in the recovered modules; a queued
+ * outcome is taken back because its call is gone from the transcript.
+ */
+export function dropRewoundReplEvals(removed: readonly Message[]): void {
+  const session = findReplSession(MAIN_REPL_SESSION)
+  if (!session) return
+  const ids = new Set<number>()
+  for (const message of removed) {
+    if (message.type !== 'assistant' || !Array.isArray(message.message.content)) continue
+    for (const block of message.message.content) {
+      const id = block.type === 'tool_use' ? session.evalIdByToolUseId.get(block.id) : undefined
+      if (id !== undefined) ids.add(id)
+    }
+  }
+  if (ids.size === 0) return
+  for (const id of ids) {
+    session.rewound.add(id)
+    session.lateMessages.delete(id)
+  }
+  const removedEvents = removeByFilter(cmd => {
+    if (cmd.mode !== 'poll-event' || cmd.agentId !== undefined || cmd.pollEvent?.kind !== REPL_EVAL_EVENT_KIND) return false
+    const id = /^<event [^>]*\beval="(\d+)"/.exec(cmd.pollEvent.envelope)?.[1]
+    return id !== undefined && ids.has(Number(id))
+  })
+  settlePollEventsDropped(removedEvents, 'rewound')
 }
 
 /** Stops every dispatched script of the session (Esc between turns). */

@@ -11,6 +11,7 @@ import { getCwd } from '../utils/cwd.js'
 import { changeSessionCwd } from '../utils/cwdChange.js'
 import { textForResubmit } from '../utils/messages.js'
 import { selectableUserMessagesFilter } from '../components/MessageSelector.js'
+import { dropRewoundReplEvals } from '../tools/REPLTool/sessions.js'
 import { expandTilde } from '../utils/path.js'
 
 type SetAppState = (f: (prev: AppState) => AppState) => void
@@ -99,7 +100,7 @@ export function handleRewindConversation(
   const target = prompts.find(m => m.uuid === uuid)
   const plan = target && prepareConversationRewind(host.messages, target)
   if (!target || !plan) return { ...REWIND_REFUSED, error: 'target not found', reason: 'target_not_found' }
-  host.messages.splice(plan.messages.length)
+  dropRewoundReplEvals(host.messages.splice(plan.messages.length))
   host.setAppState(plan.updateAppState)
   const preceding = plan.messages.findLast(m => m.type === 'assistant')
   return {
