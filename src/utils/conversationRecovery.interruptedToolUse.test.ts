@@ -5,6 +5,7 @@ import { deserializeMessagesWithInterruptDetection } from './conversationRecover
 import {
   createAssistantMessage,
   createUserMessage,
+  NO_RESPONSE_REQUESTED,
   TOOL_CALL_INTERRUPTED_MESSAGE,
 } from './messages.js'
 
@@ -114,4 +115,64 @@ test('an unanswered call the user already moved past is still left out', () => {
 
   expect(messages.some(m => m.uuid === stale.uuid)).toBe(false)
   expect(blocks(messages)).toEqual([])
+})
+
+function texts(messages: Message[]) {
+  return messages.flatMap(m =>
+    m.type === 'user' || m.type === 'assistant'
+      ? typeof m.message.content === 'string'
+        ? [`${m.type}: ${m.message.content}`]
+        : m.message.content.flatMap(b =>
+            b.type === 'text' ? [`${m.type}: ${b.text}`] : [],
+          )
+      : [],
+  )
+}
+
+test('the next prompt follows an interrupted call without a synthetic continuation (like official)', () => {
+  const previous = process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+  delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+  try {
+    const { messages, turnInterruptionState } =
+      deserializeMessagesWithInterruptDetection([
+        createUserMessage({ content: 'run it' }),
+        toolUse('toolu_cut', 'msg_1'),
+      ])
+
+    expect(turnInterruptionState.kind).toBe('interrupted_prompt')
+    expect(texts(messages)).toEqual([
+      'user: run it',
+      `assistant: ${NO_RESPONSE_REQUESTED}`,
+    ])
+    expect(messages.at(-2)?.type).toBe('user')
+  } finally {
+    if (previous !== undefined)
+      process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = previous
+  }
+})
+
+test('an auto-resumed interrupted turn still carries the continuation and its sentinel', () => {
+  const previous = process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+  process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = '1'
+  try {
+    const { messages, turnInterruptionState } =
+      deserializeMessagesWithInterruptDetection([
+        createUserMessage({ content: 'run it' }),
+        toolUse('toolu_cut', 'msg_1'),
+      ])
+
+    expect(turnInterruptionState.kind).toBe('interrupted_prompt')
+    expect(
+      turnInterruptionState.kind === 'interrupted_prompt' &&
+        messages.indexOf(turnInterruptionState.message),
+    ).toBe(messages.length - 2)
+    expect(texts(messages).slice(-2)).toEqual([
+      'user: Continue from where you left off.',
+      `assistant: ${NO_RESPONSE_REQUESTED}`,
+    ])
+  } finally {
+    if (previous === undefined)
+      delete process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN
+    else process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN = previous
+  }
 })
