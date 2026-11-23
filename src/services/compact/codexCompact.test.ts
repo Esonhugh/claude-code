@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { execFileSync } from 'node:child_process'
 import { createRemoteShellTranscript } from '../../ssh/remoteShellTranscript.js'
 import { processTextPrompt } from '../../utils/processUserInput/processTextPrompt.js'
-import type { Message } from '../../types/message.js'
+import type { Message, UserMessage } from '../../types/message.js'
 import { normalizeMessagesForAPI } from '../../utils/messages.js'
 import { buildPostCompactMessages } from './compact.js'
 import {
@@ -50,7 +49,7 @@ describe('codex compact helpers', () => {
   })
 })
 
-function userTextMessage(uuid: string, text: string): Message {
+function userTextMessage(uuid: string, text: string): UserMessage {
   return {
     type: 'user',
     uuid,
@@ -59,7 +58,7 @@ function userTextMessage(uuid: string, text: string): Message {
       role: 'user',
       content: text,
     },
-  } as Message
+  } as UserMessage
 }
 
 function assistantWriteMessage(uuid: string, id: string, content: string): Message {
@@ -198,9 +197,8 @@ describe('selectRetainedMessagesForCodexCompact', () => {
   })
 
   test('keeps terminal-looking user text but skips actual shell rows', () => {
-    const command = 'printf hello'
-    const output = createRemoteShellTranscript(command, {
-      stdout: execFileSync('/bin/sh', ['-c', command], { encoding: 'utf8' }),
+    const output = createRemoteShellTranscript('printf hello', {
+      stdout: 'hello',
       stderr: '',
       code: 0,
       interrupted: false,
