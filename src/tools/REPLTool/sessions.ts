@@ -59,7 +59,7 @@ export type ReplEvalEvent = {
 /** One persistent JavaScript context per conversation thread: the main thread or a subagent. */
 export type ReplSession = {
   executor: ReplExecutor
-  /** The session id the context was made in; a new one (/clear, a resume, a fork) starts over. */
+  /** The session id the main thread's context was made in; a new one (/clear, a resume, a fork) starts over. */
   epoch: string
   /** False until the first script ran, so the first call knows it is in a new context. */
   used: boolean
@@ -97,12 +97,21 @@ function mainScriptsChanged(): void {
   for (const listener of [...mainScriptsListeners]) listener()
 }
 
-/** The context for `key`, made on first use or when the session id moved on. */
+/**
+ * Whether the context still belongs to its thread's conversation. A
+ * subagent's context is its own (official `clear([main])` leaves them), so
+ * only the main thread's moves on with the session id.
+ */
+function isCurrent(session: ReplSession): boolean {
+  return !session.released && (session.agentId !== undefined || session.epoch === getSessionId())
+}
+
+/** The context for `key`, made on first use or when the main thread's session id moved on. */
 export function getReplSession(key: string): ReplSession {
   const epoch = getSessionId()
   const existing = sessions.get(key)
-  if (existing && existing.epoch === epoch) return existing
-  existing?.executor.release()
+  if (existing && isCurrent(existing)) return existing
+  if (existing) retireReplSession(existing)
   const session: ReplSession = {
     executor: createReplExecutor({ onAbortEval: id => abortReplEval(session, id) }),
     epoch,
@@ -122,8 +131,27 @@ export function getReplSession(key: string): ReplSession {
   }
   sessions.set(key, session)
   unregisterCleanup ??= registerCleanup(async () => releaseAllReplSessions())
-  if (existing && session.agentId === undefined) mainScriptsChanged()
   return session
+}
+
+/**
+ * Official `clear`: the context's scripts stop with their inner calls and
+ * permission prompts (`interrupt`), not only its Worker, and the outcomes it
+ * already queued for its thread are discarded.
+ */
+function retireReplSession(session: ReplSession): void {
+  if (session.released) return
+  session.released = true
+  interruptReplSession(session)
+  session.executor.release()
+  wake(session)
+  const removed = removeByFilter(cmd =>
+    cmd.mode === 'poll-event' &&
+    cmd.agentId === session.agentId &&
+    (cmd.pollEvent?.kind === REPL_EVAL_EVENT_KIND || cmd.pollEvent?.kind === REPL_STATUS_EVENT_KIND),
+  )
+  settlePollEventsDropped(removed, 'session changed')
+  if (session.agentId === undefined) mainScriptsChanged()
 }
 
 /** Ends the context for `key` (a finished subagent); the next script there starts fresh. */
@@ -131,28 +159,18 @@ export function releaseReplSession(key: string): void {
   const session = sessions.get(key)
   if (!session) return
   sessions.delete(key)
-  session.released = true
-  // Official `clear` ends in `interrupt`: the scripts stop with their inner calls, not only the Worker.
-  interruptReplSession(session)
-  session.executor.release()
-  wake(session)
-  if (session.agentId === undefined) mainScriptsChanged()
+  retireReplSession(session)
 }
 
-/** Retire the outgoing main context and discard results it already queued. */
+/** Retire the outgoing main context (/clear, /resume); subagents keep theirs. */
 export function resetMainReplSession(): void {
   releaseReplSession(MAIN_REPL_SESSION)
-  const removed = removeByFilter(cmd =>
-    cmd.agentId === undefined &&
-    (cmd.pollEvent?.kind === REPL_EVAL_EVENT_KIND || cmd.pollEvent?.kind === REPL_STATUS_EVENT_KIND),
-  )
-  settlePollEventsDropped(removed, 'session changed')
 }
 
-/** The context for `key` if one exists in this session id, without making one. */
+/** The context for `key` if it is still current, without making one. */
 export function findReplSession(key: string): ReplSession | undefined {
   const session = sessions.get(key)
-  return session && session.epoch === getSessionId() ? session : undefined
+  return session && isCurrent(session) ? session : undefined
 }
 
 function wake(session: ReplSession): void {
@@ -166,11 +184,12 @@ function wake(session: ReplSession): void {
  * counts as delivered once queued.
  */
 export function deliverReplEvent(session: ReplSession, event: ReplEvalEvent, messages: Message[]): void {
-  if (session.released || session.epoch !== getSessionId()) return
-  session.lateMessages.push(...messages)
   const refused = (error: unknown) =>
     logForDebugging(`async REPL eval #${event.id} outcome not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
   try {
+    // A retired context's outcome goes nowhere, but its waits still end.
+    if (!isCurrent(session)) return
+    session.lateMessages.push(...messages)
     enqueuePollEvent({
       kind: REPL_EVAL_EVENT_KIND,
       element: event.text,
@@ -517,7 +536,7 @@ export function formatReplStatusEvent(rows: readonly ReplLedgerRow[], at = new D
  * the session's thread; one the queue refuses is only logged.
  */
 export function enqueueReplStatus(session: ReplSession, rows: readonly ReplLedgerRow[], stillPending = false): void {
-  if (session.released || session.epoch !== getSessionId()) return
+  if (!isCurrent(session)) return
   const refused = (error: unknown) =>
     logForDebugging(`async REPL status line not delivered: ${error instanceof Error ? error.message : 'non-Error rejection'}`)
   try {

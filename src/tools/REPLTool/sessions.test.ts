@@ -19,6 +19,8 @@ import {
   MAIN_REPL_SESSION,
   markReplEvalDelivered,
   noteReplStatusLine,
+  releaseReplSession,
+  findReplSession,
   onMainReplScriptsChange,
   onReplLedgerChange,
   releaseAllReplSessions,
@@ -62,6 +64,72 @@ test.each(['clear', 'resume'] as const)('%s isolates queued and late REPL events
     switchSession(original)
   }
   await expect(lost).rejects.toThrow('session changed')
+})
+
+const outcomeOf = (id: number) => ({ id, text: `<event kind="repl-eval" eval="${id}">outcome</event>` })
+
+test('a subagent keeps its context and its outcomes across a /clear of the main thread', () => {
+  const original = getSessionId()
+  const sub = getReplSession('agent-kept')
+  dispatchReplEval(sub, 1, 'await slow()')
+  sub.pending.set(1, { id: 1, startedAt: 0, abort: () => {} })
+  let woken = false
+  sub.waiters.add(() => (woken = true))
+  try {
+    resetMainReplSession()
+    regenerateSessionId()
+    expect(getReplSession('agent-kept')).toBe(sub)
+    deliverReplEvent(sub, outcomeOf(1), [])
+    expect(getCommandQueueSnapshot()).toMatchObject([{ agentId: 'agent-kept', pollEvent: { kind: 'repl-eval' } }])
+    expect(sub.pending.size).toBe(0)
+    expect(sub.undelivered.size).toBe(0)
+    expect(woken).toBe(true)
+  } finally {
+    switchSession(original)
+  }
+})
+
+test('a retired context queues nothing more, and its late outcome still ends its waits', () => {
+  const old = getReplSession(MAIN_REPL_SESSION)
+  dispatchReplEval(old, 1, 'await slow()')
+  old.pending.set(1, { id: 1, startedAt: 0, abort: () => {} })
+  resetMainReplSession()
+  deliverReplEvent(old, outcomeOf(1), [])
+  expect(getCommandQueueSnapshot()).toHaveLength(0)
+  expect(old.pending.size).toBe(0)
+  expect(old.undelivered.size).toBe(0)
+})
+
+test('switching away and back does not bring the earlier context back', () => {
+  const original = getSessionId()
+  const old = getReplSession(MAIN_REPL_SESSION)
+  let stopped: unknown
+  dispatchReplEval(old, 1, 'await slow()')
+  startReplEval(old, 1)
+  old.pending.set(1, { id: 1, startedAt: 0, abort: reason => (stopped = reason) })
+  try {
+    switchSession(asSessionId(crypto.randomUUID()))
+    const other = getReplSession(MAIN_REPL_SESSION)
+    expect(other).not.toBe(old)
+    expect(old.released).toBe(true)
+    expect(stopped).toBe('user-cancel')
+    switchSession(original)
+    expect(findReplSession(MAIN_REPL_SESSION)).toBeUndefined()
+    expect(getReplSession(MAIN_REPL_SESSION)).not.toBe(old)
+    deliverReplEvent(old, outcomeOf(1), [])
+    expect(getCommandQueueSnapshot()).toHaveLength(0)
+  } finally {
+    switchSession(original)
+  }
+})
+
+test("a finished subagent's queued outcomes go with its context", () => {
+  const sub = getReplSession('agent-done')
+  const main = getReplSession(MAIN_REPL_SESSION)
+  deliverReplEvent(sub, outcomeOf(1), [])
+  deliverReplEvent(main, outcomeOf(1), [])
+  releaseReplSession('agent-done')
+  expect(getCommandQueueSnapshot()).toMatchObject([{ agentId: undefined }])
 })
 
 let nextKey = 0
