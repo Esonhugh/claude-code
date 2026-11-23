@@ -10,12 +10,22 @@ import React, {
 } from 'react'
 import { isCoordinatorMode } from 'src/coordinator/coordinatorMode.js'
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js'
+import {
+  getSessionCronTasks,
+  getSessionId,
+  removeSessionCronTasks,
+  type SessionCronTask,
+} from 'src/bootstrap/state.js'
+import { clearGoal } from 'src/commands/goal/hooks.js'
+import { stringWidth } from 'src/ink/stringWidth.js'
 import { useAppState, useSetAppState } from 'src/state/AppState.js'
 import {
   enterTeammateView,
   exitTeammateView,
 } from 'src/state/teammateViewHelpers.js'
+import { createTaskStateBase } from 'src/Task.js'
 import type { ToolUseContext } from 'src/Tool.js'
+import { cancelLoopWakeups } from 'src/tools/ScheduleWakeupTool/ScheduleWakeupTool.js'
 import {
   DreamTask,
   type DreamTaskState,
@@ -29,7 +39,7 @@ import type { InProcessTeammateTaskState } from 'src/tasks/InProcessTeammateTask
 import type { LocalAgentTaskState } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
 import {
   isCompletedBackgroundAgent,
-  LocalAgentTask,
+  killAsyncAgent,
 } from 'src/tasks/LocalAgentTask/LocalAgentTask.js'
 import type { LocalShellTaskState } from 'src/tasks/LocalShellTask/guards.js'
 import { LocalShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js'
@@ -46,10 +56,26 @@ import {
   isBackgroundTask,
   type TaskState,
 } from 'src/tasks/types.js'
+import { asAgentId } from 'src/types/ids.js'
+import type { Message } from 'src/types/message.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { intersperse } from 'src/utils/array.js'
+import { createAttachmentMessage } from 'src/utils/attachments.js'
+import {
+  readForkedSkillScope,
+  readForkedSkillWitness,
+} from 'src/utils/forkedSkillScope.js'
+import { cronToHuman } from 'src/utils/cron.js'
+import { nextCronRunMs } from 'src/utils/cronTasks.js'
+import { formatDuration, formatRelativeTimeAgo } from 'src/utils/format.js'
 import { isFullscreenActive } from 'src/utils/fullscreen.js'
+import { createSystemMessage } from 'src/utils/messages.js'
+import {
+  listRecordedSubagents,
+  type RecordedSubagent,
+} from 'src/utils/sessionStorage.js'
 import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js'
+import { truncate } from 'src/utils/truncate.js'
 import { stopUltraplan } from '../../commands/ultraplan.js'
 import type { CommandResultDisplay } from '../../commands.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
@@ -65,6 +91,7 @@ import { Box, Text } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import { count } from '../../utils/array.js'
+import { Select } from '../CustomSelect/select.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
 import { getRemoteTaskControl } from '../../remote/remoteTaskControl.js'
@@ -88,7 +115,10 @@ type Props = {
     result?: string,
     options?: { display?: CommandResultDisplay },
   ) => void
-  toolUseContext: ToolUseContext
+  /** With setMessages, stopping a row also says so in the transcript. */
+  toolUseContext: ToolUseContext & {
+    setMessages?: (updater: (prev: Message[]) => Message[]) => void
+  }
   initialDetailTaskId?: string
   scope?: BackgroundTasksDialogScope
 }
@@ -159,7 +189,7 @@ function TerminalDetailDialog({
   )
 }
 
-type ListItem =
+type TaskListItem =
   | {
       id: string
       type: 'local_bash'
@@ -230,6 +260,39 @@ type ListItem =
       status: 'running'
     }
 
+// Rows that are not tasks: what official 2.1.329 lists beside them.
+type StoppableItem = {
+  id: string
+  type: 'scheduled' | 'goal'
+  label: string
+  status: 'running'
+  when: string
+}
+type HistoryItem =
+  | {
+      id: typeof SUBAGENT_HISTORY_ID
+      type: 'subagent_history'
+      label: string
+      status: 'running'
+      size: number
+    }
+  | {
+      id: string
+      type: 'recorded_agent'
+      label: string
+      status: 'completed'
+      entry: RecordedSubagent
+    }
+type ListItem = TaskListItem | StoppableItem | HistoryItem
+
+const SUBAGENT_HISTORY_ID = '__subagent_history__'
+const SUBAGENT_HISTORY_LABEL = 'Earlier in this session'
+const GOAL_ITEM_ID = '__goal__'
+const STOP_TITLES = {
+  scheduled: 'Stop this scheduled task?',
+  goal: 'Stop the goal?',
+}
+
 /* eslint-disable @typescript-eslint/no-require-imports */
 const WorkflowDetailDialog = (
   require('./WorkflowDetailDialog.js') as typeof import('./WorkflowDetailDialog.js')
@@ -291,6 +354,23 @@ function LocalBackgroundTasksDialog({
   const [selectedIndex, setSelectedIndex] = useState<number>(
     initialState.initialSelectedIndex,
   )
+  const goalStatus = useAppState(s => s.goalStatus)
+  const [cronTasks, setCronTasks] = useState(getSessionCronTasks)
+  const [recordedAgents, setRecordedAgents] = useState<RecordedSubagent[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [unopenable, setUnopenable] = useState<ReadonlySet<string>>(new Set())
+  useEffect(() => {
+    if (scope === 'terminal') return
+    let isOpen = true
+    void listRecordedSubagents()
+      .then(agents => {
+        if (isOpen) setRecordedAgents(agents)
+      })
+      .catch(() => {})
+    return () => {
+      isOpen = false
+    }
+  }, [scope])
 
   // Register as modal overlay so parent Chat keybindings (up/down for history)
   // are deactivated while this dialog is open
@@ -307,6 +387,9 @@ function LocalBackgroundTasksDialog({
     mcpMonitors,
     dreamTasks,
     scriptTasks,
+    scheduledItems,
+    goalItems,
+    historyItems,
     allSelectableItems,
   } = useMemo(() => {
     // Filter to only show running/pending background tasks, matching the status bar count.
@@ -347,7 +430,7 @@ function LocalBackgroundTasksDialog({
     const scripts = sorted.filter(item => item.type === 'local_script')
     const teammates = sorted.filter(item => item.type === 'in_process_teammate')
     // Add leader entry when there are teammates, so users can foreground back to leader
-    const leaderItem: ListItem[] =
+    const leaderItem: TaskListItem[] =
       teammates.length > 0
         ? [
             {
@@ -358,7 +441,58 @@ function LocalBackgroundTasksDialog({
             },
           ]
         : []
+    const extras = scope !== 'terminal'
+    const scheduled: StoppableItem[] = extras
+      ? cronTasks.map(task => ({
+          id: task.id,
+          type: 'scheduled',
+          label: task.prompt,
+          status: 'running',
+          when: scheduledTaskWhen(task),
+        }))
+      : []
+    const goal: StoppableItem[] =
+      extras && goalStatus.active
+        ? [
+            {
+              id: GOAL_ITEM_ID,
+              type: 'goal',
+              label: goalStatus.prompt,
+              status: 'running',
+              when: 'active',
+            },
+          ]
+        : []
+    // An agent with a row above, or still running, is not history yet.
+    const listed = new Set(allItems.map(item => item.id))
+    const earlier = recordedAgents.filter(
+      agent =>
+        !listed.has(agent.agentId) &&
+        typedTasks?.[agent.agentId]?.status !== 'running',
+    )
+    const history: HistoryItem[] = !extras
+      ? []
+      : historyOpen && earlier.length > 0
+        ? earlier.map(entry => ({
+            id: entry.agentId,
+            type: 'recorded_agent',
+            label: entry.description || entry.agentId,
+            status: 'completed',
+            entry,
+          }))
+        : [
+            {
+              id: SUBAGENT_HISTORY_ID,
+              type: 'subagent_history',
+              label: SUBAGENT_HISTORY_LABEL,
+              status: 'running',
+              size: earlier.length,
+            },
+          ]
     return {
+      scheduledItems: scheduled,
+      goalItems: goal,
+      historyItems: history,
       bashTasks: bash,
       terminalTasks: terminals,
       remoteSessions: remote,
@@ -369,8 +503,8 @@ function LocalBackgroundTasksDialog({
       scriptTasks: scripts,
       teammateTasks: [...leaderItem, ...teammates],
       // Order MUST match JSX render order (teammates \u2192 bash \u2192 interactive terminals \u2192 monitorMcp \u2192
-      // remote \u2192 agent \u2192 workflows \u2192 dream \u2192 scripts) so \u2193/\u2191 navigation moves the cursor
-      // visually downward.
+      // remote \u2192 agent \u2192 completed \u2192 scheduled \u2192 goal \u2192 dream \u2192 scripts \u2192 history) so
+      // \u2193/\u2191 navigation moves the cursor visually downward.
       allSelectableItems: [
         ...leaderItem,
         ...teammates,
@@ -380,11 +514,14 @@ function LocalBackgroundTasksDialog({
         ...remote,
         ...agent,
         ...completedAgents,
+        ...scheduled,
+        ...goal,
         ...dreamTasks,
         ...scripts,
-      ],
+        ...history,
+      ] as ListItem[],
     }
-  }, [typedTasks, foregroundedTaskId, scope])
+  }, [typedTasks, foregroundedTaskId, scope, cronTasks, goalStatus, recordedAgents, historyOpen])
 
   const currentSelection = allSelectableItems[selectedIndex] ?? null
 
@@ -403,8 +540,18 @@ function LocalBackgroundTasksDialog({
           if (current.type === 'leader') {
             exitTeammateView(setAppState)
             onDone('Viewing leader', { display: 'system' })
-          } else if (current.type !== 'local_script') {
-            // A script has no detail view; its row is all there is.
+          } else if (current.type === 'subagent_history') {
+            if (current.size > 0) setHistoryOpen(true)
+          } else if (current.type === 'recorded_agent') {
+            void openRecordedAgent(current.entry)
+          } else if (current.type === 'local_agent' && isCompletedBackgroundAgent(current.task)) {
+            enterTeammateView(current.id, setAppState)
+            onDone('Viewing agent', { display: 'system' })
+          } else if (
+            current.type !== 'local_script' && // A script has no detail view; its row is all there is.
+            current.type !== 'scheduled' &&
+            current.type !== 'goal'
+          ) {
             setViewState({ mode: 'detail', itemId: current.id })
           }
         }
@@ -431,7 +578,9 @@ function LocalBackgroundTasksDialog({
 
     if (e.key === 'x') {
       e.preventDefault()
-      if (
+      if (currentSelection.type === 'scheduled' || currentSelection.type === 'goal') {
+        setViewState({ mode: 'confirmStop', itemId: currentSelection.id })
+      } else if (
         currentSelection.type === 'local_bash' &&
         currentSelection.status === 'running'
       ) {
@@ -445,7 +594,7 @@ function LocalBackgroundTasksDialog({
         currentSelection.type === 'local_agent' &&
         currentSelection.status === 'running'
       ) {
-        void killAgentTask(currentSelection.id)
+        killAgentTask(currentSelection.id)
       } else if (
         currentSelection.type === 'in_process_teammate' &&
         currentSelection.status === 'running'
@@ -512,8 +661,8 @@ function LocalBackgroundTasksDialog({
     await TerminalTask.kill(taskId, setAppState)
   }
 
-  async function killAgentTask(taskId: string): Promise<void> {
-    await LocalAgentTask.kill(taskId, setAppState)
+  function killAgentTask(taskId: string): void {
+    killAsyncAgent(taskId, setAppState, 'user')
   }
 
   async function killTeammateTask(taskId: string): Promise<void> {
@@ -528,12 +677,87 @@ function LocalBackgroundTasksDialog({
     await RemoteAgentTask.kill(taskId, setAppState)
   }
 
+  function stopItem(item: StoppableItem): void {
+    const notice = (text: string) => createSystemMessage(text, 'notice')
+    if (item.type === 'scheduled') {
+      if (cronTasks.find(task => task.id === item.id)?.kind === 'loop') {
+        cancelLoopWakeups()
+      } else {
+        removeSessionCronTasks([item.id])
+      }
+      setCronTasks(getSessionCronTasks())
+      toolUseContext.setMessages?.(prev => [
+        ...prev,
+        notice(`Stopped scheduled task: ${truncate(item.label, 60, true)}`),
+      ])
+      return
+    }
+    const { clearedGoal, attachment } = clearGoal(setAppState, getSessionId())
+    toolUseContext.setMessages?.(prev => [
+      ...prev,
+      notice(`Goal cleared: ${truncate(clearedGoal ?? item.label, 60, true)}`),
+      ...(attachment ? [createAttachmentMessage(attachment)] : []),
+    ])
+  }
+
+  // The agent left the task list; its transcript on disk is what reopens it.
+  async function openRecordedAgent(entry: RecordedSubagent): Promise<void> {
+    const { agentId, agentType } = entry
+    // A forked skill's agent resumes only as the skill its launch recorded.
+    const scope = await readForkedSkillScope(asAgentId(agentId))
+    const forkedSkillName =
+      scope.status === 'valid' ? scope.scoping.skillName : undefined
+    if (
+      agentType === undefined ||
+      (forkedSkillName !== undefined &&
+        (await readForkedSkillWitness(asAgentId(agentId))) !== forkedSkillName)
+    ) {
+      setUnopenable(prev => new Set(prev).add(agentId))
+      return
+    }
+    setAppState(prev => {
+      if (prev.tasks[agentId]) return prev
+      const task: LocalAgentTaskState = {
+        ...createTaskStateBase(agentId, 'local_agent', entry.description || agentId),
+        type: 'local_agent',
+        status: entry.stoppedByUser ? 'killed' : 'completed',
+        ...(entry.stoppedByUser && { stoppedByUser: true }),
+        ...(entry.startedAt !== undefined && { startTime: entry.startedAt }),
+        endTime: entry.lastActivityAt,
+        notified: true,
+        agentId,
+        prompt: '',
+        agentType,
+        ...(forkedSkillName !== undefined && { forkedSkillName }),
+        spawnDepth: 0,
+        retrieved: false,
+        lastReportedToolCount: 0,
+        lastReportedTokenCount: 0,
+        isBackgrounded: true,
+        isIdle: false,
+        pendingMessages: [],
+        retain: false,
+        diskLoaded: false,
+        keepaliveReasons: new Set(),
+      }
+      return { ...prev, tasks: { ...prev.tasks, [agentId]: task } }
+    })
+    enterTeammateView(agentId, setAppState)
+    onDone('Viewing agent', { display: 'system' })
+  }
+
   // Wrap onDone in useEffectEvent to get a stable reference that always calls
   // the current onDone callback without causing the effect to re-fire.
   const onDoneEvent = useEffectEvent(onDone)
 
   useEffect(() => {
-    if (viewState.mode !== 'list') {
+    if (
+      viewState.mode === 'confirmStop' &&
+      !allSelectableItems.some(item => item.id === viewState.itemId)
+    ) {
+      setViewState({ mode: 'list' })
+    }
+    if (viewState.mode === 'detail') {
       const task = (typedTasks ?? {})[viewState.itemId]
       // Workflow tasks get a grace: their detail view stays open through
       // completion so the user sees the final state before eviction.
@@ -564,7 +788,11 @@ function LocalBackgroundTasksDialog({
   // the stale-state trap: if you opened with 1 task (auto-skipped to detail),
   // then a second task started, 'back' should show the list — not close.
   const goBackToList = () => {
-    if (skippedListOnMount.current && allSelectableItems.length <= 1) {
+    // Like 2.1.329: scheduled tasks and the goal have no detail view to come back from.
+    if (
+      skippedListOnMount.current &&
+      allSelectableItems.length - scheduledItems.length - goalItems.length <= 1
+    ) {
       onDone('Background tasks dialog dismissed', { display: 'system' })
     } else {
       skippedListOnMount.current = false
@@ -572,8 +800,30 @@ function LocalBackgroundTasksDialog({
     }
   }
 
+  if (viewState.mode === 'confirmStop') {
+    const item = allSelectableItems.find(i => i.id === viewState.itemId)
+    if (item?.type !== 'scheduled' && item?.type !== 'goal') return null
+    const backToList = () => setViewState({ mode: 'list' })
+    return (
+      <Dialog title={STOP_TITLES[item.type]} onCancel={backToList} color="background">
+        <Text>{item.label}</Text>
+        <Select
+          hideIndexes
+          options={[
+            { label: 'No, keep running', value: 'keep' as const },
+            { label: 'Yes, stop', value: 'stop' as const },
+          ]}
+          onChange={value => {
+            if (value === 'stop') stopItem(item)
+            backToList()
+          }}
+        />
+      </Dialog>
+    )
+  }
+
   // If an item is selected, show the appropriate view
-  if (viewState.mode !== 'list' && typedTasks) {
+  if (viewState.mode === 'detail' && typedTasks) {
     const task = typedTasks[viewState.itemId]
     if (!task) {
       return null
@@ -600,7 +850,7 @@ function LocalBackgroundTasksDialog({
           <AsyncAgentDetailDialog
             agent={task}
             onDone={onDone}
-            onKillAgent={() => void killAgentTask(task.id)}
+            onKillAgent={() => killAgentTask(task.id)}
             onBack={goBackToList}
             key={`agent-${task.id}`}
           />
@@ -758,15 +1008,31 @@ function LocalBackgroundTasksDialog({
             </Text>,
           ]
         : []),
+      ...(scheduledItems.length > 0
+        ? [
+            <Text key="scheduled">
+              {scheduledItems.length}{' '}
+              {scheduledItems.length !== 1 ? 'scheduled tasks' : 'scheduled task'}
+            </Text>,
+          ]
+        : []),
     ],
     index => <Text key={`separator-${index}`}> · </Text>,
   )
 
   const actions = [
-    <KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />,
-    ...(currentSelection?.type !== 'local_script'
-      ? [<KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />]
+    ...(allSelectableItems.length > 1
+      ? [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />]
       : []),
+    ...(currentSelection?.type === 'subagent_history'
+      ? currentSelection.size > 0
+        ? [<KeyboardShortcutHint key="enter" shortcut="Enter" action="show" />]
+        : []
+      : currentSelection?.type !== 'local_script' &&
+          currentSelection?.type !== 'scheduled' &&
+          currentSelection?.type !== 'goal'
+        ? [<KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />]
+        : []),
     ...(currentSelection?.type === 'in_process_teammate' && isViewableTeammate(currentSelection.task)
       ? [
           <KeyboardShortcutHint
@@ -784,6 +1050,8 @@ function LocalBackgroundTasksDialog({
       currentSelection?.type === 'monitor_mcp' ||
       currentSelection?.type === 'dream' ||
       currentSelection?.type === 'local_script' ||
+      currentSelection?.type === 'scheduled' ||
+      currentSelection?.type === 'goal' ||
       currentSelection?.type === 'remote_agent') &&
     currentSelection.status === 'running'
       ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />]
@@ -824,12 +1092,19 @@ function LocalBackgroundTasksDialog({
         color="background"
         inputGuide={renderInputGuide}
       >
-        {allSelectableItems.length === 0 ? (
-          <Text dimColor>
-            {scope === 'terminal'
-              ? 'No terminals currently running'
-              : 'No tasks currently running'}
-          </Text>
+        {allSelectableItems.length === historyItems.length ? (
+          <Box flexDirection="column">
+            <Text dimColor>
+              {scope === 'terminal'
+                ? 'No terminals currently running'
+                : 'No tasks currently running'}
+            </Text>
+            <HistoryRows
+              items={historyItems}
+              currentSelectionId={currentSelection?.id}
+              unopenable={unopenable}
+            />
+          </Box>
         ) : (
           <Box flexDirection="column">
             {teammateTasks.length > 0 && (
@@ -1003,6 +1278,29 @@ function LocalBackgroundTasksDialog({
               </Box>
             )}
 
+            {[
+              { heading: 'Scheduled', items: scheduledItems },
+              { heading: 'Goal', items: goalItems },
+            ].map(
+              ({ heading, items }) =>
+                items.length > 0 && (
+                  <Box
+                    key={heading}
+                    flexDirection="column"
+                    marginTop={allSelectableItems[0] === items[0] ? 0 : 1}
+                  >
+                    <Text dimColor bold>
+                      {'  '}
+                      {heading}
+                    </Text>
+                    <StoppableRows
+                      items={items}
+                      currentSelectionId={currentSelection?.id}
+                    />
+                  </Box>
+                ),
+            )}
+
             {dreamTasks.length > 0 && (
               <Box
                 flexDirection="column"
@@ -1044,6 +1342,16 @@ function LocalBackgroundTasksDialog({
                 ))}
               </Box>
             )}
+
+            {historyItems.length > 0 && (
+              <Box flexDirection="column" marginTop={1}>
+                <HistoryRows
+                  items={historyItems}
+                  currentSelectionId={currentSelection?.id}
+                  unopenable={unopenable}
+                />
+              </Box>
+            )}
           </Box>
         )}
       </Dialog>
@@ -1051,7 +1359,7 @@ function LocalBackgroundTasksDialog({
   )
 }
 
-function toListItem(task: BackgroundTaskState): ListItem {
+function toListItem(task: BackgroundTaskState): TaskListItem {
   switch (task.type) {
     case 'local_bash':
       return {
@@ -1128,11 +1436,133 @@ function toListItem(task: BackgroundTaskState): ListItem {
   }
 }
 
+function scheduledTaskWhen(task: SessionCronTask): string {
+  if (task.recurring) return cronToHuman(task.cron)
+  const at = task.scheduledFor ?? nextCronRunMs(task.cron, task.createdAt)
+  if (at === null) return cronToHuman(task.cron)
+  return `Runs once in ${formatDuration(Math.max(0, at - Date.now()), { mostSignificantOnly: true })}`
+}
+
+function recordedAgentMeta(entry: RecordedSubagent, isUnopenable: boolean): string {
+  const ago = (ms: number | undefined) =>
+    ms === undefined ? '' : formatRelativeTimeAgo(new Date(ms))
+  const started = ago(entry.startedAt)
+  const lastActive = ago(entry.lastActivityAt)
+  return [
+    isUnopenable && 'cannot be opened',
+    entry.stoppedByUser && 'stopped',
+    entry.name ? `@${entry.name}` : entry.agentType,
+    started && `started ${started}`,
+    lastActive && lastActive !== started && `last active ${lastActive}`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function Row({
+  isSelected,
+  icon,
+  label,
+  labelWidth,
+  meta,
+}: {
+  isSelected: boolean
+  icon?: string
+  label: string
+  labelWidth: number
+  meta?: string
+}): ReactNode {
+  const useGreyPointer = isCoordinatorMode()
+  return (
+    <Box flexDirection="row">
+      <Text dimColor={useGreyPointer && isSelected}>
+        {isSelected ? figures.pointer + ' ' : '  '}
+      </Text>
+      {icon && <Text dimColor>{icon} </Text>}
+      <Box width={meta ? labelWidth + 3 : undefined} flexShrink={0}>
+        <Text color={isSelected && !useGreyPointer ? 'suggestion' : undefined} wrap="truncate-end">
+          {label}
+        </Text>
+      </Box>
+      {meta && (
+        <Text dimColor wrap="truncate-end">
+          {meta}
+        </Text>
+      )}
+    </Box>
+  )
+}
+
+function StoppableRows({
+  items,
+  currentSelectionId,
+}: {
+  items: StoppableItem[]
+  currentSelectionId: string | undefined
+}): ReactNode {
+  const labelWidth = Math.max(...items.map(item => stringWidth(item.label)))
+  return (
+    <Box flexDirection="column">
+      {items.map(item => (
+        <Row
+          key={item.id}
+          isSelected={item.id === currentSelectionId}
+          icon={figures.circle}
+          label={item.label}
+          labelWidth={labelWidth}
+          meta={item.when}
+        />
+      ))}
+    </Box>
+  )
+}
+
+function HistoryRows({
+  items,
+  currentSelectionId,
+  unopenable,
+}: {
+  items: HistoryItem[]
+  currentSelectionId: string | undefined
+  unopenable: ReadonlySet<string>
+}): ReactNode {
+  const labelWidth = Math.max(0, ...items.map(item => stringWidth(item.label)))
+  const isExpanded = items[0]?.type === 'recorded_agent'
+  return (
+    <Box flexDirection="column">
+      {isExpanded && (
+        <Text dimColor bold>
+          {'  '}
+          {SUBAGENT_HISTORY_LABEL} ({items.length})
+        </Text>
+      )}
+      {items.map(item =>
+        item.type === 'recorded_agent' ? (
+          <Row
+            key={item.id}
+            isSelected={item.id === currentSelectionId}
+            label={item.label}
+            labelWidth={labelWidth}
+            meta={recordedAgentMeta(item.entry, unopenable.has(item.id))}
+          />
+        ) : (
+          <Row
+            key={item.id}
+            isSelected={item.id === currentSelectionId}
+            label={`${item.label} (${item.size})`}
+            labelWidth={labelWidth}
+          />
+        ),
+      )}
+    </Box>
+  )
+}
+
 function Item({
   item,
   isSelected,
 }: {
-  item: ListItem
+  item: TaskListItem
   isSelected: boolean
 }): ReactNode {
   const { columns } = useTerminalSize()
@@ -1164,7 +1594,7 @@ function TeammateTaskGroups({
   teammateTasks,
   currentSelectionId,
 }: {
-  teammateTasks: ListItem[]
+  teammateTasks: TaskListItem[]
   currentSelectionId: string | undefined
 }): ReactNode {
   // Separate leader from teammates, group teammates by team

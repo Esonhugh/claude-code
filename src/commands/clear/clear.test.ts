@@ -23,11 +23,11 @@ const { getSessionId } = await import('../../bootstrap/state.js')
 const { call } = await import('./clear.js')
 const clear = (await import('./index.js')).default
 
-test('/clear <name> names the session being left before starting a new one, like 2.1.311', async () => {
+test('/clear <name> names the session being left, like 2.1.311, once it is left', async () => {
   const oldSession = getSessionId()
   expect(await call('  Foo Bar ', {} as never)).toEqual({ type: 'text', value: '' })
   expect(titles).toEqual([[oldSession, 'Foo Bar']])
-  expect(order).toEqual(['title', 'clear'])
+  expect(order).toEqual(['clear', 'title'])
 
   await call('', {} as never)
   expect(titles).toHaveLength(1)

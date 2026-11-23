@@ -1021,6 +1021,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pjrow .t .pjico { color: var(--muted); font-family: var(--f-mono); margin-right: 6px }
 .pjn { grid-column: 2; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-variant-numeric: tabular-nums }
 .history .pjrow { padding: 4px 8px; font-size: 13px }
+.history .pjrow.archived .t { color: var(--muted) }
 /* project view: sessions | coordinator session | dispatched task agents */
 body.proj .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) }
 body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { display: none !important }

@@ -16,7 +16,10 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import { resetCostState, saveCurrentSessionCosts } from '../../cost-tracker.js'
 import type { AppState } from '../../state/AppState.js'
+import { listSdkBackgroundTasks } from '../../state/onChangeAppState.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type { ModsRuntime } from '../../services/mods/runtime.js'
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js'
 import {
@@ -33,6 +36,7 @@ import {
   getSessionEndHookTimeoutMs,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import { resetSafetyStops } from '../../services/api/errors.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
 import { notifyTasksUpdated } from '../../utils/tasks.js'
@@ -61,8 +65,11 @@ export async function clearConversation({
   setAppState,
   setConversationId,
   mods,
+  resetUserMessageUuid,
 }: {
   mods?: ModsRuntime
+  /** The /clear message an SDK host sent, named in conversation_reset. */
+  resetUserMessageUuid?: string
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   readFileState: FileStateCache
   discoveredSkillNames?: Set<string>
@@ -222,6 +229,33 @@ export async function clearConversation({
   // Clear cached session metadata (title, tag, agent name/color)
   // so the new session doesn't inherit the previous session's identity
   clearSessionMetadata()
+  resetSafetyStops()
+
+  // Like official 2.1.329, SDK hosts are told a new conversation began and
+  // which background tasks carried over, before the session id changes.
+  if (getIsNonInteractiveSession()) {
+    const conversationId = randomUUID()
+    enqueueSdkEvent({
+      type: 'conversation_reset',
+      new_conversation_id: conversationId,
+      uuid: conversationId,
+      trigger: 'clear',
+      ...(resetUserMessageUuid && { user_message_uuid: resetUserMessageUuid }),
+      timestamp: new Date().toISOString(),
+      session_id: getSessionId(),
+    })
+    if (getAppState) {
+      enqueueSdkEvent({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: listSdkBackgroundTasks(getAppState()),
+      })
+    }
+  }
+
+  // Like official 2.1.329, the new session's cost and durations start from zero.
+  saveCurrentSessionCosts()
+  resetCostState()
 
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking

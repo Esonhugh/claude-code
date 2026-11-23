@@ -14,6 +14,7 @@ import {
   isClassifierDenial,
   PLAN_REJECTION_PREFIX,
   REJECT_MESSAGE_WITH_REASON_PREFIX,
+  TOOL_CALL_INTERRUPTED_MESSAGE,
 } from '../../../utils/messages.js'
 import { FallbackToolUseErrorMessage } from '../../FallbackToolUseErrorMessage.js'
 import { InterruptedByUser } from '../../InterruptedByUser.js'
@@ -40,7 +41,8 @@ export function UserToolErrorMessage({
 }: Props): React.ReactNode {
   if (
     typeof param.content === 'string' &&
-    param.content.includes(INTERRUPT_MESSAGE_FOR_TOOL_USE)
+    (param.content.includes(INTERRUPT_MESSAGE_FOR_TOOL_USE) ||
+      param.content === TOOL_CALL_INTERRUPTED_MESSAGE)
   ) {
     return (
       <MessageResponse height={1}>

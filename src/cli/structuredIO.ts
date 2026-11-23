@@ -22,7 +22,7 @@ import { type HookCallback, hookJSONOutputSchema } from 'src/types/hooks.js'
 import { getSessionId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
-import { AbortError } from 'src/utils/errors.js'
+import { AbortError, isAbortError } from 'src/utils/errors.js'
 import {
   type Output as PermissionToolOutput,
   permissionPromptToolResultToPermissionDecision,
@@ -573,7 +573,11 @@ export class StructuredIO {
     agentId: string | undefined,
     decision: PermissionDecision,
   ): void {
-    if (decision.behavior === 'allow' || decision.decisionReason?.type === 'hook')
+    // A hook's own refusal is not reported; its "ask" that nobody answered is.
+    if (
+      decision.behavior === 'allow' ||
+      (decision.behavior === 'deny' && decision.decisionReason?.type === 'hook')
+    )
       return
     this.outbound.enqueue({
       type: 'system',
@@ -821,10 +825,15 @@ export class StructuredIO {
     return canUseTool
   }
 
-  createHookCallback(callbackId: string, timeout?: number): HookCallback {
+  createHookCallback(
+    callbackId: string,
+    timeout?: number,
+    onFailure?: 'continue' | 'block',
+  ): HookCallback {
     return {
       type: 'callback',
       timeout,
+      onFailure,
       callback: async (
         input: HookInput,
         toolUseID: string | null,
@@ -843,8 +852,16 @@ export class StructuredIO {
           )
           return result
         } catch (error) {
+          // The hook's timeout or an interrupt: the caller decides what an
+          // unanswered hook means for its event.
+          if (isAbortError(error)) throw error
           // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.error(`Error in hook callback ${callbackId}:`, error)
+          if (onFailure === 'block') {
+            throw new Error(
+              `Hook callback ${callbackId} failed: the SDK host replied with an error or an invalid answer.`,
+            )
+          }
           return {}
         }
       },

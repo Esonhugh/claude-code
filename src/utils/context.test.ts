@@ -95,6 +95,16 @@ test.each([
   },
 )
 
+test('[1m] is dropped from models that are 1M on their own, like official KJ', async () => {
+  const { parseUserSpecifiedModel } = await import('./model/model.js')
+  expect(parseUserSpecifiedModel('opus[1m]')).toBe('claude-opus-5-5')
+  expect(parseUserSpecifiedModel('sonnet[1m]')).toBe('claude-sonnet-5-5')
+  expect(parseUserSpecifiedModel('claude-opus-4-8[1m]')).toBe('claude-opus-4-8')
+  expect(parseUserSpecifiedModel('claude-sonnet-4-6[1m]')).toBe('claude-sonnet-4-6[1m]')
+  expect(parseUserSpecifiedModel('claude-opus-4-6[1m]')).toBe('claude-opus-4-6[1m]')
+  expect(parseUserSpecifiedModel('My-Custom[1m]')).toBe('My-Custom[1m]')
+})
+
 test('claude-haiku-5-5 defaults to 128K output like 2.1.311', () => {
   expect(getModelMaxOutputTokens('claude-haiku-5-5')).toEqual({
     default: 128_000,

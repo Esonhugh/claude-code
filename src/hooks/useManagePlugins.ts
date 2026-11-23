@@ -43,7 +43,7 @@ export function useManagePlugins({
 } = {}) {
   const setAppState = useSetAppState()
   const needsRefresh = useAppState(s => s.plugins.needsRefresh)
-  const { addNotification } = useNotifications()
+  const { addNotification, removeNotification } = useNotifications()
 
   // Initial plugin load. Runs once on mount. NOT used for refresh — all
   // post-mount refresh goes through /reload-plugins → refreshActivePlugins().
@@ -290,13 +290,17 @@ export function useManagePlugins({
   }, [initialPluginLoad, enabled])
 
   // Plugin state changed on disk (background reconcile, /plugin menu,
-  // external settings edit). Show a notification; user runs /reload-plugins
-  // to apply. The previous auto-refresh here had a stale-cache bug (only
+  // external settings edit). Show a notification until /reload-plugins
+  // applies it. The previous auto-refresh here had a stale-cache bug (only
   // cleared loadAllPlugins, downstream memoized loaders returned old data)
   // and was incomplete (no MCP, no agentDefinitions). /reload-plugins
   // handles all of that correctly via refreshActivePlugins().
   useEffect(() => {
-    if (!enabled || !needsRefresh) return
+    if (!enabled) return
+    if (!needsRefresh) {
+      removeNotification('plugin-reload-pending')
+      return
+    }
     addNotification({
       key: 'plugin-reload-pending',
       text: 'Plugins changed. Run /reload-plugins to activate.',
@@ -305,5 +309,5 @@ export function useManagePlugins({
     })
     // Do NOT auto-refresh. Do NOT reset needsRefresh — /reload-plugins
     // consumes it via refreshActivePlugins().
-  }, [enabled, needsRefresh, addNotification])
+  }, [enabled, needsRefresh, addNotification, removeNotification])
 }

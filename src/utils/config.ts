@@ -18,7 +18,7 @@ import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalClaudeFile } from './env.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { ConfigParseError, getErrnoCode } from './errors.js'
+import { ConfigParseError, errorMessage, getErrnoCode } from './errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
 import { findCanonicalGitRoot } from './git.js'
@@ -51,6 +51,17 @@ import { jsonParse, jsonStringify } from './slowOperations.js'
 // infinite recursion when the config file is corrupted. logEvent's sampling check
 // reads GrowthBook features from the global config, which calls getConfig again.
 let insideGetConfig = false
+// Why the last getConfig returned the defaults for a file that exists, if it did.
+let lastConfigReadError: unknown
+
+/** What kept the last config save from reading the file it was changing. */
+export function getConfigReadError(): string | undefined {
+  return lastConfigReadError === undefined
+    ? undefined
+    : errorMessage(lastConfigReadError)
+}
+
+class ConfigUnreadableError extends Error {}
 
 // Image dimension info for coordinate mapping (only set when image was resized)
 export type PastedContent = {
@@ -777,26 +788,29 @@ function wouldLoseAuthState(fresh: {
   return lostOauth || lostOnboarding
 }
 
+/** False when the change was not saved: the file could not be read, or the auth-loss guard refused the write. */
 export function saveGlobalConfig(
   updater: (currentConfig: GlobalConfig) => GlobalConfig,
-): void {
+): boolean {
   if (process.env.NODE_ENV === 'test') {
     const config = updater(TEST_GLOBAL_CONFIG_FOR_TESTING)
     // Skip if no changes (same reference returned)
     if (config === TEST_GLOBAL_CONFIG_FOR_TESTING) {
-      return
+      return true
     }
     Object.assign(TEST_GLOBAL_CONFIG_FOR_TESTING, config)
-    return
+    return true
   }
 
   let written: GlobalConfig | null = null
   let before: GlobalConfig | null = null
+  let refused = true
   try {
     const didWrite = saveConfigWithLock(
       getGlobalClaudeFile(),
       createDefaultGlobalConfig,
       current => {
+        refused = false
         const config = updater(current)
         // Skip if no changes (same reference returned)
         if (config === current) {
@@ -816,6 +830,7 @@ export function saveGlobalConfig(
     if (didWrite && written) {
       writeThroughGlobalConfigCache(written)
     }
+    if (refused) return false
   } catch (error) {
     logForDebugging(`Failed to save config with lock: ${error}`, {
       level: 'error',
@@ -824,22 +839,21 @@ export function saveGlobalConfig(
     // window: if another process is mid-write (or the file got truncated),
     // getConfig returns defaults. Refuse to write those over a good cached
     // config to avoid wiping auth. See GH #3117.
-    const currentConfig = getConfig(
-      getGlobalClaudeFile(),
-      createDefaultGlobalConfig,
-    )
+    const currentConfig =
+      error instanceof ConfigUnreadableError ? undefined : getConfigForSave()
+    if (!currentConfig) return false
     if (wouldLoseAuthState(currentConfig)) {
       logForDebugging(
         'saveGlobalConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
         { level: 'error' },
       )
       logEvent('tengu_config_auth_loss_prevented', {})
-      return
+      return false
     }
     const config = updater(currentConfig)
     // Skip if no changes (same reference returned)
     if (config === currentConfig) {
-      return
+      return true
     }
     before = currentConfig
     written = {
@@ -850,7 +864,11 @@ export function saveGlobalConfig(
     writeThroughGlobalConfigCache(written)
   }
   if (before && written) mirrorUiPrefsToUserSettings(before, written)
+  return true
 }
+
+// True while the cache holds the defaults of a startup read that failed.
+let globalConfigCacheIsUnread = false
 
 // Cache for global config
 let globalConfigCache: { config: GlobalConfig | null; mtime: number } = {
@@ -1009,6 +1027,7 @@ function startGlobalConfigFreshnessWatcher(): void {
             }),
             mtime: curr.mtimeMs,
           }
+          globalConfigCacheIsUnread = false
           lastReadFileStats = { mtime: curr.mtimeMs, size: curr.size }
         })
         .catch(() => {})
@@ -1025,6 +1044,7 @@ function startGlobalConfigFreshnessWatcher(): void {
 // freshness watcher skips re-reading our own write on its next tick.
 function writeThroughGlobalConfigCache(config: GlobalConfig): void {
   globalConfigCache = { config, mtime: Date.now() }
+  globalConfigCacheIsUnread = false
   lastReadFileStats = null
 }
 
@@ -1055,6 +1075,7 @@ export function getGlobalConfig(): GlobalConfig {
     const config = migrateConfigFields(
       getConfig(getGlobalClaudeFile(), createDefaultGlobalConfig),
     )
+    globalConfigCacheIsUnread = lastConfigReadError !== undefined
     globalConfigCache = {
       config,
       mtime: stats?.mtimeMs ?? Date.now(),
@@ -1204,7 +1225,13 @@ function saveConfigWithLock<A extends object>(
     // Re-read the current config to get latest state. If the file is
     // momentarily corrupted (concurrent writes, kill-during-write), this
     // returns defaults -- we must not write those back over good config.
-    const currentConfig = getConfig(file, createDefault)
+    const currentConfig =
+      file === getGlobalClaudeFile()
+        ? (getConfigForSave() as A | undefined)
+        : getConfig(file, createDefault)
+    if (!currentConfig) {
+      throw new ConfigUnreadableError(`${file} could not be read`)
+    }
     if (file === getGlobalClaudeFile() && wouldLoseAuthState(currentConfig)) {
       logForDebugging(
         'saveConfigWithLock: re-read config is missing auth that cache has; refusing to write to avoid wiping ~/.claude.json. See GH #3117.',
@@ -1420,11 +1447,17 @@ function getConfig<A>(
   }
 
   const fs = getFsImplementation()
+  lastConfigReadError = undefined
 
   try {
-    const fileContent = fs.readFileSync(file, {
-      encoding: 'utf-8',
-    })
+    let fileContent: string
+    try {
+      fileContent = fs.readFileSync(file, { encoding: 'utf-8' })
+    } catch (error) {
+      if (getErrnoCode(error) === 'ENOENT') throw error
+      // A read can fail in passing (EIO, a sandbox); the second failure is reported below.
+      fileContent = fs.readFileSync(file, { encoding: 'utf-8' })
+    }
     try {
       // Strip BOM before parsing - PowerShell 5.x adds BOM to UTF-8 files
       const parsedConfig = jsonParse(stripBOM(fileContent))
@@ -1569,10 +1602,37 @@ function getConfig<A>(
       } else {
         process.stderr.write(`\n`)
       }
+    } else {
+      lastConfigReadError = error
+      logForDebugging(`Config file ${file} could not be read: ${error}`, {
+        level: 'error',
+      })
     }
 
     return createDefault()
   }
+}
+
+/**
+ * The config a save builds on. A read that failed says nothing about what is
+ * stored, so the defaults it returns must not be written back: the save builds
+ * on what this process read earlier, unless the file has changed since (another
+ * process wrote it). Without either there is nothing to build on.
+ */
+function getConfigForSave(): GlobalConfig | undefined {
+  const file = getGlobalClaudeFile()
+  const config = getConfig(file, createDefaultGlobalConfig)
+  if (lastConfigReadError === undefined) return config
+  if (globalConfigCacheIsUnread || !globalConfigCache.config) return undefined
+  try {
+    // Same test as the freshness watcher: a later mtime is someone else's write.
+    if (getFsImplementation().statSync(file).mtimeMs > globalConfigCache.mtime) {
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return globalConfigCache.config
 }
 
 // Memoized function to get the project path for config lookup
@@ -1613,26 +1673,29 @@ export function getCurrentProjectConfig(): ProjectConfig {
   return projectConfig
 }
 
+/** False when the change was not saved, as for saveGlobalConfig. */
 export function saveCurrentProjectConfig(
   updater: (currentConfig: ProjectConfig) => ProjectConfig,
-): void {
+): boolean {
   if (process.env.NODE_ENV === 'test') {
     const config = updater(TEST_PROJECT_CONFIG_FOR_TESTING)
     // Skip if no changes (same reference returned)
     if (config === TEST_PROJECT_CONFIG_FOR_TESTING) {
-      return
+      return true
     }
     Object.assign(TEST_PROJECT_CONFIG_FOR_TESTING, config)
-    return
+    return true
   }
   const absolutePath = getProjectPathForConfig()
 
   let written: GlobalConfig | null = null
+  let refused = true
   try {
     const didWrite = saveConfigWithLock(
       getGlobalClaudeFile(),
       createDefaultGlobalConfig,
       current => {
+        refused = false
         const currentProjectConfig =
           current.projects?.[absolutePath] ?? DEFAULT_PROJECT_CONFIG
         const newProjectConfig = updater(currentProjectConfig)
@@ -1653,6 +1716,7 @@ export function saveCurrentProjectConfig(
     if (didWrite && written) {
       writeThroughGlobalConfigCache(written)
     }
+    if (refused) return false
   } catch (error) {
     logForDebugging(`Failed to save config with lock: ${error}`, {
       level: 'error',
@@ -1660,21 +1724,23 @@ export function saveCurrentProjectConfig(
 
     // Same race window as saveGlobalConfig's fallback -- refuse to write
     // defaults over good cached config. See GH #3117.
-    const config = getConfig(getGlobalClaudeFile(), createDefaultGlobalConfig)
+    const config =
+      error instanceof ConfigUnreadableError ? undefined : getConfigForSave()
+    if (!config) return false
     if (wouldLoseAuthState(config)) {
       logForDebugging(
         'saveCurrentProjectConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
         { level: 'error' },
       )
       logEvent('tengu_config_auth_loss_prevented', {})
-      return
+      return false
     }
     const currentProjectConfig =
       config.projects?.[absolutePath] ?? DEFAULT_PROJECT_CONFIG
     const newProjectConfig = updater(currentProjectConfig)
     // Skip if no changes (same reference returned)
     if (newProjectConfig === currentProjectConfig) {
-      return
+      return true
     }
     written = {
       ...config,
@@ -1686,6 +1752,7 @@ export function saveCurrentProjectConfig(
     saveConfig(getGlobalClaudeFile(), written, DEFAULT_GLOBAL_CONFIG)
     writeThroughGlobalConfigCache(written)
   }
+  return true
 }
 
 export function isAutoUpdaterDisabled(): boolean {

@@ -1,3 +1,4 @@
+import { firstGrapheme } from '../utils/intl.js'
 import { recordPaintedScrollTop } from './dom.js'
 import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
@@ -8,12 +9,13 @@ import { LayoutDisplay, LayoutEdge, type LayoutNode } from './layout/node.js'
 import { nodeCache, pendingClears } from './node-cache.js'
 import type Output from './output.js'
 import renderBorder from './render-border.js'
-import type { Screen } from './screen.js'
+import { type Screen, SoftWrap } from './screen.js'
 import {
   type StyledSegment,
   squashTextNodesToSegments,
 } from './squash-text-nodes.js'
 import type { Color } from './styles.js'
+import { stringWidth } from './stringWidth.js'
 import { isXtermJs } from './terminal.js'
 import { widestLine } from './widest-line.js'
 import wrapText from './wrap-text.js'
@@ -224,6 +226,7 @@ function applyStylesToWrappedText(
   charToSegment: number[],
   originalPlain: string,
   trimEnabled: boolean = false,
+  softWrap?: SoftWrap[],
 ): string {
   const lines = wrappedPlain.split('\n')
   const resultLines: string[] = []
@@ -303,6 +306,14 @@ function applyStylesToWrappedText(
       charIndex++
     }
 
+    // The separator space dropped from the next line is still in the original.
+    if (
+      softWrap?.[lineIdx + 1] === SoftWrap.ContinuationElidedSep &&
+      originalPlain[charIndex] === ' '
+    ) {
+      charIndex++
+    }
+
     // In trim mode, skip whitespace that was replaced by newline when wrapping.
     // We skip whitespace in the original until we reach a character that matches
     // the first character of the next line. This handles cases like:
@@ -346,7 +357,7 @@ function wrapWithSoftWrap(
   plainText: string,
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2],
-): { wrapped: string; softWrap: boolean[] | undefined } {
+): { wrapped: string; softWrap: SoftWrap[] | undefined } {
   if (textWrap !== 'wrap' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
@@ -355,12 +366,26 @@ function wrapWithSoftWrap(
   }
   const origLines = plainText.split('\n')
   const outLines: string[] = []
-  const softWrap: boolean[] = []
+  const softWrap: SoftWrap[] = []
   for (const orig of origLines) {
     const pieces = wrapText(orig, maxWidth, textWrap).split('\n')
     for (let i = 0; i < pieces.length; i++) {
-      outLines.push(pieces[i]!)
-      softWrap.push(i > 0)
+      const piece = pieces[i]!
+      // Official 2.1.329 drops the separator space wrapAnsi leaves at the
+      // start of a continuation row, unless the row holds nothing else.
+      const elided =
+        i > 0 &&
+        piece.startsWith(' ') &&
+        firstGrapheme(piece) === ' ' &&
+        stringWidth(piece.slice(1)) > 0
+      outLines.push(elided ? piece.slice(1) : piece)
+      softWrap.push(
+        i === 0
+          ? SoftWrap.HardBreak
+          : elided
+            ? SoftWrap.ContinuationElidedSep
+            : SoftWrap.Continuation,
+      )
     }
   }
   return { wrapped: outLines.join('\n'), softWrap }
@@ -375,7 +400,7 @@ function wrapWithSoftWrap(
 function applyPaddingToText(
   node: DOMElement,
   text: string,
-  softWrap?: boolean[],
+  softWrap?: SoftWrap[],
 ): string {
   const yogaNode = node.childNodes[0]?.yogaNode
 
@@ -386,7 +411,7 @@ function applyPaddingToText(
     if (softWrap && offsetY > 0) {
       // Prepend `false` for each padding line so indices stay aligned
       // with text.split('\n'). Mutate in place — caller owns the array.
-      softWrap.unshift(...Array<boolean>(offsetY).fill(false))
+      softWrap.unshift(...Array<SoftWrap>(offsetY).fill(SoftWrap.HardBreak))
     }
   }
 
@@ -591,7 +616,7 @@ function renderNodeToOutput(
         const needsWrapping = widestLine(plainText) > maxWidth
 
         let text: string
-        let softWrap: boolean[] | undefined
+        let softWrap: SoftWrap[] | undefined
         if (needsWrapping && segments.length === 1) {
           // Single segment: wrap plain text first, then apply styles to each line
           const segment = segments[0]!
@@ -624,6 +649,7 @@ function renderNodeToOutput(
             charToSegment,
             plainText,
             textWrap === 'wrap-trim',
+            softWrap,
           )
           // Hyperlinks are handled per-run in applyStylesToWrappedText via
           // wrapWithOsc8Link, similar to how styles are applied per-run.

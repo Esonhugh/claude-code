@@ -17,9 +17,6 @@ export function deliverTaskMessage(
   setAppState: SetAppState,
 ): 'queued' | 'injected' | 'resume' {
   if (isLocalAgentTask(task)) {
-    if (task.status !== 'running' && task.stoppedByUser) {
-      throw new Error(`agent ${task.id} was stopped by the user`)
-    }
     updateTaskState<LocalAgentTaskState>(task.id, setAppState, t => ({ ...t, userMessages: [...(t.userMessages ?? []), text] }))
     if (task.status !== 'running') {
       appendMessageToLocalAgent(task.id, createUserMessage({ content: text }), setAppState)

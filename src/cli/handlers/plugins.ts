@@ -17,6 +17,7 @@ import {
   disablePlugin,
   enablePlugin,
   installPlugin,
+  prunePlugins,
   uninstallPlugin,
   updatePluginCli,
   VALID_INSTALLABLE_SCOPES,
@@ -50,6 +51,32 @@ import {
 } from '../../utils/plugins/marketplaceManager.js'
 import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
 import { parseMarketplaceInput } from '../../utils/plugins/parseMarketplaceInput.js'
+import { getTrustedPluginConfigs } from '../../utils/plugins/mcpbHandler.js'
+import {
+  describePluginOptions,
+  MAX_VALUES_STDIN_BYTES,
+  parseOptionValues,
+  pluginDisplayName,
+  PluginOptionRefusedError,
+  preparePluginOptionValues,
+  printable,
+  redactOptionValues,
+  unsetPluginOptions,
+} from '../../utils/plugins/pluginConfigure.js'
+import { updateSettingsForSource } from '../../utils/settings/settings.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
+import {
+  clearPluginOptionsCache,
+  getPluginStorageId,
+  loadPluginOptions,
+  type PluginOptionSchema,
+  savePluginOptions,
+} from '../../utils/plugins/pluginOptionsStorage.js'
+import {
+  createPluginTag,
+  pluginTagMessage,
+  preparePluginTag,
+} from '../../utils/plugins/pluginTag.js'
 import {
   parsePluginIdentifier,
   scopeToSettingSource,
@@ -115,6 +142,326 @@ function printValidationResult(result: ValidationResult): void {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('')
   }
+}
+
+// plugin tag
+export async function pluginTagHandler(
+  path: string | undefined,
+  options: {
+    push?: boolean
+    dryRun?: boolean
+    force?: boolean
+    message?: string
+    remote?: string
+  },
+): Promise<void> {
+  const force = options.force ?? false
+  const remote = options.remote ?? 'origin'
+  const prepared = await preparePluginTag(path ?? '.', { force })
+  const lines = prepared.warnings.map(w => `${figures.warning} ${w}`)
+  const finish = (code: number): never => {
+    // One terminal line per entry, as official prints them.
+    process.stdout.write(lines.map(l => l.replace(/\n+/g, ' ')).join('\n') + '\n')
+    process.exit(code)
+  }
+  if (prepared.ok === false) {
+    lines.push(`${figures.cross} ${prepared.error}`)
+    return finish(1)
+  }
+  const { plan } = prepared
+  lines.push(
+    `Plugin:  ${plan.pluginName}`,
+    `Version: ${plan.version} (from ${plan.versionFrom})`,
+  )
+  if (plan.marketplace) {
+    lines.push(
+      `Marketplace entry: plugins[${plan.marketplace.entryIndex}] in ${plan.marketplace.path}` +
+        (plan.marketplace.entryVersion
+          ? ` (version: ${plan.marketplace.entryVersion})`
+          : ''),
+    )
+  }
+  lines.push(`Tag:     ${plan.tag}`, '')
+  const pushCommand = `git -C ${plan.gitRoot} push ${force ? '--force ' : ''}${remote} refs/tags/${plan.tag}`
+  if (options.dryRun) {
+    lines.push(
+      `${figures.tick} Dry run — would create tag ${plan.tag} at HEAD in ${plan.gitRoot}`,
+      `  git -C ${plan.gitRoot} tag ${force ? '-f ' : ''}-a ${plan.tag} -m ${jsonStringify(pluginTagMessage(plan, options.message))}`,
+      `  ${pushCommand}`,
+    )
+    return finish(0)
+  }
+  const created = await createPluginTag(plan, {
+    push: options.push ?? false,
+    force,
+    message: options.message,
+    remote,
+  })
+  if (created.ok === false) {
+    lines.push(`${figures.cross} ${created.error}`)
+    return finish(1)
+  }
+  lines.push(`${figures.tick} Created tag ${plan.tag}`)
+  lines.push(
+    created.pushed
+      ? `${figures.tick} Pushed to ${remote}`
+      : `  Push with: ${pushCommand}`,
+  )
+  finish(0)
+}
+
+async function readValuesFromStdin(): Promise<string | undefined> {
+  process.stdin.setEncoding('utf8')
+  let text = ''
+  let bytes = 0
+  for await (const chunk of process.stdin) {
+    bytes += Buffer.byteLength(chunk, 'utf8')
+    if (bytes > MAX_VALUES_STDIN_BYTES) return undefined
+    text += chunk
+  }
+  return text
+}
+
+// plugin configure
+export async function pluginConfigureHandler(
+  plugin: string,
+  options: { json?: boolean; valuesStdin?: boolean },
+): Promise<void> {
+  const { enabled, disabled } = await loadAllPlugins()
+  const target = [...enabled, ...disabled].find(
+    p => p.repository === plugin || p.source === plugin,
+  )
+  if (!target) {
+    cliError(
+      `No installed plugin has the id "${printable(plugin)}". Use its full id (name@marketplace), as \`claude plugin list\` shows it.`,
+    )
+  }
+  const pluginId = getPluginStorageId(target)
+  const schema: PluginOptionSchema = target.manifest.userConfig ?? {}
+  const displayName = pluginDisplayName(target.manifest)
+  const json = (value: object) =>
+    process.stdout.write(jsonStringify(value, null, 2) + '\n')
+
+  if (options.valuesStdin) {
+    const example =
+      'Example: claude plugin configure <plugin> --values-stdin < values.json'
+    if (process.stdin.isTTY) {
+      cliError(`No option values were piped in. ${example}`)
+    }
+    const text = await readValuesFromStdin()
+    let values: Record<string, string> | undefined
+    try {
+      values = text === undefined ? undefined : parseOptionValues(jsonParse(text))
+    } catch {
+      values = undefined
+    }
+    if (values === undefined) {
+      cliError(
+        text === undefined
+          ? 'The input on stdin is over the 256 KB limit.'
+          : `The input on stdin isn't a JSON object of strings. ${example}`,
+      )
+    }
+    let saved: string[]
+    try {
+      const final = preparePluginOptionValues(
+        schema,
+        values,
+        loadPluginOptions(pluginId),
+      )
+      saved = Object.keys(final)
+      if (saved.length > 0) {
+        // A cleared option is saved as '', which is not one of its choices.
+        savePluginOptions(
+          pluginId,
+          final,
+          Object.fromEntries(
+            Object.entries(schema).map(([key, field]) => [
+              key,
+              final[key] === '' ? { ...field, options: undefined } : field,
+            ]),
+          ),
+        )
+      }
+    } catch (error) {
+      if (options.json && error instanceof PluginOptionRefusedError) {
+        json({
+          pluginId,
+          displayName,
+          refused: {
+            option: error.option,
+            message: redactOptionValues(schema, values, error.message),
+          },
+        })
+      }
+      cliError(
+        redactOptionValues(
+          schema,
+          values,
+          `Failed to save configuration: ${errorMessage(error)}`,
+        ),
+      )
+    }
+    if (options.json) {
+      let unconfigured: string[] | undefined
+      try {
+        unconfigured = unsetPluginOptions(schema, loadPluginOptions(pluginId))
+      } catch (error) {
+        logError(error)
+      }
+      json({
+        pluginId,
+        displayName,
+        saved,
+        ...(unconfigured && { unconfigured }),
+      })
+      process.exit(0)
+    }
+    cliOk(
+      saved.length > 0
+        ? 'Configuration saved. Restart Claude Code to apply it.'
+        : 'No configuration changes.',
+    )
+  }
+
+  let described: ReturnType<typeof describePluginOptions>
+  try {
+    described = describePluginOptions(
+      schema,
+      loadPluginOptions(pluginId),
+      Object.assign(
+        {},
+        ...getTrustedPluginConfigs(pluginId).map(config => config.options),
+      ),
+    )
+  } catch (error) {
+    cliError(
+      `Could not read the saved options for "${pluginId}": ${errorMessage(error)}`,
+    )
+  }
+  if (options.json) {
+    json({ pluginId, displayName, schema, ...described })
+    process.exit(0)
+  }
+  if (Object.keys(schema).length === 0) {
+    cliOk(`${displayName} (${pluginId}) has no options to set.`)
+  }
+  const marker =
+    process.stdout.isTTY && process.stderr.isTTY ? '•' : figures.pointer
+  const lines = [`Options for ${displayName} (${pluginId}):`]
+  for (const [key, field] of Object.entries(schema)) {
+    const facts = [
+      field.required ? 'required' : 'optional',
+      field.sensitive ? 'sensitive' : undefined,
+      described.configured.includes(key) ? 'set' : 'not set',
+    ].filter(Boolean)
+    const title =
+      field.title && field.title !== key ? ` — ${printable(field.title)}` : ''
+    lines.push(
+      `  ${marker} ${printable(key)}${title} (${facts.join(', ')})`,
+    )
+  }
+  lines.push(
+    '',
+    'Set values with /plugin configure <plugin> in Claude Code, or pipe a JSON object to `claude plugin configure <plugin> --values-stdin`.',
+  )
+  cliOk(lines.join('\n'))
+}
+
+// plugin details
+export async function pluginDetailsHandler(name: string): Promise<void> {
+  logEvent('tengu_plugin_details_command', {})
+  const { enabled, disabled } = await loadAllPlugins()
+  const wanted = name.toLowerCase()
+  const plugin = [...enabled, ...disabled].find(
+    p => (name.includes('@') ? p.source : p.name).toLowerCase() === wanted,
+  )
+  if (!plugin) {
+    cliError(
+      `Plugin "${printable(name)}" not found. Run \`claude plugin list\` to see installed plugins, or pass --plugin-dir <path> to load one from disk.`,
+    )
+  }
+  const {
+    formatPluginDetails,
+    getPluginInventory,
+    measurePluginComponents,
+  } = await import('../../utils/plugins/pluginDetails.js')
+  let inventory: Awaited<ReturnType<typeof measurePluginComponents>>
+  try {
+    inventory = await measurePluginComponents(
+      await getPluginInventory(plugin),
+      plugin.name,
+    )
+  } catch (error) {
+    logError(error)
+    cliError(
+      `Could not load details for "${printable(plugin.name)}": ${errorMessage(error)}`,
+    )
+  }
+  // Without a count from the API the sizes on disk give the estimate.
+  let tokens: { always_on: number; on_invoke: number } | undefined
+  const { validateForceLoginOrg } = await import('../../utils/auth.js')
+  if ((await validateForceLoginOrg()).valid) {
+    const { countMessagesTokensWithAPI } = await import(
+      '../../services/tokenEstimation.js'
+    )
+    const count = (text: string) =>
+      text
+        ? countMessagesTokensWithAPI([{ role: 'user', content: text }], [])
+        : 0
+    const [alwaysOn, onInvoke] = await Promise.all([
+      count(inventory.alwaysOnText),
+      count(inventory.onInvokeText),
+    ])
+    if (alwaysOn !== null && onInvoke !== null) {
+      tokens = { always_on: alwaysOn, on_invoke: onInvoke }
+    }
+  }
+  cliOk(formatPluginDetails(plugin, inventory, tokens))
+}
+
+// plugin restore-set-aside
+export async function pluginRestoreSetAsideHandler(
+  plugin: string,
+  options: { discard?: boolean },
+): Promise<void> {
+  const discard = options.discard ?? false
+  logEvent('tengu_plugin_restore_set_aside_command', { discard })
+  const { restoreSetAsideConfigs, saveRestoredSetAsideSecrets } = await import(
+    '../../utils/plugins/pluginSetAside.js'
+  )
+  let optionCount = 0
+  const { error } = updateSettingsForSource('userSettings', existing => {
+    const { count, update } = restoreSetAsideConfigs(
+      existing.pluginConfigs ?? {},
+      plugin,
+      discard,
+    )
+    optionCount = count
+    return count === 0
+      ? null
+      : { pluginConfigs: update as SettingsJson['pluginConfigs'] }
+  })
+  if (error) {
+    cliError(
+      'Your user settings file could not be changed, so nothing was restored or discarded. Try again once it can be.',
+    )
+  }
+  const { count: secretCount, saved: secretsSaved } =
+    saveRestoredSetAsideSecrets(plugin, discard)
+  clearPluginOptionsCache()
+  if (!secretsSaved) {
+    cliError(
+      'Secure storage could not be fully read or changed, so some stored secrets may not have been restored or discarded. Try again where it can be, such as on the machine itself if your keychain is locked over SSH.',
+    )
+  }
+  cliOk(
+    optionCount + secretCount === 0
+      ? `No options or secrets are set aside for ${plugin}.`
+      : discard
+        ? `Discarded the options and secrets set aside for ${plugin}.`
+        : `Restored the options and secrets set aside for ${plugin}. Any plugin installed under that id can read them. What it saved in its data folder is not moved: \`claude plugin list\` says where that is.`,
+  )
 }
 
 // plugin validate
@@ -481,8 +828,17 @@ export async function pluginListHandler(options: {
   }
 
   const refusal = getInstalledPluginsReadRefusal()
-  const recoveryNotes = [getSetAsideInstalledPluginsNote(), getUnreadableInstalledPluginsNote()]
-    .filter((note): note is string => note !== null)
+  const { storedSetAsidePluginIds } = await import(
+    '../../utils/plugins/pluginSetAside.js'
+  )
+  const setAsideIds = storedSetAsidePluginIds()
+  const recoveryNotes = [
+    getSetAsideInstalledPluginsNote(),
+    getUnreadableInstalledPluginsNote(),
+    setAsideIds.length > 0
+      ? `Note: your organization replaced a plugin marketplace with one of the same name, so the options and secrets stored for ${setAsideIds.join(', ')} were set aside. They stay until you choose: \`claude plugin restore-set-aside <plugin>\` gives them to the plugin now under that id, and adding --discard deletes them.`
+      : null,
+  ].filter((note): note is string => note !== null)
   if (pluginIds.length === 0 && inlinePlugins.length === 0) {
     // inlineLoadErrors can exist with zero inline plugins (e.g. --plugin-dir
     // points at a nonexistent path). Don't early-exit over them — fall
@@ -860,7 +1216,13 @@ export async function pluginInstallHandler(
 // plugin uninstall (lines 5738–5769)
 export async function pluginUninstallHandler(
   plugin: string,
-  options: { scope?: string; cowork?: boolean; keepData?: boolean },
+  options: {
+    scope?: string
+    cowork?: boolean
+    keepData?: boolean
+    prune?: boolean
+    yes?: boolean
+  },
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   const scope = options.scope || 'user'
@@ -890,7 +1252,32 @@ export async function pluginUninstallHandler(
     plugin,
     scope as 'user' | 'project' | 'local',
     options.keepData,
+    options.prune,
+    options.yes,
   )
+}
+
+export async function pluginPruneHandler(options: {
+  scope?: string
+  dryRun?: boolean
+  yes?: boolean
+  cowork?: boolean
+}): Promise<void> {
+  if (options.cowork) setUseCoworkPlugins(true)
+  const scope = options.scope || 'user'
+  if (options.cowork && scope !== 'user') {
+    cliError('--cowork can only be used with user scope')
+  }
+  if (
+    !VALID_INSTALLABLE_SCOPES.includes(
+      scope as (typeof VALID_INSTALLABLE_SCOPES)[number],
+    )
+  ) {
+    cliError(
+      `Unknown scope "${scope}". Use one of: ${VALID_INSTALLABLE_SCOPES.join(', ')}.`,
+    )
+  }
+  await prunePlugins(scope as 'user' | 'project' | 'local', options)
 }
 
 // plugin enable (lines 5783–5818)

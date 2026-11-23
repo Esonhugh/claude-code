@@ -30,6 +30,7 @@ import {
   getPlanFilePath,
   persistFileSnapshotIfRemote,
 } from '../../utils/plans.js'
+import { isDenyInsteadOfPromptingEnabled } from '../../utils/settings/settings.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   getAgentName,
@@ -173,6 +174,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     ) {
       return false
     }
+    if (isDenyInsteadOfPromptingEnabled()) return false
     return true
   },
   isConcurrencySafe() {

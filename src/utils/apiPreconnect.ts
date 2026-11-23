@@ -21,16 +21,20 @@
  * - proxy/mTLS/unix socket configured (preconnect would use wrong transport —
  *   the SDK passes a custom dispatcher/agent that doesn't share the global pool)
  * - Bedrock/Vertex/Foundry (different endpoints, different auth)
+ * - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (the warm-up is an optimisation)
  */
 
 import { getOauthConfig } from '../constants/oauth.js'
 import { isEnvTruthy } from './envUtils.js'
+import { isEssentialTrafficOnly } from './privacyLevel.js'
 
 let fired = false
 
 export function preconnectAnthropicApi(): void {
   if (fired) return
   fired = true
+
+  if (isEssentialTrafficOnly()) return
 
   // Skip if using a cloud provider — different endpoint + auth
   if (

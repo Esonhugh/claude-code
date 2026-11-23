@@ -58,9 +58,25 @@ if (process.env[childFlag] !== '1') {
     expect(getProjectMcpServerStatus('srv')).toBe('pending')
   })
 
-  test('an untracked settings.local.json still approves servers before trust', () => {
+  // Official 2.1.329: local settings sit in the workspace folder, so before
+  // trust they approve nothing, tracked or not (a copied or unpacked folder
+  // brings its own settings.local.json).
+  test('an untracked settings.local.json cannot approve servers before trust', () => {
     project({ local: { enabledMcpjsonServers: ['srv'] } })
-    expect(getProjectMcpServerStatus('srv')).toBe('approved')
+    expect(getProjectMcpServerStatus('srv')).toBe('pending')
+    project({ local: { enableAllProjectMcpServers: true } })
+    expect(getProjectMcpServerStatus('srv')).toBe('pending')
+  })
+
+  test('an untracked settings.local.json approves servers once the workspace is trusted', () => {
+    project({ local: { enabledMcpjsonServers: ['srv'] } })
+    setSessionTrustAccepted(true)
+    try {
+      expect(getProjectMcpServerStatus('srv')).toBe('approved')
+    } finally {
+      setSessionTrustAccepted(false)
+      resetTrustDialogAcceptedCacheForTesting()
+    }
   })
 
   test('a git-tracked settings.local.json is repo content and cannot approve servers', () => {
