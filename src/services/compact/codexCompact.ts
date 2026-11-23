@@ -107,7 +107,7 @@ export function selectRetainedMessagesForCodexCompact(
     const message = messages[i]
     if (!message || !isRetainableUserMessage(message)) continue
     const text = userMessageText(message)
-    if (!text || isTerminalRow(message, text)) continue
+    if (!text.trim() || isTerminalRow(message, text)) continue
     const tokens = Math.max(1, roughTokenCountEstimation(text))
     const content = message.message.content
     const textOnly =

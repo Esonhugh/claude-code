@@ -236,6 +236,14 @@ describe('selectRetainedMessagesForCodexCompact', () => {
       .toEqual(prompts)
   })
 
+  test('skips user text that is only whitespace', () => {
+    const blank = {
+      ...userTextMessage('00000000-0000-4000-8000-000000000020', ''),
+      message: { role: 'user', content: [{ type: 'text', text: '' }, { type: 'text', text: ' ' }] },
+    } as UserMessage
+    expect(selectRetainedMessagesForCodexCompact([blank], 1000)).toEqual({ messages: [], approxTokens: 0 })
+  })
+
   test('charges one token per one-character reply', () => {
     const replies = ['a', 'b', 'c'].map((text, i) =>
       userTextMessage(`00000000-0000-4000-8000-00000000000${i}`, text),
