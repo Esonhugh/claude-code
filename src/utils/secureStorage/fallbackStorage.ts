@@ -63,11 +63,11 @@ export function createFallbackStorage(
         // entry. read() prefers primary whenever it returns non-null, so that
         // stale entry would shadow the fresh data we just wrote to secondary —
         // e.g. a refresh token the server has already rotated away, causing a
-        // /login loop (#30337). Best-effort delete; if this also fails the
-        // user's keychain is in a bad state we can't fix from here.
-        if (primaryDataBefore !== null) {
-          // @ts-ignore - recovered code
-          primary.delete()
+        // /login loop (#30337). If the stale entry cannot be removed either,
+        // the write is not visible to readers and must not count as saved.
+        // @ts-ignore - recovered code
+        if (primaryDataBefore !== null && !primary.delete()) {
+          return { success: false }
         }
         return {
           success: true,
@@ -88,5 +88,57 @@ export function createFallbackStorage(
       // @ts-ignore - recovered code
       return primarySuccess || secondarySuccess
     },
+    // Proves the next update() will be visible to every reader, before a
+    // caller spends something it cannot get back (a refresh token the server
+    // rotates on use). When primary holds data but takes no write, the data
+    // moves to secondary only if primary's entry can be removed; otherwise it
+    // would shadow secondary and readers would keep the old data.
+    async proveWrites(): Promise<{ success: boolean }> {
+      // @ts-ignore - recovered code
+      const current = primary.read()
+      if (current === null || current === undefined) {
+        return { success: true }
+      }
+      if (typeof primary.probeWrite !== 'function') {
+        return { success: true }
+      }
+      // @ts-ignore - recovered code
+      if ((await primary.probeWrite()).success) {
+        return { success: true }
+      }
+      // @ts-ignore - recovered code
+      if (primary.update(current).success) {
+        return { success: true }
+      }
+      if (writeProofTried) {
+        return { success: false }
+      }
+      // @ts-ignore - recovered code
+      const secondaryBefore = secondary.read()
+      // @ts-ignore - recovered code
+      if (!secondary.update(current).success) {
+        return { success: false }
+      }
+      // @ts-ignore - recovered code
+      if (primary.delete()) {
+        return { success: true }
+      }
+      writeProofTried = true
+      if (secondaryBefore) {
+        // @ts-ignore - recovered code
+        secondary.update(secondaryBefore)
+      } else {
+        // @ts-ignore - recovered code
+        secondary.delete()
+      }
+      return { success: false }
+    },
   }
+}
+
+// Moving the data to secondary is tried once per process.
+let writeProofTried = false
+
+export function _resetWriteProofForTesting(): void {
+  writeProofTried = false
 }
