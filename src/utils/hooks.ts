@@ -5,6 +5,7 @@
  */
 import type { PromptCacheFacts } from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
+import type { z } from 'zod/v4'
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
@@ -460,6 +461,115 @@ export type AggregatedHookResult = {
   reloadSkills?: boolean
 }
 
+const HOOK_JSON_VALIDATION_PREFIX = 'Hook JSON output validation failed \u2014 '
+// Keys that pick a union branch: a mismatch there means "wrong branch", not
+// the error to report.
+const UNION_SELECTOR_KEYS = new Set(['async', 'hookEventName', 'behavior'])
+
+function isUnionSelectorMismatch(issue: z.core.$ZodIssue): boolean {
+  const key = issue.path.at(-1)
+  return (
+    issue.code === 'invalid_value' &&
+    typeof key === 'string' &&
+    UNION_SELECTOR_KEYS.has(key)
+  )
+}
+
+// Reports a union failure as the error of the branch the output was aiming
+// for, or as the allowed selector values when no branch matched.
+function describeHookJsonIssue(
+  issue: z.core.$ZodIssue,
+  parentPath: PropertyKey[],
+): { path: PropertyKey[]; message: string } {
+  const path = [...parentPath, ...issue.path]
+  if (issue.code !== 'invalid_union' || issue.errors.length === 0) {
+    const message = issue.message.startsWith('Invalid input: ')
+      ? issue.message.slice('Invalid input: '.length)
+      : issue.message
+    return { path, message }
+  }
+  const branches: z.core.$ZodIssue[][] = issue.errors
+  const branchIssue = branches.find(
+    branch => branch.length > 0 && !branch.some(isUnionSelectorMismatch),
+  )?.[0]
+  if (branchIssue) return describeHookJsonIssue(branchIssue, path)
+  const selectorIssues = branches.flatMap(branch =>
+    branch.filter(isUnionSelectorMismatch),
+  )
+  const first = selectorIssues[0]
+  if (first?.code !== 'invalid_value') return { path, message: issue.message }
+  const values = [
+    ...new Set(
+      selectorIssues.flatMap(i =>
+        i.code === 'invalid_value' ? i.values.map(v => jsonStringify(v)) : [],
+      ),
+    ),
+  ]
+  const shown = values.slice(0, 6).join(' | ')
+  return {
+    path: [...path, ...first.path],
+    message: `expected one of ${shown}${values.length > 6 ? ' | \u2026' : ''}`,
+  }
+}
+
+function formatHookJsonPath(path: PropertyKey[]): string {
+  return path.map(String).join('.') || '(root)'
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function formatHookJsonValidationError(
+  output: unknown,
+  error: z.ZodError,
+): string {
+  const specific = isPlainObject(output) ? output.hookSpecificOutput : undefined
+  const issues = error.issues.map(issue => describeHookJsonIssue(issue, []))
+  const first = issues[0]
+  let summary = first
+    ? `${formatHookJsonPath(first.path)}: ${first.message}`
+    : 'unknown error'
+  if (isPlainObject(specific) && !('hookEventName' in specific)) {
+    summary = 'hookSpecificOutput is missing required field "hookEventName"'
+  } else if (
+    isPlainObject(specific) &&
+    specific.hookEventName === 'PermissionRequest' &&
+    !isPlainObject(specific.decision) &&
+    first?.path[0] === 'hookSpecificOutput' &&
+    first.path[1] === 'decision'
+  ) {
+    summary +=
+      ' (PermissionRequest decision must be {"behavior": "allow"} or {"behavior": "deny", "message": "..."})'
+  } else if (
+    isPlainObject(output) &&
+    first?.path.length === 1 &&
+    first.path[0] === 'decision' &&
+    (output.decision === 'allow' ||
+      output.decision === 'deny' ||
+      output.decision === 'ask')
+  ) {
+    summary +=
+      output.decision === 'ask'
+        ? ' (top-level decision is the legacy approve|block field; for "ask" use hookSpecificOutput.permissionDecision in a PreToolUse hook)'
+        : ` (top-level decision is the legacy approve|block field; for "${output.decision}" use hookSpecificOutput.permissionDecision in a PreToolUse hook, or hookSpecificOutput.decision: {"behavior": "${output.decision}"} in a PermissionRequest hook)`
+  }
+  const rest = issues
+    .slice(1)
+    .map(issue => `  - ${formatHookJsonPath(issue.path)}: ${issue.message}`)
+    .join('\n')
+  return `${HOOK_JSON_VALIDATION_PREFIX}${summary}${rest ? '\n' + rest : ''}\n\nThe hook's output was: ${jsonStringify(output, null, 2)}`
+}
+
+// A failed hook's stderr is kept after the validation error when it exited
+// non-zero.
+function withHookStderr(message: string, status: number, stderr: string): string {
+  const trimmed = stderr.trim()
+  return status !== 0 && trimmed
+    ? `${message}\n\nHook exited ${status} with stderr:\n${trimmed}`
+    : message
+}
+
 /**
  * Parse and validate a JSON string against the hook output Zod schema.
  * Returns the validated output or formatted validation errors.
@@ -474,15 +584,12 @@ function validateHookJson(
     // @ts-ignore - recovered code
     return { json: validation.data }
   }
-  const errors = validation.error.issues
-    .map(err => `  - ${err.path.join('.')}: ${err.message}`)
-    .join('\n')
   return {
-    validationError: `Hook JSON output validation failed:\n${errors}\n\nThe hook's output was: ${jsonStringify(parsed, null, 2)}`,
+    validationError: formatHookJsonValidationError(parsed, validation.error),
   }
 }
 
-function parseHookOutput(stdout: string): {
+export function parseHookOutput(stdout: string): {
   json?: HookJSONOutput
   plainText?: string
   validationError?: string
@@ -2899,7 +3006,7 @@ async function* executeHooks({
             hookEvent,
             output: httpResult.body,
             stdout: httpResult.body,
-            stderr: `JSON validation failed: ${httpValidationError}`,
+            stderr: httpValidationError,
             exitCode: httpResult.statusCode,
             outcome: 'error',
           })
@@ -2910,7 +3017,7 @@ async function* executeHooks({
               hookName,
               toolUseID,
               hookEvent,
-              stderr: `JSON validation failed: ${httpValidationError}`,
+              stderr: httpValidationError,
               stdout: httpResult.body,
               exitCode: httpResult.statusCode ?? 0,
             }),
@@ -3071,14 +3178,19 @@ async function* executeHooks({
       )
 
       if (validationError) {
+        const stderr = withHookStderr(
+          validationError,
+          result.status,
+          result.stderr,
+        )
         emitHookResponse({
           hookId,
           hookName,
           hookEvent,
           output: result.output,
           stdout: result.stdout,
-          stderr: `JSON validation failed: ${validationError}`,
-          exitCode: 1,
+          stderr,
+          exitCode: result.status,
           outcome: 'error',
         })
         yield {
@@ -3088,9 +3200,9 @@ async function* executeHooks({
             hookName,
             toolUseID,
             hookEvent,
-            stderr: `JSON validation failed: ${validationError}`,
+            stderr,
             stdout: result.stdout,
-            exitCode: 1,
+            exitCode: result.status,
             command: hookCommand,
             durationMs,
           }),
