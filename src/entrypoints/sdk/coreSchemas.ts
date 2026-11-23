@@ -1912,6 +1912,22 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     duration_ms: z.number(),
     duration_api_ms: z.number(),
     ttft_ms: z.number().optional(),
+    ttft_stream_ms: z
+      .number()
+      .optional()
+      .describe('Milliseconds from the turn start to the first message_start.'),
+    time_to_request_ms: z
+      .number()
+      .optional()
+      .describe(
+        "Milliseconds from the turn start to dispatching that message_start's request.",
+      ),
+    first_content_frame_ms: z
+      .number()
+      .optional()
+      .describe(
+        'Milliseconds from the turn start to the first content_block_start or content_block_delta.',
+      ),
     is_error: z.boolean(),
     api_error_status: z.number().nullable().optional(),
     api_error_code: z.string().optional(),

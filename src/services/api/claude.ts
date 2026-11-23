@@ -2393,6 +2393,9 @@ async function* queryModelRequest(
   const newMessages: AssistantMessage[] = []
   let ttftMs = 0
   let thinkingDisplay: string | undefined
+  // Official 2.1.329: when the first attempt's request was dispatched, carried
+  // on message_start for the result's time_to_request_ms.
+  let requestSentAt: number | undefined
   let partialMessage: BetaMessage | undefined = undefined
   const contentBlocks: (BetaContentBlock | ConnectorTextBlock)[] = []
   const stoppedBlockIndexes = new Set<number>()
@@ -2474,6 +2477,7 @@ async function* queryModelRequest(
         queryCheckpoint('query_api_request_sent')
         if (!options.agentId) {
           headlessProfilerCheckpoint('api_request_sent')
+          if (attempt === 1) requestSentAt ??= Date.now()
         }
 
         // Generate and track client request ID so timeouts (which return no
@@ -3012,7 +3016,9 @@ async function* queryModelRequest(
         yield {
           type: 'stream_event',
           event: part,
-          ...(part.type === 'message_start' ? { ttftMs } : undefined),
+          ...(part.type === 'message_start'
+            ? { ttftMs, ...(requestSentAt !== undefined && { requestSentAtMs: requestSentAt }) }
+            : undefined),
           ...(display !== undefined ? { thinkingDisplay: display } : undefined),
         }
       }

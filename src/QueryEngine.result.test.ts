@@ -87,3 +87,27 @@ test('result.usage reports fallback_credit as null', () => {
   expect(tally.total.fallback_credit).toBeNull()
   expect(EMPTY_USAGE.fallback_credit).toBeNull()
 })
+
+// Official 2.1.329: result ttft_stream_ms, time_to_request_ms and
+// first_content_frame_ms run from the turn start to the first message_start,
+// its request's dispatch and the first content frame, on a successful result
+// only.
+test('result stream timings come from the first events of the turn', () => {
+  const at = (event: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ event, ...extra })
+  const events: [ReturnType<typeof at>, number][] = [
+    [at({ type: 'message_start', message: { id: 'msg_1' } }, { requestSentAtMs: 1030 }), 1100],
+    [at({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }), 1150],
+    [at({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } }), 1160],
+    [at({ type: 'message_start', message: { id: 'msg_2' } }, { requestSentAtMs: 1500 }), 1600],
+    [at({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }), 1650],
+  ]
+  let timings = {}
+  for (const [message, now] of events) timings = engine.streamTimingsAfterEvent(timings, message, now)
+  expect(engine.resultStreamTimings(timings, 1000, true)).toEqual({
+    ttft_stream_ms: 100,
+    time_to_request_ms: 30,
+    first_content_frame_ms: 150,
+  })
+  expect(engine.resultStreamTimings(timings, 1000, false)).toEqual({})
+  expect(engine.resultStreamTimings({}, 1000, true)).toEqual({})
+})
