@@ -387,6 +387,13 @@ class ShellCommandImpl implements ShellCommand {
         } catch {
           // Not a group leader (ESRCH): tree-kill below covers it.
         }
+        // A shell that is not a group leader goes first, or it runs the rest
+        // of its script once the descendant it waits on is killed.
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
         for (const descendant of tree) {
           try {
             process.kill(descendant, 'SIGKILL')
