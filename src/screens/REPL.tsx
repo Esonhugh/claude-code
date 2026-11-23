@@ -7172,8 +7172,10 @@ export function REPL({
   useEffect(() => {
     if (previousShowAll.current === showAllInTranscript) return
     previousShowAll.current = showAllInTranscript
+    // Ctrl+E changed the searchable text (Code Mode scripts). Re-count in
+    // place; a fresh setSearchQuery would jump back to the / anchor.
     if (inTranscript && !dumpMode && searchQuery) {
-      jumpRef.current?.setSearchQuery(searchQuery)
+      jumpRef.current?.refreshSearch(searchQuery)
     }
   }, [showAllInTranscript, inTranscript, dumpMode, searchQuery])
 

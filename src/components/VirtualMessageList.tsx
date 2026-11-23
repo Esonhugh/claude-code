@@ -65,6 +65,11 @@ export type JumpHandle = {
   rowHoldingSelection?: (selection: SelectionState) => string | undefined
   jumpToIndex: (i: number) => void
   setSearchQuery: (q: string) => void
+  /** Re-run the committed query after the searchable text changed (Ctrl+E
+   *  showing or hiding Code Mode scripts). Stays on the current match's
+   *  message when it still matches, else the one nearest the viewport;
+   *  moves the view only while the search is armed. */
+  refreshSearch: (q: string) => void
   nextMatch: () => void
   prevMatch: () => void
   /** Capture current scrollTop as the incsearch anchor. Typing jumps
@@ -653,6 +658,60 @@ export function VirtualMessageList({
   }
   stepRef.current = step
 
+  function resetSearchPositions(): void {
+    scanRequestRef.current = null
+    elementPositions.current = { msgIdx: -1, positions: [] }
+    startPtrRef.current = -1
+    setPositions?.(null)
+  }
+
+  // One entry per MESSAGE (deduplicated). Boolean "does this msg contain
+  // the query". ~10ms for 9k messages with cached lowered. Per-message
+  // occurrence count → prefixSum for global current index. Engine-counted
+  // (cheap indexOf loop); may differ from render-count (scanElement) for
+  // ghost/phantom messages but close enough for the badge.
+  function findMatches(q: string): { matches: number[]; prefixSum: number[] } {
+    const lq = q.toLowerCase()
+    const matches: number[] = []
+    const prefixSum: number[] = [0]
+    if (!lq) return { matches, prefixSum }
+    const msgs = jumpState.current.messages
+    for (let i = 0; i < msgs.length; i++) {
+      const text = extractSearchText(msgs[i]!)
+      let pos = text.indexOf(lq)
+      let cnt = 0
+      while (pos >= 0) {
+        cnt++
+        pos = text.indexOf(lq, pos + lq.length)
+      }
+      if (cnt > 0) {
+        matches.push(i)
+        prefixSum.push(prefixSum.at(-1)! + cnt)
+      }
+    }
+    return { matches, prefixSum }
+  }
+
+  // Index into matches of the message nearest scrollTop. <= so ties go to later.
+  function nearestMatch(matches: number[], curTop: number, why: string): number {
+    const { offsets, start, getItemTop } = jumpState.current
+    const firstTop = getItemTop(start)
+    const origin = firstTop >= 0 ? firstTop - offsets[start]! : 0
+    let ptr = 0
+    let best = Infinity
+    for (let k = 0; k < matches.length; k++) {
+      const d = Math.abs(origin + offsets[matches[k]!]! - curTop)
+      if (d <= best) {
+        best = d
+        ptr = k
+      }
+    }
+    logForDebugging(
+      `${why}: ${matches.length} msgs · ptr=${ptr} msgIdx=${matches[ptr]} curTop=${curTop} origin=${origin}`,
+    )
+    return ptr
+  }
+
   useImperativeHandle(
     jumpRef,
     () => ({
@@ -675,58 +734,19 @@ export function VirtualMessageList({
       },
       setSearchQuery: (q: string) => {
         // New search invalidates everything.
-        scanRequestRef.current = null
-        elementPositions.current = { msgIdx: -1, positions: [] }
-        startPtrRef.current = -1
-        setPositions?.(null)
-        const lq = q.toLowerCase()
-        // One entry per MESSAGE (deduplicated). Boolean "does this msg
-        // contain the query". ~10ms for 9k messages with cached lowered.
-        const matches: number[] = []
-        // Per-message occurrence count → prefixSum for global current
-        // index. Engine-counted (cheap indexOf loop); may differ from
-        // render-count (scanElement) for ghost/phantom messages but close
-        // enough for the badge. The badge is a rough location hint.
-        const prefixSum: number[] = [0]
-        if (lq) {
-          const msgs = jumpState.current.messages
-          for (let i = 0; i < msgs.length; i++) {
-            const text = extractSearchText(msgs[i]!)
-            let pos = text.indexOf(lq)
-            let cnt = 0
-            while (pos >= 0) {
-              cnt++
-              pos = text.indexOf(lq, pos + lq.length)
-            }
-            if (cnt > 0) {
-              matches.push(i)
-              prefixSum.push(prefixSum.at(-1)! + cnt)
-            }
-          }
-        }
+        resetSearchPositions()
+        const { matches, prefixSum } = findMatches(q)
         const total = prefixSum.at(-1)!
-        // Nearest MESSAGE to the anchor. <= so ties go to later.
-        let ptr = 0
         const s = scrollRef.current
-        const { offsets, start, getItemTop } = jumpState.current
-        const firstTop = getItemTop(start)
-        const origin = firstTop >= 0 ? firstTop - offsets[start]! : 0
-        if (matches.length > 0 && s) {
-          const curTop =
-            searchAnchor.current >= 0 ? searchAnchor.current : s.getScrollTop()
-          let best = Infinity
-          for (let k = 0; k < matches.length; k++) {
-            const d = Math.abs(origin + offsets[matches[k]!]! - curTop)
-            if (d <= best) {
-              best = d
-              ptr = k
-            }
-          }
-          logForDebugging(
-            `setSearchQuery('${q}'): ${matches.length} msgs · ptr=${ptr} ` +
-              `msgIdx=${matches[ptr]} curTop=${curTop} origin=${origin}`,
-          )
-        }
+        // Nearest MESSAGE to the anchor.
+        const ptr =
+          matches.length > 0 && s
+            ? nearestMatch(
+                matches,
+                searchAnchor.current >= 0 ? searchAnchor.current : s.getScrollTop(),
+                `setSearchQuery('${q}')`,
+              )
+            : 0
         searchState.current = { matches, ptr, screenOrd: 0, prefixSum }
         if (matches.length > 0) {
           // wantLast=true: preview the LAST occurrence in the nearest
@@ -746,6 +766,28 @@ export function VirtualMessageList({
           total,
           matches.length > 0 ? (prefixSum[ptr + 1] ?? total) : 0,
         )
+      },
+      refreshSearch: (q: string) => {
+        const st = searchState.current
+        // Highlighted or seeking toward a match, versus disarmed by a manual
+        // scroll (or never landed). Only an armed search moves the view.
+        const armed =
+          scanRequestRef.current !== null || elementPositions.current.msgIdx >= 0
+        const currentMsg = st.matches[st.ptr]
+        resetSearchPositions()
+        const { matches, prefixSum } = findMatches(q)
+        const total = prefixSum.at(-1)!
+        const s = scrollRef.current
+        let ptr = currentMsg === undefined ? -1 : matches.indexOf(currentMsg)
+        if (ptr < 0 && matches.length > 0 && s) {
+          ptr = nearestMatch(matches, s.getScrollTop(), `refreshSearch('${q}')`)
+        }
+        ptr = Math.max(0, ptr)
+        searchState.current = { matches, ptr, screenOrd: 0, prefixSum }
+        // No snap back to the / anchor: the user may be far from it by now.
+        if (matches.length === 0) return onSearchMatchesChange?.(0, 0)
+        if (armed) jump(matches[ptr]!, false)
+        onSearchMatchesChange?.(total, prefixSum[ptr]! + 1)
       },
       nextMatch: () => step(1),
       prevMatch: () => step(-1),
