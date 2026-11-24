@@ -5,7 +5,7 @@
   --ok: #1f8a4c; --ok-soft: #e1f3e8; --warn: #a86a00; --warn-soft: #f8edd6; --bad: #c0392b; --bad-soft: #f8e1de; --idle: #8a93a3;
   --term-bg: #121821; --term-fg: #d7dde7;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
-  --perm-edit: #7c4ca8; --perm-plan: #237373; --perm-auto: #956000; --chan: #1c6f99;
+  --perm-edit: #7c4ca8; --perm-plan: #237373; --perm-auto: #956000; --chan: #1c6f99; --glyph: #c15f3c;
   --f-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
@@ -15,12 +15,12 @@
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; color-scheme: dark } }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; --glyph: #d97757; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; --glyph: #d97757; }
 
 /* color palettes (settings → appearance); each has its own light and dark steps */
 :root[data-palette="clay"] { --bg: #faf9f5; --surface: #ffffff; --sunken: #f2efe7; --fg: #2b2620; --muted: #6f665b; --line: #e5dfd3; --accent: #b0573a; --accent-soft: #f6e6dd; }
@@ -100,7 +100,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .meta { display: flex; gap: 8px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; font-size: 12.5px; color: var(--muted) }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); white-space: nowrap }
 .teambar { display: flex; align-items: center; gap: 8px; padding: 6px 20px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 12.5px; flex-wrap: wrap }
-.avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; border: 0; padding: 0 }
+.avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: var(--surface); border: 0; padding: 0 }
 .feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px }
 .msg { max-width: var(--col); width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; min-width: 0 }
 /* Claude's side reads as one side of a conversation: left-aligned, the right edge kept clear. */
@@ -421,7 +421,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 @media (prefers-reduced-motion: no-preference) { .spin { animation: rot .8s linear infinite } }
 @keyframes rot { to { transform: rotate(360deg) } }
 .status-line { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
-.status-line .glyph { color: #d97757; font-family: var(--f-mono); width: 14px; text-align: center }
+.status-line .glyph { color: var(--glyph); font-family: var(--f-mono); width: 14px; text-align: center }
 .status-line .verb { font-weight: 500 }
 .status-line .retry { color: var(--warn) }
 .status-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font-size: 12px; color: var(--muted) }
@@ -527,7 +527,7 @@ body.nosess .col-drag.right, body.art .col-drag.right, body:not(.art) .col-drag.
 .older-sentinel .spin { display: inline-block; vertical-align: -2px; margin-right: 6px }
 .older[hidden] { display: none }
 .status-line .cbar { flex: 0 1 160px; height: 4px; background: var(--sunken); border-radius: 2px; overflow: hidden }
-.status-line .cbar i { display: block; height: 100%; width: 0; background: #d97757; transition: width .2s }
+.status-line .cbar i { display: block; height: 100%; width: 0; background: var(--glyph); transition: width .2s }
 button.chip { cursor: pointer; font: inherit; color: inherit }
 .ctxpop { position: absolute; z-index: 30; width: min(320px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 12px; display: flex; flex-direction: column; gap: 10px; font-size: 13px }
 .ctxpop[hidden] { display: none }
@@ -552,7 +552,7 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .opt select option { color: initial; background: initial }
 .opt select:focus-visible { outline: 2px solid var(--accent); border-radius: 4px }
 .sunrise { width: 14px; height: 14px; vertical-align: -2px; flex: none }
-.db-blue { color: #3b82f6 } .db-red { color: #e5484d }
+.db-blue { color: var(--accent) } .db-red { color: var(--bad) }
 .dbrow { display: flex; align-items: center; gap: 8px; margin: 2px 8px 4px }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden }
 .seg button { font: inherit; font-size: 12.5px; padding: 4px 10px; border: 0; background: var(--bg); color: var(--muted); cursor: pointer }
