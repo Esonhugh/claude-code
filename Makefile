@@ -11,7 +11,8 @@ CLAUDE_PLATFORM_PACKAGE ?= auto
 CLAUDE_BINARY_OUT ?= official-claude
 CLAUDE_KEEP_PACK ?= 0
 
-.PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude
+.PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude \
+	desktop desktop-package desktop-install desktop-stage desktop-start desktop-test desktop-e2e clean-desktop
 
 build:
 	-bun ./scripts/build-search-tools.mjs
@@ -21,6 +22,38 @@ else
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
 	mv $(FILE) ./built-claude
 endif
+
+# Desktop app (desktop/): `make desktop` builds the binary and the installers
+# for this platform into desktop/release/; DESKTOP_SIDECAR picks another binary.
+DESKTOP_SIDECAR ?= ./built-claude
+
+# In two steps so that -j cannot stage the binary before it is built.
+desktop:
+	$(MAKE) build
+	$(MAKE) desktop-package
+
+desktop-package: desktop-stage desktop-install
+	cd desktop && CSC_IDENTITY_AUTO_DISCOVERY=false bunx electron-builder --publish never -c.extraMetadata.version="$(VERSION)"
+
+desktop-install:
+	cd desktop && bun install --frozen-lockfile
+
+desktop-stage:
+	@test -x "$(DESKTOP_SIDECAR)" || { echo "No binary at $(DESKTOP_SIDECAR); run make build first" >&2; exit 1; }
+	cd desktop && bun ./stage-sidecar.mjs "$(abspath $(DESKTOP_SIDECAR))"
+
+desktop-start: desktop-stage desktop-install
+	cd desktop && bun run start
+
+desktop-test: desktop-install
+	cd desktop && bun test
+
+# The app runs as a signed-out user, as in CI; xvfb-run on Linux without a display.
+desktop-e2e: desktop-stage desktop-install
+	cd desktop && if [ "$(BUILD_OS)" = linux ] && [ -z "$$DISPLAY" ]; then CI= xvfb-run -a bun run e2e; else CI= bun run e2e; fi
+
+clean-desktop:
+	rm -rf desktop/sidecar desktop/release
 
 linux-baseline:
 	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BINARY_TARGET=bun-linux-x64-baseline bun package:binary

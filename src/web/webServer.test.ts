@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
+import { PassThrough } from 'stream'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { delimiter, join } from 'path'
@@ -8,6 +9,7 @@ import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { addressKind } from './network.js'
+import { STDIO_FRAME_PREFIX, STDIO_HOST } from './stdioTransport.js'
 import {
   cliWebTheme,
   contentSecurityPolicy,
@@ -1288,5 +1290,121 @@ describe('parsePreviewOrigin', () => {
     ]) {
       expect(parsePreviewOrigin(value)).toBeUndefined()
     }
+  })
+})
+
+type Frame = { t: string; id?: number; [key: string]: unknown }
+
+/** The desktop app's end of `claude web --stdio`. */
+function stdioClient(overrides: Partial<WebServerConfig> = {}) {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const r = start({ ...overrides, stdio: { input, output } })
+  const frames: Frame[] = []
+  const waiters: (() => void)[] = []
+  let buffer = ''
+  output.setEncoding('utf8')
+  output.on('data', (chunk: string) => {
+    buffer += chunk
+    let newline: number
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline)
+      buffer = buffer.slice(newline + 1)
+      frames.push(JSON.parse(line.slice(STDIO_FRAME_PREFIX.length)) as Frame)
+      waiters.splice(0).forEach(wake => wake())
+    }
+  })
+  const next = async (match: (frame: Frame) => boolean): Promise<Frame> => {
+    for (;;) {
+      const index = frames.findIndex(match)
+      if (index !== -1) return frames.splice(index, 1)[0]!
+      await new Promise<void>(wake => waiters.push(wake))
+    }
+  }
+  const write = (frame: Frame) => input.write(STDIO_FRAME_PREFIX + JSON.stringify(frame) + '\n')
+  const origin = `http://${STDIO_HOST}`
+  let id = 0
+  const request = async (method: string, path: string, opts: { headers?: [string, string][]; body?: string } = {}) => {
+    const n = ++id
+    write({
+      t: 'req',
+      id: n,
+      method,
+      path,
+      headers: [['host', STDIO_HOST], ...(opts.headers ?? [])],
+      ...(opts.body !== undefined && { body: Buffer.from(opts.body).toString('base64') }),
+    })
+    const head = await next(f => f.id === n && f.t === 'res')
+    let body = ''
+    for (;;) {
+      const frame = await next(f => f.id === n && (f.t === 'body' || f.t === 'end'))
+      if (frame.t === 'end') break
+      body += Buffer.from(frame.data as string, 'base64').toString()
+    }
+    return { status: head.status as number, headers: new Map(head.headers as [string, string][]), body }
+  }
+  return { r, write, next, request, origin, nextId: () => ++id, input }
+}
+
+describe('claude web over stdio', () => {
+  it('announces itself and serves the page with no cookie and no port', async () => {
+    const c = stdioClient()
+    expect(await c.next(f => f.t === 'ready')).toEqual({ t: 'ready' })
+    // Lines without the prefix are not frames.
+    c.input.write('stray output\n')
+    const page = await c.request('GET', '/')
+    expect(page.status).toBe(200)
+    expect(page.body).toBe('<p>app</p>')
+    expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
+    const info = await c.request('GET', '/api/info')
+    expect(JSON.parse(info.body)).toMatchObject({ local: true })
+  })
+
+  it('keeps the Host and Origin checks', async () => {
+    const c = stdioClient()
+    const post = (headers: [string, string][]) =>
+      c.request('POST', '/api/sessions', { headers: [['content-type', 'application/json'], ...headers], body: '{}' })
+    expect((await post([])).status).toBe(403)
+    expect((await post([['origin', 'http://attacker.example']])).status).toBe(403)
+    expect((await post([['origin', 'claude-app://app']])).status).toBe(403)
+    const wrongHost = await c.request('GET', '/', { headers: [['host', 'attacker.example']] })
+    expect(wrongHost.status).toBe(403)
+    expect((await post([['origin', c.origin]])).status).toBe(200)
+  })
+
+  it('relays a session socket and refuses a second one', async () => {
+    const c = stdioClient()
+    const created = await c.request('POST', '/api/sessions', {
+      headers: [['origin', c.origin]],
+      body: '{}',
+    })
+    const { session_id: id } = JSON.parse(created.body) as { session_id: string }
+    const path = `/api/sessions/${id}/ws`
+    const headers: [string, string][] = [['host', STDIO_HOST], ['origin', c.origin]]
+
+    const rejected = c.nextId()
+    c.write({ t: 'ws', id: rejected, path, headers: [['host', STDIO_HOST], ['origin', 'http://attacker.example']] })
+    expect(await c.next(f => f.id === rejected)).toMatchObject({ t: 'wsclose', code: 1006, reason: 'Forbidden' })
+
+    const ws = c.nextId()
+    c.write({ t: 'ws', id: ws, path, headers })
+    expect(await c.next(f => f.id === ws)).toMatchObject({ t: 'wsopen' })
+    c.write({
+      t: 'wsmsg',
+      id: ws,
+      data: JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }) + '\n',
+    })
+    const reply = await c.next(f => f.id === ws && f.t === 'wsmsg')
+    expect(JSON.parse(reply.data as string)).toMatchObject({ type: 'result', result: `hi in ${c.r.workspace}` })
+
+    const second = c.nextId()
+    c.write({ t: 'ws', id: second, path, headers })
+    expect(await c.next(f => f.id === second)).toMatchObject({ t: 'wsclose', code: 1006, reason: 'Session is open in another tab' })
+
+    // Once the app closes the first socket the session can be attached again.
+    c.write({ t: 'wsclose', id: ws })
+    const third = c.nextId()
+    c.write({ t: 'ws', id: third, path, headers })
+    expect(await c.next(f => f.id === third)).toMatchObject({ t: 'wsopen' })
   })
 })

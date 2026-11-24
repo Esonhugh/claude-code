@@ -13,6 +13,7 @@ import {
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
+import { gracefulShutdown } from '../utils/gracefulShutdown.js'
 import { shouldRejectRootBypassPermissions } from '../setup.js'
 import { getGlobalConfig } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
@@ -66,6 +67,7 @@ export type WebCommandOptions = {
   tlsKey?: string
   previewOrigin?: string[]
   pluginDir?: string[]
+  stdio?: boolean
 }
 
 function urlHost(host: string): string {
@@ -148,9 +150,10 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
     fail(`Invalid --port: ${opts.port}`)
   }
   const shouldOpen =
-    opts.open && !process.env.SSH_CONNECTION && !process.env.SSH_TTY
+    opts.open && !opts.stdio && !process.env.SSH_CONNECTION && !process.env.SSH_TTY
 
-  const existing = await probeRunningServer(LOCK_NAME)
+  // Over stdio this process belongs to the desktop app and can run beside another `claude web`.
+  const existing = opts.stdio ? undefined : await probeRunningServer(LOCK_NAME)
   if (existing) {
     process.stdout.write(
       `claude web is already running (pid ${existing.pid}) at ${existing.httpUrl}\n`,
@@ -220,7 +223,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
   const secrets = createWebSecrets()
   const { token } = secrets
   const cookieKey = saved.cookieKey ?? secrets.cookieKey
-  const start = (listenPort: number) =>
+  const start = (listenPort: number, stdio?: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream }) =>
     startWebServer(
       {
         host: bind.host,
@@ -233,11 +236,24 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
         allowLocalNetwork,
         tls,
         previewOrigins,
+        stdio,
       },
       sessionManager,
       assets,
       logger,
     )
+  if (opts.stdio) {
+    const server = start(0, { input: process.stdin, output: process.stdout })
+    void fetchBootstrapData()
+    void checkAndInstallOfficialMarketplace().catch(() => {})
+    registerCleanup(async () => {
+      server.stop(true)
+      await sessionManager.destroyAll()
+    })
+    // The app closing the pipe is how it stops this process on every platform.
+    process.stdin.once('end', () => void gracefulShutdown(0))
+    return
+  }
   let server: ReturnType<typeof startWebServer>
   try {
     // Without --port, the last run's port, so open tabs reach the restarted server.
