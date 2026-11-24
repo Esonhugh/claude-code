@@ -101,6 +101,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         if (_agent !== context.agentId) return {deny:'No live tool context for the requested agent'}
         const catalog = context.modRequestTools
         if (!catalog || catalog.agentId !== _agent || !tool || !catalog.names.has(tool.name)) return {deny:`Tool ${name} is not loaded in this agent`}
+        if (signal.aborted || context.abortController.signal.aborted) return {deny:MOD_AGENT_CALL_CUT}
         if (!await isToolOffered(tool, snapshot, context.agentId, context.agentType, signal)) return {deny:`Tool ${name} is not offered to this agent`}
       }
       const refusal = authorCallRefusals.get(tool?.name ?? name)
@@ -122,11 +123,14 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       }
       for (const parent of parents) parent.addEventListener('abort', abort, { once: true })
       abort()
+      // A cut agent call, by its signal or its agent's loop, resolves as a refusal; a result it already had is kept.
+      const isCut = () => entry === 'agent.call' && abortController.signal.aborted
+      let found = false
       try {
+        if (isCut()) return {deny:MOD_AGENT_CALL_CUT}
         abortController.signal.throwIfAborted()
         const started = Date.now()
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${tool.name} inputKeys=${Object.keys(args).join(',')}`)
-        let found = false
         let result: unknown
         let text = ''
         let isError = false
@@ -147,6 +151,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           // Keep the author execution wrapper, but project its final messages.
           modToolCallResult: () => {},
         })) {
+          if (isCut()) break
           abortController.signal.throwIfAborted()
           const message = update.message
           if (message.type === 'user' && Array.isArray(message.message.content)) {
@@ -166,13 +171,17 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
               result = message.toolUseResult
           }
         }
-        abortController.signal.throwIfAborted()
+        if (isCut() && !found) return {deny:MOD_AGENT_CALL_CUT}
+        if (entry !== 'agent.call') abortController.signal.throwIfAborted()
         if (!found) throw new Error('tool.call produced no result')
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${tool.name} outcome=${denied ? 'deny' : isError ? 'error' : 'result'} characters=${text.length} durationMs=${Date.now() - started}`)
         // Official author calls expose the final tool message. References,
         // read-only observations and model-only reminders stay in middleware.
         if (denied) return { deny: text.replace(/^<tool_use_error>|<\/tool_use_error>$/g, '') }
         return { result, text, ...(isError ? { isError: true as const } : {}) }
+      } catch (error) {
+        if (isCut() && !found) return {deny:MOD_AGENT_CALL_CUT}
+        throw error
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

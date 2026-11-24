@@ -15,7 +15,7 @@ import { getSessionSettingsCache, setSessionSettingsCache, resetSettingsCache, s
 import { dispatchModEvent } from './dispatch.js'
 import type { ModDispatchHook, ModInput } from './types.js'
 import type { ModSnapshot } from './runtime.js'
-import { createModToolHost } from './toolHost.js'
+import { createModToolHost, MOD_AGENT_CALL_CUT } from './toolHost.js'
 import { runModToolCall } from './toolAdapter.js'
 import { runToolUse } from '../tools/toolExecution.js'
 import { resolveHookPermissionDecision } from '../tools/toolHooks.js'
@@ -114,6 +114,39 @@ describe('author tool host through the real executor', () => {
       expect(refusal).toMatchObject({deny:expect.stringContaining('host refused')})
       expect(f.calls).toHaveLength(1)
     } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
+  test('a cut agent.call resolves the refusal instead of throwing', async () => {
+    const f = fixture()
+    f.context.modRequestTools = {agentId: f.context.agentId, names: new Set([f.tool.name])}
+    const reached = Promise.withResolvers<void>()
+    Object.assign(f.tool, {call: async (input: unknown, context: ToolUseContext) => {
+      f.calls.push({ input, context })
+      reached.resolve()
+      await new Promise(resolve => context.abortController.signal.addEventListener('abort', resolve, { once: true }))
+      return { data: { value: 'Exit code 137' } }
+    }})
+    const call = (signal: AbortSignal) => f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, signal, 'probe', 'agent.call')
+    expect(await call(AbortSignal.abort('mine'))).toEqual({deny: MOD_AGENT_CALL_CUT})
+    expect(f.calls).toHaveLength(0)
+    const stop = new AbortController()
+    const mid = call(stop.signal)
+    await reached.promise
+    stop.abort('mine')
+    expect(await mid).toEqual({deny: MOD_AGENT_CALL_CUT})
+    expect(f.calls).toHaveLength(1)
+    // The agent's own loop stopping cuts it the same way.
+    const again = Promise.withResolvers<void>()
+    Object.assign(f.tool, {call: async (_input: unknown, context: ToolUseContext) => {
+      again.resolve()
+      await new Promise(resolve => context.abortController.signal.addEventListener('abort', resolve, { once: true }))
+      return { data: { value: 'late' } }
+    }})
+    const loop = call(new AbortController().signal)
+    await again.promise
+    f.context.abortController.abort()
+    expect(await loop).toEqual({deny: MOD_AGENT_CALL_CUT})
+    // tool.call keeps throwing on abort.
+    await expect(f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, AbortSignal.abort('mine'), 'probe')).rejects.toBe('mine')
   })
   test('target-bound Agent call keeps spawn permissions, nesting limit and Workflow refusal', async () => {
     const f = fixture()
