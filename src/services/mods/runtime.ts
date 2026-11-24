@@ -464,11 +464,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let stopped = false
   // Set by the person's Stop and cleared when they next send input; plugin input is refused meanwhile.
   let stoppedSinceInput = false
-  const refuseAfterStop = (plugin: string, op: string): void => {
-    if (!stoppedSinceInput) return
+  // command.run rejects with the reason; prompt.submit settles { drop } with it (2.1.329).
+  const refusalAfterStop = (plugin: string, op: string): string | undefined => {
+    if (!stoppedSinceInput) return undefined
     const reason = 'the session was stopped and nobody has sent input since'
-    logForDebugging(`[Mods] ${op} (${plugin}): refused: ${reason}`)
-    throw Object.assign(new Error(`${plugin}: $.${op}: refused: ${reason}`), { name: 'HooksError' })
+    logForDebugging(`[Mods] $.${op} (${plugin}): refused: ${reason}`)
+    return reason
   }
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
@@ -2052,7 +2053,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
           }
           if (fn === hostIdentity && op === 'command.run') {
-            refuseAfterStop(owner.declaration.name, op)
+            const refusal = refusalAfterStop(owner.declaration.name, op)
+            if (refusal !== undefined) throw Object.assign(new Error(`${owner.declaration.name}: $.command.run: ${refusal}`), { name: 'HooksError' })
             const event = context?.active ? context.next?.event : undefined
             // session.start and plugin.register run inside the load the host awaits before it runs queued input.
             const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
@@ -2087,7 +2089,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'prompt.submit') {
             const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
             if (!submit) throw new Error('Prompt submission host is unavailable on this host')
-            refuseAfterStop(owner.declaration.name, op)
+            const refusal = refusalAfterStop(owner.declaration.name, op)
+            if (refusal !== undefined) return { drop: refusal }
             const held = context?.active ? context.next?.event : undefined
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',

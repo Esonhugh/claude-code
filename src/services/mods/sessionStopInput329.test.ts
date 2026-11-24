@@ -33,9 +33,9 @@ async function start(source: string, submitted: string[], ran: string[], logs: s
   return runtime
 }
 
-const tryLog = (call: string) => `try{await ${call};await $.ui.log('accepted')}catch(error){await $.ui.log(error.message)}`
+const tryLog = (call: string) => `try{const r=await ${call};await $.ui.log(r?.drop===undefined?'accepted':'drop: '+r.drop)}catch(error){await $.ui.log(error.name+': '+error.message)}`
 
-test('input a session.stop hook queues is refused, whether or not a turn is running', async () => {
+test('input a session.stop hook queues is answered with the Stop reason, whether or not a turn is running', async () => {
   const submitted: string[] = [], ran: string[] = [], logs: string[] = []
   const value = await start(
     `export function register(on){on('session.stop',async($,e,next)=>{
@@ -48,7 +48,8 @@ test('input a session.stop hook queues is refused, whether or not a turn is runn
   await value.notifySessionStop(true)
   expect(submitted).toEqual([])
   expect(ran).toEqual([])
-  const refusals = [`stopper: $.prompt.submit: refused: ${REFUSED}`, `stopper: $.command.run: refused: ${REFUSED}`]
+  // prompt.submit settles { drop } and command.run rejects, both without a `refused:` prefix (2.1.329).
+  const refusals = [`drop: ${REFUSED}`, `HooksError: stopper: $.command.run: ${REFUSED}`]
   expect(logs).toEqual([...refusals, ...refusals])
 })
 
@@ -64,7 +65,7 @@ test('plugin input stays refused after a Stop until the person sends input', asy
   const call = () => value.dispatch('ui.message', {}, async () => ({ result: 'core' }))
   await value.notifySessionStop(false)
   await call()
-  expect(logs).toEqual([`stopper: $.prompt.submit: refused: ${REFUSED}`, `stopper: $.command.run: refused: ${REFUSED}`])
+  expect(logs).toEqual([`drop: ${REFUSED}`, `HooksError: stopper: $.command.run: ${REFUSED}`])
   value.notePersonInput()
   logs.length = 0
   await call()
