@@ -5,6 +5,7 @@
   --ok: #1f8a4c; --ok-soft: #e1f3e8; --warn: #a86a00; --warn-soft: #f8edd6; --bad: #c0392b; --bad-soft: #f8e1de; --idle: #8a93a3;
   --term-bg: #121821; --term-fg: #d7dde7;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --perm-edit: #7c4ca8; --perm-plan: #237373; --perm-auto: #956000; --chan: #1c6f99;
   --f-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
@@ -12,12 +13,12 @@
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark } }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; }
 
 /* color palettes (settings → appearance); each has its own light and dark steps */
 :root[data-palette="clay"] { --bg: #faf9f5; --surface: #ffffff; --sunken: #f2efe7; --fg: #2b2620; --muted: #6f665b; --line: #e5dfd3; --accent: #b0573a; --accent-soft: #f6e6dd; }
@@ -258,7 +259,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .pop.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: visible; max-height: none }
 .acctmenu[hidden], .authmenu[hidden] { display: none }
 .acctmenu .ah { display: flex; gap: 10px; align-items: center; padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; min-width: 0 } .acctmenu .ah > div { min-width: 0 } .acctmenu .ah b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600 } .acctmenu .ah small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent) } .acctmenu .ah .avatar.none { background: var(--idle) }
+.acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent); color: var(--surface) } .acctmenu .ah .avatar.none { background: var(--idle) }
 .acctmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0 }
 .mi { border: 0; background: transparent; text-align: left; padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: center; cursor: pointer; width: 100%; white-space: nowrap; min-width: 0 }
 .mi:hover, .mi[aria-expanded="true"], .mi:focus-visible { background: var(--sunken) }
@@ -303,7 +304,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .pickmenu { top: calc(100% + 4px); bottom: auto; width: 100%; max-height: 240px; overflow: auto }
 .modsrc { width: 100%; min-height: 220px; font-family: var(--f-mono); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box }
 .applist { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px }
-.acct .avatar { background: var(--accent); width: 22px; height: 22px; font-size: 11px; flex: none }
+.acct .avatar { background: var(--accent); color: var(--surface); width: 22px; height: 22px; font-size: 11px; flex: none }
 .acct > div { min-width: 0; line-height: 1.25 } .acct b { display: block; font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .acct small { color: var(--muted); display: block; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .menu-btn { display: none; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 9px }
@@ -553,7 +554,7 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden }
 .seg button { font: inherit; font-size: 12.5px; padding: 4px 10px; border: 0; background: var(--bg); color: var(--muted); cursor: pointer }
 .seg button + button { border-left: 1px solid var(--line) }
-.seg button[aria-checked="true"] { background: var(--accent); color: #fff }
+.seg button[aria-checked="true"] { background: var(--accent); color: var(--surface) }
 .usegroup { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 12px }
 .usegroup:last-child { border-bottom: 0 }
 .usegroup h4 { margin: 0; font-size: 13.5px; font-weight: 600 } .usegroup h4 small { font-weight: 400; color: var(--muted); font-size: 12px }
@@ -638,8 +639,8 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer }
 .tag { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--muted) }
 .bgrow .bgact { grid-column: 2 / -1; margin-top: 4px }
-.msg.channel .bubble { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid #2aa3d8; padding: 9px 13px; border-radius: 3px 12px 12px 12px; max-width: 85% }
-.chan-badge { display: inline-block; font-size: 11px; font-weight: 600; color: #fff; background: #2aa3d8; border-radius: 4px; padding: 0 6px; margin-right: 4px }
+.msg.channel .bubble { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--chan); padding: 9px 13px; border-radius: 3px 12px 12px 12px; max-width: 85% }
+.chan-badge { display: inline-block; font-size: 11px; font-weight: 600; color: var(--surface); background: var(--chan); border-radius: 4px; padding: 0 6px; margin-right: 4px }
 .approve .relay { font-size: 12px }
 .card.elicit { border-color: var(--accent); gap: 8px }
 .card.elicit select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); max-width: 260px }
@@ -650,14 +651,14 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .wfout .utable td { vertical-align: top }
 .opt.perm { padding-left: 8px }
 .opt .pmark, .opt .emark { font-size: 11px; color: var(--muted) }
-.opt.perm[data-mode="acceptEdits"] { border-color: #8a5ab8; } .opt.perm[data-mode="acceptEdits"] .pmark, .opt.perm[data-mode="acceptEdits"] select { color: #8a5ab8 }
-.opt.perm[data-mode="plan"] { border-color: #2c8a8a } .opt.perm[data-mode="plan"] .pmark, .opt.perm[data-mode="plan"] select { color: #2c8a8a }
-.opt.perm[data-mode="auto"] { border-color: #a86a00 } .opt.perm[data-mode="auto"] .pmark, .opt.perm[data-mode="auto"] select { color: #a86a00 }
+.opt.perm[data-mode="acceptEdits"] { border-color: var(--perm-edit); } .opt.perm[data-mode="acceptEdits"] .pmark, .opt.perm[data-mode="acceptEdits"] select { color: var(--perm-edit) }
+.opt.perm[data-mode="plan"] { border-color: var(--perm-plan) } .opt.perm[data-mode="plan"] .pmark, .opt.perm[data-mode="plan"] select { color: var(--perm-plan) }
+.opt.perm[data-mode="auto"] { border-color: var(--perm-auto) } .opt.perm[data-mode="auto"] .pmark, .opt.perm[data-mode="auto"] select { color: var(--perm-auto) }
 .opt.perm[data-mode="bypassPermissions"] { border-color: var(--bad) } .opt.perm[data-mode="bypassPermissions"] .pmark, .opt.perm[data-mode="bypassPermissions"] select { color: var(--bad) }
 .footwrap { position: relative } .footwrap.right { margin-left: auto }
 .footbtn { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; padding: 3px 6px; border-radius: 6px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer }
 .footbtn:hover, .footbtn[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
-.footbtn.perm[data-mode="acceptEdits"] { color: #8a5ab8 } .footbtn.perm[data-mode="plan"] { color: #2c8a8a } .footbtn.perm[data-mode="auto"] { color: #a86a00 } .footbtn.perm[data-mode="bypassPermissions"] { color: var(--bad) }
+.footbtn.perm[data-mode="acceptEdits"] { color: var(--perm-edit) } .footbtn.perm[data-mode="plan"] { color: var(--perm-plan) } .footbtn.perm[data-mode="auto"] { color: var(--perm-auto) } .footbtn.perm[data-mode="bypassPermissions"] { color: var(--bad) }
 .footmenu { position: absolute; bottom: calc(100% + 6px); left: 0; width: min(340px, calc(100vw - 40px)); z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 2px }
 .footmenu.right { left: auto; right: 0 }
 #goal-wrap:not([hidden]) + .footwrap { margin-left: 4px } #goal-wrap[hidden] + .footwrap { margin-left: auto }
@@ -676,7 +677,7 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .footmenu > *, .wl-pick > * { flex-shrink: 0 }
 .mm-more { display: flex !important; gap: 6px; align-items: center }
 .wl-pick .seg button { display: block; padding: 4px 8px; border-radius: 0; text-align: center; color: var(--muted) }
-.wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: #fff }
+.wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: var(--surface) }
 .wl-pick .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
 .mm-effort .seg { display: flex; flex-wrap: wrap } .mm-effort .seg button { flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; white-space: nowrap }
 /* Room for four models, More models and the effort row before the list scrolls. */
