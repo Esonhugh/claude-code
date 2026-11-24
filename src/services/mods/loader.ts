@@ -70,9 +70,23 @@ const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
 export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
 
+// loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
+class ModLoadError extends Error {}
+
 function fail(path: string, message: string): never {
-  throw new Error(`Mod ${path}: ${message}`)
+  throw new ModLoadError(`${path}: ${message}`)
 }
+
+// Official 2.1.329 scans a .js, .mjs or .cjs file as written and names its line; it names a compiled
+// line of any other file with the line itself, cut at 80 characters.
+function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+  const excerpt = line === undefined || compiled === undefined ? undefined : compiled[line - 1]?.trim() ?? ''
+  const at = line === undefined ? '' : excerpt === undefined ? `:${line}` :
+    `, compiled line ${line} \`${excerpt.length > 80 ? `${excerpt.slice(0, 80)}...` : excerpt}\``
+  return new ModLoadError(`${path}${at}: ${construct}; ${spellingHint}`)
+}
+
+const scannedAsWritten = (path: string) => ['.js', '.mjs', '.cjs'].includes(extname(path))
 
 function children(node: Node): Node[] {
   const result: Node[] = []
@@ -88,7 +102,12 @@ function isFunction(node: Node): boolean {
   return ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type)
 }
 
-function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[]) {
+function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>) {
+  // A refusal names the line of the node the scan is at, unless it names a node itself.
+  let at: Node | undefined
+  function fail(file: string, message: string, node: Node | undefined = at): never {
+    throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
+  }
   const events = new Set<string>()
   const calls = new Set<string>()
   const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
@@ -100,7 +119,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const env = { reads: new Set<string>(), writes: new Set<string>() }
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
-  const wasm = { literals: [] as { path: string; spelling: string }[], isMadeAtRunTime: false }
+  const wasm = { literals: [] as { path: string; spelling: string; line?: number }[], isMadeAtRunTime: false }
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
@@ -335,7 +354,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const source = node.arguments[0] as Node | undefined
     const spelling = source && literalString(source)
     if (spelling !== undefined) {
-      wasm.literals.push({ path, spelling })
+      wasm.literals.push({ path, spelling, line: node.loc?.start.line })
       return
     }
     if (!source || stringShaped(source))
@@ -769,11 +788,16 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const how = parent?.type === 'CallExpression' || parent?.type === 'NewExpression'
       ? parent.callee === use ? 'called' : 'passed as an argument'
       : parent === undefined ? 'used' : itselfUses[parent.type] ?? `used in a ${parent.type}`
-    const line = node.loc?.start.line
-    fail(path, `${line === undefined ? '' : `compiled line ${line}: `}$ itself is ${how} (bound, passed, spread, returned or read); ${spellingHint}`)
+    fail(path, `$ itself is ${how} (bound, passed, spread, returned or read)`, node)
   }
 
   function visit(node: Node | null | undefined, scope: Scope, event?: string, standalone = false) {
+    const outer = at
+    if (node?.loc) at = node
+    try { visitNode(node, scope, event, standalone) } finally { at = outer }
+  }
+
+  function visitNode(node: Node | null | undefined, scope: Scope, event?: string, standalone = false) {
     if (!node) return
     if (registers.has(node)) {
       if (!node.params.length) fail(path, 'register requires an on parameter')
@@ -1168,7 +1192,7 @@ export function validateModRegistrations(
   })
 }
 
-export async function loadModDeclaration(input: {
+type ModLoadInput = {
   name: string
   storageId: string
   version?: string
@@ -1178,7 +1202,18 @@ export async function loadModDeclaration(input: {
   options?: ModInput
   fingerprintOptions?: ModInput
   tier?: ModTier
-}): Promise<ModDeclaration> {
+}
+
+export async function loadModDeclaration(input: ModLoadInput): Promise<ModDeclaration> {
+  try {
+    return await readModDeclaration(input)
+  } catch (error) {
+    if (error instanceof ModLoadError) throw new ModLoadError(`${input.name}: ${error.message}`)
+    throw error
+  }
+}
+
+async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> {
   const root = resolve(input.pluginRoot)
   const rootReal = await realpath(root)
   const entrypoints = input.entrypoints.map(path => {
@@ -1289,13 +1324,17 @@ export async function loadModDeclaration(input: {
     try {
       const extension = extname(path)
       const syntax = extension === '.tsx' || extension === '.jsx' ? 'tsx' : 'ts'
-      compiled = transpilers[syntax].transformSync(source, syntax)
+      compiled = scannedAsWritten(path) ? source : transpilers[syntax].transformSync(source, syntax)
       program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module', locations: true }) as unknown as Node
     } catch (error) {
-      // Wording of official 2.1.329.
-      const position = (error as { position?: { line?: number; column?: number } } | null)?.position
-      throw new Error(`${path} does not parse: ${error instanceof Error ? error.message : String(error)}` +
-        (position?.line === undefined ? '' : ` (line ${position.line}, column ${position.column})`))
+      // Wording of official 2.1.329: each error the transpiler lists, with its position.
+      const errors = (error as { errors?: unknown } | null)?.errors
+      const words = (Array.isArray(errors) ? errors : [error]).map(item => {
+        const { message, position } = (item ?? {}) as { message?: unknown; position?: { line?: unknown; column?: unknown } | null }
+        const text = message === undefined ? '' : String(message)
+        return typeof position?.line === 'number' && position.column !== undefined ? `${text} (line ${position.line}, column ${position.column})` : text
+      }).filter(Boolean).join('; ') || String(error)
+      throw new ModLoadError(`${path} does not parse: ${words}`)
     }
     function clientSpecifier(node: Node): Node | undefined {
       if (node.type !== 'CallExpression') return
@@ -1381,7 +1420,9 @@ export async function loadModDeclaration(input: {
   for (const link of links) {
     if (awaits.has(link.to)) fail(link.to, 'top-level await in imported files is unsupported')
   }
-  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints)
+  const compiledLines = new Map(modules.filter(module => hookPaths.has(module.path) && !scannedAsWritten(module.path))
+    .map(module => [module.path, module.source.split('\n')]))
+  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines)
   for (const value of scanned.events) events.add(value)
   for (const value of scanned.calls) calls.add(value)
   for (const value of scanned.env.reads) env.reads.add(value)
@@ -1393,8 +1434,8 @@ export async function loadModDeclaration(input: {
     fail(root, 'hooks module not loaded; its hooks stand on the telemetry stream "anthropic" (a matcher names it, or a telemetry hook names no "to" and so stands on every stream), which is for the plugins built into the CLI; name the collector on each telemetry hook: on("telemetry.log", { to: "collector" }, hook) (policy/scan)')
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
   const wasmFiles = new Map<string, Set<string>>()
-  for (const { path, spelling } of scanned.wasm.literals) {
-    const refuse = (reason: string) => fail(path, `$.wasm.compile's path "${spelling}" ${reason}`)
+  for (const { path, spelling, line } of scanned.wasm.literals) {
+    const refuse = (reason: string) => { throw refusal(path, line, compiledLines.get(path), `$.wasm.compile's path "${spelling}" ${reason}`) }
     if (!spelling.startsWith('./') && !spelling.startsWith('../')) refuse('is not relative: spell it from this file ("./engine.wasm")')
     if (!spelling.endsWith('.wasm')) refuse('does not end in .wasm')
     const target = resolve(dirname(path), spelling)

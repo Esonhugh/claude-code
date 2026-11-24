@@ -92,6 +92,6 @@ test('a literal path is relative, names a .wasm file and stays in the plugin', a
     ['../engine.wasm', "leaves the plugin's folder"],
   ]) {
     await writeFile(join(root, 'entry.mjs'), hook(`await $.wasm.compile(${JSON.stringify(spelling)}); return {result:1}`))
-    await expect(declare(root)).rejects.toThrow(`$.wasm.compile's path "${spelling}" ${reason}`)
+    await expect(declare(root)).rejects.toThrow(`probe: ${join(root, 'entry.mjs')}:1: $.wasm.compile's path "${spelling}" ${reason}; $ is always spelled $.noun.event(...) at the call site, on is always on("<event>", hook), and next.to always next.to(e, "<tier>")`)
   }
 })

@@ -340,7 +340,7 @@ test.each([
   ['called', `on('tool.call', ($) => $())`],
 ])('refuses a module where $ itself is %s, with the official text', async (how, body) => {
   const input = await plugin({ 'main.ts': `export function register(on) { ${body} }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(new RegExp(`main\\.ts: compiled line \\d+: \\$ itself is ${how} \\(bound, passed, spread, returned or read\\); \\$ is always spelled \\$\\.noun\\.event\\(\\.\\.\\.\\) at the call site, on is always on\\("<event>", hook\\), and next\\.to always next\\.to\\(e, "<tier>"\\)$`))
+  await expect(loadModDeclaration(input)).rejects.toThrow(new RegExp(`^example: .*main\\.ts, compiled line \\d+ \`[^\`]*\`: \\$ itself is ${how} \\(bound, passed, spread, returned or read\\); \\$ is always spelled \\$\\.noun\\.event\\(\\.\\.\\.\\) at the call site, on is always on\\("<event>", hook\\), and next\\.to always next\\.to\\(e, "<tier>"\\)$`))
 })
 
 test('tracks local helper arguments and const Next aliases by lexical binding', async () => {
@@ -1115,6 +1115,7 @@ test('loads a direct .cts ESM entrypoint', async () => {
   expect(declaration.modules[0]?.source).not.toContain('event: string')
 })
 
+// Official 2.1.329 runs a .js, .mjs or .cjs file as written.
 test('resolves an extensionless import to a .cjs ESM module and snapshots its source', async () => {
   const input = await plugin({
     'main.ts': `import { value } from './helper'; export function register(on) { on('tool.call', () => ({ result: value })) }`,
@@ -1124,7 +1125,7 @@ test('resolves an extensionless import to a .cjs ESM module and snapshots its so
   const original = await loadModDeclaration(input)
 
   expect(original.links).toContainEqual({ from: input.entrypoints[0], specifier: './helper', to: helper })
-  expect(original.modules).toContainEqual({ path: helper, source: expect.stringContaining('value = "first"') })
+  expect(original.modules).toContainEqual({ path: helper, source: `export const value = 'first'` })
   await writeFile(helper, `export const value = 'second'`)
   expect((await loadModDeclaration(input)).fingerprint).not.toBe(original.fingerprint)
 })

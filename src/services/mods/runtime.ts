@@ -727,6 +727,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const unloadedSteps = new Map<string, FailedBuildStep>()
   let unattributedCrashes = 0
   const controller = new AbortController()
+  // A load error names its plugin in front, as in official 2.1.329; the diagnostic names the plugin already.
+  const loadWords = (plugin: string, error: unknown) => {
+    const words = error instanceof Error ? error.message : String(error)
+    return words.startsWith(`${plugin}: `) ? words.slice(plugin.length + 2) : words
+  }
   const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
     plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
   })
@@ -3793,7 +3798,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         const old = active.find(owner => owner.declaration.storageId === input.storageId)
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
       }
     }
     // Official 2.1.329 session.start: a reload runs changed modules only, all of them if a changed one hooks
@@ -3946,7 +3951,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         // A retained previous version still guards the user tier.
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
       }
     }
     for (const input of loading) await load(input)
