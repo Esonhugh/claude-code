@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime, type ModDiagnostic } from './runtime.js'
-import { modWasmSharedMemoryReason } from './wasm.js'
+import { modWasmSharedMemoryReason, readModWasmFile } from './wasm.js'
 
 const head = [0, 97, 115, 109, 1, 0, 0, 0]
 // (func (export "answer") (result i32) i32.const 42)
@@ -151,6 +151,36 @@ test('the host reads only a listed file, through no link to another kind of file
   async ([root]) => { await symlink(join(root!, 'data.bin'), join(root!, 'answer.wasm')); await writeFile(join(root!, 'data.bin'), answer()) })
   expect(listed).toMatchObject([
     { message: 'probe: $.wasm.compile refused: a path is a string literal in the call itself, and its hooks module names no such file that way (host rule; the scan lists answer.wasm)' },
-    { message: expect.stringContaining('answer.wasm is a link to a file not named .wasm and was not read') },
+    { name: 'HooksError', message: expect.stringContaining('answer.wasm is a link to a file not named .wasm and was not read') },
   ])
+})
+
+test('a file the host cannot read is refused as the official build words it, naming the absolute path', async () => {
+  const outside = await fixture({ 'outside.wasm': answer() })
+  let root = ''
+  const result = await run([{ name: 'probe', files: { 'entry.mjs': hook(`
+    return { result: [${['link', 'missing', 'big', 'data', 'dir'].map(name => settle(`$.wasm.compile('./${name}.wasm')`)).join(', ')}] }`) } }],
+  async ([dir]) => {
+    root = dir!
+    await symlink(join(outside, 'outside.wasm'), join(root, 'link.wasm'))
+    const big = await open(join(root, 'big.wasm'), 'w')
+    await big.truncate(67108865)
+    await big.close()
+    await symlink(join(root, 'data.bin'), join(root, 'data.wasm'))
+    await writeFile(join(root, 'data.bin'), answer())
+    await mkdir(join(root, 'dir.wasm'))
+  })
+  expect(result).toEqual([
+    `probe: ${root}/link.wasm: ${outside}/outside.wasm resolves outside the plugin's folder`,
+    `probe: ${root}/missing.wasm: no such file`,
+    `probe: ${root}/big.wasm is over 67108864 bytes and was not read`,
+    `probe: ${root}/data.wasm is a link to a file not named .wasm and was not read`,
+    `probe: ${root}/dir.wasm: not a regular file`,
+  ].map(message => ({ name: 'HooksError', message, isCompileError: false })))
+})
+
+test('a file in the MCP bundle cache is not read', async () => {
+  const root = await fixture({ '.MCPB-Cache. /x.wasm': answer() })
+  await expect(readModWasmFile(root, '.MCPB-Cache. /x.wasm', 'probe')).rejects.toMatchObject({ name: 'HooksError', message: `probe: ${root}/.MCPB-Cache. /x.wasm: it leads into .mcpb-cache, which Claude Code may have overwritten when it unpacked the plugin's MCP bundles; the plugin's author needs to move it to another folder` })
+  expect(await readModWasmFile(root, '.MCPB-Cache. /x.wasm'.replace('Cache', 'Kache'), 'probe').catch(error => error.message)).toBe(`probe: ${root}/.MCPB-Kache. /x.wasm: no such file`)
 })

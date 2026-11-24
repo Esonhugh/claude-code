@@ -1,5 +1,6 @@
-import { open, realpath } from 'node:fs/promises'
-import { join } from 'node:path'
+import { constants } from 'node:fs'
+import { lstat, open, realpath } from 'node:fs/promises'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 
 // Official 2.1.329: a binary for $.wasm.compile, as bytes or a file, holds at most 64 MiB.
 export const MOD_WASM_MAX_BYTES = 67108864
@@ -219,23 +220,60 @@ export function modWasmBase64Problem(base64: unknown): string | undefined {
   if (Buffer.byteLength(base64, 'base64') > MOD_WASM_MAX_BYTES) return `a base64 of more than ${MOD_WASM_MAX_BYTES} bytes`
 }
 
-/** Reads a scanned `.wasm` file of the plugin (a `/`-separated path under its root) as base64. */
+// Official 2.1.329: a folder of that name may have been overwritten by the MCP bundle unpacker.
+const mcpbCache = "it leads into .mcpb-cache, which Claude Code may have overwritten when it unpacked the plugin's MCP bundles; the plugin's author needs to move it to another folder"
+const isInMcpbCache = (base: string, path: string) => relative(base, path).split(sep).some(segment =>
+  segment.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '').toUpperCase().toLowerCase().replace(/[. ]+$/, '') === '.mcpb-cache')
+const hooksError = (message: string, cause?: string) => Object.assign(new Error(message, cause ? { cause } : undefined), { name: 'HooksError' })
+
+/** Reads a scanned `.wasm` file of the plugin (a `/`-separated path under its root) as base64, as the official build does. */
 export async function readModWasmFile(root: string, path: string, plugin: string, signal?: AbortSignal): Promise<string> {
-  const real = await realpath(join(root, ...path.split('/')))
-  if (!real.endsWith('.wasm')) throw new Error(`${plugin}: ${path} is a link to a file not named .wasm and was not read`)
-  const file = await open(real, 'r')
+  const file = resolve(root, ...path.split('/'))
+  const changed = () => hooksError(`${plugin}: ${file}: changed while it was read`)
+  const over = () => hooksError(`${plugin}: ${file} is over ${MOD_WASM_MAX_BYTES} bytes and was not read`)
+  const failed = (error: unknown) => {
+    const code = (error as NodeJS.ErrnoException)?.code ?? 'EIO'
+    return code === 'EMFILE' || code === 'ENFILE'
+      ? hooksError(`${plugin}: ${file}: not read, no file descriptor free (${code})`, code)
+      : hooksError(`${plugin}: ${file}: no such file`, code)
+  }
+  let rootReal: string
+  try { rootReal = await realpath(root) } catch (error) {
+    throw hooksError(`${plugin}: ${basename(root)}: not readable (${(error as NodeJS.ErrnoException)?.code ?? 'EIO'})`)
+  }
+  let real: string
+  try { real = await realpath(file) } catch (error) { throw failed(error) }
+  const rel = relative(rootReal, real)
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw hooksError(`${plugin}: ${file}: ${real} resolves outside the plugin's folder`)
+  if (isInMcpbCache(root, file) || isInMcpbCache(rootReal, real)) throw hooksError(`${plugin}: ${file}: ${mcpbCache}`)
+  let entry
+  try { entry = await lstat(real) } catch (error) { throw failed(error) }
+  if (!entry.isFile()) throw hooksError(`${plugin}: ${file}: not a regular file`)
+  if (!real.endsWith('.wasm')) throw hooksError(`${plugin}: ${file} is a link to a file not named .wasm and was not read`)
+  if (entry.size > MOD_WASM_MAX_BYTES) throw over()
+  signal?.throwIfAborted()
+  let handle
+  try { handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW) } catch (error) {
+    throw (error as NodeJS.ErrnoException)?.code === 'ELOOP' ? changed() : failed(error)
+  }
   try {
-    const chunks: Buffer[] = []
-    let size = 0
-    for (;;) {
+    const opened = await handle.stat()
+    if (!opened.isFile()) throw changed()
+    let again: string
+    try { again = await realpath(real) } catch { throw changed() }
+    if (again !== real) throw changed()
+    if (opened.size > MOD_WASM_MAX_BYTES) throw over()
+    // One byte past the size shows a file that grew after the stat.
+    const bytes = Buffer.allocUnsafe(opened.size + 1)
+    let length = 0
+    while (length < bytes.length) {
       signal?.throwIfAborted()
-      const chunk = Buffer.allocUnsafe(1 << 20)
-      const { bytesRead } = await file.read(chunk, 0, chunk.length, null)
+      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, null)
       if (bytesRead === 0) break
-      size += bytesRead
-      if (size > MOD_WASM_MAX_BYTES) throw new Error(`${plugin}: $.wasm.compile takes at most ${MOD_WASM_MAX_BYTES} bytes (${path} holds more)`)
-      chunks.push(chunk.subarray(0, bytesRead))
+      length += bytesRead
     }
-    return Buffer.concat(chunks, size).toString('base64')
-  } finally { await file.close() }
+    if (length > MOD_WASM_MAX_BYTES) throw over()
+    if (length !== opened.size) throw changed()
+    return bytes.subarray(0, length).toString('base64')
+  } finally { await handle.close() }
 }
