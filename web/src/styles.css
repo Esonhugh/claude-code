@@ -26,6 +26,15 @@
 :root[data-palette="mono"] { --bg: #ffffff; --surface: #ffffff; --sunken: #f3f3f3; --fg: #0a0a0a; --muted: #616161; --line: #e2e2e2; --accent: #111111; --accent-soft: #ececec; }
 @media (prefers-color-scheme: dark) { :root[data-palette="mono"]:not([data-theme="light"]) { --bg: #000000; --surface: #0e0e0e; --sunken: #181818; --fg: #f4f4f4; --muted: #a3a3a3; --line: #282828; --accent: #f4f4f4; --accent-soft: #232323; } }
 :root[data-palette="mono"][data-theme="dark"] { --bg: #000000; --surface: #0e0e0e; --sunken: #181818; --fg: #f4f4f4; --muted: #a3a3a3; --line: #282828; --accent: #f4f4f4; --accent-soft: #232323; }
+/* The terminal colour names Mods draw with (modColor in Mods.tsx; light default palette there), on the root so a decorated draft gets them too. Mono greys only the neutrals, as it keeps the page's own --ok and --bad. */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
+:root[data-theme="dark"] { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
+:root[data-palette="clay"] { --mod-black: #2b2620; --mod-red: #b5402e; --mod-green: #43702a; --mod-yellow: #8a6408; --mod-blue: #3d679e; --mod-magenta: #91508c; --mod-cyan: #2e7570; --mod-white: #9a9286; --mod-gray: #6f665b; --mod-grey: #6f665b }
+@media (prefers-color-scheme: dark) { :root[data-palette="clay"]:not([data-theme="light"]) { --mod-black: #d4cdc1; --mod-red: #ec8a6f; --mod-green: #9cc07a; --mod-yellow: #dcb05c; --mod-blue: #8fb0dd; --mod-magenta: #d1a2cb; --mod-cyan: #7cbdb5; --mod-white: #f4f1ea; --mod-gray: #a8a094; --mod-grey: #a8a094 } }
+:root[data-palette="clay"][data-theme="dark"] { --mod-black: #d4cdc1; --mod-red: #ec8a6f; --mod-green: #9cc07a; --mod-yellow: #dcb05c; --mod-blue: #8fb0dd; --mod-magenta: #d1a2cb; --mod-cyan: #7cbdb5; --mod-white: #f4f1ea; --mod-gray: #a8a094; --mod-grey: #a8a094 }
+:root[data-palette="mono"] { --mod-black: #0a0a0a; --mod-white: #8f8f8f; --mod-gray: #616161; --mod-grey: #616161 }
+@media (prefers-color-scheme: dark) { :root[data-palette="mono"]:not([data-theme="light"]) { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 } }
+:root[data-palette="mono"][data-theme="dark"] { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 }
 .swatch { display: inline-flex; width: 12px; height: 12px; border-radius: 999px; margin-right: 6px; vertical-align: -1px; border: 1px solid var(--line); overflow: hidden } .swatch i { flex: 1 }
 
 * { box-sizing: border-box }
@@ -1146,8 +1155,6 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .composer:has(> .mod-toasts) { position: relative }
 .mod-toasts { position: absolute; right: 20px; bottom: 100%; margin-bottom: 8px; z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: min(360px, calc(100vw - 32px)) }
 .mod-toast { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 13px }
-:root[data-theme="dark"] :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
 /* A page row as Mods draw it: their tree, with the page's row where it says. */
 .mod-site { min-width: 0; overflow-wrap: anywhere }
 .mod-site .mod-btn { font-size: 12px }
