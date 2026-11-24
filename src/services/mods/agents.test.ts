@@ -267,8 +267,11 @@ test('production Worker agent.list reads live session tasks rather than definiti
   try {
     const list = async () => JSON.parse((await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}).text)
     expect(await list()).toEqual([
-      {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',spawnedBy:'author',name:'child-name',kind:'local_agent'},
-      {id:'agent-mate',teammateId:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer',kind:'in_process_teammate'},
+      {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',spawnedBy:'author',name:'child-name',kind:'local_agent',
+        taskStatus:'running',label:'Review changes',cwd:'/tmp',tokenCount:0,tokenSamples:[0],cost:{usd:0},hasRow:true},
+      // A teammate in a pane of its own keeps no cost ledger here.
+      {id:'agent-mate',teammateId:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer',kind:'in_process_teammate',
+        taskStatus:'running',label:'Help',cwd:'/tmp',tokenCount:0,tokenSamples:[0],hasRow:true},
     ])
     tasks = {}
     expect(await list()).toEqual([])

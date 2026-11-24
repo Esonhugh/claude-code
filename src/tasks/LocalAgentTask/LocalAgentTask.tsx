@@ -248,6 +248,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   /** The Agent tool spawn this task counts toward in result.subagent_stats. */
   spawnedSubagent?: SubagentOutcome
   model?: string
+  /** Its own directory: a worktree or an explicit cwd; absent when it works in the session's. */
+  cwd?: string
   abortController?: AbortController
   unregisterCleanup?: () => void
   error?: string

@@ -171,6 +171,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   agentMessages?(agentId:string,sessionId:string): Promise<readonly Message[] | undefined>
   tasks?(): AppState['tasks']
   agentNames?(): AppState['agentNameRegistry']
+  viewingAgentTaskId?(): string | undefined
   configRows?(): readonly ModConfigRowProvider[] | Promise<readonly ModConfigRowProvider[]>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   cwd?(): string
@@ -1633,7 +1634,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'agent.limits': return { concurrent: getMaxConcurrentSubagents(), depth: getMaxSubagentDepth(), isBackgroundEnabled: !isEnvTruthy(globalThis.process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) }
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
-        return listModAgents(services.tasks(), services.agentNames?.())
+        return listModAgents(services.tasks(), services.agentNames?.(), {
+          cwd: services.cwd?.() ?? binding?.cwd ?? globalThis.process.cwd(),
+          viewingAgentTaskId: services.viewingAgentTaskId?.(),
+        })
       }
       case 'agent.register': {
         if (!binding) throw new Error('agent.register requires a bound session')

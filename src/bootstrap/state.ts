@@ -72,6 +72,8 @@ type State = {
   // Per-model usage since the last result was written; undefined until a
   // stream-json host asks for it.
   modelUsageSinceLastResult: { [modelName: string]: ModelUsage } | undefined
+  // Each agent's own share of the session cost, keyed by agent id.
+  agentSpend: Map<string, AgentSpend>
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
   sessionFallbackModels: string[]
@@ -325,6 +327,7 @@ function getInitialState(): State {
     cwd: resolvedCwd,
     modelUsage: {},
     modelUsageSinceLastResult: undefined,
+    agentSpend: new Map(),
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
     sessionFallbackModels: [],
@@ -916,6 +919,31 @@ export function getUsageForModel(model: string): ModelUsage | undefined {
   return STATE.modelUsage[model]
 }
 
+/** One model's tokens in an agent's spend, as the API reported them. */
+export type AgentTurnUsage = {
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  ephemeral_5m_input_tokens?: number
+  ephemeral_1h_input_tokens?: number
+}
+
+export type AgentSpend = {
+  usage: AgentTurnUsage[]
+  costUSD: number
+  hasUnknownModelCost: boolean
+}
+
+export function getAgentSpend(agentId: string): AgentSpend | undefined {
+  return STATE.agentSpend.get(agentId)
+}
+
+export function setAgentSpend(agentId: string, spend: AgentSpend): void {
+  STATE.agentSpend.set(agentId, spend)
+}
+
 export function trackModelUsageSinceLastResult(): void {
   STATE.modelUsageSinceLastResult ??= {}
 }
@@ -983,6 +1011,7 @@ export function resetCostState(): void {
   STATE.totalLinesRemoved = 0
   STATE.hasUnknownModelCost = false
   STATE.modelUsage = {}
+  STATE.agentSpend = new Map()
   STATE.promptId = null
 }
 
@@ -1022,6 +1051,7 @@ export function setCostStateForRestore({
 
   // Restore per-model usage breakdown, clearing stale usage for legacy records.
   STATE.modelUsage = modelUsage ?? {}
+  STATE.agentSpend = new Map()
   STATE.hasUnknownModelCost = restoredUnknownModelCost ?? false
 
   // Adjust startTime to make wall duration accumulate

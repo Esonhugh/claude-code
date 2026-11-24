@@ -35,7 +35,8 @@ test('C17 production Worker projects native task-feature fixture states and iden
   const tasks={pending:local('pending','pending'),run:local('run','running'),wait:local('wait','running',{isIdle:true}),finalizing:local('finalizing','completed',{finalizing:true}),keep:local('keep','completed',{keepaliveReasons:new Set(['child'])}),idleWindow:local('idleWindow','completed',{keepaliveReasons:new Set(['flag:idle-window'])}),named:local('named','completed'),done:local('done','completed'),fail:local('fail','failed'),killed:local('killed','killed'),paused:local('paused','paused'),mateIdle:mate('mateIdle',{isIdle:true,spawnedBy:'author'}),mateApproval:mate('mateApproval',{isIdle:true,awaitingPlanApproval:true})} as unknown as AppState['tasks']
   const rows=await observer(tasks,new Map([['kept','named' as never]]))
   expect(rows.map((x:{id:string;status:string})=>[x.id,x.status])).toEqual([['pending','pending'],['run','running'],['wait','waiting'],['finalizing','running'],['keep','waiting'],['idleWindow','idle'],['named','idle'],['done','completed'],['fail','failed'],['killed','killed'],['paused','idle'],['logical-mateIdle','idle'],['logical-mateApproval','waiting']])
-  expect(rows.find((x:{id:string})=>x.id==='logical-mateIdle')).toEqual({id:'logical-mateIdle',teammateId:'mateIdle',description:'Spawn description',type:'Review',status:'idle',parentId:'parent',spawnedBy:'author',name:'mateIdle',kind:'in_process_teammate'})
+  expect(rows.find((x:{id:string})=>x.id==='logical-mateIdle')).toEqual({id:'logical-mateIdle',teammateId:'mateIdle',description:'Spawn description',type:'Review',status:'idle',parentId:'parent',spawnedBy:'author',name:'mateIdle',kind:'in_process_teammate',
+    taskStatus:'running',label:'Spawn description',cwd:'/tmp',tokenCount:0,tokenSamples:[0],cost:{usd:0},hasRow:true})
 })
 test('C17 production Worker prefers live logical duplicate and retains monitor work',async()=>{
   const tasks={live:local('same','running'),old:local('same','completed'),mate:mate('mate',{isIdle:true}),shell:{id:'shell',type:'local_bash',status:'running',isBackgrounded:true,agentId:'logical-mate'},monitor:{id:'monitor',type:'monitor_mcp',status:'running',agentId:'monitor-agent'},kept:local('monitor-agent','completed')} as unknown as AppState['tasks']
@@ -100,4 +101,44 @@ test('C17 inactive persisted membership applies only to matching live legacy tea
   await writeTeamFileAsync(name,{name,createdAt:0,leadAgentId:'lead',members:[{agentId:'legacy',name:'legacy',joinedAt:0,tmuxPaneId:'none',cwd:'/tmp',subscriptions:[],isActive:false},{agentId:'local',name:'local',joinedAt:0,tmuxPaneId:'none',cwd:'/tmp',subscriptions:[],isActive:false},{agentId:'ended',name:'ended',joinedAt:0,tmuxPaneId:'none',cwd:'/tmp',subscriptions:[],isActive:false}]})
   const tasks={local:local('local','completed'),legacy:mate('legacy',{identity:{agentId:'legacy',agentName:'legacy',teamName:name}}),ended:mate('ended',{status:'completed',identity:{agentId:'ended',agentName:'ended',teamName:name}})} as unknown as AppState['tasks']
   const rows=await observer(tasks);expect(rows.map((x:{id:string;status:string})=>[x.id,x.status])).toEqual([['local','completed'],['legacy','idle'],['ended','completed']])
+})
+
+test('agent.list rows carry the AgentInfo fields of official 2.1.329', async () => {
+  const { listModAgents } = await import('./agents.js')
+  const { resetCostState } = await import('../../bootstrap/state.js')
+  const { addToTotalSessionCost } = await import('../../cost-tracker.js')
+  const { recordAgentRequest, resetAgentRequestsForTests } = await import('../../utils/agentLastRequest.js')
+  resetCostState(); resetAgentRequestsForTests()
+  const usage = {input_tokens:10,output_tokens:5,cache_read_input_tokens:4,cache_creation_input_tokens:0} as never
+  addToTotalSessionCost(0.5, usage, 'claude-opus-5-5', {agentId:'worker', answeredModel:'claude-opus-5-5'})
+  recordAgentRequest('worker', {at:1_234, model:'claude-opus-5-5', effort:'medium', usage:{cache_read_input_tokens:4}})
+  const tasks = {
+    worker: local('worker','running',{startTime:1_000,model:'claude-opus-5-5',cwd:'/work/tree',progress:{tokenCount:15,toolUseCount:0,summary:'Reading files'}}),
+    parked: local('parked','completed',{startTime:2_000,isBackgrounded:true}),
+    held: local('held','completed',{startTime:3_000,isBackgrounded:true,evictAfter:99_999}),
+    mate: mate('mate',{startTime:4_000}),
+  } as unknown as AppState['tasks']
+  const rows = await listModAgents(tasks, new Map(), {cwd:'/session', now:1_100})
+  const byId = Object.fromEntries(rows.map(row => [row.id, row]))
+  expect(byId.worker).toEqual({id:'worker',description:'worker',type:'Explore',status:'running',kind:'local_agent',
+    taskStatus:'running',label:'Reading files',startTime:1_000,cwd:'/work/tree',model:'claude-opus-5-5',contextWindowSize:expect.any(Number),
+    tokenCount:15,tokenSamples:[15],lastRequest:{at:1_234,model:'claude-opus-5-5',effort:'medium'},
+    usage:[{model:'claude-opus-5-5',input_tokens:10,output_tokens:5,cache_read_input_tokens:4,cache_creation_input_tokens:0}],cost:{usd:0.5},hasRow:true})
+  expect([byId.parked.hasRow, byId.parked.cwd, byId.parked.cost]).toEqual([false, '/session', {usd:0}])
+  expect(byId.held.hasRow).toBe(true)
+  // A teammate with a logical id of its own has a ledger under it.
+  expect(byId['logical-mate']).toMatchObject({teammateId:'mate', label:'Spawn description', cost:{usd:0}, hasRow:true})
+  resetCostState(); resetAgentRequestsForTests()
+})
+
+test('a request that only read the cache keeps the lifetime of the last write', async () => {
+  const { recordAgentRequest, getLastAgentRequest, resetAgentRequestsForTests } = await import('../../utils/agentLastRequest.js')
+  resetAgentRequestsForTests()
+  recordAgentRequest('a', {at:1, model:'m', usage:{cache_creation_input_tokens:8, cache_creation:{ephemeral_5m_input_tokens:0, ephemeral_1h_input_tokens:8}}})
+  expect(getLastAgentRequest('a')).toEqual({at:1, model:'m', cacheTtl:'1h'})
+  recordAgentRequest('a', {at:2, model:'m', effort:3, usage:{cache_read_input_tokens:8}})
+  expect(getLastAgentRequest('a')).toEqual({at:2, model:'m', effort:3, cacheTtl:'1h'})
+  recordAgentRequest('a', {at:3, model:'m', usage:{}})
+  expect(getLastAgentRequest('a')).toEqual({at:3, model:'m'})
+  resetAgentRequestsForTests()
 })

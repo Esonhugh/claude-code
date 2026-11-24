@@ -2209,6 +2209,7 @@ export function REPL({
     builtinCommands: () => modBuiltinCommandsRef.current,
     tasks: () => store.getState().tasks,
     agentNames: () => store.getState().agentNameRegistry,
+    viewingAgentTaskId: () => store.getState().viewingAgentTaskId,
     tools: () => modToolContextRef.current!().options.tools,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
