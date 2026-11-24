@@ -18,10 +18,20 @@
 | 4. 主题和渲染 | 先做 theme set/clear 的会话状态、回执、客户端晚接入，再做 `prompt.paint`、`ui.place`、Backdrop、`ui.pointer` 和 shader。分开验证作者类型、宿主行为与实际绘制。 | 无绘制客户端时不误判设置失败；clear 后晚接入不见旧主题；paint 不改草稿、光标或撤销历史；背景点击只交给拥有该主题的插件。没有图形客户端证据时标记未验收。 |
 | 5. 切换与回归 | 每组先写最小失败测试，再实现并重跑相关 `.303` 回归；切换前执行 `make build`，用同一 fixture 在固定 `.329` 官方与本地 CLI 的 tmux 会话中对照。 | 留下双方版本、制品哈希、场景和输出；明确剩余缺口再决定是否切换默认声明。不把编译通过当运行时对齐，不覆盖旧账本。 |
 
-### `wasm.compile`：声明存在，运行时未支持
+### `wasm.compile`：已按官方隔离模型实现
 
-`src/services/mods/wasmIsolation329.test.ts` 在 Bun 1.4.4 实测：单独启用 Wasm 的 VM 能编译并实例化模块。`structuredClone` 也能复制已编译模块，但将它交给现行 `codeGeneration.wasm: false` 的 VM 后，连 `WebAssembly.instantiate(module)` 都会得到 `CompileError`。所以只外包编译并不能满足插件拿回标准 Module 并在自己的 realm 实例化的契约。返回字节或 RPC 对象也不等价。
+官方 2.1.329 二进制的做法是：所有插件仍共用一个 hooks Worker，只有扫描到 `wasm.compile` 调用的插件，其 VM 才设 `codeGeneration.wasm: true`；该 VM 先执行一段沙箱脚本，换上冻结的精简 `WebAssembly`。同步 Wasm 导出占住事件循环，与同步 JS 死循环同属既有 Worker 超时恢复的范围，官方也未为此另开 Worker。本地照此实现：
 
-当前所有插件共用一个执行 Worker（`createModEnvironmentHost`）；在其中只给一个 VM 打开 Wasm，仍会让同步 Wasm 导出占住其他插件的事件循环。简单分配第二个 host 同样不可直接用：环境和函数 ID 只在各自 host 内唯一，`prepareUiTables` 从一个 host 的环境表解析发布者/消费者，同步 UI 回调通过同一 Worker 的环境表执行。现有超时恢复也以整个 Worker 为单位。
+- 扫描（`loader.ts`）：参数是字符串字面量（或无替换的模板）时，列为 `declaration.wasm.files`，记录插件相对路径和写法。路径须相对调用文件、以 `.wasm` 结尾、不出插件目录。模板、拼接、条件、展开、数字字面量、无参数，以及绑定到这些值的常量都拒绝加载。其他表达式视为运行时字节（`isMadeAtRunTime`）。所列文件的内容 sha256 计入 fingerprint，文件保存后声明随之变化。
+- 沙箱（`wasm.ts`、`worker.ts`）：`Module`、`compile` 以及对非模块调用的 `instantiate` 都抛 CompileError。`validate` 和 `Memory` 拒绝 shared memory。命名空间及其成员均冻结，`SharedArrayBuffer`、`Atomics` 照旧删除。不调用的插件看不到 `WebAssembly`。
+- 调用：Worker 在调用当时复制字节，上限 64 MiB。宿主核对扫描规则：路径须是所列写法，字节须声明过 `isMadeAtRunTime`。宿主经 realpath 读取文件，目标不以 `.wasm` 结尾即拒绝。随后派发 `wasm.compile` 事件 `{ path?, base64 }`，`path` 固定不可改，hook 可替换字节或 deny。回到 Worker 后在调用者的 realm 中编译，再检查 shared memory。
+- 测试：`wasmCompile329.test.ts`。
 
-独立实现须隔离**实际运行 Hook 的插件**，而非仅隔离编译器，解决上述跨 Worker 发布和调用后，再接入仅字面量文件准入（相对调用文件、内容指纹）、字节快照与 64 MiB 限额、shared memory 拒绝、重写/拒绝事件和 worker 卸载。现阶段不要移除共享 VM 的 Wasm 禁令，也不要用宿主 `WebAssembly` 替换插件全局对象。
+与官方的已知差异：
+
+- 本地只追踪 `const` 绑定，未赋值的 `let`/`var` 字符串不会像官方那样在扫描时拒绝；运行时宿主仍会按写法规则拒绝。
+- 未实现 hosted 模式下文件改动后拒绝调用（官方声明本地模式改为重载）。
+
+### `Shader`：未实现
+
+官方由单独打包的编译器读取 `claude-code/shader` 文件。扫描时给出 `namesShader`/`shaders`，`claude plugin validate` 报告开销，desktop 在 GPU 上播放。不播放 shader 的应用只显示其 `Svg` 子节点。本地缺少整条链路：Backdrop 现只接受被动 Box/Text（`theme.ts` `validateBackdropTree`），也就没有 `Svg` 回退，更没有编译器和 GPU 播放器。只做其中一段不能独立使用，所以留待第 4 步渲染工作：先让 Backdrop 支持 Svg，再接受 `Shader` 并回退到 Svg，最后实现编译器。
