@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "com.esonhugh.claude-code",
-    "productName": "Claude Code",
+    "productName": "Claude",
     "directories": {
       "output": "release"
     },
