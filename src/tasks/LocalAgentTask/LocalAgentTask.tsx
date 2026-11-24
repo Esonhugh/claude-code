@@ -653,8 +653,8 @@ export function stopBackgroundAgentTasks(
   const stopped = Object.values(tasks).filter(isLiveLocalAgentTask).filter(task => task.isBackgrounded)
   for (const task of stopped) {
     killAsyncAgent(task.id, setAppState, 'user')
+    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description, outputFile: getTaskOutputPath(task.id) })
     markAgentsNotified(task.id, setAppState)
-    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description })
   }
   return stopped
 }

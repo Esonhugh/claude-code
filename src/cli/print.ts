@@ -3752,6 +3752,8 @@ function runHeadlessStreaming(
           logForDebugging(
             `[print.ts] interrupt handled, stillQueued=${response.still_queued.length}`,
           )
+          // Like official 2.1.329, the background agents it stopped end ahead of its response.
+          for (const event of drainSdkOutput()) output.enqueue(event)
           sendControlResponseSuccess(message, response)
         } else if (message.request.subtype === 'end_session') {
           logForDebugging(

@@ -156,6 +156,25 @@ test('a failed or stopped subagent sends its error or description as the summary
   }
 })
 
+// Like official 2.1.329, an interrupt's stopped agents end, then leave the background list.
+test('an interrupt stops background agents, each ending before it leaves the background list', async () => {
+  const { stopBackgroundAgentTasks } = await import('../../tasks/LocalAgentTask/LocalAgentTask.js')
+  registerTask(agentTask, setAppState)
+  registerTask({ ...agentTask, id: 'a2', isBackgrounded: false } as unknown as TaskState, setAppState)
+  drainSdkEvents()
+
+  expect(stopBackgroundAgentTasks(state.tasks, setAppState).map(task => task.id)).toEqual(['a1'])
+  const ended = events()
+  expect(ended.map(e => [e.subtype, 'task_id' in e ? e.task_id : undefined])).toEqual([
+    ['task_updated', 'a1'],
+    ['task_notification', 'a1'],
+    ['background_tasks_changed', undefined],
+  ])
+  expect(ended[1]).toMatchObject({ status: 'stopped', summary: 'probe', tool_use_id: 'toolu_1', output_file: expect.stringContaining('a1.output') })
+  expect(ended[2]).toMatchObject({ tasks: [] })
+  expect(state.tasks.a2?.status).toBe('running')
+})
+
 // Like official 2.1.318: a subagent launched from inside another agent names
 // that agent's task; one launched by the main thread or an untracked launcher
 // carries no parent_task_id.
