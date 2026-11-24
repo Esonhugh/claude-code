@@ -2590,7 +2590,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         .some(name => name !== owner.declaration.name)
   }
 
-  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation, callerChain?: ModCallerChain): ModDispatchHook[] {
+  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation | readonly Activation[], callerChain?: ModCallerChain): ModDispatchHook[] {
     const trusted = [...hostHooks].map(hook => ({
       ...hook,
       ...(hook.invokeStream ? { invokeStream: (input: ModInput, next: ModStreamNext, catching: boolean) => {
@@ -2620,7 +2620,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { entered.active = false }
       },
     }))
-    return [...trusted, ...snapshot.filter(owner => (!only || owner === only) && owner !== skipOwner).flatMap(owner => owner.environment.registrations.map(registration => ({
+    return [...trusted, ...snapshot.filter(owner => (!only || owner === only) && owner !== skipOwner && !(Array.isArray(skipOwner) && skipOwner.includes(owner))).flatMap(owner => owner.environment.registrations.map(registration => ({
       plugin: owner.declaration.name,
       tier: owner.declaration.tier,
       registration,
@@ -3039,7 +3039,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
     snapshot: readonly Activation[] = active,
     table: Nouns = nouns,
-    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
+    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation | readonly Activation[]; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     // Official 2.1.292 raises filesystem entry paths against the invocation's cwd.
@@ -3163,6 +3163,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
+  /** Why the built $ has no event for one of the module's registrations, if so. */
+  function unprovidedEvent(owner: Activation, table: Nouns, owners: ReadonlyMap<string, string>): string | undefined {
+    for (const { event } of owner.environment.registrations) {
+      const negated = event.startsWith('!')
+      const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
+      if (method === undefined || engineEventNouns.has(noun)) continue
+      const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
+      if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
+      return negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
+        : methods ? `registered ${event}, but $.${noun} (${owners.get(noun)}) has no method ${method}`
+        : `registered ${event}, but no loaded plugin provides $.${noun}`
+    }
+    return undefined
+  }
+
   async function build(
     snapshot: Activation[],
     replacements = new Map<Activation, Activation>(),
@@ -3261,8 +3276,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
           for (const [noun, methods] of Object.entries(before)) {
             if (Object.hasOwn(result, noun)) continue
-            if (noun === 'telemetry' && owner.declaration.tier === 'user')
-              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.telemetry, added by core; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
+            if (owner.declaration.tier === 'user')
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.${noun}, added by ${state.owners.get(noun) === 'engine' ? 'core' : state.owners.get(noun)}; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
             const withholders = state.withheld.get(noun) ?? new Set<string>()
             withholders.add(owner.declaration.name)
             state.withheld.set(noun, withholders)
@@ -3289,18 +3304,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.
         for (const owner of failed || !checkRegistrations ? [] : modules) {
           if (owner.declaration.isNative) continue
-          let reason: string | undefined
-          for (const { event } of owner.environment.registrations) {
-            const negated = event.startsWith('!')
-            const [noun, method] = (negated ? event.slice(1) : event).split('.') as [string, string | undefined]
-            if (method === undefined || engineEventNouns.has(noun)) continue
-            const methods = Object.hasOwn(table, noun) ? table[noun]! : undefined
-            if (method === '*' ? methods && Object.keys(methods).length : methods && Object.hasOwn(methods, method)) continue
-            reason = negated || method === '*' ? `registered on("${event}"), ${negated ? 'whose negated pattern selects no event' : 'which selects no event'}`
-              : methods ? `registered ${event}, but $.${noun} (${state.owners.get(noun)}) has no method ${method}`
-              : `registered ${event}, but no loaded plugin provides $.${noun}`
-            break
-          }
+          const reason = unprovidedEvent(owner, table, state.owners)
           if (!reason) continue
           failed = owner
           if (!hostDead && !controller.signal.aborted)
@@ -3355,7 +3359,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return composed
   }
 
-  async function admit(candidate: ModDeclaration, judges: readonly Activation[], table: Nouns) {
+  // `asked` already let the candidate in: they are not asked again, but stay in the call's snapshot.
+  async function admit(candidate: ModDeclaration, judges: readonly Activation[], table: Nouns, asked?: readonly Activation[]) {
     const result = await dispatch('plugin.register', {
       name: candidate.name, tier: candidate.tier, root: candidate.pluginRoot, provenance: candidate.storageId,
       ...(candidate.version === undefined ? {} : { version: candidate.version }),
@@ -3364,14 +3369,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ...(candidate.env ? { env: candidate.env } : {}),
         ...(candidate.state ? { state: candidate.state } : {}),
       },
-    }, async () => ({ allow: true }), judges, table) as { allow?: true; refuse?: string }
+    }, async () => ({ allow: true }), judges, table, asked ? { skipOwner: asked } : {}) as { allow?: true; refuse?: string }
     return result.refuse
   }
 
-  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[]) {
-    const eligible = before.filter(judge => judge.state === 'active' && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
+  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[], unadmitted?: { has(owner: Activation): boolean }) {
+    const live = (judge: Activation) => judge.state === 'active' || unadmitted?.has(judge)
+    const eligible = before.filter(judge => live(judge) && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
     if (candidate.isNative) return eligible.filter(judge => judge.declaration.isNative)
-    return [...eligible, ...after.filter(judge => judge.state === 'active' && (candidate.tier === 'user' ? judge.declaration.tier !== 'user' : judge.declaration.isNative))]
+    return [...eligible, ...after.filter(judge => live(judge) && (candidate.tier === 'user' ? judge.declaration.tier !== 'user' : judge.declaration.isNative))]
   }
 
   async function publish(
@@ -3575,10 +3581,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
       loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
+    // Loaded on a cold start before every judge could be asked; barred from the host until judged.
+    // The value lists the judges that already let the plugin in.
+    const unadmitted = new Map<Activation, readonly Activation[]>()
     let registrationsChecked = false
     async function buildBootstrap(isLast = false) {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
-      if (bootstrap && !changed.size && (!isLast || registrationsChecked)) return
+      const removed = bootstrap?.modules.some(owner => !candidates.includes(owner))
+      if (bootstrap && !changed.size && !removed && (!isLast || registrationsChecked)) return
       // Keep newly admitted providers barred during their own bootstrap fold.
       for (const owner of changed) owner.state = 'candidate'
       bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
@@ -3587,14 +3597,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       registrationsChecked = isLast
       ensureLive()
       candidates = [...bootstrap.modules]
-      for (const owner of candidates) owner.state = 'active'
+      for (const owner of candidates) owner.state = unadmitted.has(owner) ? 'candidate' : 'active'
     }
-    for (const input of loading) {
+    const judgesPlugins = (owner: Activation) => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register'))
+    const refuse = (input: ModPluginInput, name: string, refusal: string) => {
+      failGuard(input)
+      knownArgs.delete(input.storageId)
+      unloadedSteps.delete(input.storageId)
+      diagnostic(name, 'admission', refusal)
+    }
+    const load = async (input: ModPluginInput) => {
       const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
       if (guardFailed && (input.tier ?? 'user') === 'user') {
         if (old) withdraw(old)
         diagnostic(input.name, 'guard', 'Managed Mods protection is not loaded; this user Mod stands down')
-        continue
+        return
       }
       let suggestionSuspended = false
       try {
@@ -3616,28 +3633,32 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (old && !reloading?.has(input.storageId) && sameModDeclaration(old.declaration, declaration)) {
           await refreshDeclarations()
           ensureLive()
-          continue
+          return
         }
         if (old) {
           old.suggestionEligible = false
           suggestionSuspended = true
         }
+        let unsettled: readonly Activation[] | undefined
         {
           const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
           const position = seats.findIndex(owner => owner.declaration === declaration)
-          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[])
-          if (cold && judges.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register')))) {
+          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[], unadmitted)
+          if (cold && judges.some(judgesPlugins)) {
             await buildBootstrap()
-            judges = judges.filter(owner => candidates.includes(owner))
+            // Official 2.1.329 judges plugins after it loaded all of them and validated every module's
+            // registrations. A judge that may still be unloaded for an unprovided event, or refused itself,
+            // cannot refuse this plugin yet: the plugin loads and is judged after the last build, below.
+            const settled = judges.filter(owner => candidates.includes(owner) && !unadmitted.has(owner) &&
+              !(judgesPlugins(owner) && unprovidedEvent(owner, bootstrap!.table, new Map())))
+            if (judges.some(owner => candidates.includes(owner) && !settled.includes(owner) && judgesPlugins(owner))) unsettled = settled
+            judges = settled
           }
           const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
             if (old) withdraw(old)
-            failGuard(input)
-            knownArgs.delete(input.storageId)
-            unloadedSteps.delete(input.storageId)
-            diagnostic(declaration.name, 'admission', refusal)
-            continue
+            refuse(input, declaration.name, refusal)
+            return
           }
         }
         await refreshDeclarations()
@@ -3666,6 +3687,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         }
         if (old) candidates.splice(candidates.indexOf(old), 1, candidate)
         else candidates.push(candidate)
+        if (unsettled) {
+          unadmitted.set(candidate, unsettled)
+          candidate.state = 'candidate'
+        }
         if (old) replacements.set(candidate, old)
       } catch (error) {
         if (suggestionSuspended && old && active.includes(old)) {
@@ -3676,6 +3701,27 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (!old) failGuard(input)
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
+    }
+    for (const input of loading) await load(input)
+    if (unadmitted.size) {
+      await buildBootstrap(true)
+      for (const input of loading) {
+        const owner = candidates.find(owner => owner.declaration.storageId === input.storageId)
+        const asked = owner && unadmitted.get(owner)
+        if (!owner || !asked) continue
+        unadmitted.delete(owner)
+        const seats = [...candidates].sort(seatOrder)
+        const position = seats.indexOf(owner)
+        const refusal = await admit(owner.declaration, judgesFor(owner.declaration, seats.slice(0, position), seats.slice(position + 1)), bootstrap!.table, asked)
+        ensureLive()
+        if (refusal === undefined) {
+          owner.state = 'active'
+          continue
+        }
+        withdraw(owner)
+        refuse(input, owner.declaration.name, refusal)
+      }
+      unadmitted.clear()
     }
     candidates.sort(seatOrder)
     if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) {
