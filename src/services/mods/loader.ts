@@ -1361,24 +1361,24 @@ export async function loadModDeclaration(input: {
     spellings.add(spelling)
     wasmFiles.set(relativePath(target), spellings)
   }
-  const wasm = wasmFiles.size || scanned.wasm.isMadeAtRunTime ? {
-    files: [...wasmFiles].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, spellings]) => ({ path, spellings: [...spellings].sort() })),
-    ...(scanned.wasm.isMadeAtRunTime ? { isMadeAtRunTime: true as const } : {}),
-  } : undefined
   // A saved binary changes the declaration, so the mod reloads with it; a missing one hashes as null.
-  const wasmStamps = await Promise.all((wasm?.files ?? []).map(async file => {
+  const wasmFile = async (path: string) => {
     const hash = createHash('sha256')
     try {
-      for await (const chunk of createReadStream(resolve(root, ...file.path.split('/')))) hash.update(chunk as Buffer)
-    } catch { return { path: file.path, sha256: null } }
-    return { path: file.path, sha256: hash.digest('hex') }
-  }))
+      for await (const chunk of createReadStream(resolve(root, ...path.split('/')))) hash.update(chunk as Buffer)
+    } catch { return { path, spellings: [...wasmFiles.get(path)!].sort(), sha256: null } }
+    return { path, spellings: [...wasmFiles.get(path)!].sort(), sha256: hash.digest('hex') }
+  }
+  const wasm = wasmFiles.size || scanned.wasm.isMadeAtRunTime ? {
+    files: await Promise.all([...wasmFiles.keys()].sort((a, b) => a < b ? -1 : a > b ? 1 : 0).map(wasmFile)),
+    ...(scanned.wasm.isMadeAtRunTime ? { isMadeAtRunTime: true as const } : {}),
+  } : undefined
   // Absolute installation locations are plumbing, not declaration identity.
   const fingerprint = createHash('sha256').update(JSON.stringify({
     entrypoints: entrypoints.map(relativePath),
     modules: modules.map(module => ({ path: relativePath(module.path), source: module.source })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     clients: clients.map(client => ({ path: relativePath(client.path), module: client.module })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-    options: fingerprintOptions, tier, ...(wasm ? { wasm, wasmStamps } : {}),
+    options: fingerprintOptions, tier, ...(wasm ? { wasm } : {}),
   })).digest('hex')
   return {
     name: input.name, storageId: input.storageId, pluginRoot: root,

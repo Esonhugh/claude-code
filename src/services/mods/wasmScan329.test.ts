@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,18 +32,22 @@ test('a literal path is listed as a plugin-relative file with its spelling', asy
   })
   const declaration = await declare(root, 'lib/entry.mjs')
   expect(declaration.calls).toContain('wasm.compile')
-  expect(declaration.wasm).toEqual({ files: [{ path: 'lib/engine.wasm', spellings: ['./engine.wasm'] }] })
+  expect(declaration.wasm).toEqual({ files: [{ path: 'lib/engine.wasm', spellings: ['./engine.wasm'], sha256: createHash('sha256').update(answer()).digest('hex') }] })
 })
 
 test('a saved binary changes the declaration by its content alone', async () => {
   const root = await fixture({ 'entry.mjs': hook(`await $.wasm.compile('./engine.wasm'); return {result:1}`) })
-  const missing = (await declare(root)).fingerprint
+  const missing = await declare(root)
   await writeFile(join(root, 'engine.wasm'), answer())
-  const saved = (await declare(root)).fingerprint
+  const saved = await declare(root)
   await writeFile(join(root, 'engine.wasm'), answer())
-  expect((await declare(root)).fingerprint).toBe(saved)
+  expect(await declare(root)).toEqual(saved)
   await writeFile(join(root, 'engine.wasm'), answer(7))
-  expect(new Set([missing, saved, (await declare(root)).fingerprint]).size).toBe(3)
+  const edited = await declare(root)
+  expect(new Set([missing, saved, edited].map(declaration => declaration.fingerprint)).size).toBe(3)
+  // The runtime compares declarations without their fingerprint, so the hash is in the files themselves.
+  expect([missing, saved, edited].map(declaration => declaration.wasm?.files[0]?.sha256)).toEqual([null,
+    createHash('sha256').update(answer()).digest('hex'), createHash('sha256').update(answer(7)).digest('hex')])
 })
 
 test('bytes made at run time are marked, string expressions refused', async () => {
@@ -51,7 +56,7 @@ test('bytes made at run time are marked, string expressions refused', async () =
   // A name bound to another name is not followed; a template with no substitution is a literal.
   await writeFile(join(root, 'entry.mjs'), `const bytes = new Uint8Array(8); const alias = bytes;
     ${hook('await $.wasm.compile(alias); await $.wasm.compile(`./a.wasm`); return {result:1}')}`)
-  expect((await declare(root)).wasm).toEqual({ files: [{ path: 'a.wasm', spellings: ['./a.wasm'] }], isMadeAtRunTime: true })
+  expect((await declare(root)).wasm).toEqual({ files: [{ path: 'a.wasm', spellings: ['./a.wasm'], sha256: null }], isMadeAtRunTime: true })
   for (const argument of ['`./${"a"}.wasm`', '"./a" + ".wasm"', 'Math.random() ? "./a.wasm" : bytes', '', '...parts', 'name', '42']) {
     await writeFile(join(root, 'entry.mjs'), `const name = './' + 'a.wasm'; const bytes = new Uint8Array(8); const parts = [];
       ${hook(`await $.wasm.compile(${argument}); return {result:1}`)}`)

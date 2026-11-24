@@ -184,3 +184,26 @@ test('a file in the MCP bundle cache is not read', async () => {
   await expect(readModWasmFile(root, '.MCPB-Cache. /x.wasm', 'probe')).rejects.toMatchObject({ name: 'HooksError', message: `probe: ${root}/.MCPB-Cache. /x.wasm: it leads into .mcpb-cache, which Claude Code may have overwritten when it unpacked the plugin's MCP bundles; the plugin's author needs to move it to another folder` })
   expect(await readModWasmFile(root, '.MCPB-Cache. /x.wasm'.replace('Cache', 'Kache'), 'probe').catch(error => error.message)).toBe(`probe: ${root}/.MCPB-Kache. /x.wasm: no such file`)
 })
+
+test('a saved binary reloads the module that compiles it', async () => {
+  const root = await fixture({ 'answer.wasm': answer(), 'entry.mjs': `const loaded = Math.random();
+    export function register(on){on('tool.call', async $ => {
+      const module = await $.wasm.compile('./answer.wasm');
+      return { result: [loaded, (await WebAssembly.instantiate(module)).exports.answer()] } })}` })
+  const runtime = createModsRuntime({ onDiagnostic: () => {} })
+  const input = [{ name: 'probe', storageId: 'probe@fixture', entrypoints: [join(root, 'entry.mjs')], pluginRoot: root }]
+  const call = async () => (await runtime.dispatch('tool.call', {}, async () => ({ result: null })) as { result: [number, number] }).result
+  try {
+    await runtime.bind({ cwd: root, sessionId: 'wasm-329', isInteractive: false, surface: null })
+    await runtime.reconcile(input)
+    const [first, value] = await call()
+    expect(value).toBe(42)
+    await runtime.reconcile(input)
+    expect((await call())[0]).toBe(first)
+    await writeFile(join(root, 'answer.wasm'), answer(9))
+    await runtime.reconcile(input)
+    const [second, edited] = await call()
+    expect(edited).toBe(9)
+    expect(second).not.toBe(first)
+  } finally { await runtime.dispose() }
+})
