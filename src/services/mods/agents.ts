@@ -12,7 +12,7 @@ import type { AppState } from '../../state/AppState.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 
 export type ModAgentStatus = 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
-export type ModAgentInfo = { id: string; teammateId?: string; description: string; type: string; status: ModAgentStatus; parentId?: string; spawnedBy?: string; name?: string }
+export type ModAgentInfo = { id: string; teammateId?: string; description: string; type: string; status: ModAgentStatus; parentId?: string; spawnedBy?: string; name?: string; kind: 'local_agent' | 'in_process_teammate' }
 
 export async function listModAgents(tasks: AppState['tasks'], names: AppState['agentNameRegistry'] = new Map()): Promise<ModAgentInfo[]> {
   const namesById = new Map([...names].map(([name, id]) => [id as string, name]))
@@ -57,6 +57,7 @@ export async function listModAgents(tasks: AppState['tasks'], names: AppState['a
       status, ...(parentId === undefined ? {} : {parentId}),
       ...(task.spawnedBy === undefined ? {} : {spawnedBy:task.spawnedBy}),
       ...(name === undefined ? {} : {name}),
+      kind: task.type,
     })
   }
   return [...result.values()]
