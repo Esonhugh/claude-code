@@ -448,6 +448,10 @@ export async function* query(
     toolHost: () => createModToolHost(catalogContext, params.canUseTool),
     captureUsage: () => captureModSessionUsage(catalogContext),
   }
+  // Hooks in any request reach this agent's tools with $.agent.call while it runs, and after it rests.
+  const releaseAgentToolHost = params.toolUseContext.agentId !== undefined || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk'
+    ? catalogContext.mods?.registerAgentToolHost?.(params.toolUseContext.agentId, resting => createModToolHost(catalogContext, params.canUseTool, resting))
+    : undefined
   const snapshot = catalogContext.mods?.capture(queryServices)
   let registeredTurn = catalogContext.mods?.currentTurn?.(catalogContext.agentId)
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
@@ -483,12 +487,14 @@ export async function* query(
     !handlesAppend
   ) {
     snapshot?.release()
-    const terminal = yield* queryLoop(params, consumedCommandUuids)
-    // Only normal return completes commands; throw and iterator.return() do not.
-    for (const uuid of consumedCommandUuids) {
-      notifyCommandLifecycle(uuid, 'completed')
-    }
-    return terminal
+    try {
+      const terminal = yield* queryLoop(params, consumedCommandUuids, undefined, context => { catalogContext = context })
+      // Only normal return completes commands; throw and iterator.return() do not.
+      for (const uuid of consumedCommandUuids) {
+        notifyCommandLifecycle(uuid, 'completed')
+      }
+      return terminal
+    } finally { releaseAgentToolHost?.() }
   }
 
   const turnId = isPublicTurn ? randomUUID() : registeredTurn?.turnId
@@ -586,6 +592,7 @@ export async function* query(
       }
     } finally {
       endPublicTurn?.()
+      releaseAgentToolHost?.()
       try {
         await params.toolUseContext.modsSession?.finishTurn()
       } catch (error) {

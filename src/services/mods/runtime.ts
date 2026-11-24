@@ -141,6 +141,8 @@ export type ModRequestServices = {
   tools?(): readonly Tool[]
   toolHost?(): {
     tools?(): readonly Tool[]
+    /** False when `$.agent.call` naming `agentId` belongs to another agent's host. */
+    serves?(agentId: string | undefined): boolean
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
@@ -303,6 +305,8 @@ const coreClock = Object.freeze({
 
 // Core noun identity is stable; the caller's activation selects its store and lifetime.
 const hostIdentity = () => { throw new Error('Host calls must use the environment bridge') }
+/** Finished subagents whose tools `$.agent.call` can still reach. */
+const MAX_RESTING_AGENT_TOOL_HOSTS = 100
 const invalidatableEvents = ['ui.render', 'prompt.section', 'prompt.context', 'prompt.attachment', 'tool.describe', 'command.describe', 'config.describe']
 const invalidationError = 'ui.invalidate takes "ui.render", "prompt.section", "prompt.context", "prompt.attachment", "tool.describe", "command.describe" or "config.describe"'
 const coreHost: Nouns = {
@@ -725,6 +729,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let activeHostCallbacks = 0
   const toolNotices = createModToolNotices()
   let agentReportWarnings = new Map<string, string>()
+  // Each agent's tool hosts for `$.agent.call`, by agentId ('' is the main conversation):
+  // its outermost running query's, else the last one's once it rests. The oldest resting subagents are let go.
+  type AgentToolHost = (resting: boolean) => NonNullable<ReturnType<NonNullable<ModRequestServices['toolHost']>>>
+  const agentToolHosts = new Map<string, { live: AgentToolHost[]; resting?: AgentToolHost }>()
   const tools = createModTools({
     notify,
     pluginOf: owner => (owner as Activation).declaration.name,
@@ -2231,12 +2239,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             // The author's own signal cuts an agent call: it resolves as a refusal, and already aborted nothing runs.
             const cut = op === 'agent.call' ? (args[1] as {signal?:AbortSignal} | undefined)?.signal : undefined
             if (cut?.aborted) return {deny:MOD_AGENT_CALL_CUT}
-            const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            const target = op === 'agent.call' ? (input as ModInput).agentId as string | undefined : undefined
+            const host = op === 'agent.call' ? agentCallHost(target) : (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
               return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
             if (ask && (!binding?.isInteractive || !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'AskUserQuestion')))
               throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: no tool named \"AskUserQuestion\" in this session`), {name:'HooksError'})
-            if (!host && op === 'agent.call') return {deny:'No live tool context for the requested agent'}
+            if (!host && op === 'agent.call') return {deny:target === undefined ? 'No live tool context for the requested agent' : `$.agent.call: No transcript found for agent ID: ${target}`}
             if (!host) throw new Error('Tool execution host is unavailable on this host')
             let toolInput = input as ModInput
             if (op === 'session.send') {
@@ -3982,6 +3991,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     void currentRecovery.catch(error => diagnostic('engine', 'recovery', error))
   }
 
+  /** The request's own host when it is the target's, else the target's registered host, else the session's. */
+  function agentCallHost(agentId: string | undefined) {
+    const serving = (host: ReturnType<NonNullable<ModRequestServices['toolHost']>> | undefined) => host?.serves?.(agentId) === false ? undefined : host
+    const held = agentToolHosts.get(agentId ?? '')
+    return serving(requestServices.getStore()?.toolHost?.()) ?? held?.live[0]?.(false) ?? held?.resting?.(true) ?? serving(services.toolHost?.())
+  }
+
   function capture(hostServices: ModRequestServices = {}): ModSnapshot {
     if (stopped) throw new Error('Mods runtime disposed')
     const snapshot = active
@@ -4361,6 +4377,25 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
     currentTurn: (agentId?: string) => turns.current(agentId),
+    /** Makes an agent's tools reachable by `$.agent.call` from any request; the release leaves it resting. */
+    registerAgentToolHost(agentId: string | undefined, host: AgentToolHost): () => void {
+      const key = agentId ?? ''
+      let held = agentToolHosts.get(key)
+      if (!held) agentToolHosts.set(key, held = { live: [] })
+      const hosts = held
+      hosts.live.push(host)
+      return () => {
+        const index = hosts.live.indexOf(host)
+        if (index < 0 || agentToolHosts.get(key) !== hosts) return
+        hosts.live.splice(index, 1)
+        if (hosts.live.length) return
+        hosts.resting = host
+        agentToolHosts.delete(key)
+        agentToolHosts.set(key, hosts)
+        const resting = [...agentToolHosts].filter(([id, held]) => id && !held.live.length)
+        for (const [id] of resting.slice(0, Math.max(0, resting.length - MAX_RESTING_AGENT_TOOL_HOSTS))) agentToolHosts.delete(id)
+      }
+    },
     /** Resolves once turns ended early by a turn.complete hook's queued input have finished their completion. */
     settleTurns: async (): Promise<void> => { await Promise.all([...settlingTurns]) },
     beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
@@ -4383,6 +4418,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       )) return
       if (ending || binding?.sessionId !== next.sessionId) {
         agentReportWarnings = new Map()
+        agentToolHosts.clear()
         retireTurns()
         theme.clear()
         placed.reset()

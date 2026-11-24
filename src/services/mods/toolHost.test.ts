@@ -148,6 +148,51 @@ describe('author tool host through the real executor', () => {
     // tool.call keeps throwing on abort.
     await expect(f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, AbortSignal.abort('mine'), 'probe')).rejects.toBe('mine')
   })
+  test('agent.call reaches other running agents, resting agents and the main conversation', async () => {
+    const agent = (id?: string) => {
+      const f = fixture()
+      f.context.agentId = id as ToolUseContext['agentId']
+      f.context.modRequestTools = {agentId: f.context.agentId, names: new Set([f.tool.name, 'Bash'])}
+      f.context.options.tools = [f.tool, {...f.tool, name: 'Bash', inputSchema: z.strictObject({ value: z.string(), run_in_background: z.boolean().optional() })}]
+      return f
+    }
+    const main = agent(), a = agent('a1'), b = agent('b1')
+    const runtime = createModsRuntime({})
+    const root = await mkdtemp(join(tmpdir(), 'agent-call-targets-'))
+    try {
+      const entry = join(root, 'entry.mjs')
+      await writeFile(entry, `export function register(on){on('tool.call',{tool:'probe'},async($,e)=>({result:await $.agent.call({tool:e.target.tool,input:e.target.input,...(e.target.agentId?{agentId:e.target.agentId}:{})})}))}`)
+      await runtime.reconcile([{name:'probe',storageId:'probe@test',pluginRoot:root,entrypoints:[entry]}])
+      const releaseMain = runtime.registerAgentToolHost(undefined, resting => createModToolHost(main.context, async () => ({behavior:'allow'}), resting))
+      runtime.registerAgentToolHost('a1', resting => createModToolHost(a.context, async () => ({behavior:'allow'}), resting))
+      const releaseB = runtime.registerAgentToolHost('b1', resting => createModToolHost(b.context, async () => ({behavior:'allow'}), resting))
+      // Dispatched from agent a1's own request.
+      const fromA = (target: ModInput) => {
+        const snapshot = runtime.capture({toolHost: () => createModToolHost(a.context, async () => ({behavior:'allow'}))})
+        return snapshot.dispatch('tool.call', {tool:'probe', agentId:'a1', target}, async () => ({result:null})).finally(() => snapshot.release())
+      }
+      expect(await fromA({tool:'AuthorFixture', input:{value:'running'}, agentId:'b1'})).toMatchObject({result:{result:{value:'running'}}})
+      expect(b.calls.map(call => call.context.agentId)).toEqual(['b1' as ToolUseContext['agentId']])
+      expect(await fromA({tool:'AuthorFixture', input:{value:'main'}})).toMatchObject({result:{result:{value:'main'}}})
+      expect(main.calls).toHaveLength(1)
+      // A query nested in b1's own, ending first, leaves b1 running.
+      const inner = agent('b1')
+      runtime.registerAgentToolHost('b1', resting => createModToolHost(inner.context, async () => ({behavior:'allow'}), resting))()
+      inner.context.abortController.abort()
+      expect(await fromA({tool:'AuthorFixture', input:{value:'outer'}, agentId:'b1'})).toMatchObject({result:{result:{value:'outer'}}})
+      expect(inner.calls).toHaveLength(0)
+      // b1 finishes: its loop is gone, yet it still answers calls that end within them.
+      releaseB()
+      b.context.abortController.abort()
+      expect(await fromA({tool:'AuthorFixture', input:{value:'resting'}, agentId:'b1'})).toMatchObject({result:{result:{value:'resting'}}})
+      expect(await fromA({tool:'Bash', input:{value:'x', run_in_background:true}, agentId:'b1'})).toEqual({result:{deny:'Bash was not run: it starts work that outlasts the call, and a resting agent has no loop to hear it or stop it'}})
+      expect(b.calls).toHaveLength(3)
+      expect(await fromA({tool:'AuthorFixture', input:{value:'x'}, agentId:'a0000000000000000'})).toEqual({result:{deny:'$.agent.call: No transcript found for agent ID: a0000000000000000'}})
+      expect(await fromA({tool:'Nope', input:{}, agentId:'b1'})).toEqual({result:{deny:'$.agent.call: that agent has no tool named "Nope"'}})
+      releaseMain()
+      expect(await fromA({tool:'AuthorFixture', input:{value:'main resting'}})).toMatchObject({result:{result:{value:'main resting'}}})
+    } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+  })
   test('target-bound Agent call keeps spawn permissions, nesting limit and Workflow refusal', async () => {
     const f = fixture()
     const target = 'target' as ToolUseContext['agentId']
