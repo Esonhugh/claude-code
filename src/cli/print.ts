@@ -324,7 +324,7 @@ import {
   stopShellTaskAtDeadline,
 } from '../tasks/LocalShellTask/LocalShellTask.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
-import { isLocalAgentTask } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { isLocalAgentTask, stopBackgroundAgentTasks } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import { createSendNow, isSendNowPrompt } from '../utils/sendNow.js'
 import {
   setupSdkMcpClients,
@@ -3735,6 +3735,8 @@ function runHeadlessStreaming(
           if (abortController) {
             abortController.abort()
           }
+          // Like official, an interrupt also stops running background agents, idle session or not.
+          stopBackgroundAgentTasks(getAppState().tasks, setAppState)
           shellAbortController?.abort('user-cancel')
           suggestionState.abortController?.abort()
           suggestionState.abortController = null

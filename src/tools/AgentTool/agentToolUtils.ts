@@ -1014,7 +1014,8 @@ type AgentNotice = Parameters<typeof enqueueAgentNotification>[0]
  * The one end of a background run: agent.report, then the parent's
  * notification, its result built by `message` from the answer. A consumed
  * report notifies no one, but the run counts as notified so nothing waits on
- * it. Returns the answer, or undefined when the run was already notified.
+ * it. Returns the answer, or undefined when the run was already notified. A
+ * run stopped in a sweep counts as notified from the kill, yet still reports.
  */
 export async function notifyAgentEnd(
   toolUseContext: ToolUseContext,
@@ -1025,7 +1026,7 @@ export async function notifyAgentEnd(
   { deliver = true }: { deliver?: boolean } = {},
 ): Promise<AgentReportAnswer | undefined> {
   const task = (toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState)().tasks[notice.taskId]
-  if (isLocalAgentTask(task) && task.notified && !task.waitingNotice) return undefined
+  if (isLocalAgentTask(task) && task.notified && !task.waitingNotice && task.status !== 'killed') return undefined
   const status = notice.status === 'killed' ? 'stopped' : notice.status
   const answer = await withAgentReportSnapshot(toolUseContext, snapshot =>
     reportAgentEnd(snapshot, target, notice.taskId, status, report))

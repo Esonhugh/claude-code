@@ -639,6 +639,24 @@ export function killAllRunningAgentTasks(
 }
 
 /**
+ * Stop the live background agents, as official does on a print-mode
+ * interrupt: each reports stopped and SDK consumers see it end, but the model
+ * gets no notification. The turn's abort stops foreground agents itself.
+ */
+export function stopBackgroundAgentTasks(
+  tasks: Record<string, TaskState>,
+  setAppState: SetAppState,
+): LocalAgentTaskState[] {
+  const stopped = Object.values(tasks).filter(isLiveLocalAgentTask).filter(task => task.isBackgrounded)
+  for (const task of stopped) {
+    killAsyncAgent(task.id, setAppState, 'user')
+    markAgentsNotified(task.id, setAppState)
+    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description })
+  }
+  return stopped
+}
+
+/**
  * Mark a task as notified without enqueueing a notification.
  * Used by chat:killAgents bulk kill to suppress per-agent async notifications
  * when a single aggregate message is sent instead.

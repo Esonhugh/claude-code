@@ -6,9 +6,11 @@ import type { AppState } from '../../state/AppState.js'
 import {
   isLocalAgentTask,
   registerAsyncAgent,
+  stopBackgroundAgentTasks,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { AbortError } from '../../utils/errors.js'
 import { getCommandQueue } from '../../utils/messageQueueManager.js'
+import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import {
   beginSubagentHandback,
   deliverSubagentHandback,
@@ -211,5 +213,22 @@ await run('agent-report-workflow', async function* () {
 }, { unreported: true })
 assert.equal(reports.length, before)
 assert.match(String(queued('agent-report-workflow')[0]?.value), /workflow done/)
+
+// A print-mode interrupt's sweep: the run still reports stopped, SDK consumers see it end once, and the model is not told.
+drainSdkEvents()
+const sweptTask = await run('agent-report-swept', async function* (abort) {
+  yield assistant('halfway')
+  assert.deepEqual(stopBackgroundAgentTasks(state.tasks, setAppState).map(task => task.id), ['agent-report-swept'])
+  abort.abort()
+  throw new AbortError('stopped')
+})
+assert.equal(sweptTask.status, 'killed')
+assert.equal(lastReport()?.agentId, 'agent-report-swept')
+assert.equal(lastReport()?.status, 'stopped')
+assert.equal(queued('agent-report-swept').length, 0)
+assert.deepEqual(
+  drainSdkEvents().filter(event => event.subtype === 'task_notification').map(event => [event.task_id, event.status]),
+  [['agent-report-swept', 'stopped']],
+)
 
 console.log('agentReport.background.test.ts passed')
