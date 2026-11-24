@@ -501,22 +501,23 @@ export function enqueueAgentNotification({
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${userSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
-  // Like official 2.1.311, SDK consumers get task_notification as the agent
-  // stops, before it leaves background_tasks_changed; a finished agent's
-  // summary is its result text.
+  // Like official 2.1.329, SDK consumers get task_notification as the agent
+  // stops, before it leaves background_tasks_changed. A finished agent's
+  // summary is its result text and carries its usage; a failed one's is the
+  // error it failed on, a stopped one's its description.
   emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
     toolUseId,
     summary:
-      status === 'completed' && !waiting && finalMessage
-        ? finalMessage
-        : summaryText,
+      status === 'completed'
+        ? !waiting && finalMessage ? finalMessage : summaryText
+        : status === 'failed' ? error || 'Unknown error' : description,
     outputFile: outputPath,
     waiting,
-    usage: usage && {
+    usage: status === 'completed' && usage ? {
       total_tokens: usage.totalTokens,
       tool_uses: usage.toolUses,
       duration_ms: usage.durationMs,
-    },
+    } : undefined,
   })
   const markNotified = () =>
     updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>

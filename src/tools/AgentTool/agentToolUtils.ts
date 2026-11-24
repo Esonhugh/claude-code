@@ -554,12 +554,14 @@ export class AgentApiError extends Error {
   }
 }
 
-export function getAgentTerminalError(messages: MessageType[]): Error | undefined {
+// Like official 2.1.329, a run that ended on an API error fails with the termination text,
+// which the task's error, its SDK task_notification summary and the parent's notice all show.
+export function getAgentTerminalError(messages: MessageType[], runModel: string): Error | undefined {
   const lastAssistantMessage = getLastAssistantMessage(messages)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
-  const message = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const message = agentApiTerminationText(messages, runModel) ?? extractTextContent(lastAssistantMessage.message.content, '\n').trim()
   return new AgentApiError(
     message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
     lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
@@ -669,7 +671,7 @@ export function finalizeAgentTool(
   if (lastAssistantMessage === undefined) {
     throw new Error('No assistant messages found')
   }
-  const terminalError = getAgentTerminalError(agentMessages)
+  const terminalError = getAgentTerminalError(agentMessages, resolvedAgentModel)
   if (terminalError) throw terminalError
   const unresolvedToolUses = findUnresolvedToolUses(agentMessages)
   if (unresolvedToolUses.length > 0) {

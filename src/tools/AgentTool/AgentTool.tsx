@@ -2297,7 +2297,7 @@ export const AgentTool = buildTool({
               )
             }
 
-            const terminalAgentError = getAgentTerminalError(agentMessages)
+            const terminalAgentError = getAgentTerminalError(agentMessages, metadata.resolvedAgentModel)
             syncAgentError ??= terminalAgentError
 
             // Unregister foreground task if agent completed without being backgrounded
@@ -2313,8 +2313,9 @@ export const AgentTool = buildTool({
                   : wasAborted
                     ? 'stopped'
                     : 'completed'
-                // Like official 2.1.318, a foreground agent's end also arrives
-                // as task_updated, and a finished agent's summary is its result.
+                // Like official 2.1.329, a foreground agent's end also arrives
+                // as task_updated; the summary is its description, or the error
+                // it failed on, and output_file names its transcript.
                 enqueueSdkEvent({
                   type: 'system',
                   subtype: 'task_updated',
@@ -2331,16 +2332,15 @@ export const AgentTool = buildTool({
                   task_id: foregroundTaskId,
                   tool_use_id: toolUseContext.toolUseId,
                   status,
-                  output_file: '',
-                  summary:
-                    (status === 'completed' &&
-                      extractPartialResult(agentMessages)) ||
-                    description,
-                  usage: {
-                    total_tokens: progress.tokenCount,
-                    tool_uses: progress.toolUseCount,
-                    duration_ms: Date.now() - agentStartTime,
-                  },
+                  output_file: getTaskOutputPath(foregroundTaskId),
+                  summary: syncAgentError?.message ?? description,
+                  ...(status === 'completed' && {
+                    usage: {
+                      total_tokens: progress.tokenCount,
+                      tool_uses: progress.toolUseCount,
+                      duration_ms: Date.now() - agentStartTime,
+                    },
+                  }),
                 })
               }
             }
