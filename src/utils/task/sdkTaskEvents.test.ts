@@ -156,23 +156,36 @@ test('a failed or stopped subagent sends its error or description as the summary
   }
 })
 
-// Like official 2.1.329, an interrupt's stopped agents end, then leave the background list.
-test('an interrupt stops background agents, each ending before it leaves the background list', async () => {
+// Like official 2.1.329, an interrupt's stopped tasks end, then leave the background list.
+test('an interrupt stops background agents and workflows, each ending before it leaves the background list', async () => {
   const { stopBackgroundAgentTasks } = await import('../../tasks/LocalAgentTask/LocalAgentTask.js')
+  const { stopRunningWorkflowTasks } = await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
+  const workflowAbort = new AbortController()
   registerTask(agentTask, setAppState)
   registerTask({ ...agentTask, id: 'a2', isBackgrounded: false } as unknown as TaskState, setAppState)
+  registerTask({
+    id: 'w1', type: 'local_workflow', status: 'running', description: 'probe workflow', toolUseId: 'toolu_2',
+    startTime: 1, outputFile: '', outputOffset: 0, notified: false, abortController: workflowAbort, phases: [], results: [], events: [],
+  } as unknown as TaskState, setAppState)
   drainSdkEvents()
 
   expect(stopBackgroundAgentTasks(state.tasks, setAppState).map(task => task.id)).toEqual(['a1'])
+  expect(stopRunningWorkflowTasks(state.tasks, setAppState).map(task => task.id)).toEqual(['w1'])
   const ended = events()
   expect(ended.map(e => [e.subtype, 'task_id' in e ? e.task_id : undefined])).toEqual([
     ['task_updated', 'a1'],
     ['task_notification', 'a1'],
     ['background_tasks_changed', undefined],
+    ['task_updated', 'w1'],
+    ['task_notification', 'w1'],
+    ['background_tasks_changed', undefined],
   ])
   expect(ended[1]).toMatchObject({ status: 'stopped', summary: 'probe', tool_use_id: 'toolu_1', output_file: expect.stringContaining('a1.output') })
-  expect(ended[2]).toMatchObject({ tasks: [] })
+  expect(ended[4]).toMatchObject({ status: 'stopped', summary: 'probe workflow', tool_use_id: 'toolu_2', output_file: expect.stringContaining('w1.output') })
+  expect(ended[5]).toMatchObject({ tasks: [] })
+  expect(workflowAbort.signal.aborted).toBe(true)
   expect(state.tasks.a2?.status).toBe('running')
+  expect(state.tasks.w1).toMatchObject({ status: 'killed', notified: true })
 })
 
 // Like official 2.1.318: a subagent launched from inside another agent names
