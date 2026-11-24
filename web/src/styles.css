@@ -9,6 +9,8 @@
   --f-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
+/* Dark and the palettes are for the screen; a print is always ink on white (@media print below). */
+@media screen {
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
@@ -36,6 +38,7 @@
 :root[data-palette="mono"] { --mod-black: #0a0a0a; --mod-white: #8f8f8f; --mod-gray: #616161; --mod-grey: #616161 }
 @media (prefers-color-scheme: dark) { :root[data-palette="mono"]:not([data-theme="light"]) { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 } }
 :root[data-palette="mono"][data-theme="dark"] { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 }
+}
 .swatch { display: inline-flex; width: 12px; height: 12px; border-radius: 999px; margin-right: 6px; vertical-align: -1px; border: 1px solid var(--line); overflow: hidden } .swatch i { flex: 1 }
 
 * { box-sizing: border-box }
@@ -945,8 +948,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .codeblock-body, .codeblock-body pre.shiki { margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre; overflow-wrap: normal; background: transparent !important; font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5 }
 .codeblock-body:has(pre.shiki) { padding: 0 }
 .codeblock-body code { background: none; padding: 0 }
-:root[data-theme="dark"] .shiki, :root[data-theme="dark"] .shiki span { color: var(--shiki-dark) !important }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shiki, :root:not([data-theme="light"]) .shiki span { color: var(--shiki-dark) !important } }
+@media screen { :root[data-theme="dark"] .shiki, :root[data-theme="dark"] .shiki span { color: var(--shiki-dark) !important } }
+@media screen and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shiki, :root:not([data-theme="light"]) .shiki span { color: var(--shiki-dark) !important } }
 .mermaid { margin: 0 0 8px; overflow-x: auto; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px }
 .math-block { overflow-x: auto; margin: 0 0 8px }
 .math-src { font-family: var(--f-mono) }
