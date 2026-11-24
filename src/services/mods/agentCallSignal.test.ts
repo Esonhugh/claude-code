@@ -120,3 +120,14 @@ test('options.signal must be an AbortSignal, null included; an absent one is no 
   } })
   expect(calls).toHaveLength(3)
 })
+
+test('malformed arguments are refused with the official host-check text', async () => {
+  const { calls, run } = await setup(async () => ({ result: 'ok', text: 'ok' }),
+    `const refused = []
+      for (const bad of [undefined, { tool: 1, input: {} }, { tool: 'Bash' }, { tool: 'Bash', input: 'x' }, { tool: 'Bash', input: {}, agentId: 2 }, { tool: 'Bash', input: {}, agentId: '' }])
+        try { await (bad === undefined ? $.agent.call() : $.agent.call(bad)) } catch (error) { refused.push({ name: error.name, message: error.message }) }
+      return { result: refused }`)
+  const text = "cutter: agent.call: takes { tool, input, agentId? } (the tool's name, its arguments, an object, and the id of the agent whose call it is) (host check)"
+  expect(await run()).toEqual({ result: Array(6).fill({ name: 'HooksError', message: text }) })
+  expect(calls).toHaveLength(0)
+})

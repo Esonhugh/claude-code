@@ -1154,7 +1154,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const signal = (args[1] as { signal?: unknown } | null | undefined)?.signal
         if (signal !== undefined && !(signal instanceof AbortSignal))
           throw Object.assign(new Error(`${plugin}: $.agent.call options.signal must be an AbortSignal`), {name:'HooksError'})
-        if (args.length > 2 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && typeof value.agentId !== 'string') throw new TypeError('agent.call takes {tool, input, agentId?}')
+        if (args.length > 2 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && (typeof value.agentId !== 'string' || !value.agentId))
+          throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}agent.call: takes { tool, input, agentId? } (the tool's name, its arguments, an object, and the id of the agent whose call it is) (host check)`), {name:'HooksError'})
         return {tool:value.tool, input:value.input, ...(value.agentId !== undefined && {agentId:value.agentId})}
       }
       case 'tool.call': {
