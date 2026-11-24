@@ -1,8 +1,10 @@
+import { createHash } from 'crypto'
 import type { Dirent, Stats } from 'fs'
 import { readdir, readFile, realpath, stat } from 'fs/promises'
 import * as path from 'path'
 import { z } from 'zod/v4'
 import { loadModDeclaration } from '../../services/mods/loader.js'
+import { modWasmSharedMemoryReason, readModWasmFile } from '../../services/mods/wasm.js'
 import {
   parseModTypeContract,
   validateModStateReferences,
@@ -870,6 +872,35 @@ async function validateHooksJson(
           ...declaration.nextTiers.map(tier => `next.to:${tier}`),
         ].join(', ') || 'nothing on $'}`,
       )
+      // Each listed binary is read and compiled as $.wasm.compile would; one that fails is an error.
+      for (const file of declaration.wasm?.files ?? []) {
+        const fail = (message: string) => errors.push({ path: `modules.${modulePath}`, message })
+        let bytes: Buffer
+        try {
+          bytes = Buffer.from(await readModWasmFile(pluginRoot, file.path, owner), 'base64')
+        } catch (error) {
+          fail(errorMessage(error))
+          continue
+        }
+        let module: WebAssembly.Module
+        try {
+          module = await WebAssembly.compile(bytes)
+        } catch (error) {
+          fail(`${file.path}: ${errorMessage(error)}`)
+          continue
+        }
+        const shared = modWasmSharedMemoryReason(bytes)
+        if (shared) {
+          fail(`${file.path}: ${owner}: $.wasm.compile: ${shared}`)
+          continue
+        }
+        notes.push(
+          `${modulePath} wasm ${file.path}: ${bytes.length} bytes, sha256 ${createHash('sha256').update(bytes).digest('hex')}`,
+          `${modulePath} wasm ${file.path} imports: ${WebAssembly.Module.imports(module).map(entry => `${entry.module}.${entry.name} (${entry.kind})`).join(', ') || 'nothing'}`,
+          `${modulePath} wasm ${file.path} exports: ${WebAssembly.Module.exports(module).map(entry => `${entry.name} (${entry.kind})`).join(', ') || 'nothing'}`,
+        )
+      }
+      if (declaration.wasm?.isMadeAtRunTime) notes.push(`${modulePath} wasm: bytes made at run time`)
       if (!declaration.state) continue
       for (const direction of ['writes', 'reads'] as const) {
         notes.push(
