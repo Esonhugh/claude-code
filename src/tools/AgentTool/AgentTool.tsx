@@ -25,7 +25,6 @@ import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { restoreModAgentSpawnInput, validateModAgentSpawnInput } from '../../services/mods/agents.js'
-import { deliverAgentReport } from '../../services/mods/agentReport.js'
 import { isAgentOffered, providerForAgent } from '../../services/mods/agentOffer.js'
 import type { ModInput } from '../../services/mods/types.js'
 import {
@@ -121,8 +120,8 @@ import {
   agentReportOf,
   type AgentReportTarget,
   agentToolResultSchema,
+  applyAgentReport,
   backgroundHandoffReview,
-  classifyHandoffIfNeeded,
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
@@ -130,8 +129,10 @@ import {
   getLastToolUseName,
   notifyAgentEnd,
   parkedAgentEnd,
+  reportAgentEnd,
   reportedAgentMessage,
   resolveAgentTools,
+  reviewAgentHandoff,
   runAsyncAgentLifecycle,
   reportObservedAgentProgress,
   unreviewedAgentReport,
@@ -2386,7 +2387,8 @@ export const AgentTool = buildTool({
             if (!hasAssistantMessages) {
               // No messages collected, re-throw the error
               spawnedSubagent?.failed()
-              throw syncAgentError
+              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport(''))
+              throw 'consumed' in answer ? new Error(answer.consumed) : syncAgentError
             }
 
             // We have some messages, try to finalize and return them
@@ -2403,51 +2405,23 @@ export const AgentTool = buildTool({
           )
           spawnedSubagent?.completed()
 
-          const reportSnapshot = toolUseContext.modsSnapshot
-          if (!workflowFraming && agentResult.handback === undefined && reportSnapshot && (reportSnapshot.hasHooks('agent.report') || reportSnapshot.agentReportWarnings?.has(syncAgentId))) {
-            const original = subagentResultText(agentResult)
-            const report = await deliverAgentReport(reportSnapshot, {
-              agentId:syncAgentId, subagentType:selectedAgent.agentType, provider:providerForAgent(selectedAgent,reportSnapshot),
-              ...(toolUseContext.agentId && {parentAgentId:toolUseContext.agentId}), status:syncAgentError ? 'failed' : 'completed', text:original,
-            }, async () => {
-              if (!feature('TRANSCRIPT_CLASSIFIER') || toolUseContext.getAppState().toolPermissionContext.mode !== 'auto') return {review:'off'}
-              let review: 'none' | 'flagged' | 'cleared' | 'unavailable' = 'none'
-              const warning = await classifyHandoffIfNeeded({agentMessages, tools:toolUseContext.options.tools,
-                toolPermissionContext:toolUseContext.getAppState().toolPermissionContext, abortSignal:toolUseContext.abortController.signal,
-                subagentType:selectedAgent.agentType, totalToolUseCount:agentResult.totalToolUseCount, onReview:value => {review=value}})
-              return {review, ...(warning && {warning})}
-            })
-            if ('consumed' in report) agentResult.content = [{type:'text',text:report.consumed}]
-            else {
-              if (report.text !== original) agentResult.content = [{type:'text', text:report.text}]
-              if (report.warning) agentResult.content.unshift({type:'text',text:report.warning})
-            }
-          } else if (
-            feature('TRANSCRIPT_CLASSIFIER') &&
-            agentResult.handback === undefined
-          ) {
-            const currentAppState = toolUseContext.getAppState()
-            const handoffWarning = await classifyHandoffIfNeeded({
-              agentMessages,
-              tools: toolUseContext.options.tools,
-              toolPermissionContext: currentAppState.toolPermissionContext,
-              abortSignal: toolUseContext.abortController.signal,
-              subagentType: selectedAgent.agentType,
-              totalToolUseCount: agentResult.totalToolUseCount,
-            })
-            if (handoffWarning) {
-              agentResult.content = [
-                { type: 'text' as const, text: handoffWarning },
-                ...agentResult.content,
-              ]
-            }
-          }
+          // A partial result after an error is still what the parent reads, so it is reviewed too.
+          const report = agentReportOf(agentResult, () => reviewAgentHandoff({
+            agentMessages,
+            tools: toolUseContext.options.tools,
+            toolPermissionContext: toolUseContext.getAppState().toolPermissionContext,
+            abortSignal: toolUseContext.abortController.signal,
+            subagentType: selectedAgent.agentType,
+            totalToolUseCount: agentResult.totalToolUseCount,
+          }))
+          const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, syncAgentError ? 'failed' : 'completed', report)
+          const reported = applyAgentReport(agentResult, report, answer)
 
           return {
             data: {
               status: 'completed' as const,
               prompt,
-              ...agentResult,
+              ...reported,
               ...worktreeResult,
               canContinueAgent: canContinueAgent(toolUseContext.options.tools),
             },

@@ -151,6 +151,24 @@ const call = (context: TestContext, description: string) =>
     { message: { id: `msg_parent_${description}` } } as never,
   )
 
+// A hand-back run is reported, its own verdict as the review; the answer replaces the report under the frame.
+{
+  script = 'handback'
+  hook = async (input, next) => {
+    const below = await next(input)
+    reviews.push(below)
+    return { text: 'REPORT-BETA' }
+  }
+  const result = await call(createContext(), 'handback')
+  assert.equal(reports.length, 1)
+  assert.equal(reports[0]?.status, 'completed')
+  assert.equal(reports[0]?.text, 'REPORT-ALPHA')
+  assert.equal((reviews[0] as { review?: string }).review, 'cleared')
+  assert.equal(result.data.status, 'completed')
+  assert.match(JSON.stringify(result.data), /REPORT-BETA/)
+  assert.doesNotMatch(JSON.stringify(result.data), /REPORT-ALPHA/)
+}
+
 // Interrupting the parent stops the foreground run and leaves no task running.
 {
   script = 'interrupted'
