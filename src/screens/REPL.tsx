@@ -768,12 +768,14 @@ function median(values: number[]): number {
 }
 
 /**
- * Esc at an empty prompt between turns stops the main thread's dispatched
- * REPL scripts. Official 325 stops them with `ReplSessions.interrupt([qx])`
- * during a turn, and between turns through the background task each eval
- * registers (`Rds`; stopping it calls `kge.abort(…, "person")`), both with
- * the reason "user-cancel". Capture phase so it runs before PromptInput's
- * double-Esc; with nothing pending it returns false and the key falls through.
+ * Esc or Ctrl+C at an empty prompt between turns stops the main thread's
+ * dispatched REPL scripts, raising session.stop { isTurnRunning: false } first
+ * without waiting on it (official 329 "stop-background-work"). Official 325
+ * stops them with `ReplSessions.interrupt([qx])` during a turn, and between
+ * turns through the background task each eval registers (`Rds`; stopping it
+ * calls `kge.abort(…, "person")`), both with the reason "user-cancel". Capture
+ * phase so it runs before PromptInput's double-Esc and the double-Ctrl+C exit;
+ * with nothing pending it returns false and the key falls through.
  * Must be rendered inside KeybindingSetup to access keybinding context.
  */
 function ReplEvalCancelHandler({ isActive, modsSession }: { isActive: boolean; modsSession?: ModsSession }): null {
@@ -790,6 +792,11 @@ function ReplEvalCancelHandler({ isActive, modsSession }: { isActive: boolean; m
   }, [modsSession])
   useKeybinding('chat:cancel', stopDispatchedReplEvals, {
     context: 'Chat',
+    isActive: isActive && !isOverlayActive && !isViewingTeammate,
+    capture: true,
+  })
+  useKeybinding('app:interrupt', stopDispatchedReplEvals, {
+    context: 'Global',
     isActive: isActive && !isOverlayActive && !isViewingTeammate,
     capture: true,
   })

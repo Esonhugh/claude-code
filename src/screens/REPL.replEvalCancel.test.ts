@@ -93,9 +93,25 @@ test('the handler is mounted beside CancelRequestHandler, only between turns, in
   expect(elements).toHaveLength(1)
   expect(elements[0]!.attributes.getText(file)).toContain('!isLoading')
   expect(elements[0]!.attributes.getText(file)).toContain('!inputValue')
-  const binding = find((node): node is ts.CallExpression =>
+  const bindings = find((node): node is ts.CallExpression =>
     ts.isCallExpression(node) && node.expression.getText(file) === 'useKeybinding' &&
     node.arguments[1]?.getText(file) === 'stopDispatchedReplEvals')
-  expect(binding).toHaveLength(1)
-  expect(binding[0]!.arguments[2]!.getText(file)).toContain('capture: true')
+  expect(bindings.map(b => b.arguments[0]!.getText(file))).toEqual(["'chat:cancel'", "'app:interrupt'"])
+  for (const binding of bindings) expect(binding.arguments[2]!.getText(file)).toContain('capture: true')
+  // Ctrl+C is Global: it must run before the double-press exit and PromptInput's own interrupt.
+  expect(bindings[1]!.arguments[2]!.getText(file)).toContain("context: 'Global'")
+})
+
+// Official 329: Ctrl+C at an empty prompt with stoppable scripts ("stop-background-work") raises
+// session.stop { isTurnRunning: false } and then interrupts them, without waiting on the hooks.
+test('stopping scripts raises session.stop before the abort and does not wait on it', () => {
+  const s = scope(1)
+  const order: string[] = []
+  const values = {
+    ...s.values,
+    abortPendingReplEvals: () => order.push('abort'),
+    modsSession: { runtime: { notifySessionStop: (busy: boolean) => (order.push(`stop:${busy}`), new Promise(() => {})) } },
+  }
+  expect(escHandler()(values)).toBeUndefined()
+  expect(order).toEqual(['stop:false', 'abort'])
 })
