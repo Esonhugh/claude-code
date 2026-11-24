@@ -52,6 +52,12 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   storeMethods.set(call, method)
   return call
 }
+const wasmBridges = new WeakSet<HostFunction>()
+/** Marks `$.wasm.compile`: the Worker copies its bytes and compiles the answer in the caller's environment. */
+export function createModWasmBridge<T extends HostFunction>(call: T): T {
+  wasmBridges.add(call)
+  return call
+}
 const interfaceBridges = new WeakMap<HostFunction, string>()
 export function createModInterfaceBridge<T extends HostFunction>(call: T, operation: string): T {
   interfaceBridges.set(call, operation)
@@ -334,7 +340,7 @@ export function createModEnvironmentHost({
       const stateMethod = stateMethods.get(value as HostFunction)
       const modelMethod = modelMethods.get(value as HostFunction)
       const signalOption = signalOptions.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(mutableResults.has(value as HostFunction) ? {mutableResult:true} : {}), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}), ...(signalOption ? {signalOption} : {}) }
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(mutableResults.has(value as HostFunction) ? {mutableResult:true} : {}), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}), ...(signalOption ? {signalOption} : {}), ...(wasmBridges.has(value as HostFunction) ? {wasmMethod:'compile' as const} : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)

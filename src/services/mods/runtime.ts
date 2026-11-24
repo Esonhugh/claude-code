@@ -51,7 +51,8 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost, MOD_AGENT_CALL_CUT } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, createModSignalOptionBridge, type ModEnvironment } from './environment.js'
+import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, createModSignalOptionBridge, createModWasmBridge, type ModEnvironment } from './environment.js'
+import { modWasmBase64Problem, readModWasmFile } from './wasm.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
@@ -329,6 +330,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
+  wasm: { compile: hostIdentity },
   ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, place: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notify: hostIdentity, cancelNotify: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
@@ -1186,6 +1188,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'fs.list': return checkFsPath(op, { path: args[0] ?? '.' }, plugin)
       case 'fs.write': return checkFsPath(op, { path: args[0], text: args[1] }, plugin)
       case 'env.get': return { name: args[0] }
+      case 'wasm.compile': {
+        // The Worker sends the literal path, or the bytes it copied as base64.
+        const source = args[0] as { path?: unknown; base64?: unknown } | undefined
+        if (typeof source?.path === 'string' && source.base64 === undefined) return { path: source.path }
+        const problem = modWasmBase64Problem(source?.base64)
+        if (problem) throw Object.assign(new TypeError(`${plugin}: $.wasm.compile takes a path or bytes (got ${problem})`), {name:'HooksError'})
+        return { base64: source!.base64 }
+      }
       case 'env.set': return { name: args[0], value: args[1] }
       case 'store.get': case 'store.delete': return { key: args[0] }
       case 'store.set': return { key: args[0], value: args[1] }
@@ -1948,6 +1958,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           : undefined
         const coreSignal = modelOwned?.signal ?? modelInvocation?.signal ?? signal
         try {
+          if (fn === hostIdentity && op === 'wasm.compile') return await compileWasm(owner, input as ModInput, snapshot, table, signal, caller)
           // State and drawing belong to this runtime, not to production host providers.
           if (testTerminal(op)) {
             const result = await withReference(owner, () => dispatch(op, input as ModInput,
@@ -2565,6 +2576,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
       if (noun === 'agent' && methods.call === hostIdentity && wrapped.call) createModSignalOptionBridge(wrapped.call, 'agent.call')
       if (noun === 'session' && methods.version === hostIdentity && wrapped.version) createModMutableResultBridge(wrapped.version)
+      if (noun === 'wasm' && methods.compile === hostIdentity && wrapped.compile) createModWasmBridge(wrapped.compile)
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
           if (methods[method] === hostIdentity && wrapped[method])
@@ -2582,6 +2594,36 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         : Object.freeze(wrapped)
     }
     return Object.freeze(result)
+  }
+
+  // The host reads only a file the scan listed under the spelling the call used, then
+  // hooks on wasm.compile see (and may replace) its bytes; the path is pinned.
+  async function compileWasm(owner: Activation, input: ModInput, snapshot: readonly Activation[], table: Nouns,
+    signal: AbortSignal | undefined, caller: { plugin: string; registrationId: number } | undefined) {
+    const name = owner.declaration.name
+    const refused = (reason: string) => Object.assign(new Error(`${name}: $.wasm.compile refused: ${reason}`), {name:'HooksError'})
+    const files = owner.declaration.wasm?.files ?? []
+    let path: string | undefined
+    let base64 = input.base64 as string | undefined
+    if (typeof input.path === 'string') {
+      const named = files.filter(file => file.spellings.includes(input.path as string))
+      if (named.length !== 1)
+        throw refused(`a path is a string literal in the call itself, and its hooks module names no such file that way (host rule; the scan lists ${files.map(file => file.path).join(', ') || 'nothing'})`)
+      path = named[0]!.path
+      base64 = await readModWasmFile(owner.declaration.pluginRoot, path, name, signal)
+    } else if (!owner.declaration.wasm?.isMadeAtRunTime) throw refused('its hooks module passes bytes in no $.wasm.compile call (host rule)')
+    if (stopped || owner.state === 'disposed')
+      throw refused('the hooks module that made the call is no longer loaded (it was reloaded or removed)')
+    const result = await withReference(owner, () => dispatch('wasm.compile', { ...(path ? { path } : {}), base64 }, async rewritten => {
+      const problem = modWasmBase64Problem(rewritten.base64)
+      if (problem) throw Object.assign(new TypeError(`${name}: $.wasm.compile: next() passed ${problem}`), {name:'HooksError'})
+      return { value: { base64: rewritten.base64 } }
+    }, snapshot, table, {
+      signal, origin: { plugin: name, tier: owner.declaration.tier },
+      ...(caller ? { caller } : {}),
+    })) as { value?: { base64: string }; deny?: string }
+    if (typeof result.deny === 'string') throw Object.assign(new Error(`${name}: $.wasm.compile: ${result.deny}`), {name:'HooksError'})
+    return result.value
   }
 
   function capabilityResult(op: string, result: { value?: unknown; deny?: string }) {
@@ -2817,6 +2859,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'wasm.compile') {
+      const envelope = result as { value?: { base64?: unknown } | null; deny?: unknown } | null
+      if (typeof envelope?.deny === 'string' && envelope.value === undefined) return
+      const problem = envelope?.value && typeof envelope.value === 'object' ? modWasmBase64Problem(envelope.value.base64) : 'no value'
+      if (problem) throw new TypeError(`wasm.compile must return { value: { base64 } } or { deny } (got ${problem})`)
+      return
+    }
     if (event === 'agent.report') {
       const answer = result as {text?: unknown; consumed?: unknown} | null
       if (!answer || !(typeof answer.text === 'string' && answer.consumed === undefined || typeof answer.consumed === 'string' && answer.text === undefined)) throw new TypeError('agent.report must return text or consumed')

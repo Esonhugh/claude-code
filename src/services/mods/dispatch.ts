@@ -450,6 +450,8 @@ export async function dispatchModEvent(options: {
           ? ['command', 'origin', 'presentation']
           : options.event === 'env.get' || options.event === 'env.set'
             ? ['name']
+          : options.event === 'wasm.compile'
+            ? ['path']
             : options.event === 'session.stop'
               ? ['isTurnRunning']
             : options.event === 'session.end'
@@ -725,6 +727,8 @@ export async function dispatchModEvent(options: {
               ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed ${key} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`), {name:'HooksError'})
               : options.event === 'telemetry.log'
               ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed to (pinned)`), {name:'HooksError'})
+              : options.event === 'wasm.compile'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed path (the file asked for; next(e) passes it on)`), {name:'HooksError'})
               : new Error(`Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`),
           )
       }
