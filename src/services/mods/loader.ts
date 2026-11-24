@@ -44,6 +44,13 @@ const supportedEvents = new Set([
 ])
 const telemetryStreams = ['anthropic', 'collector']
 const telemetryStreamHint = '"to" is a string literal, or a list of them, from "anthropic", "collector", written in the call, so the streams a module\'s hooks stand on can be listed'
+// Official 2.1.329 ends every scan refusal with this.
+const spellingHint = '$ is always spelled $.noun.event(...) at the call site, on is always on("<event>", hook), and next.to always next.to(e, "<tier>")'
+const itselfUses: Record<string, string> = {
+  VariableDeclarator: 'bound to a name', AssignmentExpression: 'assigned', SpreadElement: 'spread', ReturnStatement: 'returned',
+  ArrowFunctionExpression: 'returned', Property: 'put in an object', ArrayExpression: 'put in an array',
+  ChainExpression: 'optionally chained', TemplateLiteral: 'put in a template',
+}
 
 const scanOnlyEvents = new Set([
   'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text',
@@ -110,6 +117,17 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   let returningEngine = false
   let returningRegister = false
   let path = entrypoints[0]!
+  const parents = new WeakMap<Node, Node>()
+  for (const program of programs.values()) {
+    const stack = [program]
+    while (stack.length) {
+      const node = stack.pop()!
+      for (const child of children(node)) {
+        parents.set(child, node)
+        stack.push(child)
+      }
+    }
+  }
 
   function cachedScope(key: object, outer: Scope, signature: string, create: () => Scope): Scope {
     let parents = scopes.get(key)
@@ -738,6 +756,23 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return !!value && ['engine', 'beneath'].includes(value.role) && !value.members.length
   }
 
+  function isItself(node: Node | undefined, scope: Scope): boolean {
+    const value = node && capabilityValue(node, scope)
+    return !!value && value.role === 'engine' && !value.members.length
+  }
+
+  // Official 2.1.329 takes $ only as $.noun.event(...), $.plugin or the argument of a plain helper call.
+  function refuseItself(node: Node): never {
+    let use = node
+    let parent = parents.get(use)
+    while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+    const how = parent?.type === 'CallExpression' || parent?.type === 'NewExpression'
+      ? parent.callee === use ? 'called' : 'passed as an argument'
+      : parent === undefined ? 'used' : itselfUses[parent.type] ?? `used in a ${parent.type}`
+    const line = node.loc?.start.line
+    fail(path, `${line === undefined ? '' : `compiled line ${line}: `}$ itself is ${how} (bound, passed, spread, returned or read); ${spellingHint}`)
+  }
+
   function visit(node: Node | null | undefined, scope: Scope, event?: string, standalone = false) {
     if (!node) return
     if (registers.has(node)) {
@@ -763,7 +798,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           visitPattern(item.id, scope, event)
           if ((node.kind === 'let' || node.kind === 'var') && item.init) captureWrite(item.id, item.init, item, scope)
           const alias = ['const', 'let', 'var'].includes(node.kind) && item.id.type === 'Identifier' && item.init && capabilityValue(item.init, scope)
-          if (alias && ['engine', 'beneath', 'next'].includes(alias.role)) {
+          if (alias && ['engine', 'beneath', 'next'].includes(alias.role) && !isItself(item.init, scope)) {
             if ((alias.role === 'next' && !['', 'to', 'is'].includes(alias.members.join('.'))) ||
               (alias.role !== 'next' && alias.members.length > 2)) visit(item.init, scope, event)
           } else visit(item.init, scope, event)
@@ -830,7 +865,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (!directCapture) visit(assigned, scope, event)
         if (directCapture && standalone) {
           const value = capabilityValue(node.right, scope)
-          if (value && ['engine', 'beneath', 'next'].includes(value.role) &&
+          if (value && ['engine', 'beneath', 'next'].includes(value.role) && !isItself(node.right, scope) &&
             (value.role === 'next' ? ['', 'to', 'is'].includes(value.members.join('.')) : value.members.length <= 2)) return
         }
         visit(node.right, scope, event)
@@ -839,7 +874,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       case 'BinaryExpression':
         if (!collecting && ['===', '!=='].includes(node.operator)) {
           for (const operand of [node.left, node.right]) {
-            if (!identityValue(operand, scope)) visit(operand, scope, event)
+            if (!identityValue(operand, scope) || isItself(operand, scope)) visit(operand, scope, event)
           }
           return
         }
@@ -854,7 +889,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (['Object', 'globalThis', 'self', 'window'].includes(node.name) && !lookup(node.name, scope)) builtinObjectChanged = true
           return
         }
-        if (capabilityValue(node, scope)) fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+        if (capabilityValue(node, scope)) {
+          const parent = parents.get(node)
+          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
+          fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+        }
         if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
       case 'ImportExpression': fail(path, 'dynamic import is unsupported; use static relative imports')
@@ -920,7 +959,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (!builtinObjectChanged && !lookup('Object', scope) && !node.optional &&
           callee.type === 'MemberExpression' && !callee.computed && !callee.optional &&
           callee.object.type === 'Identifier' && callee.object.name === 'Object' && callee.property.name === 'isFrozen' &&
-          node.arguments.length === 1 && identityValue(node.arguments[0], scope)) return
+          node.arguments.length === 1 && identityValue(node.arguments[0], scope) && !isItself(node.arguments[0], scope)) return
+        if (isItself(callee, scope)) refuseItself(callee)
         const calleeCapability = capabilityValue(callee, scope)
         if (event === 'engine.create' && calleeCapability?.role === 'next' &&
           ['', 'to'].includes(calleeCapability.members.join('.')) &&
@@ -929,6 +969,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         }
         const argumentsRoles = node.arguments.map((argument: Node) => capabilityValue(argument, scope))
         if (argumentsRoles.some(Boolean)) {
+          const passed = node.arguments.find((argument: Node) => isItself(argument, scope))
+          if (passed && (callee.type !== 'Identifier' || node.optional)) refuseItself(passed)
           const value = resolveValue(callee, scope)
           const helper = value && !value.members.length && value.binding.fn
           if (!helper || value.binding.role || node.optional || node.arguments.some((argument: Node) => argument.type === 'SpreadElement') ||

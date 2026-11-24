@@ -209,7 +209,7 @@ test.each([
   `import {atom} from 'claude-code'; const count = atom({plugin:'fixture', key:Math.random()}, 0); export function register(on) { on('command.run', () => ({})); }`,
 ])('rejects unrecognized or dynamic state helper use %#', async source => {
   const input = await plugin(source)
-  await expect(loadModDeclaration(input)).rejects.toThrow(/capability escape|literal plugin and key/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/capability escape|literal plugin and key|\$ itself is passed/)
 })
 
 test('state helpers do not permit mutation of a plain reference after scanning', async () => {

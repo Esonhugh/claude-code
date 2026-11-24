@@ -937,15 +937,16 @@ test('saved engine closures resolve the current invocation provider after a same
   expect(diagnostics).toEqual([])
 })
 
-test('Worker keeps one frozen engine across hooks, catch and provider shape changes', async () => {
-  const consumer = await plugin('stable-engine', `let first, captured;
+test('Worker keeps a captured engine reading across hooks, catch and provider shape changes', async () => {
+  // Official 2.1.329 refuses a module that binds, compares or passes $ itself, so only a closure over it is kept.
+  const consumer = await plugin('stable-engine', `let captured;
     export function register(on) {
-      on('session.start', ($,e,next) => {first=$;captured=()=>$.source.read();return next(e)});
+      on('session.start', ($,e,next) => {captured=()=>$.source.read();return next(e)});
       on('tool.call', async ($,e,next) => {
         if(e.fail) throw Error('recover identity');
         if(e.hold) await next(e);
-        return {result:{same:first===$,frozen:Object.isFrozen($),value:e.beta?await $.beta.read():await captured()}};
-      }).catch(async ($,e,next) => ({result:{same:first===$,value:await captured()}}));
+        return {result:{value:e.beta?await $.beta.read():await captured()}};
+      }).catch(async ($,e,next) => ({result:{value:await captured()}}));
     }`)
   const provider = await plugin('stable-source', `export function register(on) {
     on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'old'}}});
@@ -953,8 +954,8 @@ test('Worker keeps one frozen engine across hooks, catch and provider shape chan
   const {value,diagnostics}=runtime()
   await value.bind(binding(root));await value.reconcile([consumer,provider])
   expect(diagnostics).toEqual([])
-  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'old'}})
-  expect(await value.dispatch('tool.call',{fail:true},async()=>({result:'core'}))).toEqual({result:{same:true,value:'old'}})
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{value:'old'}})
+  expect(await value.dispatch('tool.call',{fail:true},async()=>({result:'core'}))).toEqual({result:{value:'old'}})
   const entered=Promise.withResolvers<void>(), release=Promise.withResolvers<void>()
   const pending=value.dispatch('tool.call',{hold:true},async()=>{entered.resolve();await release.promise;return {result:'core'}})
   await entered.promise
@@ -963,9 +964,9 @@ test('Worker keeps one frozen engine across hooks, catch and provider shape chan
       on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'new'},beta:{read:()=> 'beta'}}});
     }`)
     await value.reconcile([consumer,provider])
-    expect(await value.dispatch('tool.call',{beta:true},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'beta'}})
+    expect(await value.dispatch('tool.call',{beta:true},async()=>({result:'core'}))).toEqual({result:{value:'beta'}})
   } finally {release.resolve()}
-  expect(await pending).toEqual({result:{same:true,frozen:true,value:'old'}})
+  expect(await pending).toEqual({result:{value:'old'}})
   expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.call',message:'recover identity'})])
 })
 
