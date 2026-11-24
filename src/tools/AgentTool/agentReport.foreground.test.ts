@@ -45,7 +45,7 @@ mock.module('../../services/AgentSummary/agentSummary.js', () => ({
   startAgentSummarization: () => ({ stop() {} }),
 }))
 
-type Script = 'handback' | 'interrupted'
+type Script = 'handback' | 'interrupted' | 'apiError'
 let script: Script = 'handback'
 let started: (() => void) | undefined
 let childSignal: AbortSignal | undefined
@@ -58,6 +58,10 @@ mock.module('./runAgent.js', () => ({
       beginSubagentHandback(agentId, true)
       deliverSubagentHandback(agentId, 'REPORT-ALPHA', undefined)
       yield assistant('sent')
+      return
+    }
+    if (script === 'apiError') {
+      yield { ...assistant('API Error: 400 probe failure'), isApiErrorMessage: true, error: 'unknown', apiErrorStatus: 400 } as Message
       return
     }
     yield assistant('halfway')
@@ -193,6 +197,26 @@ const call = (context: TestContext, description: string) =>
     task => isLocalAgentTask(task) && task.status === 'running',
   )
   assert.deepEqual(running, [])
+}
+
+// A run that ends on an API error is reported failed with no text, and the parent reads official 2.1.329's termination text.
+{
+  script = 'apiError'
+  reports.length = 0
+  reviews.length = 0
+  hook = async (input, next) => {
+    const below = await next(input)
+    reviews.push(below)
+    return below
+  }
+  await assert.rejects(call(createContext(), 'api-error'), (error: Error) => {
+    assert.match(error.message, /^Agent terminated early due to an API error: API Error: 400 probe failure \(error type unknown, HTTP 400, model sent to the API: [^)]+\)$/)
+    return true
+  })
+  assert.equal(reports.length, 1)
+  assert.equal(reports[0]?.status, 'failed')
+  assert.equal(reports[0]?.text, '')
+  assert.equal((reviews[0] as { review?: string }).review, 'off')
 }
 
 console.log('agentReport.foreground.test.ts passed')

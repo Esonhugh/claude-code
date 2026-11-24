@@ -125,6 +125,7 @@ import {
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
+  agentApiTerminationText,
   getAgentTerminalError,
   getLastToolUseName,
   notifyAgentEnd,
@@ -2393,11 +2394,15 @@ export const AgentTool = buildTool({
               msg => msg.type === 'assistant',
             )
 
-            if (!hasAssistantMessages) {
+            // A run that ended on an API error has nothing to report: official 2.1.329 reports it
+            // failed and the parent reads the API error, as with no messages at all.
+            const terminated = agentApiTerminationText(agentMessages, metadata.resolvedAgentModel)
+            if (!hasAssistantMessages || terminated !== undefined) {
               // No messages collected, re-throw the error
               spawnedSubagent?.failed()
               const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport('', toolUseContext))
-              throw 'consumed' in answer ? new Error(answer.consumed) : syncAgentError
+              if ('consumed' in answer) throw new Error(answer.consumed)
+              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), { name: 'AgentApiErrorTerminationError' })
             }
 
             // We have some messages, try to finalize and return them

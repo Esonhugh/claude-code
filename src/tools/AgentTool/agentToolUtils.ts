@@ -566,6 +566,25 @@ export function getAgentTerminalError(messages: MessageType[]): Error | undefine
   )
 }
 
+/**
+ * Official 2.1.329 AgentApiErrorTerminationError's text for a run whose last
+ * response is an API error, with what places it: the error type, HTTP status,
+ * request id and the model a request reached (the run's model unless the response names another).
+ */
+export function agentApiTerminationText(messages: MessageType[], runModel: string): string | undefined {
+  const last = getLastAssistantMessage(messages)
+  if (!last?.isApiErrorMessage) return undefined
+  const text = extractTextContent(last.message.content, '\n')
+  const sent = last.apiErrorStatus !== undefined || !!last.requestId
+  const details = [
+    last.error && `error type ${String(last.error)}`,
+    last.apiErrorStatus !== undefined && `HTTP ${last.apiErrorStatus}`,
+    last.requestId && `request id ${last.requestId}`,
+    sent && `model sent to the API: ${last.requestedModel ?? runModel}`,
+  ].filter((detail): detail is string => typeof detail === 'string')
+  return `Agent terminated early due to an API error: ${details.length > 0 ? `${text} (${details.join(', ')})` : text}`
+}
+
 export function countToolUses(messages: MessageType[]): number {
   let count = 0
   for (const m of messages) {
