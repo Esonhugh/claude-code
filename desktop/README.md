@@ -5,6 +5,21 @@ binary as `claude web --stdio` and talks to it over that process's stdin and
 stdout, so it listens on no port. The page is served as `claude-app://app/`;
 session sockets go through the preload script (`window.claudeDesktop`).
 
+## Make targets
+
+From the repo root:
+
+```sh
+make desktop             # make build, then the installers for this platform in desktop/release/
+make desktop-package     # installers from the binary already built
+make desktop-start       # opens the app on that binary
+make desktop-test        # bun test
+make desktop-e2e         # bun run e2e; xvfb-run on Linux without a display
+make clean-desktop       # removes desktop/sidecar/ and desktop/release/
+```
+
+The binary is `./built-claude`; `DESKTOP_SIDECAR=<path>` picks another.
+
 ## Run from the repo
 
 Build the binary at the repo root first (`make build` leaves it at
