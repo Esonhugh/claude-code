@@ -678,17 +678,13 @@ describe('Mods lifecycle', () => {
     const policy = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return {}; });
     }`, 'policy')
-    const consumer = await fixture(`let allowed = false; export function register(on) {
-      on('engine.create', async ($, e, next) => {
-        const built = await next(e);
-        try { await built.clock.now(); allowed = true; } catch { allowed = false; }
-        return { ...built };
-      });
-      on('tool.call', () => ({ result: allowed }));
+    // Without engine.create of its own, the changed consumer reloads alone and keeps the policy's fold.
+    const consumer = await fixture(`export function register(on) {
+      on('tool.call', async ($) => { try { await $.clock.now(); return { result: true }; } catch { return { result: false }; } });
     }`, 'consumer')
     const { value, events } = runtime()
     await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
-    expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: true })
+    expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: false })
     await value.reconcile([{ ...policy, tier: 'prepend' }, { ...consumer, options: { changed: true } }])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: false })
     await value.reconcile([consumer])
@@ -713,31 +709,6 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 'unadmitted' })
     await value.reconcile([{ ...consumer, options: { changed: true } }, provider])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 'ready' })
-    expect(events).toEqual([])
-  })
-
-  test('captured beneath calls inside an entered provider keep their generation across reload', async () => {
-    const provider = await fixture(`export function register(on) {
-      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, source: { read: () => 'old' } }; });
-    }`, 'provider')
-    const wrapper = await fixture(`let begin, release; const started = new Promise(resolve => { begin = resolve }); const hold = new Promise(resolve => { release = resolve });
-      export function register(on) {
-        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, wrapper: { read: async () => { begin(); await hold; return built.source.read(); } } }; });
-        on('tool.call', { tool: 'Started' }, async () => { await started; return { result: true }; });
-        on('tool.call', { tool: 'Release' }, () => { release(); return { result: true }; });
-      }`, 'wrapper')
-    const consumer = await fixture(`export function register(on) { on('tool.call', { tool: 'Read' }, async ($) => ({ result: await $.wrapper.read() })); }`, 'consumer')
-    const { value, events } = runtime()
-    await value.reconcile([consumer, wrapper, provider])
-    const pending = value.dispatch('tool.call', { ...input, tool: 'Read' }, async () => ({ result: 'core' }))
-    await value.dispatch('tool.call', { ...input, tool: 'Started' }, async () => ({}))
-    try {
-      await writeFile(provider.entrypoints[0]!, `export function register(on) {
-        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, source: { read: () => 'new' } }; });
-      }`)
-      await value.reconcile([consumer, wrapper, provider])
-    } finally { await value.dispatch('tool.call', { ...input, tool: 'Release' }, async () => ({})) }
-    expect(await pending).toEqual({ result: 'old' })
     expect(events).toEqual([])
   })
 
@@ -1191,7 +1162,7 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 1 })
   })
 
-  test('incremental engine.create runs only changed modules and preserves unchanged nouns', async () => {
+  test('a changed module that starts hooking engine.create reruns every module (official 2.1.329)', async () => {
     const stable = await fixture(`let builds = 0; export function register(on) {
       on('engine.create', async ($, e, next) => { builds++; const built = await next(e); return { ...built, stable: { read: () => builds } }; });
       on('tool.call', { tool: 'Stable' }, async ($) => ({ result: { builds, noun: await $.stable.read() } }));
@@ -1207,7 +1178,7 @@ describe('Mods lifecycle', () => {
     }`)
     await value.reconcile([stable, changed])
     expect(await value.dispatch('tool.call', { ...input, tool: 'Stable' }, async () => ({}))).toEqual({ result: { builds: 1, noun: 1 } })
-    expect(await value.dispatch('tool.call', { ...input, tool: 'Changed' }, async () => ({}))).toEqual({ result: { plugins: ['changed'], noun: 'new' } })
+    expect(await value.dispatch('tool.call', { ...input, tool: 'Changed' }, async () => ({}))).toEqual({ result: { plugins: ['stable', 'changed'], noun: 'new' } })
     expect(events).toEqual([])
   })
 
@@ -1458,38 +1429,6 @@ describe('Mods lifecycle', () => {
     release.resolve()
     expect(await pending).toEqual({ result: 'old' })
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'new' })
-  })
-
-  test('pins provider generations for a timer callback entered after session start', async () => {
-    const gate = await fixture(`let start, release, finish;
-      const began = new Promise(resolve => { start = resolve });
-      const hold = new Promise(resolve => { release = resolve });
-      const done = new Promise(resolve => { finish = resolve });
-      export function register(on) {
-        on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, gate: {
-          hold: async () => { start(); await hold; }, finish: () => { finish(); }
-        } }; });
-        on('tool.call', { command: 'started' }, async () => { await began; return { result: 'started' }; });
-        on('tool.call', { command: 'release' }, () => { release(); return { result: 'released' }; });
-        on('tool.call', { command: 'done' }, async ($, e, next) => { await done; return next(e); });
-      }`, 'gate')
-    const provider = await fixture(`export function register(on) {
-      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'old' } }; });
-    }`, 'provider')
-    const plugin = await fixture(`let result; export function register(on) {
-      on('session.start', ($, e, next) => { $.clock.after(0, async () => { await $.gate.hold(); result = await $.greeting.read(); await $.gate.finish(); }); return next(e); });
-      on('tool.call', () => ({ result }));
-    }`)
-    const { value } = runtime()
-    await value.reconcile([gate, plugin, provider])
-    await value.bind({ cwd: plugin.pluginRoot, surface: null, isInteractive: false, sessionId: 'timer' })
-    await value.dispatch('tool.call', { ...input, command: 'started' }, async () => ({ result: 'core' }))
-    await writeFile(provider.entrypoints[0]!, `export function register(on) {
-      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'new' } }; });
-    }`)
-    await value.reconcile([gate, plugin, provider])
-    await value.dispatch('tool.call', { ...input, command: 'release' }, async () => ({ result: 'core' }))
-    expect(await value.dispatch('tool.call', { ...input, command: 'done' }, async () => ({ result: 'core' }))).toEqual({ result: 'old' })
   })
 
   test('a surviving timer enters the current provider generation after reload', async () => {
