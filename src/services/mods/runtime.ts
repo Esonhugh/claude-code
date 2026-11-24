@@ -48,10 +48,10 @@ import { createModUiRealm } from './uiRealm.js'
 import type { Tool } from '../../Tool.js'
 import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
 import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog } from './toolCatalog.js'
-import { createModToolHost } from './toolHost.js'
+import { createModToolHost, MOD_AGENT_CALL_CUT } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, type ModEnvironment } from './environment.js'
+import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, createModSignalOptionBridge, type ModEnvironment } from './environment.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
@@ -1139,7 +1139,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'agent.call': {
         const value = args[0] as ModInput | undefined
-        if (args.length !== 1 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && typeof value.agentId !== 'string') throw new TypeError('agent.call takes {tool, input, agentId?}; explicit signal options are not supported on this host')
+        const signal = (args[1] as { signal?: unknown } | null | undefined)?.signal
+        if (signal !== undefined && !(signal instanceof AbortSignal))
+          throw Object.assign(new Error(`${plugin}: $.agent.call options.signal must be an AbortSignal`), {name:'HooksError'})
+        if (args.length > 2 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && typeof value.agentId !== 'string') throw new TypeError('agent.call takes {tool, input, agentId?}')
         return {tool:value.tool, input:value.input, ...(value.agentId !== undefined && {agentId:value.agentId})}
       }
       case 'tool.call': {
@@ -2225,6 +2228,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
           }
           if (fn === hostIdentity && (op === 'agent.call' || op === 'tool.call' || op === 'session.send' || op === 'ui.ask')) {
+            // The author's own signal cuts an agent call: it resolves as a refusal, and already aborted nothing runs.
+            const cut = op === 'agent.call' ? (args[1] as {signal?:AbortSignal} | undefined)?.signal : undefined
+            if (cut?.aborted) return {deny:MOD_AGENT_CALL_CUT}
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
               return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
@@ -2241,7 +2247,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               }
               toolInput = {tool:'SendMessage',to:resolved.to,message:(input as ModInput).text}
             }
-            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            // Hooks beneath see the cut under the engine's reason, not the author's.
+            const cutting = new AbortController()
+            let isCut = false
+            const onCut = () => { isCut = true; cutting.abort(Object.assign(new Error('call-cut-by-plugin'), {name:'HooksError'})) }
+            cut?.addEventListener('abort', onCut, {once:true})
+            const callSignal = combineModModelSignals(signal, cut && cutting.signal)
+            const combined = createCombinedAbortSignal(callSignal.signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
               toolNotices,
@@ -2269,10 +2281,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             try {
               combined.signal.throwIfAborted()
               if (op === 'agent.call') {
-                const result = await callSnapshot.dispatch(op, toolInput, async (question, nextSignal) => {
-                  if (typeof question.tool !== 'string' || !question.input || typeof question.input !== 'object' || Array.isArray(question.input)) throw new TypeError('agent.call needs a tool and its input')
-                  return {value:await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call')}
-                }, {signal:combined.signal, validateInput:value => { if (value.agentId !== toolInput.agentId) throw new Error('agent.call cannot rewrite agentId') }}) as {value?:unknown;deny?:string}
+                // A result the tool gave before the cut took hold is kept.
+                let kept: {value:unknown} | undefined
+                let result: {value?:unknown;deny?:string}
+                try {
+                  result = await callSnapshot.dispatch(op, toolInput, async (question, nextSignal) => {
+                    if (typeof question.tool !== 'string' || !question.input || typeof question.input !== 'object' || Array.isArray(question.input)) throw new TypeError('agent.call needs a tool and its input')
+                    const value = await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call')
+                    if (!isCut) kept = {value}
+                    return {value}
+                  }, {signal:combined.signal, validateInput:value => { if (value.agentId !== toolInput.agentId) throw new Error('agent.call cannot rewrite agentId') }}) as {value?:unknown;deny?:string}
+                } catch (error) {
+                  if (isCut) return kept ? kept.value : {deny:MOD_AGENT_CALL_CUT}
+                  throw error
+                }
+                if (isCut && !kept) return {deny:MOD_AGENT_CALL_CUT}
                 return capabilityResult(op,result)
               }
               // Only a call descending from the person's own interaction may speak consent for them.
@@ -2288,7 +2311,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               const sent = sessionSendToolResult(receipt as import('./toolAdapter.js').ToolCallResult)
               logForDebugging(`[ModsSend] plugin=${owner.declaration.name} to=${String(toolInput.to)} delivered=${sent.isDelivered}${sent.isDelivered ? '' : ` reason=${sent.reason}`}`)
               return sent
-            } finally { open = false; combined.cleanup() }
+            } finally { open = false; combined.cleanup(); callSignal.cleanup(); cut?.removeEventListener('abort', onCut) }
           }
           if (fn === hostIdentity && op === 'tool.check') {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
@@ -2531,6 +2554,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (step) wrapped.step = step
       if (noun === 'model') for (const method of ['complete','fork','classify'] as const)
         if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
+      if (noun === 'agent' && methods.call === hostIdentity && wrapped.call) createModSignalOptionBridge(wrapped.call, 'agent.call')
       if (noun === 'session' && methods.version === hostIdentity && wrapped.version) createModMutableResultBridge(wrapped.version)
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {

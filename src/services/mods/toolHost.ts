@@ -20,6 +20,9 @@ const authorCallRefusals = new Map([
   [WORKFLOW_TOOL_NAME, 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
 ])
 
+/** What a `$.agent.call` cut by its signal resolves with, as official 2.1.329 words it. */
+export const MOD_AGENT_CALL_CUT = '[Tool call did not complete: the plugin that made it cancelled it. Nothing refused it.]'
+
 export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToolFn) {
   const getTools = () => context.mods?.tools.projection(context.options.tools) ?? context.options.tools
   return {

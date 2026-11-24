@@ -354,10 +354,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
             if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
               throw Object.assign(Error(plugin + ': $.store.' + wire.storeMethod + ' takes a non-empty string key'), {name:'HooksError'});
             let modelAborted, modelAbortReason;
-            if (wire.modelMethod === 'complete') {
+            const signalled = wire.modelMethod === 'complete' || wire.signalOption !== undefined;
+            if (signalled) {
               const signal = args[1]?.signal;
               if (signal !== undefined && signal !== null && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
-                throw Object.assign(Error(plugin + ': options.signal must be an AbortSignal'), {name:'HooksError'});
+                throw Object.assign(Error(plugin + ': ' + (wire.signalOption ? '$.' + wire.signalOption + ' ' : '') + 'options.signal must be an AbortSignal'), {name:'HooksError'});
               const reason = () => {
                 const value = signal?.reason;
                 return value instanceof Error ? {name:value.name,message:value.message}
@@ -370,7 +371,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
               if (modelAborted) modelAbortReason = reason();
               args = [args[0]];
             }
-            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(wire.modelMethod === 'complete' ? {modelAborted,modelAbortReason} : {}) }));
+            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(signalled ? {modelAborted,modelAbortReason} : {}) }));
           } catch (error) { pending.delete(call); reject(error); }
         });
         return result.finally(() => cleanup?.());
