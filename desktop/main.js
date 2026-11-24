@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, dialog, ipcMain, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { startSidecar } from './sidecar.js'
+import { isThemeMode, readThemeMode, writeThemeMode } from './theme.js'
 
 const SCHEME = 'claude-app'
 const APP_ORIGIN = `${SCHEME}://app`
@@ -82,6 +83,18 @@ ipcMain.on('socket:close', (event, n, code, reason) => {
   if (fromAppPage(event)) sockets.get(`${event.sender.id}:${n}`)?.close(code, reason)
 })
 
+// The page's appearance setting, so native menus, dialogs and the title bar follow it.
+const themeFile = () => join(app.getPath('userData'), 'appearance.json')
+ipcMain.on('theme:set', (event, mode) => {
+  if (!fromAppPage(event) || !isThemeMode(mode) || nativeTheme.themeSource === mode) return
+  nativeTheme.themeSource = mode
+  try {
+    writeThemeMode(themeFile(), mode)
+  } catch (err) {
+    console.warn(`could not save the appearance: ${err.message}`)
+  }
+})
+
 app.on('web-contents-created', (_event, contents) => {
   contents.on('destroyed', () => closeSockets(contents.id))
   // A reload leaves its sessions attached unless their sockets go first.
@@ -143,6 +156,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(async () => {
+    nativeTheme.themeSource = readThemeMode(themeFile())
     // The app's own page may ask (clipboard, notifications); frames from elsewhere may not.
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback, details) => {
       callback(isAppUrl(details.requestingUrl))

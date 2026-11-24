@@ -1,4 +1,5 @@
-// Session sockets for the page (web/src/api.ts `DesktopBridge`), relayed by the main process.
+// Session sockets for the page (web/src/api.ts `DesktopBridge`), relayed by the main process,
+// and the page's appearance setting for the window's native theme.
 const { contextBridge, ipcRenderer } = require('electron')
 
 const listeners = new Map()
@@ -20,5 +21,8 @@ contextBridge.exposeInMainWorld('claudeDesktop', {
       send: data => ipcRenderer.send('socket:send', n, data),
       close: (code, reason) => ipcRenderer.send('socket:close', n, code, reason),
     }
+  },
+  setTheme(mode) {
+    if (mode === 'system' || mode === 'light' || mode === 'dark') ipcRenderer.send('theme:set', mode)
   },
 })

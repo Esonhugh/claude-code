@@ -28,6 +28,7 @@
     "files": [
       "main.js",
       "sidecar.js",
+      "theme.js",
       "preload.cjs"
     ],
     "extraResources": [
