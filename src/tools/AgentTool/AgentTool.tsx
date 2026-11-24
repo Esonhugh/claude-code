@@ -166,6 +166,7 @@ import {
   getCurrentSubagentDepth,
   getNextSubagentDepth,
 } from './subagentDepth.js'
+import { subagentStats, type SubagentRefusal } from './subagentStats.js'
 import {
   renderGroupedAgentToolUse,
   renderToolResultMessage,
@@ -596,6 +597,17 @@ export const AgentTool = buildTool({
     const startTime = Date.now()
     description = normalizeAgentDescription(description)
     let model = isCoordinatorMode() ? undefined : modelParam
+    // result.subagent_stats counts the model's own Agent calls, not workflow agents.
+    const requestedBackground = run_in_background
+    const countsInSubagentStats = toolUseContext.workflowAgentSystemPrompt === undefined
+    const refusedFor = (reason: SubagentRefusal, check: () => void) => {
+      try {
+        check()
+      } catch (error) {
+        if (countsInSubagentStats) subagentStats().recordRefused(reason)
+        throw error
+      }
+    }
 
     // Get app state for permission mode and agent filtering.
     const appState = toolUseContext.getAppState()
@@ -654,7 +666,7 @@ export const AgentTool = buildTool({
     const isForkPath = requestedFork && forkAvailability.available
 
     if (!isForkPath) {
-      assertCanSpawnNestedSubagent(toolUseContext.options)
+      refusedFor('depth_limit', () => assertCanSpawnNestedSubagent(toolUseContext.options))
     }
 
     let selectedAgent: AgentDefinition
@@ -884,7 +896,7 @@ export const AgentTool = buildTool({
       throw new Error('cwd is mutually exclusive with isolation: "worktree"')
     }
 
-    if (effectiveIsolation !== 'remote') assertSubagentCapacity(toolUseContext)
+    if (effectiveIsolation !== 'remote') refusedFor('concurrency_limit', () => assertSubagentCapacity(toolUseContext))
 
     // Capture for type narrowing — `let selectedAgent` prevents TS from
     // narrowing property types across the if-else assignment above.
@@ -999,10 +1011,20 @@ export const AgentTool = buildTool({
       agent_depth: childSubagentDepth,
       agent_system_prompt_chars: agentSystemPromptChars,
     })
+    const recordSpawn = () =>
+      countsInSubagentStats
+        ? subagentStats().recordSpawn({
+            agentType: selectedAgent.agentType,
+            runInBackground: requestedBackground,
+            runsInBackground: shouldRunInBackground(),
+            depth: childSubagentDepth,
+          })
+        : undefined
 
     // Remote isolation: delegate to CCR. Gated ant-only — the guard enables
     // dead code elimination of the entire block for external builds.
     if (isAnt() && effectiveIsolation === 'remote') {
+      recordSpawn()
       const eligibility = await checkRemoteAgentEligibility()
       if (eligibility.eligible === false) {
         const reasons = eligibility.errors
@@ -1403,11 +1425,12 @@ export const AgentTool = buildTool({
     }
 
     try {
-      assertSubagentCapacity(toolUseContext)
+      refusedFor('concurrency_limit', () => assertSubagentCapacity(toolUseContext))
     } catch (error) {
       await cleanupWorktreeIfNeeded()
       throw error
     }
+    const spawnedSubagent = recordSpawn()
     const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
     let ownsSlot = true
     try {
@@ -1427,6 +1450,7 @@ export const AgentTool = buildTool({
         ownerAgentId: toolUseContext.agentId,
         spawnedBy: toolUseContext.modSpawnedBy,
         spawnDepth: childSubagentDepth,
+        spawnedSubagent,
       })
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
@@ -1599,6 +1623,7 @@ export const AgentTool = buildTool({
               parentAgentId,
               ownerAgentId: toolUseContext.agentId,
               spawnDepth: childSubagentDepth,
+              spawnedSubagent,
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             })
             foregroundTaskId = registration.taskId
@@ -1973,7 +1998,8 @@ export const AgentTool = buildTool({
                       if (isAbortError(error)) {
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
-                        killAsyncAgent(backgroundedTaskId, rootSetAppState)
+                        // Official 2.1.329 counts an abort nothing else claimed as the user's.
+                        killAsyncAgent(backgroundedTaskId, rootSetAppState, 'system', 'user')
                         logForDebugging(
                           `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=killed`,
                         )
@@ -2222,6 +2248,7 @@ export const AgentTool = buildTool({
             // AbortError should be re-thrown for proper interruption handling
             if (error instanceof AbortError) {
               wasAborted = true
+              if (!wasBackgrounded) spawnedSubagent?.killed('user')
               logEvent('tengu_agent_tool_terminated', {
                 agent_type:
                   metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -2358,6 +2385,7 @@ export const AgentTool = buildTool({
               reason:
                 'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
             })
+            spawnedSubagent?.cancelledAfterCompletion()
             throw new AbortError()
           }
 
@@ -2372,6 +2400,7 @@ export const AgentTool = buildTool({
 
             if (!hasAssistantMessages) {
               // No messages collected, re-throw the error
+              spawnedSubagent?.failed()
               throw syncAgentError
             }
 
@@ -2387,6 +2416,7 @@ export const AgentTool = buildTool({
             syncAgentId,
             metadata,
           )
+          spawnedSubagent?.completed()
 
           const reportSnapshot = toolUseContext.modsSnapshot
           if (!workflowFraming && agentResult.handback === undefined && reportSnapshot && (reportSnapshot.hasHooks('agent.report') || reportSnapshot.agentReportWarnings?.has(syncAgentId))) {

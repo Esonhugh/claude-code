@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
+import { getSessionId, regenerateSessionId, switchSession } from '../../bootstrap/state.js'
+import { handleRewindConversation } from '../../cli/sessionControlRequests.js'
+import { getDefaultAppState } from '../../state/AppStateStore.js'
+import { asSessionId } from '../../types/ids.js'
+import type { Message } from '../../types/message.js'
+import { rewindConversationTo } from '../../utils/conversationRewind.js'
+import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
+import { drainPollEventChunk, enqueuePollEvent, getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import {
+  deliverReplEvent,
+  resetMainReplSession,
   describeMainReplScripts,
   describeRunningReplScripts,
   detachReplEval,
@@ -15,6 +24,8 @@ import {
   MAIN_REPL_SESSION,
   markReplEvalDelivered,
   noteReplStatusLine,
+  releaseReplSession,
+  findReplSession,
   onMainReplScriptsChange,
   onReplLedgerChange,
   releaseAllReplSessions,
@@ -24,6 +35,7 @@ import {
   type ReplLedgerRow,
   type ReplNotYetStartedCall,
   startReplEval,
+  takeReplLateMessages,
   takeReplStatusLineGiven,
   takeUnwaitedReplEvals,
 } from './sessions.js'
@@ -32,6 +44,152 @@ import { replScriptLabel } from './scriptLabel.js'
 afterEach(() => {
   releaseAllReplSessions()
   resetCommandQueue()
+})
+
+test.each(['clear', 'resume'] as const)('%s isolates queued and late REPL events', async transition => {
+  const original = getSessionId()
+  const old = getReplSession(MAIN_REPL_SESSION)
+  const outcome = (id: number, startsTurn?: false) => ({
+    id, startsTurn, text: `<event kind="repl-eval" eval="${id}">outcome</event>`,
+  })
+  const lost = enqueuePollEvent({
+    kind: 'repl-eval', element: '<event kind="repl-eval">lost</event>', startsTurn: false,
+  })
+  deliverReplEvent(old, outcome(1), [])
+  enqueueReplStatus(old, [])
+  try {
+    resetMainReplSession()
+    if (transition === 'clear') regenerateSessionId()
+    else switchSession(asSessionId(crypto.randomUUID()))
+    deliverReplEvent(old, outcome(2), [])
+    enqueueReplStatus(old, [])
+    expect(getCommandQueueSnapshot()).toHaveLength(0)
+    deliverReplEvent(getReplSession(MAIN_REPL_SESSION), outcome(1, false), [])
+    expect(drainPollEventChunk(undefined).commands).toHaveLength(1)
+  } finally {
+    switchSession(original)
+  }
+  await expect(lost).rejects.toThrow('session changed')
+})
+
+const outcomeOf = (id: number) => ({ id, text: `<event kind="repl-eval" eval="${id}">outcome</event>` })
+
+test('a subagent keeps its context and its outcomes across a /clear of the main thread', () => {
+  const original = getSessionId()
+  const sub = getReplSession('agent-kept')
+  dispatchReplEval(sub, 1, 'await slow()')
+  sub.pending.set(1, { id: 1, startedAt: 0, abort: () => {} })
+  let woken = false
+  sub.waiters.add(() => (woken = true))
+  try {
+    resetMainReplSession()
+    regenerateSessionId()
+    expect(getReplSession('agent-kept')).toBe(sub)
+    deliverReplEvent(sub, outcomeOf(1), [])
+    expect(getCommandQueueSnapshot()).toMatchObject([{ agentId: 'agent-kept', pollEvent: { kind: 'repl-eval' } }])
+    expect(sub.pending.size).toBe(0)
+    expect(sub.undelivered.size).toBe(0)
+    expect(woken).toBe(true)
+  } finally {
+    switchSession(original)
+  }
+})
+
+test('a retired context queues nothing more, and its late outcome still ends its waits', () => {
+  const old = getReplSession(MAIN_REPL_SESSION)
+  dispatchReplEval(old, 1, 'await slow()')
+  old.pending.set(1, { id: 1, startedAt: 0, abort: () => {} })
+  resetMainReplSession()
+  deliverReplEvent(old, outcomeOf(1), [])
+  expect(getCommandQueueSnapshot()).toHaveLength(0)
+  expect(old.pending.size).toBe(0)
+  expect(old.undelivered.size).toBe(0)
+})
+
+test('switching away and back does not bring the earlier context back', () => {
+  const original = getSessionId()
+  const old = getReplSession(MAIN_REPL_SESSION)
+  let stopped: unknown
+  dispatchReplEval(old, 1, 'await slow()')
+  startReplEval(old, 1)
+  old.pending.set(1, { id: 1, startedAt: 0, abort: reason => (stopped = reason) })
+  try {
+    switchSession(asSessionId(crypto.randomUUID()))
+    const other = getReplSession(MAIN_REPL_SESSION)
+    expect(other).not.toBe(old)
+    expect(old.released).toBe(true)
+    expect(stopped).toBe('user-cancel')
+    switchSession(original)
+    expect(findReplSession(MAIN_REPL_SESSION)).toBeUndefined()
+    expect(getReplSession(MAIN_REPL_SESSION)).not.toBe(old)
+    deliverReplEvent(old, outcomeOf(1), [])
+    expect(getCommandQueueSnapshot()).toHaveLength(0)
+  } finally {
+    switchSession(original)
+  }
+})
+
+test("a finished subagent's queued outcomes go with its context", () => {
+  const sub = getReplSession('agent-done')
+  const main = getReplSession(MAIN_REPL_SESSION)
+  deliverReplEvent(sub, outcomeOf(1), [])
+  deliverReplEvent(main, outcomeOf(1), [])
+  releaseReplSession('agent-done')
+  expect(getCommandQueueSnapshot()).toMatchObject([{ agentId: undefined }])
+})
+
+// Official `dropRewound` (chunk-gcw6cvys.js): a rewound call's script runs on, its outcome goes nowhere.
+describe('rewinding past a REPL call', () => {
+  const replCall = (id: string) =>
+    createAssistantMessage({ content: [{ type: 'tool_use', id, name: 'REPL', input: { code: '' } }] as never })
+  const rewinds = {
+    '/rewind': (messages: Message[], target: Message) =>
+      rewindConversationTo(target as never, {
+        messages, logEvent() {}, setMessages() {}, resetDiff() {}, setConversationId() {},
+        resetMicrocompactState() {}, resetContextCollapse() {}, setAppState() {},
+      }),
+    rewind_conversation: (messages: Message[], target: Message) => {
+      let state = getDefaultAppState()
+      const setAppState = (update: (prev: typeof state) => typeof state) => (state = update(state))
+      expect(handleRewindConversation(
+        { target_message_uuid: target.uuid, last_seen_user_message_uuid: target.uuid },
+        { messages, busy: false, queued: false, setAppState },
+      )).toMatchObject({ rewound: true })
+    },
+  }
+
+  test.each(Object.keys(rewinds) as (keyof typeof rewinds)[])('%s: the rewound evals deliver nothing; earlier ones still do', path => {
+    const main = getReplSession(MAIN_REPL_SESSION)
+    const kept = createUserMessage({ content: 'kept' })
+    const target = createUserMessage({ content: 'rewound' })
+    const messages: Message[] = [kept, replCall('tu-kept'), target, replCall('tu-gone')]
+    for (const [id, toolUseId] of [[1, 'tu-kept'], [2, 'tu-gone']] as const) {
+      dispatchReplEval(main, id, 'await slow()', undefined, toolUseId)
+      startReplEval(main, id)
+      main.pending.set(id, { id, startedAt: 0, abort: () => {} })
+    }
+    rewinds[path](messages, target)
+    deliverReplEvent(main, outcomeOf(2), [createUserMessage({ content: 'inner call of #2' })])
+    deliverReplEvent(main, outcomeOf(1), [])
+    expect(getCommandQueueSnapshot().map(cmd => cmd.pollEvent?.envelope)).toEqual([expect.stringContaining('eval="1"')])
+    expect(takeReplLateMessages(main)).toEqual([])
+    // Its waits still end: the script ran on and finished.
+    expect(main.pending.size).toBe(0)
+    expect(main.undelivered.size).toBe(0)
+  })
+
+  test('/rewind takes back an outcome already queued, with its inner-call messages', () => {
+    const main = getReplSession(MAIN_REPL_SESSION)
+    const target = createUserMessage({ content: 'rewound' })
+    dispatchReplEval(main, 1, 'await slow()', undefined, 'tu-gone')
+    dispatchReplEval(main, 2, 'await slow()', undefined, 'tu-other')
+    deliverReplEvent(main, outcomeOf(1), [createUserMessage({ content: 'inner call of #1' })])
+    const other = createUserMessage({ content: 'inner call of #2' })
+    deliverReplEvent(main, outcomeOf(2), [other])
+    rewinds['/rewind']([target, replCall('tu-gone')], target)
+    expect(getCommandQueueSnapshot().map(cmd => cmd.pollEvent?.envelope)).toEqual([expect.stringContaining('eval="2"')])
+    expect(takeReplLateMessages(main)).toEqual([other])
+  })
 })
 
 let nextKey = 0

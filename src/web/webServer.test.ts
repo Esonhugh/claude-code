@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
+import { PassThrough } from 'stream'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { delimiter, join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
+import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { addressKind } from './network.js'
+import { STDIO_FRAME_PREFIX, STDIO_HOST } from './stdioTransport.js'
 import {
+  cliWebTheme,
   contentSecurityPolicy,
   normalizeProjectDir,
   openLocal,
@@ -309,7 +313,11 @@ describe('claude web server', () => {
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', effort: '--max' })).status).toBe(400)
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', model: 'gpt-5.6-terra', effort: 'high' })).status).toBe(200)
     expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'gpt-5.6-terra', effort: 'high' })
+    // The page starts in the CLI's theme until one is picked there.
+    const cliTheme = getGlobalConfig().theme
+    saveGlobalConfig(c => ({ ...c, theme: 'light-daltonized' }))
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
+    saveGlobalConfig(c => ({ ...c, theme: cliTheme }))
     expect(await info.json()).toEqual({
       workspace: r.workspace,
       preview_origins: [],
@@ -317,6 +325,7 @@ describe('claude web server', () => {
       home: homedir(),
       local: true,
       version: '9.9.9-test',
+      theme: 'light',
     })
     const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
       models: { value: string }[]
@@ -618,6 +627,49 @@ describe('claude web server', () => {
     expect(other.status).toBe(404)
   })
 
+  it('saves an empty upload and removes a deleted session\'s uploads', async () => {
+    const r = start()
+    const prior = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = r.configDir
+    try {
+      const cookie = await signIn(r)
+      const id = '99999999-2222-4333-8444-666666666666'
+      const dir = join(r.configDir, 'projects', r.workspace.replace(/[^a-zA-Z0-9]/g, '-'))
+      mkdirSync(dir, { recursive: true })
+      const line = { type: 'user', sessionId: id, cwd: r.workspace, uuid: 'a0000000-0000-4000-8000-000000000002', message: { role: 'user', content: 'hello there' } }
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(line) + '\n')
+      const empty = await fetch(`${r.base}/api/files/${id}?name=empty.txt`, {
+        method: 'POST',
+        headers: { cookie, origin: r.origin },
+        body: '',
+      })
+      expect(empty.status).toBe(200)
+      expect(await empty.json()).toEqual({ path: join(r.uploads, id, 'empty.txt'), name: 'empty.txt', size: 0 })
+
+      const del = await fetch(`${r.base}/api/sessions/${id}?transcript=1`, {
+        method: 'DELETE',
+        headers: { cookie, origin: r.origin },
+      })
+      expect(del.status).toBe(204)
+      expect(existsSync(join(r.uploads, id))).toBe(false)
+    } finally {
+      if (prior === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prior
+    }
+  })
+
+  it('answers a HEAD like a GET, without an Origin', async () => {
+    const r = start()
+    const cookie = await signIn(r)
+    const head = (path: string, headers: Record<string, string> = { cookie }) =>
+      fetch(`${r.base}${path}`, { method: 'HEAD', headers })
+    expect((await head('/')).status).toBe(200)
+    expect((await head('/', {})).status).toBe(401)
+    expect((await head('/', { cookie, origin: 'https://evil.example' })).status).toBe(403)
+    // Nothing in the API acts on a HEAD.
+    expect((await head('/api/sessions')).status).toBe(404)
+  })
+
   it('answers to <hostname>.local only with the local network flag', async () => {
     const name = hostname().toLowerCase().split('.')[0]
     const signInAs = (r: Running) =>
@@ -740,6 +792,15 @@ describe('claude web server', () => {
     expect(await (await call('GET', '/api/projects')).json()).toEqual([])
     expect((await call('PATCH', `/api/projects/${id}`, { name: 'x' })).status).toBe(404)
     expect((await meta({ project_id: id })).status).toBe(400)
+    // An archived project is listed only on request, and comes back whole.
+    expect(await (await call('GET', '/api/projects?archived=1')).json()).toMatchObject([{ id, name: 'Beta' }])
+    expect((await call('GET', `/api/projects/${id}/unarchive`)).status).toBe(405)
+    expect((await call('POST', `/api/projects/${crypto.randomUUID()}/unarchive`)).status).toBe(404)
+    expect(await (await call('POST', `/api/projects/${id}/unarchive`)).json()).toMatchObject({ id, archived_at: null })
+    expect((await call('POST', `/api/projects/${id}/unarchive`)).status).toBe(404)
+    expect(await (await call('GET', '/api/projects')).json()).toMatchObject([{ id }])
+    expect((await meta({ project_id: id })).status).toBe(200)
+    expect((await call('DELETE', `/api/projects/${id}?purge=1`)).status).toBe(204)
 
     const other = (await (await call('POST', '/api/projects', { name: 'Gamma', cwd: dir })).json()) as { id: string }
     expect((await call('DELETE', `/api/projects/${other.id}?purge=1`)).status).toBe(204)
@@ -1147,6 +1208,20 @@ describe('GET /api/peers', () => {
   })
 })
 
+describe('cliWebTheme', () => {
+  it('maps the CLI theme to light, dark or system', () => {
+    expect(cliWebTheme('light')).toBe('light')
+    expect(cliWebTheme('light-daltonized')).toBe('light')
+    expect(cliWebTheme('light-ansi')).toBe('light')
+    expect(cliWebTheme('dark')).toBe('dark')
+    expect(cliWebTheme('dark-daltonized')).toBe('dark')
+    expect(cliWebTheme('dark-ansi')).toBe('dark')
+    expect(cliWebTheme('auto')).toBe('system')
+    expect(cliWebTheme('custom:light-ish')).toBe('system')
+    expect(cliWebTheme(undefined)).toBe('system')
+  })
+})
+
 describe('normalizeProjectDir', () => {
   it('expands ~, resolves dots and symlinks, and refuses relative or missing paths', () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'web-home-')))
@@ -1215,5 +1290,121 @@ describe('parsePreviewOrigin', () => {
     ]) {
       expect(parsePreviewOrigin(value)).toBeUndefined()
     }
+  })
+})
+
+type Frame = { t: string; id?: number; [key: string]: unknown }
+
+/** The desktop app's end of `claude web --stdio`. */
+function stdioClient(overrides: Partial<WebServerConfig> = {}) {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const r = start({ ...overrides, stdio: { input, output } })
+  const frames: Frame[] = []
+  const waiters: (() => void)[] = []
+  let buffer = ''
+  output.setEncoding('utf8')
+  output.on('data', (chunk: string) => {
+    buffer += chunk
+    let newline: number
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline)
+      buffer = buffer.slice(newline + 1)
+      frames.push(JSON.parse(line.slice(STDIO_FRAME_PREFIX.length)) as Frame)
+      waiters.splice(0).forEach(wake => wake())
+    }
+  })
+  const next = async (match: (frame: Frame) => boolean): Promise<Frame> => {
+    for (;;) {
+      const index = frames.findIndex(match)
+      if (index !== -1) return frames.splice(index, 1)[0]!
+      await new Promise<void>(wake => waiters.push(wake))
+    }
+  }
+  const write = (frame: Frame) => input.write(STDIO_FRAME_PREFIX + JSON.stringify(frame) + '\n')
+  const origin = `http://${STDIO_HOST}`
+  let id = 0
+  const request = async (method: string, path: string, opts: { headers?: [string, string][]; body?: string } = {}) => {
+    const n = ++id
+    write({
+      t: 'req',
+      id: n,
+      method,
+      path,
+      headers: [['host', STDIO_HOST], ...(opts.headers ?? [])],
+      ...(opts.body !== undefined && { body: Buffer.from(opts.body).toString('base64') }),
+    })
+    const head = await next(f => f.id === n && f.t === 'res')
+    let body = ''
+    for (;;) {
+      const frame = await next(f => f.id === n && (f.t === 'body' || f.t === 'end'))
+      if (frame.t === 'end') break
+      body += Buffer.from(frame.data as string, 'base64').toString()
+    }
+    return { status: head.status as number, headers: new Map(head.headers as [string, string][]), body }
+  }
+  return { r, write, next, request, origin, nextId: () => ++id, input }
+}
+
+describe('claude web over stdio', () => {
+  it('announces itself and serves the page with no cookie and no port', async () => {
+    const c = stdioClient()
+    expect(await c.next(f => f.t === 'ready')).toEqual({ t: 'ready' })
+    // Lines without the prefix are not frames.
+    c.input.write('stray output\n')
+    const page = await c.request('GET', '/')
+    expect(page.status).toBe(200)
+    expect(page.body).toBe('<p>app</p>')
+    expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
+    const info = await c.request('GET', '/api/info')
+    expect(JSON.parse(info.body)).toMatchObject({ local: true })
+  })
+
+  it('keeps the Host and Origin checks', async () => {
+    const c = stdioClient()
+    const post = (headers: [string, string][]) =>
+      c.request('POST', '/api/sessions', { headers: [['content-type', 'application/json'], ...headers], body: '{}' })
+    expect((await post([])).status).toBe(403)
+    expect((await post([['origin', 'http://attacker.example']])).status).toBe(403)
+    expect((await post([['origin', 'claude-app://app']])).status).toBe(403)
+    const wrongHost = await c.request('GET', '/', { headers: [['host', 'attacker.example']] })
+    expect(wrongHost.status).toBe(403)
+    expect((await post([['origin', c.origin]])).status).toBe(200)
+  })
+
+  it('relays a session socket and refuses a second one', async () => {
+    const c = stdioClient()
+    const created = await c.request('POST', '/api/sessions', {
+      headers: [['origin', c.origin]],
+      body: '{}',
+    })
+    const { session_id: id } = JSON.parse(created.body) as { session_id: string }
+    const path = `/api/sessions/${id}/ws`
+    const headers: [string, string][] = [['host', STDIO_HOST], ['origin', c.origin]]
+
+    const rejected = c.nextId()
+    c.write({ t: 'ws', id: rejected, path, headers: [['host', STDIO_HOST], ['origin', 'http://attacker.example']] })
+    expect(await c.next(f => f.id === rejected)).toMatchObject({ t: 'wsclose', code: 1006, reason: 'Forbidden' })
+
+    const ws = c.nextId()
+    c.write({ t: 'ws', id: ws, path, headers })
+    expect(await c.next(f => f.id === ws)).toMatchObject({ t: 'wsopen' })
+    c.write({
+      t: 'wsmsg',
+      id: ws,
+      data: JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }) + '\n',
+    })
+    const reply = await c.next(f => f.id === ws && f.t === 'wsmsg')
+    expect(JSON.parse(reply.data as string)).toMatchObject({ type: 'result', result: `hi in ${c.r.workspace}` })
+
+    const second = c.nextId()
+    c.write({ t: 'ws', id: second, path, headers })
+    expect(await c.next(f => f.id === second)).toMatchObject({ t: 'wsclose', code: 1006, reason: 'Session is open in another tab' })
+
+    // Once the app closes the first socket the session can be attached again.
+    c.write({ t: 'wsclose', id: ws })
+    const third = c.nextId()
+    c.write({ t: 'ws', id: third, path, headers })
+    expect(await c.next(f => f.id === third)).toMatchObject({ t: 'wsopen' })
   })
 })

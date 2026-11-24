@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { delimiter, dirname, join, parse, sep } from 'path'
 
@@ -183,7 +183,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
   // The Long workers wait here on their first request until the test has sent them a message.
   const longGates: Record<string, () => void> = {}
   const longHeld: Record<string, Promise<void>> = {}
-  for (const name of ['LONG_A', 'LONG_B', 'SLASH']) longHeld[name] = new Promise<void>(resolve => (longGates[name] = resolve))
+  for (const name of ['LONG_A', 'LONG_B', 'SLASH', 'RELOAD']) longHeld[name] = new Promise<void>(resolve => (longGates[name] = resolve))
   const agent = (description: string, prompt: string) => ({
     type: 'tool_use',
     id: `toolu_${description.toLowerCase()}`,
@@ -453,6 +453,12 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
           blocks = [{ type: 'text', text: 'FOLLOWUP_DONE' }]
         } else if (lastText.includes('SUBTASK_BG')) {
           blocks = [{ type: 'text', text: 'SUB_RESULT' }]
+        } else if (lastText.includes('GATED_TURN')) {
+          // A turn the test ends when it is ready.
+          await longHeld.RELOAD
+          blocks = [{ type: 'text', text: 'GATED_DONE' }]
+        } else if (lastText.includes('RELOAD_B')) {
+          blocks = [{ type: 'text', text: 'RELOAD_RAN' }]
         } else if (lastText.includes('HOLD_TURN')) {
           // A long turn that only an interrupt ends early.
           await new Promise(r => setTimeout(r, 25_000))
@@ -648,6 +654,24 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.katex').nth(2).waitFor({ timeout: 30_000 })
       expect(await page.locator('.markdown').last().textContent()).not.toContain('\\(')
       await page.locator('.mermaid svg').waitFor({ timeout: 30_000 })
+      // A dark page keeps a light copy of the diagram, shown only in print.
+      const theme = await page.evaluate(() => {
+        const was = document.documentElement.dataset.theme
+        document.documentElement.dataset.theme = 'dark'
+        return was
+      })
+      await page.locator('.mermaid-print svg').waitFor({ state: 'attached', timeout: 30_000 })
+      await page.emulateMedia({ media: 'print' })
+      expect(await page.locator('.mermaid.on-screen').isVisible()).toBe(false)
+      expect(await page.locator('.mermaid-print').isVisible()).toBe(true)
+      expect(
+        await page.locator('.mermaid-print svg .node rect').first().evaluate(el => getComputedStyle(el).fill),
+      ).toBe('rgb(236, 236, 255)')
+      await page.emulateMedia({ media: null })
+      await page.evaluate(was => {
+        if (was) document.documentElement.dataset.theme = was
+        else delete document.documentElement.dataset.theme
+      }, theme)
       expect(await page.locator('a[href^="javascript"]').count()).toBe(0)
       expect(await page.locator('a[href="https://example.com"]').count()).toBe(1)
       expect(await page.getByText('<script>window.__xss=2</script>', { exact: false }).count()).toBe(1)
@@ -2375,7 +2399,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.evaluate(() => navigator.clipboard.writeText('SweepName'))
       await name.focus()
       await page.keyboard.press('ControlOrMeta+v')
-      await page.locator('.dialog [role="radio"]', { hasText: 'Dark' }).click()
+      await page.locator('.dialog [role="radiogroup"][aria-label="Appearance"] [role="radio"]', { hasText: 'Dark' }).click()
       await page.locator('.dialog .settabs button').nth(2).click()
       const feature = page.locator('.dialog [role="switch"]').first()
       const was = await feature.getAttribute('aria-checked')
@@ -2396,7 +2420,7 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await page.locator('.dialog [role="switch"]').first().getAttribute('aria-checked')).not.toBe(was)
       await page.locator('.dialog [role="switch"]').first().click()
       await page.locator('.dialog .settabs button').first().click()
-      await page.locator('.dialog [role="radio"]', { hasText: 'System' }).click()
+      await page.locator('.dialog [role="radiogroup"][aria-label="Appearance"] [role="radio"]', { hasText: 'System' }).click()
       await page.locator('#ui-name-input').fill('')
       await page.waitForTimeout(600)
       await page.keyboard.press('Escape')
@@ -2933,6 +2957,170 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 240_000)
+
+  it('keeps the queued prompts and the turn that just ended across a reload', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US' })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+      await page.getByLabel('Message', { exact: true }).fill('GATED_TURN start')
+      await page.getByLabel('Message', { exact: true }).press('Enter')
+      const input = page.locator('.main').getByLabel('Message', { exact: true })
+      await input.waitFor({ timeout: 30_000 })
+      for (let i = 0; i < 100 && !promptsSeen.some(p => p.includes('GATED_TURN start')); i++) await Bun.sleep(100)
+      const queued = page.locator('.main .msg.user.queued')
+      for (const text of ['RELOAD_B', 'RELOAD_C']) {
+        await input.fill(text)
+        await input.press('Enter')
+        await queued.filter({ hasText: text }).waitFor({ timeout: 10_000 })
+      }
+
+      // The reloaded page still shows both waiting behind the running turn.
+      await page.reload()
+      await showing(queued.nth(1).waitFor({ timeout: 30_000 }), page.locator('.main'))
+      expect((await queued.allTextContents()).map(text => /RELOAD_[BC]/.exec(text)?.[0])).toEqual(['RELOAD_B', 'RELOAD_C'])
+      await page.locator('.main .status-line').waitFor()
+
+      // They run once the turn ends, each shown once.
+      longGates.RELOAD!()
+      await page.locator('.main .msg', { hasText: 'RELOAD_RAN' }).waitFor({ timeout: 30_000 })
+      expect(await queued.count()).toBe(0)
+      const shownOnce = async () => {
+        await showing(page.locator('.main .msg', { hasText: 'RELOAD_RAN' }).waitFor({ timeout: 30_000 }), page.locator('.main'))
+        await page.waitForTimeout(2_000)
+        for (const text of ['GATED_DONE', 'RELOAD_B', 'RELOAD_C', 'RELOAD_RAN']) {
+          expect([text, await page.locator('.main .feed').getByText(text).count()]).toEqual([text, 1])
+        }
+        expect(await queued.count()).toBe(0)
+      }
+      await shownOnce()
+      // Reloaded right as the turn ended, before the CLI wrote it to disk; then again once it is there.
+      await page.reload()
+      await shownOnce()
+      await page.waitForTimeout(4_000)
+      await page.reload()
+      await shownOnce()
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 180_000)
+
+  it('starts with an empty attachment, unarchives, drops uploads on delete and withdraws approvals when the server goes', async () => {
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])
+      .stdout.toString()
+      .trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const page = await (await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 900 } })).newPage()
+      const errors: string[] = []
+      page.on('pageerror', (e: Error) => errors.push(e.message))
+      // Session sockets pass through until the test drops them.
+      let dropSocket = () => {}
+      await page.routeWebSocket(/\/api\/sessions\/[^/]+\/ws$/, (ws: any) => {
+        const server = ws.connectToServer()
+        ws.onMessage((raw: string) => server.send(raw))
+        server.onMessage((raw: string) => ws.send(raw))
+        dropSocket = () => {
+          server.close()
+          ws.close({ code: 1006 })
+        }
+      })
+      await page.goto(signInUrl)
+      await page.locator('.wl-hi').waitFor()
+
+      // An empty file attaches like any other.
+      await page
+        .locator('input[type=file][aria-label="Upload file"]')
+        .setInputFiles({ name: 'empty.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0) })
+      await page.getByLabel('Message', { exact: true }).fill('EMPTY_ATTACH hi')
+      await page.getByLabel('Message', { exact: true }).press('Enter')
+      await showing(page.locator('.feed').getByText('Hello from the fake model').waitFor({ timeout: 30_000 }), page.locator('body'))
+      const sessionId = /^#s=([\w-]+)$/.exec(new URL(page.url()).hash)![1]!
+      const uploads = join(home, '.claude', 'web', 'uploads', sessionId)
+      expect(readdirSync(uploads)).toEqual(['empty.txt'])
+
+      // An archived session is found by the search, where the menu brings it back.
+      const search = page.getByLabel('Search sessions', { exact: true })
+      const row = page.locator('#sessions .history .sess', { hasText: 'EMPTY_ATTACH' })
+      await row.click({ button: 'right' })
+      await page.locator('.ctxmenu').getByRole('menuitem', { name: /Archive/ }).click()
+      await row.waitFor({ state: 'detached', timeout: 15_000 })
+      await search.fill('EMPTY_ATTACH')
+      await row.click({ button: 'right' })
+      await page.locator('.ctxmenu').getByRole('menuitem', { name: /Unarchive/ }).click()
+      await search.fill('')
+      await row.waitFor({ timeout: 15_000 })
+      await page.reload()
+      await row.waitFor({ timeout: 15_000 })
+
+      // Deleting the session removes what was uploaded to it.
+      await row.click({ button: 'right' })
+      await page.keyboard.press('d')
+      await page.locator('.ctxmenu .btn.danger').click()
+      await row.waitFor({ state: 'detached', timeout: 15_000 })
+      expect(existsSync(uploads)).toBe(false)
+
+      // The same for a project: archived, found by the search, brought back and opened.
+      await page.getByRole('button', { name: 'New project', exact: true }).click()
+      await page.locator('.dialog #pj-name').fill('Archive target')
+      await page.locator('.dialog #pj-path').fill(workspace)
+      await page.locator('.dialog').getByRole('button', { name: 'Create project' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Archive target' }).waitFor({ timeout: 30_000 })
+      const project = page.locator('.pjrow', { hasText: 'Archive target' })
+      await project.click({ button: 'right' })
+      await page.locator('.ctxmenu').getByRole('menuitem', { name: /Archive/ }).click()
+      await project.waitFor({ state: 'detached', timeout: 15_000 })
+      await page.reload()
+      await page.locator('.wl-hi').waitFor()
+      expect(await project.count()).toBe(0)
+      await search.fill('archive targ')
+      await page.locator('.pjrow.archived', { hasText: 'Archive target' }).click()
+      await page.locator('.ctxmenu').getByRole('menuitem', { name: /Unarchive/ }).click()
+      await search.fill('')
+      await page.locator('.pjrow:not(.archived)', { hasText: 'Archive target' }).click()
+      await page.locator('#projview .pv-head b', { hasText: 'Archive target' }).waitFor({ timeout: 30_000 })
+      await page.reload()
+      await page.locator('#projview .pv-head b', { hasText: 'Archive target' }).waitFor({ timeout: 30_000 })
+
+      // An approval leaves with the socket that could answer it, and is asked again once reconnected.
+      await page.getByRole('button', { name: 'New session' }).first().click()
+      await page.getByLabel('Message', { exact: true }).fill('please DENYME')
+      await page.getByLabel('Message', { exact: true }).press('Enter')
+      const asking = page.getByRole('dialog').getByText('Claude wants to run a command')
+      await asking.waitFor({ timeout: 30_000 })
+      dropSocket()
+      await asking.waitFor({ state: 'detached', timeout: 5_000 })
+      await asking.waitFor({ timeout: 30_000 })
+      expect(await asking.count()).toBe(1)
+      await page.getByRole('dialog').getByRole('option', { name: /Allow once/ }).click()
+      await page.locator('.feed').getByText('WEB_DONE').waitFor({ timeout: 30_000 })
+      expect(existsSync(join(workspace, 'denied.txt'))).toBe(true)
+      rmSync(join(workspace, 'denied.txt'))
+
+      // With the server gone nobody can answer: the approval stays away.
+      const input = page.locator('.main').getByLabel('Message', { exact: true })
+      await input.fill('please DENYME')
+      await input.press('Enter')
+      await asking.waitFor({ timeout: 30_000 })
+      web.kill('SIGTERM')
+      await web.exited
+      await startWeb()
+      await asking.waitFor({ state: 'detached', timeout: 30_000 })
+      expect(existsSync(join(workspace, 'denied.txt'))).toBe(false)
+      expect(errors).toEqual([])
+    } finally {
+      await browser.close()
+    }
+  }, 180_000)
 
   it('@s several tasks at once from the coordinator box, and a task box @s the coordinator', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"])

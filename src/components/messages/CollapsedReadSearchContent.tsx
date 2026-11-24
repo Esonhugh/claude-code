@@ -14,10 +14,16 @@ import type {
   NormalizedAssistantMessage,
 } from '../../types/message.js'
 import { uniq } from '../../utils/array.js'
-import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.js'
+import {
+  getSearchOrReadFromContent,
+  getToolUseIdsFromCollapsedGroup,
+} from '../../utils/collapseReadSearch.js'
 import { getDisplayPath } from '../../utils/file.js'
 import { formatDuration, formatSecondsShort } from '../../utils/format.js'
-import type { buildMessageLookups } from '../../utils/messages.js'
+import {
+  type buildMessageLookups,
+  TOOL_CALL_INTERRUPTED_MESSAGE,
+} from '../../utils/messages.js'
 import type { ResolvedTheme } from '../../utils/theme.js'
 import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { useSelectedMessageBg } from '../messageActions.js'
@@ -93,6 +99,46 @@ function ToolUseError({
       verbose={verbose}
     />
   )
+}
+
+/**
+ * How a call in a finished group fell short: 'not-run' when a permission
+ * rule, auto mode or the user's answer at the prompt stopped it before it
+ * ran; 'no-result' when the session ended during it (no result and no longer
+ * running, or the stand-in result resume records for it).
+ */
+function getCutToolUse(
+  id: string,
+  lookups: ReturnType<typeof buildMessageLookups>,
+  inProgressToolUseIDs: Set<string>,
+): 'no-result' | 'not-run' | undefined {
+  const resultMsg = lookups.toolResultByToolUseID.get(id)
+  if (!resultMsg) {
+    return !lookups.resolvedToolUseIDs.has(id) && !inProgressToolUseIDs.has(id)
+      ? 'no-result'
+      : undefined
+  }
+  if (resultMsg.type !== 'user' || !Array.isArray(resultMsg.message.content)) {
+    return undefined
+  }
+  const block = resultMsg.message.content.find(
+    b => b.type === 'tool_result' && b.tool_use_id === id,
+  )
+  if (block?.type !== 'tool_result') return undefined
+  if (block.content === TOOL_CALL_INTERRUPTED_MESSAGE) return 'no-result'
+  if (block.is_error !== true) return undefined
+  const kind = resultMsg.toolDenialKind
+  if (
+    kind === 'permission-rule' ||
+    kind === 'automode-blocked' ||
+    kind === 'automode-unavailable' ||
+    kind === 'automode-parsing-error' ||
+    (kind === 'user-rejected' &&
+      resultMsg.permissionDecision?.source === 'user_reject')
+  ) {
+    return 'not-run'
+  }
+  return undefined
 }
 
 type Props = {
@@ -253,12 +299,49 @@ export function CollapsedReadSearchContent({
   const readCount = maxReadCountRef.current
   const searchCount = maxSearchCountRef.current
   const listCount = maxListCountRef.current
-  const mcpCallCount = maxMcpCountRef.current
+  const toolUses: VerboseToolUseBlock[] = []
+  for (const msg of groupMessages) {
+    const messages: NormalizedAssistantMessage[] =
+      msg.type === 'assistant'
+        ? [msg]
+        : msg.type === 'grouped_tool_use'
+          ? msg.messages
+          : []
+    for (const { message } of messages) {
+      const content = message.content[0]
+      if (isVerboseToolUseBlock(content)) toolUses.push(content)
+    }
+  }
+
+  // Shell and MCP calls a finished group never got a result for (the session
+  // ended mid-call) are folded into "no result recorded for N calls", and
+  // ones stopped before they ran into "did not run N calls", rather than
+  // counted as run (official 2.1.329).
+  const cutToolUseIds = new Set<string>()
+  let notRunCount = 0
+  let cutBashCount = 0
+  let cutMcpCount = 0
+  if (!isActiveGroup) {
+    for (const content of toolUses) {
+      const cut = getCutToolUse(content.id, lookups, inProgressToolUseIDs)
+      if (!cut) continue
+      const info = getSearchOrReadFromContent(content, tools, true)
+      if (info?.mcpServerName) cutMcpCount++
+      else if (info?.isBash) cutBashCount++
+      else continue
+      cutToolUseIds.add(content.id)
+      if (cut === 'not-run') notRunCount++
+    }
+  }
+  const mcpCallCount = Math.max(0, maxMcpCountRef.current - cutMcpCount)
   // Subtract commands surfaced as "Committed …" / "Created PR …" so the
   // same command isn't counted twice. gitOpBashCount is read live (no max-ref
   // needed — it's 0 until results arrive, then only grows).
   const gitOpBashCount = message.gitOpBashCount ?? 0
-  const bashCount = Math.max(0, maxBashCountRef.current - gitOpBashCount)
+  const bashCount = Math.max(
+    0,
+    maxBashCountRef.current - gitOpBashCount - cutBashCount,
+  )
 
   const hasNonMemoryOps =
     searchCount > 0 ||
@@ -267,7 +350,8 @@ export function CollapsedReadSearchContent({
     replCount > 0 ||
     mcpCallCount > 0 ||
     bashCount > 0 ||
-    gitOpBashCount > 0
+    gitOpBashCount > 0 ||
+    cutToolUseIds.size > 0
 
   const readPaths = message.readFilePaths
   const searchArgs = message.searchArgs
@@ -304,20 +388,6 @@ export function CollapsedReadSearchContent({
   }
 
   const displayedHint = useMinDisplayTime(incomingHint, MIN_HINT_DISPLAY_MS)
-
-  const toolUses: VerboseToolUseBlock[] = []
-  for (const msg of groupMessages) {
-    const messages: NormalizedAssistantMessage[] =
-      msg.type === 'assistant'
-        ? [msg]
-        : msg.type === 'grouped_tool_use'
-          ? msg.messages
-          : []
-    for (const { message } of messages) {
-      const content = message.content[0]
-      if (isVerboseToolUseBlock(content)) toolUses.push(content)
-    }
-  }
 
   // In verbose mode, render each tool use with its 1-line result summary
   if (verbose) {
@@ -590,6 +660,22 @@ export function CollapsedReadSearchContent({
     )
   }
 
+  for (const [key, verb, total] of [
+    ['no-result', 'no result recorded for', cutToolUseIds.size - notRunCount],
+    ['not-run', 'did not run', notRunCount],
+  ] as const) {
+    if (total === 0) continue
+    const other = nonMemParts.length > 0 ? 'other ' : ''
+    pushPart(
+      key,
+      verb,
+      <>
+        <Text bold>{total}</Text> {other}
+        {total === 1 ? 'call' : 'calls'}
+      </>,
+    )
+  }
+
   // Build memory parts (auto-memory) — rendered after nonMemParts
   const hasPrecedingNonMem = nonMemParts.length > 0
   const memParts: React.ReactNode[] = []
@@ -690,7 +776,8 @@ export function CollapsedReadSearchContent({
       )}
       {toolUses.map(
         content =>
-          lookups.erroredToolUseIDs.has(content.id) && (
+          lookups.erroredToolUseIDs.has(content.id) &&
+          !cutToolUseIds.has(content.id) && (
             <ToolUseError
               key={content.id}
               content={content}

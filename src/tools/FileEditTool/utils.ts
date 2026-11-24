@@ -499,25 +499,34 @@ export function getEditsForPatch(patch: StructuredPatchHunk[]): FileEdit[] {
     const oldLines: string[] = []
     const newLines: string[] = []
 
-    // Parse each line and categorize it
+    // Parse each line and categorize it. Every line keeps its newline unless
+    // the next one is the "\ No newline at end of file" marker.
+    let previous = ''
     for (const line of hunk.lines) {
-      if (line.startsWith(' ')) {
+      if (line.startsWith('\\')) {
+        const strip = (lines: string[]) => {
+          lines[lines.length - 1] = lines[lines.length - 1]!.slice(0, -1)
+        }
+        if (previous !== '+') strip(oldLines)
+        if (previous !== '-') strip(newLines)
+      } else if (line.startsWith(' ')) {
         // Context line - appears in both versions
         contextLines.push(line.slice(1))
-        oldLines.push(line.slice(1))
-        newLines.push(line.slice(1))
+        oldLines.push(line.slice(1) + '\n')
+        newLines.push(line.slice(1) + '\n')
       } else if (line.startsWith('-')) {
         // Deleted line - only in old version
-        oldLines.push(line.slice(1))
+        oldLines.push(line.slice(1) + '\n')
       } else if (line.startsWith('+')) {
         // Added line - only in new version
-        newLines.push(line.slice(1))
+        newLines.push(line.slice(1) + '\n')
       }
+      previous = line[0]!
     }
 
     return {
-      old_string: oldLines.join('\n'),
-      new_string: newLines.join('\n'),
+      old_string: oldLines.join(''),
+      new_string: newLines.join(''),
       replace_all: false,
     }
   })

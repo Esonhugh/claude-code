@@ -148,8 +148,10 @@ test('REPL sizes the dock from the shown pane requested body columns', () => {
 })
 
 const makeSubmit = extract('./REPL.tsx', 'onSubmit')
+const makeHandBackPrompt = extract('./REPL.tsx', 'handBackPrompt')
 const makeHandle = extract('../utils/handlePromptSubmit.ts', 'handlePromptSubmit', 'function')
 const makeExecute = extract('../utils/handlePromptSubmit.ts', 'executeUserInput', 'function')
+const wasBlockedTypedPrompt = extract('../utils/handlePromptSubmit.ts', 'wasBlockedTypedPrompt', 'function')({})
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(r => { resolve = r })
@@ -970,6 +972,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
   const diffSession = { current: 'same-id' }
   const restoredCosts: unknown[] = []
   const log = { sessionId: 'same-id', messages: [] }
+  let replResets = 0
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
     planCodeModeResume: () => ({ messages: [], replMode: undefined }), reportLostReplEvals: async () => [], isCodeModeEnabled: () => false,
@@ -981,6 +984,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    resetMainReplSession: () => { replResets++ },
     getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
     resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, saveCurrentSessionCosts: noop,
@@ -1001,6 +1005,7 @@ test('successful same-ID resume resets diff without waiting for identity change'
   expect(restoredCosts[0]).toBe(log)
   expect(replaced).toBe(true)
   expect(resets).toBe(1)
+  expect(replResets).toBe(1)
   expect(state.diffSidebarVisible).toBe(false)
   expect(diffSession.current).toBe('same-id')
 })
@@ -1081,6 +1086,7 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
       return settled
     },
     fileHistoryEnabled: () => false, createUserMessage: (p: any) => ({ ...p, uuid: 'test-message' }),
+    wasBlockedTypedPrompt,
   }
   lowerScope.executeUserInput = makeExecute(lowerScope)
   lowerScope.handlePromptSubmit = makeHandle(lowerScope)
@@ -1116,6 +1122,7 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     isSendNowCommand, isSendNowPrompt, sendNowRequests: 0,
     sendNow: { request: () => { scope.sendNowRequests++ } },
   }
+  scope.handBackPrompt = makeHandBackPrompt(scope)
   const submit = makeSubmit(scope)
   scope.onSubmitRef = { current: submit }
   return { submit, scope, lowerScope, helpers, draft, guard, executions, queued, history, epoch, remoteMessages,
@@ -1155,6 +1162,35 @@ for (const gap of ['mods', 'hooks']) {
     expect(h.draft.paste[7].content).toBe('new')
   })
 }
+
+const blockedByHook = {
+  messages: [{ type: 'system', subtype: 'informational', content: 'UserPromptSubmit operation blocked by hook',
+    promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: false } }],
+  shouldQuery: false,
+}
+for (const active of [false, true]) {
+  test(`${active ? 'a busy' : 'an idle'} typed prompt a UserPromptSubmit hook blocks goes back to the input box`, async () => {
+    const h = harness({ active, result: blockedByHook })
+    const pending = h.submit('submitted', h.helpers)
+    await Promise.resolve()
+    expect(h.draft.text).toBe('')
+    h.setText('typed meanwhile')
+    h.release()
+    await pending
+    expect(h.queued).toEqual([])
+    expect(h.draft).toMatchObject({ text: 'typed meanwhile\nsubmitted', mode: 'prompt' })
+  })
+}
+
+test('a prompt a hook stops but keeps stays out of the input box', async () => {
+  const kept = { ...blockedByHook, messages: [{ ...blockedByHook.messages[0],
+    promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: true } }] }
+  const h = harness({ active: false, result: kept })
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('')
+})
 
 test('an idle prompt shows as processing while it waits on the Mods barrier', async () => {
   const h = harness({ active: false })
@@ -2845,6 +2881,7 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     restorePermissionModeForResume: () => ({ mode: 'default' }), savePermissionMode: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    resetMainReplSession: noop,
     getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
     setConversationId: noop, saveCurrentSessionCosts: noop,
     restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },

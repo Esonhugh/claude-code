@@ -19,7 +19,7 @@ import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
 import type { Control } from './extShared'
 import { McpApp } from './McpApp'
-import { ModSite } from './Mods'
+import { modColor, ModSite } from './Mods'
 
 /** `claude-opus-5-5` → `Opus 5.5`; anything else is shown as is. */
 export function modelLabel(model: string | undefined): string | undefined {
@@ -507,11 +507,19 @@ export function teamEventLabel(
   return type === 'idle_notification' ? t('teamIdle') : type.replace(/_/g, ' ')
 }
 
-export function TeamDot({ color }: { color?: string }) {
-  return <span className="team-dot" style={{ background: teamColor(color) }} />
+// A teammate's color as the terminal color Mods draw with, the way the CLI's ANSI theme maps
+// its eight agent colors, so it follows the palette and dark mode.
+const TEAM_INK: Record<string, string> = { purple: 'magenta', orange: 'red', pink: 'magenta' }
+const AVATAR_INKS = ['blue', 'green', 'yellow', 'magenta', 'red', 'cyan']
+
+function teamInk(color: string | undefined): string | undefined {
+  const name = teamColor(color)?.toLowerCase()
+  return name && (modColor(TEAM_INK[name] ?? name) ?? name)
 }
 
-const AVATAR_COLORS = ['#3b6fd8', '#2c9a5a', '#9a8a2c', '#8a5ab8', '#c0563a', '#2a8a9a']
+export function TeamDot({ color }: { color?: string }) {
+  return <span className="team-dot" style={{ background: teamInk(color) }} />
+}
 
 /** The `.teambar` under the meta row: one avatar per teammate, opening its chat. */
 export function TeamBar({
@@ -535,7 +543,7 @@ export function TeamBar({
           type="button"
           key={m.task.id}
           className="avatar"
-          style={{ background: m.color ?? AVATAR_COLORS[i % AVATAR_COLORS.length] }}
+          style={{ background: teamInk(m.color) ?? modColor(AVATAR_INKS[i % AVATAR_INKS.length]) }}
           title={`${m.name} · ${m.state === 'stopped' ? t('statusKilled') : m.state}`}
           onClick={() => onOpen(m.task.id)}
         >

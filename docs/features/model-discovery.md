@@ -10,7 +10,7 @@
 
 开启模型发现后，Claude Code 启动时会去问网关「你有哪些模型」（请求 `/v1/models`），把结果加进 `/model` 列表，标注 `From gateway`。
 
-- **Anthropic 网关**：设置了非官方 `ANTHROPIC_BASE_URL` 就默认开启，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 关闭；
+- **Anthropic 网关**：设置了非官方 `ANTHROPIC_BASE_URL` 就默认开启，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 关闭；设了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 时只有显式 `=1` 才请求；
 - **OpenAI provider**：自动发现，见 [openai-provider.md](openai-provider.md)。
 
 <details lang="en"><summary>English</summary>
@@ -23,7 +23,7 @@ Many teams reach models through an **API gateway** (a proxy, LiteLLM, a company 
 
 With model discovery on, Claude Code asks the gateway which models it has at startup (a request to `/v1/models`) and adds them to the `/model` list, marked `From gateway`.
 
-- **Anthropic gateways**: on by default whenever `ANTHROPIC_BASE_URL` points somewhere unofficial; `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` turns it off.
+- **Anthropic gateways**: on by default whenever `ANTHROPIC_BASE_URL` points somewhere unofficial; `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` turns it off. Under `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` only an explicit `=1` sends the request.
 - **OpenAI provider**: discovered automatically, see [openai-provider.md](openai-provider.md).
 
 </details>
@@ -37,7 +37,7 @@ With model discovery on, Claude Code asks the gateway which models it has at sta
 
 開啟模型發現後，Claude Code 啟動時會去問閘道「你有哪些模型」（請求 `/v1/models`），把結果加進 `/model` 列表，標註 `From gateway`。
 
-- **Anthropic 閘道**：設定了非官方 `ANTHROPIC_BASE_URL` 就預設開啟，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 關閉；
+- **Anthropic 閘道**：設定了非官方 `ANTHROPIC_BASE_URL` 就預設開啟，`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=0` 關閉；設了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 時只有顯式 `=1` 才請求；
 - **OpenAI provider**：自動發現，見 [openai-provider.md](openai-provider.md)。
 
 </details>

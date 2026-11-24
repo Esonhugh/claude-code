@@ -111,9 +111,9 @@ export function openProjectsDb(path: string): Database {
 export class ProjectStore {
   constructor(private db: Database) {}
 
-  list(): Project[] {
+  list(archived = false): Project[] {
     return this.db
-      .query('SELECT * FROM projects WHERE archived_at IS NULL ORDER BY updated_at DESC')
+      .query(`SELECT * FROM projects ${archived ? '' : 'WHERE archived_at IS NULL '}ORDER BY updated_at DESC`)
       .all() as Project[]
   }
 
@@ -156,6 +156,12 @@ export class ProjectStore {
     if (!project || project.archived_at !== null) return undefined
     this.db.run('UPDATE projects SET archived_at = ? WHERE id = ?', [Date.now(), id])
     return project
+  }
+
+  unarchive(id: string): Project | undefined {
+    if (this.get(id)?.archived_at == null) return undefined
+    this.db.run('UPDATE projects SET archived_at = NULL WHERE id = ?', [id])
+    return this.get(id)
   }
 }
 

@@ -123,6 +123,9 @@ export const openLocal = (id: string, path?: string, reveal?: boolean) =>
 export const removeProject = (id: string, purge: boolean) =>
   sendJson(`/api/projects/${encodeURIComponent(id)}${purge ? '?purge=1' : ''}`, 'DELETE')
 
+export const unarchiveProject = (id: string) =>
+  sendJson(`/api/projects/${encodeURIComponent(id)}/unarchive`, 'POST') as Promise<Project>
+
 export type TranscriptPage = {
   messages: unknown[]
   start: number
@@ -164,7 +167,16 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string; local?: boolean }>('/api/info')
+  getJson<{
+    workspace: string
+    preview_origins?: string[]
+    temp_root?: string
+    home?: string
+    version?: string
+    local?: boolean
+    // The CLI's theme as the page's, for a page whose own theme was never picked.
+    theme?: 'system' | 'light' | 'dark'
+  }>('/api/info')
 
 /** Files under the session's working directory matching an `@` query, relative to it. */
 export const listWorkspaceFiles = (sessionId: string, query: string) =>
@@ -192,14 +204,59 @@ export const loadModels = (): Promise<{ models: ModelOption[]; model?: string }>
 export const loadSnippet = (sessionId: string) =>
   getJson<{ snippet: string }>(`/api/history/${encodeURIComponent(sessionId)}/snippet`).then(r => r.snippet)
 
+/**
+ * What the desktop app's preload exposes. Its page is served over a pipe, which carries no
+ * WebSocket, so the session socket is relayed by the app instead.
+ */
+type DesktopBridge = {
+  socket: (
+    path: string,
+    onEvent: (type: 'open' | 'message' | 'close', data?: string, code?: number, reason?: string) => void,
+  ) => { send: (data: string) => void; close: (code?: number, reason?: string) => void }
+}
+
+/** The parts of a WebSocket the page uses, over the desktop app's relay. */
+class DesktopSocket extends EventTarget {
+  readyState: number = WebSocket.CONNECTING
+  private channel: ReturnType<DesktopBridge['socket']>
+
+  constructor(bridge: DesktopBridge, path: string) {
+    super()
+    this.channel = bridge.socket(path, (type, data, code, reason) => {
+      if (type === 'open') {
+        this.readyState = WebSocket.OPEN
+        this.dispatchEvent(new Event('open'))
+      } else if (type === 'message') {
+        this.dispatchEvent(new MessageEvent('message', { data }))
+      } else {
+        this.readyState = WebSocket.CLOSED
+        this.dispatchEvent(new CloseEvent('close', { code, reason }))
+      }
+    })
+  }
+
+  send(data: string) {
+    if (this.readyState === WebSocket.OPEN) this.channel.send(data)
+  }
+
+  close(code?: number, reason?: string) {
+    if (this.readyState >= WebSocket.CLOSING) return
+    this.readyState = WebSocket.CLOSING
+    this.channel.close(code, reason)
+  }
+}
+
 /** Opens the session's stream-json socket; resolves once it is open. */
 export function openSessionSocket(
   id: string,
   onMessage: (msg: unknown) => void,
 ): Promise<WebSocket> {
+  const desktop = (window as { claudeDesktop?: DesktopBridge }).claudeDesktop
   const url = new URL(`/api/sessions/${encodeURIComponent(id)}/ws`, location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  const socket = new WebSocket(url)
+  const socket = desktop
+    ? (new DesktopSocket(desktop, url.pathname) as unknown as WebSocket)
+    : new WebSocket(url)
   let buffer = ''
   socket.addEventListener('message', event => {
     buffer += String(event.data)
@@ -353,6 +410,8 @@ export type Project = {
   coordinator_effort?: string | null
   created_at: number
   updated_at: number
+  /** Set while the project is archived: listed only in a sidebar search. */
+  archived_at?: number | null
   running: boolean
   /** From the tasks table: all, still running (blocked included), and waiting on the user. */
   task_count?: number
@@ -368,7 +427,8 @@ export type ProjectFields = {
   permission_mode?: string
 }
 
-export const listProjects = () => getJson<Project[]>('/api/projects')
+/** Every project, the archived ones included. */
+export const listProjects = () => getJson<Project[]>('/api/projects?archived=1')
 
 export async function createProject(body: ProjectFields & { name: string; cwd: string; trust?: boolean }): Promise<Project> {
   const res = await fetch('/api/projects', {

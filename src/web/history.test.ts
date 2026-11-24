@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, sep } from 'path'
 import { sanitizePath } from '../utils/sessionStoragePortable.js'
 import { findAgentIssuers, forkSession, listHistory, readAgentTranscript, readSnippet, readTranscript, renameSession, snippetText } from './history.js'
 
@@ -457,6 +457,35 @@ describe('web history', () => {
     // The original is untouched.
     expect(JSON.stringify((await readTranscript(ID, undefined, 50))!.messages)).toContain('second question')
     expect(await forkSession(ID, 'msg_missing')).toBeUndefined()
+  })
+
+  it('gives a fork its own copy of the uploads, so deleting the original leaves them', async () => {
+    // A folder name JSON escapes, as every Windows path is.
+    const uploads = join(root, 'up"loads')
+    const inJson = (text: string) => JSON.stringify(text).slice(1, -1)
+    mkdirSync(join(uploads, ID), { recursive: true })
+    writeFileSync(join(uploads, ID, 'note.txt'), 'NOTE')
+    const file = join(root, 'config', 'projects', sanitizePath(join(root, 'project')), `${ID}.jsonl`)
+    // The page's quoted mention, then the path as a tool reads it.
+    const prompt = (dir: string) => `first question @"${inJson(join(uploads, dir, 'note.txt'))}" ${join(uploads, dir, 'note.txt')}`
+    writeFileSync(file, readFileSync(file, 'utf8').replace('"first question"', JSON.stringify(prompt(ID))))
+    const forkId = (await forkSession(ID, 'msg_1', uploads))!
+    rmSync(join(uploads, ID), { recursive: true })
+    expect(readFileSync(join(uploads, forkId, 'note.txt'), 'utf8')).toBe('NOTE')
+    const fork = JSON.stringify((await readTranscript(forkId, undefined, 50))!.messages)
+    expect(fork).toContain(inJson(prompt(forkId)))
+    expect(fork).not.toContain(`${ID}${inJson(sep)}note.txt`)
+    // The original still names its own.
+    expect(readFileSync(file, 'utf8')).toContain(JSON.stringify(prompt(ID)))
+  })
+
+  it('does not fork when the uploads cannot be copied', async () => {
+    // Under a file: the copy fails with something other than a missing folder.
+    writeFileSync(join(root, 'uploads'), 'x')
+    const dir = join(root, 'config', 'projects', sanitizePath(join(root, 'project')))
+    const before = readdirSync(dir)
+    await expect(forkSession(ID, 'msg_1', join(root, 'uploads'))).rejects.toThrow()
+    expect(readdirSync(dir)).toEqual(before)
   })
 
   it('renames by appending a custom title', async () => {

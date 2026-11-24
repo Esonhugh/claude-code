@@ -1,7 +1,7 @@
 import type { UUID } from 'crypto'
 import { randomBytes, randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
-import type { SDKAssistantMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
+import type { SDKAssistantMessage, SDKConversationResetMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {
@@ -104,7 +104,41 @@ type SessionStateChangedEvent = {
   state: 'idle' | 'running' | 'requires_action'
 }
 
+// A PreToolUse hook timed out or could not run, so it never checked the call.
+type HookNoVerdictEvent = {
+  type: 'system'
+  subtype: 'informational'
+  content: string
+  level: 'warning'
+  tag: 'hook_no_verdict'
+  hook_no_verdict: {
+    hook_event: 'PreToolUse'
+    tool_use_id: string
+    timed_out: boolean
+  }
+}
+
+// A notice the terminal UI shows in its footer, for hosts without one.
+type NotificationEvent = {
+  type: 'system'
+  subtype: 'notification'
+  key: string
+  text: string
+  priority: 'immediate' | 'high'
+  color?: 'warning'
+}
+
+// The session's name: sent at startup when it has one, and on each rename.
+type SessionTitleChangedEvent = {
+  type: 'system'
+  subtype: 'session_title_changed'
+  title: string
+}
+
 export type SdkEvent =
+  | SessionTitleChangedEvent
+  | HookNoVerdictEvent
+  | NotificationEvent
   | TaskStartedEvent
   | TaskUpdatedEvent
   | BackgroundTasksChangedEvent
@@ -114,7 +148,8 @@ export type SdkEvent =
 
 // A background agent's own messages, tagged with parent_tool_use_id. They share
 // the queue so they stay in order with that agent's task events.
-type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage
+// So does conversation_reset, sent whole: it names the session /clear left.
+type SubagentSdkMessage = SDKAssistantMessage | SDKUserMessage | SDKConversationResetMessage
 
 // Id of one run of a task, as official sends it on every task_* event: a resumed
 // task keeps its task_id and gets a new run id. Run ids of one task sort in the
@@ -133,7 +168,7 @@ export function getTaskRunId(taskId: string): string | undefined {
 }
 
 const MAX_QUEUE_SIZE = 1000
-const queue: (SdkEvent | SubagentSdkMessage)[] = []
+const queue: ((SdkEvent & { session_id: string }) | SubagentSdkMessage)[] = []
 let onEnqueue: (() => void) | undefined
 
 /** Called after each queued event, so the output stream can take it right away. */
@@ -153,7 +188,8 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   if (event.type === 'system' && 'task_id' in event && runIds.has(event.task_id)) {
     event = { ...event, run_id: runIds.get(event.task_id) }
   }
-  queue.push(event)
+  // Named for the session it happened in, which /clear may leave before the drain.
+  queue.push(event.type === 'system' ? { ...event, session_id: getSessionId() } : event)
   onEnqueue?.()
 }
 
@@ -164,11 +200,11 @@ export function drainSdkOutput(): Array<
   if (queue.length === 0) {
     return []
   }
-  return queue.splice(0).map(e =>
-    e.type === 'system'
-      ? { ...e, uuid: randomUUID(), session_id: getSessionId() }
-      : e,
-  )
+  return queue.splice(0).map(e => {
+    if (e.type !== 'system') return e
+    const { session_id, ...event } = e
+    return { ...event, uuid: randomUUID(), session_id } as SdkEvent & { uuid: UUID; session_id: string }
+  })
 }
 
 /** The queued system events; subagent messages are dropped. */
@@ -179,6 +215,51 @@ export function drainSdkEvents(): Array<
     (e): e is SdkEvent & { uuid: UUID; session_id: string } =>
       e.type === 'system',
   )
+}
+
+/**
+ * The SDK event for a queued `<task-notification>`, or undefined when it has
+ * no <status>: only a terminal notification closes the task for SDK hosts.
+ */
+export function taskNotificationSdkEvent(
+  notification: unknown,
+): TaskNotificationSdkEvent | undefined {
+  const text = typeof notification === 'string' ? notification : ''
+  const tag = (name: string) =>
+    text.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]
+  const rawStatus = tag('status')
+  if (!rawStatus) return undefined
+  const status =
+    rawStatus === 'failed' || rawStatus === 'stopped'
+      ? rawStatus
+      : rawStatus === 'killed'
+        ? 'stopped'
+        : 'completed'
+
+  const usage = text.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
+  const totalTokens = usage.match(
+    /<(subagent_tokens|total_tokens)>(\d+)<\/\1>/,
+  )
+  const toolUses = usage.match(/<tool_uses>(\d+)<\/tool_uses>/)
+  const durationMs = usage.match(/<duration_ms>(\d+)<\/duration_ms>/)
+
+  return {
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: tag('task-id') ?? '',
+    tool_use_id: tag('tool-use-id'),
+    status,
+    output_file: tag('output-file') ?? '',
+    summary: tag('summary') ?? '',
+    usage:
+      totalTokens && toolUses
+        ? {
+            total_tokens: parseInt(totalTokens[2]!, 10),
+            tool_uses: parseInt(toolUses[1]!, 10),
+            duration_ms: durationMs ? parseInt(durationMs[1]!, 10) : 0,
+          }
+        : undefined,
+  }
 }
 
 /**

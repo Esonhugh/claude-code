@@ -2,17 +2,38 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage } from '../../utils/errors.js'
 import { lock } from '../../utils/lockfile.js'
-import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
+import { getPluginsDirectory, pluginDataDirPath } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
 import { appendFileSync, constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, readlink, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, readdir, readlink, stat, utimes, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
 import { getAdditionalDirectoriesForClaudeMd } from '../../bootstrap/state.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
+
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i
+
+/**
+ * Official 2.1.329: the store of a plugin is <plugins>/store/<id>.json, or the
+ * id with unsafe characters replaced plus a hash of the id when the id is not
+ * a safe file name itself.
+ */
+export function storeFileName(storageId: string): string {
+  if (
+    /^[a-z0-9._-]+$/.test(storageId) &&
+    !WINDOWS_RESERVED_NAME.test(storageId) &&
+    storageId.length <= 64 &&
+    storageId !== '.' &&
+    storageId !== '..'
+  )
+    return `${storageId}.json`
+  const hash = createHash('sha256').update(storageId).digest('hex').slice(0, 12)
+  return `${storageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'plugin'}-${hash}.json`
+}
 
 // Resolve symbolic links component by component. Bun's realpath variants can
 // return another hard-link alias; Mods must preserve non-link path spellings.
@@ -314,41 +335,67 @@ export function createModHostOperations({
       }
     }
   }, { once: true })
-  const storeName = `mod-store-${createHash('sha256').update(storageId).digest('hex')}.json`
-  const storePath = () => join(getPluginDataDir(storageId), storeName)
+  const storePath = () => join(getPluginsDirectory(), 'store', storeFileName(storageId))
+  // Where this fork kept the store before it used the official location.
+  const legacyStorePath = () =>
+    join(pluginDataDirPath(storageId), `mod-store-${createHash('sha256').update(storageId).digest('hex')}.json`)
+  const storeError = (message: string, code?: string) =>
+    Object.assign(new Error(message), { name: 'HooksError', ...(code !== undefined && { code }) })
 
-  async function readStore(path: string): Promise<Map<string, unknown>> {
-    let text: string
+  /** The text of a store file, or undefined when there is none. Official reads it whole: indentation can make a store within the limit many times larger on disk. */
+  async function readStoreFile(path: string): Promise<string | undefined> {
     try {
-      // Allow UTF-8 expansion and the entries-array overhead of the local format.
-      text = await readText(path, signal, 4 * MAX_STORE_CHARACTERS)
+      return await readText(path, signal, Infinity)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Map()
-      throw error
-    }
-    const entries: unknown = JSON.parse(text)
-    if (
-      !Array.isArray(entries) ||
-      entries.some(
-        (entry) =>
-          !Array.isArray(entry) ||
-          entry.length !== 2 ||
-          typeof entry[0] !== 'string',
+      signal.throwIfAborted()
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw storeError(
+        `${storageId}: store file ${path} is unreadable (${errorMessage(error)})`,
+        (error as NodeJS.ErrnoException).code,
       )
-    ) {
-      throw new TypeError('Invalid mod store: expected JSON key/value entries')
     }
-    const result = new Map<string, unknown>(entries)
-    if (result.size !== entries.length)
-      throw new TypeError('Invalid mod store: duplicate keys')
-    return result
+  }
+
+  function parseStoreFile(path: string, text: string): unknown {
+    try {
+      return JSON.parse(text)
+    } catch (error) {
+      throw storeError(`${storageId}: store file ${path} is malformed (${errorMessage(error)})`)
+    }
+  }
+
+  async function readStore(path: string): Promise<Record<string, unknown>> {
+    const text = await readStoreFile(path)
+    if (text === undefined) return readLegacyStore()
+    const data = parseStoreFile(path, text)
+    if (typeof data !== 'object' || data === null || Array.isArray(data))
+      throw storeError(`${storageId}: store file ${path} is malformed (the JSON is not an object)`)
+    // Official sweeps stores nobody read for the cleanup period; a read keeps this one.
+    const now = new Date()
+    await utimes(path, now, now).catch(error =>
+      logForDebugging(`$.store (${storageId}): could not touch ${path}: ${errorMessage(error)}`, { level: 'warn' }),
+    )
+    return data as Record<string, unknown>
+  }
+
+  // A legacy file that cannot be read or understood fails the call: writing a
+  // new store over it would hide the data it still holds.
+  async function readLegacyStore(): Promise<Record<string, unknown>> {
+    const path = legacyStorePath()
+    const text = await readStoreFile(path)
+    if (text === undefined) return {}
+    const entries = parseStoreFile(path, text)
+    if (!Array.isArray(entries) || !entries.every(entry => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string'))
+      throw storeError(`${storageId}: store file ${path} is malformed (the JSON is not a list of key/value entries)`)
+    return Object.fromEntries(entries)
   }
 
   async function updateStore(
-    change: (data: Map<string, unknown>) => boolean,
+    change: (data: Record<string, unknown>) => Record<string, unknown> | undefined,
   ): Promise<void> {
     signal.throwIfAborted()
     const path = storePath()
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     let release: (() => Promise<void>) | undefined
     const deadline = Date.now() + 30_000
     // Hold the lock across read, mutation and atomic replacement, not only the write.
@@ -367,14 +414,35 @@ export function createModHostOperations({
     }
     try {
       signal.throwIfAborted()
-      const data = await readStore(path)
-      if (!change(data)) return
-      if (JSON.stringify(Object.fromEntries(data)).length > MAX_STORE_CHARACTERS)
-        throw new RangeError('Store exceeds 4194304 characters')
+      const data = change(await readStore(path))
+      if (!data) return
+      const size = JSON.stringify(data).length
+      if (size > MAX_STORE_CHARACTERS)
+        throw storeError(`${storageId}: $.store.set: the store would be ${size} characters, over the ${MAX_STORE_CHARACTERS} limit`)
       signal.throwIfAborted()
-      await atomicWriteToZipCache(path, JSON.stringify([...data]))
+      await atomicWriteToZipCache(path, `${JSON.stringify(data, null, 2)}\n`, 0o600)
     } finally {
       await release()
+    }
+  }
+
+  // Official wording: every failure names the plugin and the call.
+  async function storeCall<T>(event: 'get' | 'keys' | 'set' | 'delete', key: string | undefined, run: () => Promise<T>): Promise<T> {
+    signal.throwIfAborted()
+    if (key !== undefined) {
+      if (typeof key !== 'string' || key.length === 0)
+        throw new TypeError('key must be a nonempty string')
+      if (key.length > 256)
+        throw storeError(`${storageId}: $.store.${event}: the key is ${key.length} characters, over the 256 limit`)
+    }
+    try {
+      return await run()
+    } catch (error) {
+      if (signal.aborted || (error instanceof Error && error.name === 'HooksError')) throw error
+      throw storeError(
+        `${storageId}: $.store.${event} failed: ${errorMessage(error)}`,
+        (error as NodeJS.ErrnoException).code,
+      )
     }
   }
 
@@ -543,32 +611,28 @@ export function createModHostOperations({
       },
     },
     store: {
-      async get(key: string): Promise<unknown> {
-        signal.throwIfAborted()
-        if (typeof key !== 'string' || key.length === 0 || key.length > 256)
-          throw new TypeError('key must be a nonempty string of at most 256 characters')
-        return (await readStore(storePath())).get(key)
-      },
-      async keys(): Promise<string[]> {
-        signal.throwIfAborted()
-        return [...(await readStore(storePath())).keys()]
-      },
-      async set(key: string, value: unknown): Promise<void> {
-        if (typeof key !== 'string' || key.length === 0 || key.length > 256)
-          throw new TypeError('key must be a nonempty string of at most 256 characters')
-        const text = JSON.stringify(value)
-        if (text === undefined) throw new TypeError('value must be JSON data')
-        const stored: unknown = JSON.parse(text)
-        await updateStore((data) => {
-          data.set(key, stored)
-          return true
-        })
-      },
-      async delete(key: string): Promise<void> {
-        if (typeof key !== 'string' || key.length === 0 || key.length > 256)
-          throw new TypeError('key must be a nonempty string of at most 256 characters')
-        await updateStore(data => data.delete(key))
-      },
+      get: (key: string): Promise<unknown> =>
+        storeCall('get', key, async () => {
+          const data = await readStore(storePath())
+          return Object.hasOwn(data, key) ? data[key] : undefined
+        }),
+      keys: (): Promise<string[]> =>
+        storeCall('keys', undefined, async () => Object.keys(await readStore(storePath()))),
+      set: (key: string, value: unknown): Promise<void> =>
+        storeCall('set', key, async () => {
+          const text = JSON.stringify(value)
+          if (text === undefined) throw new TypeError('value must be JSON data')
+          const stored: unknown = JSON.parse(text)
+          await updateStore(data => ({ ...data, [key]: stored }))
+        }),
+      delete: (key: string): Promise<void> =>
+        storeCall('delete', key, () =>
+          updateStore(data => {
+            if (!Object.hasOwn(data, key)) return undefined
+            const { [key]: _removed, ...rest } = data
+            return rest
+          }),
+        ),
     },
     process: {
       async *spawn(request: ProcessSpawnRequest, signal: AbortSignal = activationSignal): AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> {

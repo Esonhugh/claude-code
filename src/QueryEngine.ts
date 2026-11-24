@@ -1,3 +1,4 @@
+import { NO_CONTENT_MESSAGE } from './constants/messages.js'
 import { createModCommandQueue } from './services/mods/commandRunQueue.js'
 import { createModMcpConnections } from './services/mods/mcpConnect.js'
 import { copyModCallerChain, type ModCallerChain } from './services/mods/callerChain.js'
@@ -20,6 +21,7 @@ import type {
   TerminalReason,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
+import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
 import stripAnsi from 'strip-ansi'
@@ -45,14 +47,20 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
-import { categorizeRetryableAPIError } from './services/api/errors.js'
+import { categorizeRetryableAPIError, getSafetyStops } from './services/api/errors.js'
 import {
   callMCPToolForMod,
   findMCPConnectionForMod,
 } from './services/mcp/client.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
-import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
+import {
+  findToolByName,
+  type Tools,
+  type ToolUseContext,
+  toolMatchesName,
+} from './Tool.js'
+import type { DeferredToolMarker } from './utils/attachments.js'
 import type { ModsSession } from './services/mods/session.js'
 import { UNSUBMITTED_PROMPT_DROP, type PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
@@ -63,7 +71,9 @@ import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
+import { AGENT_TOOL_NAME } from './tools/AgentTool/constants.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
+import { subagentStats } from './tools/AgentTool/subagentStats.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { AssistantMessage, AttachmentMessage, Message, MessageOrigin, UserMessage } from './types/message.js'
 import { formatTeammateMessages } from './utils/teammateMailbox.js'
@@ -90,7 +100,7 @@ import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
 import { dequeue, enqueueTracked, remove } from './utils/messageQueueManager.js'
-import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import { countToolCalls, SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './utils/messages.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
@@ -121,8 +131,10 @@ const messageSelector =
     require('src/components/MessageSelector.js')
 
 import {
+  hookSystemMessagesToSDK,
   localCommandOutputToSDKAssistantMessage,
   toSDKCompactMetadata,
+  toSDKSystemNotice,
 } from './utils/messages/mappers.js'
 import {
   buildSystemInitMessage,
@@ -135,6 +147,7 @@ import {
 } from './utils/permissions/filesystem.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
+  handleDeferredToolResume,
   handleOrphanedPermission,
   isResultSuccessful,
   normalizeMessage,
@@ -242,6 +255,127 @@ export function toolDenialsIn(
   return denials
 }
 
+type UsageTally = {
+  total: NonNullableUsage
+  /** The request that is streaming: its usage, and whether it is not in `total` yet. */
+  current: NonNullableUsage
+  messageId: string | null
+  open: boolean
+}
+
+/**
+ * result.usage after `message`. A streamed request counts at message_stop, or
+ * once a retry notice or a later request shows its stream was cut (official
+ * counts a cut request that was retried, not the one a turn is interrupted in
+ * or gives up on). A
+ * reply that did not stream (the non-streaming fallback) has no stream events
+ * and counts by its own usage.
+ */
+export function usageAfterMessage(
+  tally: UsageTally,
+  message: { type: string; message?: unknown; event?: unknown },
+): UsageTally {
+  const total = tally.open
+    ? accumulateUsage(tally.total, tally.current)
+    : tally.total
+  if (message.type === 'assistant') {
+    const reply = (message as AssistantMessage).message
+    if (reply.model === SYNTHETIC_MODEL || reply.id === tally.messageId) return tally
+    return {
+      ...tally,
+      messageId: reply.id,
+      open: false,
+      // @ts-ignore - recovered code
+      total: accumulateUsage(total, updateUsage(EMPTY_USAGE, reply.usage)),
+    }
+  }
+  // The notice that a request is sent again: the one it replaces was cut.
+  if (
+    message.type === 'system' &&
+    (message as { subtype?: string }).subtype === 'api_error'
+  ) {
+    return tally.open ? { ...tally, total, open: false } : tally
+  }
+  if (message.type !== 'stream_event') return tally
+  const event = message.event as BetaRawMessageStreamEvent
+  if (event.type === 'message_start') {
+    return {
+      total,
+      current: updateUsage(EMPTY_USAGE, event.message.usage),
+      messageId: event.message.id,
+      open: true,
+    }
+  }
+  if (event.type === 'message_delta') {
+    return { ...tally, current: updateUsage(tally.current, event.usage) }
+  }
+  if (event.type === 'message_stop') return { ...tally, total, open: false }
+  return tally
+}
+
+/**
+ * Official 2.1.329: when the turn's first message_start and first content
+ * frame (content_block_start or content_block_delta) arrived, and when the
+ * request that first message_start belongs to was dispatched.
+ */
+export type StreamTimings = {
+  firstStreamAt?: number
+  requestSentAt?: number
+  firstContentFrameAt?: number
+}
+
+export function streamTimingsAfterEvent(
+  timings: StreamTimings,
+  message: { event?: unknown; requestSentAtMs?: number },
+  now: number,
+): StreamTimings {
+  const { type } = message.event as BetaRawMessageStreamEvent
+  if (type === 'message_start') {
+    return {
+      ...timings,
+      firstStreamAt: timings.firstStreamAt ?? now,
+      requestSentAt: timings.requestSentAt ?? message.requestSentAtMs,
+    }
+  }
+  if (
+    timings.firstContentFrameAt === undefined &&
+    (type === 'content_block_start' || type === 'content_block_delta')
+  ) {
+    return { ...timings, firstContentFrameAt: now }
+  }
+  return timings
+}
+
+// Official 2.1.329 reports these only on a successful result that is not an
+// API error and did not stop for a deferred tool.
+export function resultStreamTimings(
+  timings: StreamTimings,
+  startTime: number,
+  reported: boolean,
+): { ttft_stream_ms?: number; time_to_request_ms?: number; first_content_frame_ms?: number } {
+  if (!reported) return {}
+  const since = (at: number | undefined) =>
+    at === undefined ? undefined : Math.max(0, at - startTime)
+  const ttft = since(timings.firstStreamAt)
+  const toRequest = since(timings.requestSentAt)
+  const firstFrame = since(timings.firstContentFrameAt)
+  return {
+    ...(ttft !== undefined && { ttft_stream_ms: ttft }),
+    ...(toRequest !== undefined && { time_to_request_ms: toRequest }),
+    ...(firstFrame !== undefined && { first_content_frame_ms: firstFrame }),
+  }
+}
+
+// Official 2.1.329 leaves ttft_ms off a result that ends on an API error.
+export function resultTtft(
+  firstAssistantAt: number | undefined,
+  startTime: number,
+  isApiError: boolean,
+): { ttft_ms?: number } {
+  if (isApiError || firstAssistantAt === undefined) return {}
+  return { ttft_ms: Math.max(0, firstAssistantAt - startTime) }
+}
+
 /**
  * The message the turn's result is read from. Stop hooks append progress,
  * attachments and meta feedback after the assistant reply; a turn that ends
@@ -304,6 +438,8 @@ export type QueryEngineConfig = {
   setSDKStatus?: ToolUseContext['setSDKStatus']
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
+  /** The call a PreToolUse hook deferred, to run before this turn's prompt. */
+  deferredToolUse?: DeferredToolMarker
   /**
    * Snip-boundary handler: receives each yielded system message plus the
    * current mutableMessages store. Returns undefined if the message is not a
@@ -337,6 +473,7 @@ export class QueryEngine {
   private permissionDenials: SDKPermissionDenial[]
   private totalUsage: NonNullableUsage
   private hasHandledOrphanedPermission = false
+  private hasHandledDeferredToolResume = false
   private readFileState: FileStateCache
   // Turn-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across the two
@@ -471,6 +608,7 @@ export class QueryEngine {
       allowedAgentTypes,
       setSDKStatus,
       orphanedPermission,
+      deferredToolUse,
     } = this.config
 
     this.discoveredSkillNames.clear()
@@ -779,6 +917,67 @@ export class QueryEngine {
       }
     }
 
+    // Run the call a PreToolUse hook deferred (only once per engine lifetime)
+    if (deferredToolUse && !this.hasHandledDeferredToolResume) {
+      this.hasHandledDeferredToolResume = true
+      const deferredResult = (
+        ended: 'tool_deferred' | 'tool_deferred_unavailable',
+        call: DeferredToolMarker,
+      ) => ({
+        type: 'result' as const,
+        subtype: 'success' as const,
+        is_error: ended === 'tool_deferred_unavailable',
+        duration_ms: Date.now() - startTime,
+        duration_api_ms: getTotalAPIDuration(),
+        num_turns: this.mutableMessages.length,
+        result: '',
+        stop_reason: ended,
+        session_id: getSessionId(),
+        total_cost_usd: getTotalCost(),
+        usage: this.totalUsage,
+        modelUsage: getModelUsage(),
+        permission_denials: this.permissionDenials,
+        deferred_tool_use: {
+          id: call.toolUseID,
+          name: call.toolName,
+          input: call.toolInput,
+        },
+        terminal_reason: ended,
+        uuid: randomUUID(),
+      })
+      if (
+        !findToolByName(
+          processUserInputContext.options.tools,
+          deferredToolUse.toolName,
+        )
+      ) {
+        logForDebugging(
+          `Deferred tool resume: tool '${deferredToolUse.toolName}' is no longer available (MCP server disconnected or tool removed)`,
+          { level: 'warn' },
+        )
+        yield deferredResult('tool_deferred_unavailable', deferredToolUse)
+        return
+      }
+      let deferredAgain: DeferredToolMarker | undefined
+      for await (const message of handleDeferredToolResume(
+        deferredToolUse,
+        wrappedCanUseTool,
+        this.mutableMessages,
+        processUserInputContext,
+      )) {
+        // Attachments are passed through as SDK messages here.
+        const { attachment } = message as { attachment?: DeferredToolMarker }
+        if (attachment?.type === 'hook_deferred_tool') {
+          deferredAgain = attachment
+        }
+        yield message
+      }
+      if (deferredAgain) {
+        yield deferredResult('tool_deferred', deferredAgain)
+        return
+      }
+    }
+
     const { signal } = this.abortController
     const {
       messages: messagesFromUserInput,
@@ -997,6 +1196,7 @@ export class QueryEngine {
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
+    yield* hookSystemMessagesToSDK(messagesFromUserInput)
 
     // A channel message is meta to the model, but a client that asked for
     // replays shows it, as the TUI does; before the reply, where it was read.
@@ -1009,7 +1209,9 @@ export class QueryEngine {
     }
 
     // Like official 2.1.311, every result carries the fast mode state and,
-    // when fast mode is unavailable, why.
+    // when fast mode is unavailable, why; like 2.1.329, also safety_stops and,
+    // with the Agent tool, subagent_stats.
+    const hasAgentTool = tools.some(tool => toolMatchesName(tool, AGENT_TOOL_NAME))
     const resultFastMode = () => {
       const reason = getFastModeDisabledReason()
       return {
@@ -1018,6 +1220,8 @@ export class QueryEngine {
           initialAppState.fastMode,
         ),
         ...(reason !== null && { fast_mode_disabled_reason: reason }),
+        safety_stops: getSafetyStops(),
+        ...(hasAgentTool && { subagent_stats: subagentStats().snapshot() }),
       }
     }
 
@@ -1068,7 +1272,10 @@ export class QueryEngine {
           (msg.content.includes(`<${LOCAL_COMMAND_STDOUT_TAG}>`) ||
             msg.content.includes(`<${LOCAL_COMMAND_STDERR_TAG}>`))
         ) {
-          yield localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          // Like official 2.1.329, a command that printed nothing (/clear) sends no reply.
+          const reply = localCommandOutputToSDKAssistantMessage(msg.content, msg.uuid)
+          const [block] = (reply.message as { content: Array<{ type: string; text?: string }> }).content
+          if (block?.text !== NO_CONTENT_MESSAGE) yield reply
         }
 
         if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
@@ -1080,6 +1287,10 @@ export class QueryEngine {
             // @ts-ignore - recovered code
             compact_metadata: toSDKCompactMetadata(msg.compactMetadata),
           } as SDKCompactBoundaryMessage
+        }
+
+        if (msg.type === 'system' && msg.subtype === 'informational') {
+          yield toSDKSystemNotice(msg)
         }
       }
 
@@ -1137,11 +1348,20 @@ export class QueryEngine {
     }
 
     // Track current message usage (reset on each message_start)
-    let currentMessageUsage: NonNullableUsage = EMPTY_USAGE
+    let usageTally: UsageTally = {
+      total: this.totalUsage,
+      current: EMPTY_USAGE,
+      messageId: null,
+      open: false,
+    }
     let turnCount = 1
     let hasAcknowledgedInitialMessages = false
     // Track structured output from StructuredOutput tool calls
     let structuredOutputFromTool: unknown
+    // The call a PreToolUse hook deferred this turn, reported on the result
+    let deferredToolUseResult:
+      | { id: string; name: string; input: Record<string, unknown> }
+      | undefined
     // Track the last stop_reason from assistant messages
     let lastStopReason: string | null = null
     // Reference-based watermark so error_during_execution's errors[] is
@@ -1172,8 +1392,13 @@ export class QueryEngine {
     // message, api_error_status the status of a trailing API error message.
     let firstAssistantAt: number | undefined
     let lastApiErrorStatus: number | null = null
+    let lastApiErrorType: string | undefined
+    let lastApiErrorCode: string | undefined
     let requestStartedAt: number | undefined
+    let streamTimings: StreamTimings = {}
     let thinkingEstimate = 0
+    // The API message the stream events being forwarded belong to.
+    let apiMessageId: string | undefined
 
     for await (const message of trackTerminal(query({
       messages,
@@ -1275,6 +1500,8 @@ export class QueryEngine {
       if (message.type === 'user') {
         turnCount++
       }
+      usageTally = usageAfterMessage(usageTally, message)
+      this.totalUsage = usageTally.total
 
       switch (message.type) {
         case 'tombstone':
@@ -1285,6 +1512,8 @@ export class QueryEngine {
           lastApiErrorStatus = message.isApiErrorMessage
             ? (message.apiErrorStatus ?? null)
             : null
+          lastApiErrorType = message.apiErrorType
+          lastApiErrorCode = message.apiErrorCode
           // Capture stop_reason if already set (synthetic messages). For
           // streamed responses, this is null at content_block_stop time;
           // the real value arrives via message_delta (handled below).
@@ -1311,6 +1540,7 @@ export class QueryEngine {
           break
         case 'user':
           lastApiErrorStatus = null
+          lastApiErrorType = lastApiErrorCode = undefined
           this.permissionDenials.push(
             ...toolDenialsIn(
               message,
@@ -1322,6 +1552,7 @@ export class QueryEngine {
           yield* normalizeMessage(message)
           break
         case 'stream_event': {
+          streamTimings = streamTimingsAfterEvent(streamTimings, message, Date.now())
           const thinking = nextThinkingEstimate(
             thinkingEstimate,
             // @ts-ignore - recovered code
@@ -1340,21 +1571,11 @@ export class QueryEngine {
           }
           // @ts-ignore - recovered code
           if (message.event.type === 'message_start') {
-            // Reset current message usage for new message
-            currentMessageUsage = EMPTY_USAGE
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.message.usage,
-            )
+            // @ts-ignore - recovered code
+            apiMessageId = message.event.message.id
           }
           // @ts-ignore - recovered code
           if (message.event.type === 'message_delta') {
-            currentMessageUsage = updateUsage(
-              currentMessageUsage,
-              // @ts-ignore - recovered code
-              message.event.usage,
-            )
             // Capture stop_reason from message_delta. The assistant message
             // is yielded at content_block_stop with stop_reason=null; the
             // real value only arrives here (see claude.ts message_delta
@@ -1365,14 +1586,6 @@ export class QueryEngine {
               lastStopReason = message.event.delta.stop_reason
             }
           }
-          // @ts-ignore - recovered code
-          if (message.event.type === 'message_stop') {
-            // Accumulate current message usage into total
-            this.totalUsage = accumulateUsage(
-              this.totalUsage,
-              currentMessageUsage,
-            )
-          }
 
           if (includePartialMessages) {
             yield {
@@ -1381,11 +1594,15 @@ export class QueryEngine {
               session_id: getSessionId(),
               parent_tool_use_id: null,
               uuid: randomUUID(),
+              ...(apiMessageId && { api_message_id: apiMessageId }),
               // @ts-ignore - recovered code
               ...(message.event.type === 'message_start' &&
                 requestStartedAt !== undefined && {
                   ttft_ms: Date.now() - requestStartedAt,
                 }),
+              ...(message.thinkingDisplay !== undefined && {
+                thinking_display: message.thinkingDisplay,
+              }),
             }
           }
 
@@ -1404,6 +1621,18 @@ export class QueryEngine {
           if (message.attachment.type === 'structured_output') {
             // @ts-ignore - recovered code
             structuredOutputFromTool = message.attachment.data
+          }
+          // @ts-ignore - recovered code
+          else if (message.attachment.type === 'hook_deferred_tool') {
+            deferredToolUseResult = {
+              // @ts-ignore - recovered code
+              id: message.attachment.toolUseID,
+              // @ts-ignore - recovered code
+              name: message.attachment.toolName,
+              // @ts-ignore - recovered code
+              input: message.attachment.toolInput,
+            }
+            lastStopReason = 'tool_deferred'
           }
           // Handle max turns reached signal from query.ts
           // @ts-ignore - recovered code
@@ -1442,6 +1671,9 @@ export class QueryEngine {
           }
           else if (replayUserMessages && message.attachment.type === 'teammate_mailbox') {
             yield* teammateMailboxReplays(message)
+          }
+          else if (message.attachment.type === 'hook_system_message') {
+            yield* hookSystemMessagesToSDK([message])
           }
           // Yield queued_command attachments as SDK user message replays
           else if (
@@ -1543,6 +1775,9 @@ export class QueryEngine {
               session_id: getSessionId(),
               uuid: message.uuid,
             }
+          }
+          if (message.subtype === 'informational') {
+            yield toSDKSystemNotice(message)
           }
           // Don't yield other system messages in headless mode
           break
@@ -1665,7 +1900,11 @@ export class QueryEngine {
       }
     }
 
-    if (!isResultSuccessful(result, lastStopReason)) {
+    // A deferred call ends the turn on an open tool_use; that is not a failure.
+    if (
+      deferredToolUseResult === undefined &&
+      !isResultSuccessful(result, lastStopReason)
+    ) {
       yield {
         type: 'result',
         subtype: 'error_during_execution',
@@ -1706,7 +1945,7 @@ export class QueryEngine {
     let textResult = ''
     let isApiError = false
 
-    if (result.type === 'assistant') {
+    if (result?.type === 'assistant') {
       textResult = resultTextOf(messages, result)
       isApiError = Boolean(result.isApiErrorMessage)
     }
@@ -1716,11 +1955,16 @@ export class QueryEngine {
       subtype: 'success',
       is_error: isApiError,
       api_error_status: lastApiErrorStatus,
+      ...(lastApiErrorCode !== undefined && { api_error_code: lastApiErrorCode }),
+      ...(lastApiErrorType !== undefined && { api_error_type: lastApiErrorType }),
       duration_ms: Date.now() - startTime,
       duration_api_ms: getTotalAPIDuration(),
-      ...(firstAssistantAt !== undefined && {
-        ttft_ms: Math.max(0, firstAssistantAt - startTime),
-      }),
+      ...resultTtft(firstAssistantAt, startTime, isApiError),
+      ...resultStreamTimings(
+        streamTimings,
+        startTime,
+        !isApiError && !deferredToolUseResult,
+      ),
       num_turns: turnCount,
       result: textResult,
       stop_reason: lastStopReason,
@@ -1730,6 +1974,7 @@ export class QueryEngine {
       modelUsage: getModelUsage(),
       permission_denials: this.permissionDenials,
       structured_output: structuredOutputFromTool,
+      ...(deferredToolUseResult && { deferred_tool_use: deferredToolUseResult }),
       ...resultFastMode(),
       terminal_reason: terminal?.reason,
       uuid: randomUUID(),
@@ -1803,6 +2048,7 @@ export async function* ask({
   allowedAgentTypes,
   setSDKStatus,
   orphanedPermission,
+  deferredToolUse,
   modsSession,
 }: {
   modsSession?: ModsSession
@@ -1844,6 +2090,7 @@ export async function* ask({
   allowedAgentTypes?: string[]
   setSDKStatus?: ToolUseContext['setSDKStatus']
   orphanedPermission?: OrphanedPermission
+  deferredToolUse?: DeferredToolMarker
 }): AsyncGenerator<SDKMessage, void, unknown> {
   // @ts-ignore - recovered code
   const engine = new QueryEngine({
@@ -1876,6 +2123,7 @@ export async function* ask({
     setSDKStatus,
     abortController,
     orphanedPermission,
+    deferredToolUse,
     ...(feature('HISTORY_SNIP')
       ? {
           snipReplay: (yielded: Message, store: Message[]) => {

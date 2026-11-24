@@ -18,6 +18,7 @@ import React, {
   useState,
 } from 'react'
 import { LANGS, type Lang, translate } from '../i18n'
+import { useDark } from '../theme'
 import { WebPreviewContext } from '../webPreview'
 import { cachedHighlight, highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
@@ -140,37 +141,55 @@ export function CodeBlock({
 }
 
 let mermaidReady: Promise<typeof import('mermaid').default> | undefined
+let mermaidTheme: string | undefined
+let mermaidQueue: Promise<unknown> = Promise.resolve()
+
+// One at a time: the theme is mermaid's global config, so another diagram's
+// initialize must not land between this one's initialize and render.
+function renderMermaid(id: string, code: string, theme: 'dark' | 'default'): Promise<string> {
+  const run = mermaidQueue.then(async () => {
+    mermaidReady ??= import('mermaid').then(mod => mod.default)
+    const mermaid = await mermaidReady
+    if (mermaidTheme !== theme) {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme })
+      mermaidTheme = theme
+    }
+    return (await mermaid.render(id, code)).svg
+  })
+  mermaidQueue = run.catch(() => {})
+  return run
+}
 
 function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, '')
-  const [svg, setSvg] = useState<{ __html: string }>()
+  const [svg, setSvg] = useState<{ screen: { __html: string }; print?: { __html: string } }>()
   const [failed, setFailed] = useState(false)
+  // Drawn again in the other colors when the page turns light or dark; a dark
+  // page also keeps a light copy, as a print is ink on white.
+  const dark = useDark()
   useEffect(() => {
     if (streaming) return
     let live = true
-    mermaidReady ??= import('mermaid').then(mod => {
-      mod.default.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: matchMedia('(prefers-color-scheme: dark)').matches
-          ? 'dark'
-          : 'default',
-      })
-      return mod.default
-    })
-    mermaidReady
-      .then(mermaid => mermaid.render(`mermaid-${id}`, code))
-      .then(
-        result => live && setSvg({ __html: result.svg }),
-        () => live && setFailed(true),
-      )
+    Promise.all([
+      renderMermaid(`mermaid-${id}`, code, dark ? 'dark' : 'default'),
+      dark ? renderMermaid(`mermaid-${id}-print`, code, 'default') : undefined,
+    ]).then(
+      ([screen, print]) => live && setSvg({ screen: { __html: screen }, print: print ? { __html: print } : undefined }),
+      () => live && setFailed(true),
+    )
     return () => {
       live = false
     }
-  }, [code, id, streaming])
+  }, [code, id, streaming, dark])
   if (svg && !failed) {
     // Rendered with securityLevel 'strict', which sanitizes labels.
-    return <div className="mermaid" dangerouslySetInnerHTML={svg} />
+    if (!svg.print) return <div className="mermaid" dangerouslySetInnerHTML={svg.screen} />
+    return (
+      <>
+        <div className="mermaid on-screen" dangerouslySetInnerHTML={svg.screen} />
+        <div className="mermaid-print" dangerouslySetInnerHTML={svg.print} />
+      </>
+    )
   }
   return <CodeBlock code={code} lang="mermaid" streaming />
 }

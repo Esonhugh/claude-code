@@ -5,6 +5,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
+import { errorMessage } from './utils/errors.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
@@ -64,6 +65,7 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
   TombstoneMessage,
+  SystemInformationalMessage,
 } from './types/message.js'
 import { logError } from './utils/log.js'
 import {
@@ -110,6 +112,10 @@ import {
   subscribeToCommandQueue,
   takePollEventChunk,
 } from './utils/messageQueueManager.js'
+import {
+  enqueueSdkEvent,
+  taskNotificationSdkEvent,
+} from './utils/sdkEventQueue.js'
 import { pollEventsAttachment } from './tools/PollTool/delivery.js'
 import { shouldWaitAfterToolCalls, waitForReplScriptsAfterToolCalls } from './tools/REPLTool/spliceWait.js'
 import { findReplSession, MAIN_REPL_SESSION, takeReplLateMessages } from './tools/REPLTool/sessions.js'
@@ -277,6 +283,37 @@ export type QueryParams = {
   deps?: QueryDeps
 }
 
+const REFUSAL_TOOL_NOT_RUN = 'Not run: the response that made this tool call was stopped by a safety classifier.'
+const REFUSAL_TOOL_INTERRUPTED =
+  'Interrupted: the response that made this tool call was stopped by a safety classifier while the call was running; it may have partially or fully completed.'
+const REFUSAL_RETRY_NOTE =
+  'Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.'
+const REFUSAL_RETRY_NOTE_INTERRUPTED =
+  REFUSAL_RETRY_NOTE +
+  ' Exception: a tool call whose result reads "Interrupted" was already running when the response was stopped; it may have partially or fully completed.'
+
+function isRefusalMessage(message: Message | StreamEvent | RequestStartEvent | TombstoneMessage | ToolUseSummaryMessage): message is AssistantMessage {
+  return message.type === 'assistant' && message.isApiErrorMessage === true && message.message.stop_reason === 'refusal'
+}
+
+/** Official 2.1.329 announces a refusal nothing is tried after; SDK hosts get it as system/model_refusal_no_fallback. */
+function refusalNoFallbackNotice(refusal: AssistantMessage, messages: readonly Message[], model: string): SystemInformationalMessage {
+  const details = refusal.message.stop_details as { category?: string | null; explanation?: string | null } | null | undefined
+  const prompt = messages.findLast(message =>
+    message.type === 'user' && !message.isMeta &&
+    !(Array.isArray(message.message.content) && message.message.content.some(block => block.type === 'tool_result')))
+  return {
+    ...createSystemMessage('', 'info'),
+    modelRefusalNoFallback: {
+      originalModel: refusal.refusingModel ?? model,
+      requestId: refusal.requestId ?? null,
+      category: details?.category ?? null,
+      explanation: details?.explanation?.trimEnd() ?? null,
+      refusedUserMessageUuid: prompt?.uuid,
+    },
+  }
+}
+
 // -- query loop state
 
 // Mutable state carried between loop iterations
@@ -304,6 +341,24 @@ function modAgentTurnText(messages: readonly Message[]): string {
   return typeof content === 'string' ? content : content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
 }
 
+
+// Wording of 2.1.329. A missing model the API named needs no further detail.
+function modelFallbackNotice(
+  { reason, originalError }: FallbackTriggeredError,
+  fallback: string,
+  original: string,
+): string {
+  if (reason === 'overloaded' || reason === 'server_error') {
+    return `Switched to ${fallback} due to high demand for ${original}`
+  }
+  const text = originalError === undefined ? '' : errorMessage(originalError)
+  const detail = text
+    ? ` (${text.length > 300 ? `${text.slice(0, 300)}…` : text})`
+    : ''
+  return reason === 'last_resort'
+    ? `Switched to ${fallback} because ${original} returned an error that could not be retried${detail}`
+    : `Switched to ${fallback} because ${original} is not available${text.includes('model:') ? '' : detail}`
+}
 
 export async function* query(
   params: QueryParams,
@@ -776,6 +831,8 @@ async function* queryLoop(
     state.toolUseContext,
   )
 
+  // A response stopped by a safety classifier is retried once per query.
+  let refusalRetrySpent = false
   // eslint-disable-next-line no-constant-condition
   while (true) {
     // Destructure state at the top of each iteration. toolUseContext alone
@@ -1187,6 +1244,13 @@ async function* queryLoop(
     // loop-exit signal. If false after streaming, we're done (modulo stop-hook retry).
     const toolUseBlocks: ToolUseBlock[] = []
     let needsFollowUp = false
+    // A PreToolUse hook deferred the call, during the stream or after it.
+    let toolWasDeferred = false
+    const refusalRetryAllowed =
+      !refusalRetrySpent &&
+      !process.env.CLAUDE_CODE_DISABLE_REFUSAL_RETRY &&
+      (querySource === 'sdk' || querySource.startsWith('repl_main_thread') || querySource.startsWith('agent:'))
+    let withheldRefusal: AssistantMessage | undefined
 
     queryCheckpoint('query_setup_start')
     const modelTools = snapshot?.hasHooks('tool.offer') && (toolUseContext.agentId !== undefined || querySource.startsWith('repl_main_thread') || querySource === 'sdk')
@@ -1462,6 +1526,7 @@ async function* queryLoop(
               toolResults.length = 0
               toolUseBlocks.length = 0
               needsFollowUp = false
+              toolWasDeferred = false
 
               // Discard pending results from the failed streaming attempt and create
               // a fresh executor. This prevents orphan tool_results (with old tool_use_ids)
@@ -1564,6 +1629,12 @@ async function* queryLoop(
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
+            if (refusalRetryAllowed && isRefusalMessage(message)) {
+              withheld = true
+              withheldRefusal = message
+            } else if (isRefusalMessage(message)) {
+              yield refusalNoFallbackNotice(message, messagesForQuery, currentModel)
+            }
             if (message.type === 'assistant')
               updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })
             if (!withheld) {
@@ -1594,6 +1665,12 @@ async function* queryLoop(
               for (const result of streamingToolExecutor.getCompletedResults()) {
                 if (result.message) {
                   yield result.message
+                  if (
+                    result.message.type === 'attachment' &&
+                    result.message.attachment.type === 'hook_deferred_tool'
+                  ) {
+                    toolWasDeferred = true
+                  }
                   toolResults.push(
                     ...normalizeMessagesForAPI(
                       [result.message],
@@ -1651,6 +1728,7 @@ async function* queryLoop(
             toolResults.length = 0
             toolUseBlocks.length = 0
             needsFollowUp = false
+            toolWasDeferred = false
 
             // Discard pending results from the failed attempt and create a
             // fresh executor. This prevents orphan tool_results (with old
@@ -1687,10 +1765,21 @@ async function* queryLoop(
 
             // Yield system message about fallback — use 'warning' level so
             // users see the notification without needing verbose mode
-            yield createSystemMessage(
-              `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
-              'warning',
-            )
+            yield {
+              ...createSystemMessage(
+                modelFallbackNotice(
+                  innerError,
+                  renderModelName(innerError.fallbackModel),
+                  renderModelName(innerError.originalModel),
+                ),
+                'warning',
+              ),
+              modelFallback: {
+                trigger: innerError.reason,
+                originalModel: innerError.originalModel,
+                fallbackModel: innerError.fallbackModel,
+              },
+            }
 
             const chain = getSessionFallbackModels()
             const chainIndex = chain.indexOf(fallbackModel)
@@ -1791,6 +1880,65 @@ async function* queryLoop(
       return { reason: 'aborted_streaming' }
     }
 
+    // A response the safety classifier stopped is retried once on the same
+    // model: what it had produced stays, its unfinished tool calls get a
+    // result saying so, and the model is told why (official 2.1.329).
+    if (withheldRefusal && assistantMessages.at(-1) === withheldRefusal) {
+      for (const update of streamingToolExecutor.getCompletedResults()) {
+        if (!update.message) continue
+        yield update.message
+        if (update.message.type === 'attachment' && update.message.attachment.type === 'hook_deferred_tool') toolWasDeferred = true
+        toolResults.push(...normalizeMessagesForAPI([update.message], toolUseContext.options.tools).filter(_ => _.type === 'user'))
+      }
+      if (toolWasDeferred) {
+        yield refusalNoFallbackNotice(withheldRefusal, messagesForQuery, currentModel)
+        yield withheldRefusal
+      } else {
+        const started = new Set(streamingToolExecutor.getStartedToolUseIds())
+        streamingToolExecutor.discard()
+        const kept = assistantMessages.filter(message => message !== withheldRefusal)
+        const answered = new Set(toolResults.flatMap(message =>
+          message.type === 'user' && Array.isArray(message.message.content)
+            ? message.message.content.flatMap(block => block.type === 'tool_result' ? [block.tool_use_id] : [])
+            : []))
+        let interrupted = false
+        const notRun = kept.flatMap(message => message.message.content.flatMap(block => {
+          if (block.type !== 'tool_use' || answered.has(block.id)) return []
+          const running = started.has(block.id)
+          if (running) interrupted = true
+          const content = running ? REFUSAL_TOOL_INTERRUPTED : REFUSAL_TOOL_NOT_RUN
+          return [createUserMessage({
+            content: [{ type: 'tool_result', tool_use_id: block.id, is_error: true, content }],
+            toolUseResult: content,
+            toolDenialKind: running ? 'interrupted' : 'cancelled',
+            sourceToolAssistantUUID: message.uuid,
+          })]
+        }))
+        const nudge = createUserMessage({
+          content: interrupted ? REFUSAL_RETRY_NOTE_INTERRUPTED : REFUSAL_RETRY_NOTE,
+          isMeta: true,
+        })
+        nudge.refusedMessageId = withheldRefusal.refusedMessageId
+        yield* notRun
+        yield createSystemMessage(
+          `${renderModelName(currentModel)}'s safeguards stopped the response above · continuing once with that noted`,
+          'notice',
+        )
+        yield nudge
+        refusalRetrySpent = true
+        state = {
+          ...state,
+          messages: [...messagesForQuery, ...kept, ...toolResults, ...notRun, nudge],
+          toolUseContext,
+          autoCompactTracking: tracking,
+          maxOutputTokensOverride: undefined,
+          pendingToolUseSummary: undefined,
+          transition: { reason: 'refusal_retry' },
+        }
+        continue
+      }
+    }
+
     // Yield tool use summary from previous turn — haiku (~1s) resolved during model streaming (5-30s)
     if (pendingToolUseSummary) {
       const summary = await pendingToolUseSummary
@@ -1863,6 +2011,18 @@ async function* queryLoop(
         isWithheld413 &&
         (reactiveCompact?.isWithheldPromptTooLong(lastMessage) ?? false)
       if ((reactiveWithheld413 || isWithheldMedia) && reactiveCompact) {
+        const uncompactable =
+          reactiveWithheld413 && !hasAttemptedReactiveCompact
+            ? reactiveCompact.singleExchangePromptTooLong(
+                lastMessage!,
+                messagesForQuery,
+              )
+            : null
+        if (uncompactable) {
+          yield uncompactable
+          void executeStopFailureHooks(uncompactable, toolUseContext)
+          return { reason: 'prompt_too_long' }
+        }
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,
           querySource,
@@ -1976,6 +2136,7 @@ async function* queryLoop(
               `Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.`,
             isMeta: true,
           })
+          yield recoveryMessage
 
           const next: State = {
             messages: [
@@ -2011,7 +2172,7 @@ async function* queryLoop(
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
         void executeStopFailureHooks(lastMessage, toolUseContext)
-        return { reason: 'completed' }
+        return { reason: 'api_error' }
       }
 
       const stopHookResult = yield* handleStopHooks(
@@ -2077,10 +2238,9 @@ async function* queryLoop(
             hit_max_turns: false,
             hit_cap: true,
           })
-          yield createSystemMessage(
-            `A hook blocked the turn from ending ${nextBlockingCount} consecutive times — overriding and ending turn. For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. Set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP to raise this limit.`,
-            'warning',
-          )
+          const text = `A hook blocked the turn from ending ${nextBlockingCount} consecutive times—overriding and ending turn. For Stop/SubagentStop hooks, check stop_hook_active in the input and return success while it's true. Set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP to raise this limit.`
+          yield createSystemMessage(text, 'warning')
+          enqueueSdkEvent({ type: 'system', subtype: 'notification', key: 'stop-hook-block-cap', text, priority: 'high', color: 'warning' })
           return { reason: 'completed' }
         }
 
@@ -2183,6 +2343,12 @@ async function* queryLoop(
           update.message.attachment.type === 'hook_stopped_continuation'
         ) {
           shouldPreventContinuation = true
+        }
+        if (
+          update.message.type === 'attachment' &&
+          update.message.attachment.type === 'hook_deferred_tool'
+        ) {
+          toolWasDeferred = true
         }
 
         const currentTools =
@@ -2381,6 +2547,11 @@ async function* queryLoop(
         })
       }
       return { reason: 'aborted_tools' }
+    }
+
+    // A PreToolUse hook deferred the call: the turn ends with the call open.
+    if (toolWasDeferred) {
+      return { reason: 'tool_deferred' }
     }
 
     if (postToolBatchStopReason !== undefined) {
@@ -2618,6 +2789,16 @@ async function* queryLoop(
         if (cmd.uuid) {
           consumedCommandUuids.push(cmd.uuid)
           notifyCommandLifecycle(cmd.uuid, 'started')
+        }
+        // print.ts sends this event when it takes the notification off the
+        // queue; one folded into the turn here never reaches it.
+        if (
+          cmd.mode === 'task-notification' &&
+          cmd.agentId === undefined &&
+          !cmd.sdkTaskNotificationSent
+        ) {
+          const event = taskNotificationSdkEvent(cmd.value)
+          if (event) enqueueSdkEvent(event)
         }
       }
       removeFromQueue(consumedCommands)

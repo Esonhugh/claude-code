@@ -2,6 +2,7 @@
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
@@ -57,9 +58,13 @@ export function shouldOmitThinkingByDefault(
 /**
  * Build-time gate (feature) + runtime gate (GrowthBook). The build flag
  * controls code inclusion in external builds; the GB flag controls rollout.
+ * CLAUDE_CODE_DISABLE_ULTRATHINK turns the keyword off for the user.
  */
 export function isUltrathinkEnabled(): boolean {
   if (!feature('ULTRATHINK')) {
+    return false
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ULTRATHINK)) {
     return false
   }
   return getFeatureValue_CACHED_MAY_BE_STALE('tengu_turtle_carbon', true)

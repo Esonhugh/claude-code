@@ -4,18 +4,31 @@ import type { QuerySource } from './constants/querySource.js'
 import { buildTool, type ToolUseContext } from './Tool.js'
 import type { Message } from './types/message.js'
 import { query } from './query.js'
+import { runPostCompactCleanup } from './services/compact/postCompactCleanup.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { createAssistantMessage, extractTextContent } from './utils/messages.js'
 import { getDefaultAppState, type AppState } from './state/AppStateStore.js'
-import { resetStateForTests } from './bootstrap/state.js'
+import {
+  getSystemPromptSectionCache,
+  resetStateForTests,
+  setSystemPromptSectionCacheEntry,
+} from './bootstrap/state.js'
 import { resetAdvisorRefusalsForTesting, resolveAdvisorModelId } from './utils/advisor.js'
 import { type AdvisorRequest, getMainAdvisorCarrier } from './utils/advisorQuery.js'
 
 const SWITCH = 'CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL'
 // Set where requests cannot carry the server-side advisor.
 const NO_BETAS = 'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS'
-const saved = { [SWITCH]: process.env[SWITCH], [NO_BETAS]: process.env[NO_BETAS] }
+const otherProviders = [
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+]
+const saved = Object.fromEntries(
+  [SWITCH, NO_BETAS, ...otherProviders].map(key => [key, process.env[key]]),
+)
 
 // What a tool named `advisor` can see of the response that called it.
 let seenByTool: { replyInHistory: boolean; response: string[] } | undefined
@@ -131,6 +144,7 @@ beforeEach(() => {
   seenByTool = undefined
   process.env[SWITCH] = '1'
   delete process.env[NO_BETAS]
+  for (const key of otherProviders) delete process.env[key]
 })
 
 afterEach(() => {
@@ -205,6 +219,42 @@ test('a refusal reported by the request hands the conversation to the local tool
   expect(offered).toEqual([['Other'], ['Other', 'advisor']])
   expect(serverAdvisors).toEqual([resolveAdvisorModelId('opus'), undefined])
   expect(announcements).toMatchObject([{ available: true }])
+})
+
+test('subagent compaction leaves the main conversation on the local advisor after a refusal', async () => {
+  await run('opus', { refusesFirst: true })
+  expect(getMainAdvisorCarrier().held?.refused).toBe(true)
+  setSystemPromptSectionCacheEntry('memory', 'main thread memory')
+  runPostCompactCleanup('agent:general-purpose', 'a1')
+  // The main thread's locked prompt sections are not the subagent's to drop.
+  expect(getSystemPromptSectionCache().get('memory')).toBe('main thread memory')
+
+  const { offered, serverAdvisors } = await run('opus', { earlier: announced() })
+  expect(serverAdvisors).toEqual([undefined, undefined])
+  expect(offered).toEqual([['Other', 'advisor'], ['Other', 'advisor']])
+})
+
+test('a backgrounded main session compacting refreshes prompt sections but keeps the refusal', async () => {
+  await run('opus', { refusesFirst: true })
+  expect(getMainAdvisorCarrier().held?.refused).toBe(true)
+  setSystemPromptSectionCacheEntry('memory', 'main thread memory')
+  // LocalMainSessionTask: a main-thread source with its own agentId and Advisor carrier.
+  runPostCompactCleanup('repl_main_thread', 'background-task')
+  expect(getSystemPromptSectionCache().size).toBe(0)
+
+  const { offered, serverAdvisors } = await run('opus', { earlier: announced() })
+  expect(serverAdvisors).toEqual([undefined, undefined])
+  expect(offered).toEqual([['Other', 'advisor'], ['Other', 'advisor']])
+})
+
+test('main compaction resets the conversation refusal and retries the server-side advisor', async () => {
+  await run('opus', { refusesFirst: true })
+  expect(getMainAdvisorCarrier().held?.refused).toBe(true)
+  runPostCompactCleanup('repl_main_thread')
+
+  const { offered, serverAdvisors } = await run('opus')
+  expect(serverAdvisors).toEqual([resolveAdvisorModelId('opus')])
+  expect(offered).toEqual([['Other']])
 })
 
 test('with the switch off a conversation that had the advisor is told it went away', async () => {

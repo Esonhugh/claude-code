@@ -3,9 +3,14 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
-import type { PromptCacheFacts } from './promptCacheFacts.js'
+import type {
+  ModelSwitchCacheFacts,
+  PromptCacheFacts,
+} from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
-import { basename } from 'path'
+import type { z } from 'zod/v4'
+import { basename, dirname, join } from 'path'
+import { lstatSync, mkdirSync } from 'fs'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
 import { wrapSpawn } from './ShellCommand.js'
@@ -30,6 +35,7 @@ import {
   getProjectConfigRoot,
   getProjectRoot,
   getIsNonInteractiveSession,
+  getHasStreamingInput,
   getRegisteredHooks,
   getStatsStore,
   addToTurnHookDuration,
@@ -148,6 +154,7 @@ import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
+import { SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../constants/xml.js'
 import {
   escapeSystemReminderTags,
   extractTextContent,
@@ -175,6 +182,7 @@ import {
   type FunctionHook,
 } from './hooks/sessionHooks.js'
 import type { AppState } from '../state/AppState.js'
+import { enqueueSdkEvent } from './sdkEventQueue.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy, isSSHLocalUI } from './envUtils.js'
 import {
@@ -183,7 +191,9 @@ import {
   resolveAppliedEffort,
 } from './effort.js'
 import { getMainLoopModel } from './model/model.js'
-import { errorMessage, getErrnoCode } from './errors.js'
+import { errorMessage, getErrnoCode, isAbortError } from './errors.js'
+import { getProjectTempDir } from './permissions/filesystem.js'
+import { validateUuid } from './uuid.js'
 
 export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
@@ -264,13 +274,21 @@ function executeInBackground({
         outcome: result.code === 0 ? 'success' : 'error',
       })
       if (result.code === 2) {
-        enqueuePendingNotification({
-          value: wrapInSystemReminder(
-            escapeSystemReminderTags(
-              `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
-            ),
+        // Official 2.1.329 shows the user "⏺ Stop hook feedback" and gives the
+        // model the hook output in a system-reminder after the notification.
+        const reminder = wrapInSystemReminder(
+          escapeSystemReminderTags(
+            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
           ),
+        ).replaceAll(
+          new RegExp(`<(?=\\s*/\\s*${TASK_NOTIFICATION_TAG}\\b)`, 'gi'),
+          '&lt;',
+        )
+        enqueuePendingNotification({
+          value: `<${TASK_NOTIFICATION_TAG}>\n<${SUMMARY_TAG}>Stop hook feedback</${SUMMARY_TAG}>\n</${TASK_NOTIFICATION_TAG}>\n${reminder}`,
           mode: 'task-notification',
+          priority: 'next',
+          skipAttachments: true,
         })
       }
     })
@@ -411,7 +429,7 @@ export interface HookResult {
   preventContinuation?: boolean
   stopReason?: string
   impossible?: boolean
-  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
+  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'defer' | 'passthrough'
   hookPermissionDecisionReason?: string
   additionalContext?: string
   initialUserMessage?: string
@@ -427,6 +445,8 @@ export interface HookResult {
   displayContent?: string
   sessionTitle?: string
   reloadSkills?: boolean
+  /** A failed command hook that ran and returned its own exit code. */
+  ranByContract?: boolean
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -439,7 +459,7 @@ export type AggregatedHookResult = {
   impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
-  permissionBehavior?: PermissionResult['behavior']
+  permissionBehavior?: PermissionResult['behavior'] | 'defer'
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
@@ -456,6 +476,115 @@ export type AggregatedHookResult = {
   reloadSkills?: boolean
 }
 
+const HOOK_JSON_VALIDATION_PREFIX = 'Hook JSON output validation failed \u2014 '
+// Keys that pick a union branch: a mismatch there means "wrong branch", not
+// the error to report.
+const UNION_SELECTOR_KEYS = new Set(['async', 'hookEventName', 'behavior'])
+
+function isUnionSelectorMismatch(issue: z.core.$ZodIssue): boolean {
+  const key = issue.path.at(-1)
+  return (
+    issue.code === 'invalid_value' &&
+    typeof key === 'string' &&
+    UNION_SELECTOR_KEYS.has(key)
+  )
+}
+
+// Reports a union failure as the error of the branch the output was aiming
+// for, or as the allowed selector values when no branch matched.
+function describeHookJsonIssue(
+  issue: z.core.$ZodIssue,
+  parentPath: PropertyKey[],
+): { path: PropertyKey[]; message: string } {
+  const path = [...parentPath, ...issue.path]
+  if (issue.code !== 'invalid_union' || issue.errors.length === 0) {
+    const message = issue.message.startsWith('Invalid input: ')
+      ? issue.message.slice('Invalid input: '.length)
+      : issue.message
+    return { path, message }
+  }
+  const branches: z.core.$ZodIssue[][] = issue.errors
+  const branchIssue = branches.find(
+    branch => branch.length > 0 && !branch.some(isUnionSelectorMismatch),
+  )?.[0]
+  if (branchIssue) return describeHookJsonIssue(branchIssue, path)
+  const selectorIssues = branches.flatMap(branch =>
+    branch.filter(isUnionSelectorMismatch),
+  )
+  const first = selectorIssues[0]
+  if (first?.code !== 'invalid_value') return { path, message: issue.message }
+  const values = [
+    ...new Set(
+      selectorIssues.flatMap(i =>
+        i.code === 'invalid_value' ? i.values.map(v => jsonStringify(v)) : [],
+      ),
+    ),
+  ]
+  const shown = values.slice(0, 6).join(' | ')
+  return {
+    path: [...path, ...first.path],
+    message: `expected one of ${shown}${values.length > 6 ? ' | \u2026' : ''}`,
+  }
+}
+
+function formatHookJsonPath(path: PropertyKey[]): string {
+  return path.map(String).join('.') || '(root)'
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function formatHookJsonValidationError(
+  output: unknown,
+  error: z.ZodError,
+): string {
+  const specific = isPlainObject(output) ? output.hookSpecificOutput : undefined
+  const issues = error.issues.map(issue => describeHookJsonIssue(issue, []))
+  const first = issues[0]
+  let summary = first
+    ? `${formatHookJsonPath(first.path)}: ${first.message}`
+    : 'unknown error'
+  if (isPlainObject(specific) && !('hookEventName' in specific)) {
+    summary = 'hookSpecificOutput is missing required field "hookEventName"'
+  } else if (
+    isPlainObject(specific) &&
+    specific.hookEventName === 'PermissionRequest' &&
+    !isPlainObject(specific.decision) &&
+    first?.path[0] === 'hookSpecificOutput' &&
+    first.path[1] === 'decision'
+  ) {
+    summary +=
+      ' (PermissionRequest decision must be {"behavior": "allow"} or {"behavior": "deny", "message": "..."})'
+  } else if (
+    isPlainObject(output) &&
+    first?.path.length === 1 &&
+    first.path[0] === 'decision' &&
+    (output.decision === 'allow' ||
+      output.decision === 'deny' ||
+      output.decision === 'ask')
+  ) {
+    summary +=
+      output.decision === 'ask'
+        ? ' (top-level decision is the legacy approve|block field; for "ask" use hookSpecificOutput.permissionDecision in a PreToolUse hook)'
+        : ` (top-level decision is the legacy approve|block field; for "${output.decision}" use hookSpecificOutput.permissionDecision in a PreToolUse hook, or hookSpecificOutput.decision: {"behavior": "${output.decision}"} in a PermissionRequest hook)`
+  }
+  const rest = issues
+    .slice(1)
+    .map(issue => `  - ${formatHookJsonPath(issue.path)}: ${issue.message}`)
+    .join('\n')
+  return `${HOOK_JSON_VALIDATION_PREFIX}${summary}${rest ? '\n' + rest : ''}\n\nThe hook's output was: ${jsonStringify(output, null, 2)}`
+}
+
+// A failed hook's stderr is kept after the validation error when it exited
+// non-zero.
+function withHookStderr(message: string, status: number, stderr: string): string {
+  const trimmed = stderr.trim()
+  return status !== 0 && trimmed
+    ? `${message}\n\nHook exited ${status} with stderr:\n${trimmed}`
+    : message
+}
+
 /**
  * Parse and validate a JSON string against the hook output Zod schema.
  * Returns the validated output or formatted validation errors.
@@ -470,15 +599,12 @@ function validateHookJson(
     // @ts-ignore - recovered code
     return { json: validation.data }
   }
-  const errors = validation.error.issues
-    .map(err => `  - ${err.path.join('.')}: ${err.message}`)
-    .join('\n')
   return {
-    validationError: `Hook JSON output validation failed:\n${errors}\n\nThe hook's output was: ${jsonStringify(parsed, null, 2)}`,
+    validationError: formatHookJsonValidationError(parsed, validation.error),
   }
 }
 
-function parseHookOutput(stdout: string): {
+export function parseHookOutput(stdout: string): {
   json?: HookJSONOutput
   plainText?: string
   validationError?: string
@@ -494,7 +620,8 @@ function parseHookOutput(stdout: string): {
     if ('json' in result) {
       return result
     }
-    // For command hooks, include the schema hint in the error message
+    // For command hooks, include the schema hint in the error message.
+    // Official 2.1.329 also lists terminalSequence, which this build ignores.
     const errorMessage = `${result.validationError}\n\nExpected schema:\n${jsonStringify(
       {
         continue: 'boolean (optional)',
@@ -503,21 +630,44 @@ function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
-            permissionDecision: '"allow" | "deny" | "ask" (optional)',
+            permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
             permissionDecisionReason: 'string (optional)',
             updatedInput: 'object (optional) - Modified tool input to use',
           },
+          'for PermissionRequest': {
+            hookEventName: '"PermissionRequest"',
+            decision: {
+              'to allow': {
+                behavior: '"allow"',
+                updatedInput: 'object (optional) - Modified tool input to use',
+                updatedPermissions: 'array (optional) - Permission updates',
+              },
+              'to deny': {
+                behavior: '"deny"',
+                message: 'string (optional)',
+                interrupt: 'boolean (optional)',
+              },
+            },
+          },
           'for UserPromptSubmit': {
             hookEventName: '"UserPromptSubmit"',
-            additionalContext: 'string (required)',
+            additionalContext: 'string (optional)',
           },
           'for PostToolUse': {
             hookEventName: '"PostToolUse"',
             additionalContext: 'string (optional)',
+          },
+          'for PostToolBatch': {
+            hookEventName: '"PostToolBatch"',
+            additionalContext: 'string (optional)',
+          },
+          'for Stop / SubagentStop': {
+            hookEventName: '"Stop" | "SubagentStop"',
+            additionalContext:
+              'string (optional) - Feedback for the model; the conversation continues so the model can act on it',
           },
         },
       },
@@ -667,10 +817,13 @@ function processHookJSONOutput({
       case 'ask':
         result.permissionBehavior = 'ask'
         break
+      case 'defer':
+        result.permissionBehavior = 'defer'
+        break
       default:
         // Handle unknown decision types as errors
         throw new Error(
-          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask`,
+          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask, defer`,
         )
     }
   }
@@ -710,6 +863,9 @@ function processHookJSONOutput({
               break
             case 'ask':
               result.permissionBehavior = 'ask'
+              break
+            case 'defer':
+              result.permissionBehavior = 'defer'
               break
           }
         }
@@ -879,6 +1035,86 @@ function processHookJSONOutput({
   }
 }
 
+// Entrypoints whose non-interactive sessions still have someone watching.
+const ATTENDED_ENTRYPOINTS = new Set([
+  'claude-vscode',
+  'claude-desktop',
+  'claude-desktop-3p',
+  'local-agent',
+  'local_agent',
+  'remote',
+  'remote_desktop',
+  'remote_mobile',
+  'remote_projects',
+  'remote_cowork',
+  'ssh-remote',
+  'claude-in-slack',
+  'claude_in_slack',
+  'claude-in-teams',
+  'claude-coworker',
+  'claude-coworker-terminal',
+])
+
+function isAttendedSession(): boolean {
+  const kind = process.env.CLAUDE_CODE_SESSION_KIND
+  if (kind === 'bg' || kind === 'daemon' || kind === 'daemon-worker') {
+    return false
+  }
+  if (!getIsNonInteractiveSession()) return true
+  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  return (
+    !process.env.CLAUDE_CODE_CHILD_SESSION &&
+    entrypoint !== undefined &&
+    ATTENDED_ENTRYPOINTS.has(entrypoint)
+  )
+}
+
+// Official 2.1.329: where a Claude session started by a hook leaves a note
+// for the session that ran the hook. Owner-only, and never through a symlink.
+function childNotesDirEnv(sessionId: string): NodeJS.ProcessEnv {
+  if (!validateUuid(sessionId)) return {}
+  const dir = join(getProjectTempDir(), sessionId, 'started')
+  const levels = [dirname(dirname(dir)), dirname(dir), dir]
+  try {
+    mkdirSync(dirname(levels[0]!), { recursive: true, mode: 0o700 })
+    for (const level of levels) {
+      try {
+        mkdirSync(level, { mode: 0o700 })
+      } catch (error) {
+        if (getErrnoCode(error) !== 'EEXIST') throw error
+      }
+      if (!lstatSync(level).isDirectory()) return {}
+    }
+    return { CLAUDE_CODE_CHILD_NOTES_DIR: dir }
+  } catch {
+    return {}
+  }
+}
+
+// What a hook process sees of the session that ran it. The packaged binary's
+// own CLAUDE_CODE_BUILTIN_* / CLAUDE_CODE_EMBEDDED_* locations stay out: they
+// point into this process and mean nothing to the hook.
+export function hookProcessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(subprocessEnv())) {
+    if (
+      !name.startsWith('CLAUDE_CODE_BUILTIN_') &&
+      !name.startsWith('CLAUDE_CODE_EMBEDDED_')
+    ) {
+      env[name] = value
+    }
+  }
+  return {
+    ...env,
+    CLAUDECODE: '1',
+    CLAUDE_CODE_SESSION_ID: getSessionId(),
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_SESSION_ATTENDED: isAttendedSession() ? '1' : '0',
+    CLAUDE_PID: String(process.pid),
+    ...childNotesDirEnv(getSessionId()),
+  }
+}
+
 /**
  * Execute a command-based hook using bash or PowerShell.
  *
@@ -908,6 +1144,8 @@ async function execCommandHook(
   status: number
   aborted?: boolean
   backgrounded?: boolean
+  /** The hook process was ended by a signal instead of exiting on its own. */
+  signaled?: boolean
 }> {
   // Gated to once-per-session events to keep diag_log volume bounded.
   // started/completed live inside the try/finally so setup-path throws
@@ -1037,7 +1275,7 @@ async function execCommandHook(
 
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
-    ...subprocessEnv(),
+    ...hookProcessEnv(),
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
   }
 
@@ -1161,7 +1399,13 @@ async function execCommandHook(
   // Track whether stdin has already been written (to avoid "write after end" errors)
   let stdinWritten = false
 
-  if ((hook.async || hook.asyncRewake) && !forceSyncExecution) {
+  // A single-shot print session exits after its turn, so nothing would be
+  // left to rewake: an asyncRewake hook runs to completion there.
+  const canRewake = !getIsNonInteractiveSession() || getHasStreamingInput()
+  if (
+    (hook.async || (hook.asyncRewake && canRewake)) &&
+    !forceSyncExecution
+  ) {
     const processId = `async_hook_${child.pid}`
     logForDebugging(
       `Hooks: Config-based async hook, backgrounding process ${processId}`,
@@ -1417,8 +1661,10 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    signaled?: boolean
   }>(resolve => {
     let exitCode: number | null = null
+    let signaled = false
     let settled = false
     let quietTimer: ReturnType<typeof setTimeout> | undefined
     const streamsEnded = Promise.all([stdoutEndPromise, stderrEndPromise])
@@ -1445,6 +1691,7 @@ async function execCommandHook(
         output,
         status: exitCode!,
         aborted: signal.aborted,
+        ...(signaled && { signaled }),
       })
     }
 
@@ -1464,6 +1711,7 @@ async function execCommandHook(
 
     const onExit = (code: number | null) => {
       if (exitCode !== null) return
+      signaled = code === null
       exitCode = code ?? 1
       // Wait for both streams to end before resolving with the final output
       void streamsEnded.then(finish)
@@ -1729,14 +1977,30 @@ function isInternalHook(matched: MatchedHook): boolean {
   return matched.hook.type === 'callback' && matched.hook.internal === true
 }
 
+const NON_MANAGED_SETTINGS_SOURCES = new Set([
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'flagSettings',
+])
+
 /**
  * Build a dedup key for a matched hook, namespaced by source context.
  *
- * Each settings source retains its own commands. Plugin/skill roots also
- * distinguish identical templates that expand to different files.
+ * User/project/local/--settings hooks share one namespace, so a command
+ * configured in several of them runs once. Managed hooks keep their own
+ * (identical managed matchers are dropped from the other sources when the
+ * snapshot is captured). Plugin/skill roots distinguish identical templates
+ * that expand to different files.
  */
 function hookDedupKey(m: MatchedHook, payload: string): string {
-  const source = m.pluginRoot ? 'plugin' : m.skillRoot ? 'skill' : m.hookSource
+  const source = m.pluginRoot
+    ? 'plugin'
+    : m.skillRoot
+      ? 'skill'
+      : m.hookSource && NON_MANAGED_SETTINGS_SOURCES.has(m.hookSource)
+        ? 'settings'
+        : m.hookSource
   return `${source ?? ''}\0${m.pluginRoot ?? m.skillRoot ?? ''}\0${payload}`
 }
 
@@ -2022,11 +2286,11 @@ export async function getMatchingHooks(
     })
 
     // Deduplicate hooks by command/prompt/url within the same source context.
-    // Key includes the settings source and plugin/skill root, so
-    // cross-plugin template collisions don't drop hooks (gh-29724).
+    // Key includes the plugin/skill root, so cross-plugin template collisions
+    // don't drop hooks (gh-29724).
     //
     // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-    // Within each source, the last matching definition still wins.
+    // Across settings files the highest-precedence definition therefore wins.
     // Fast-path: callback/function hooks don't need dedup (each is unique).
     // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
     // callback/function — the common case for internal hooks like
@@ -2277,7 +2541,10 @@ function hookBlocksOnFailure(hook: HookResult['hook']): boolean {
   if (hook.type === 'command') {
     return hook.onFailure === 'block' && !hook.async && !hook.asyncRewake
   }
-  return hook.type === 'http' && hook.onFailure === 'block'
+  return (
+    (hook.type === 'http' || hook.type === 'callback') &&
+    hook.onFailure === 'block'
+  )
 }
 
 /**
@@ -2291,7 +2558,10 @@ function applyHookOnFailure(
 ): HookResult {
   if (!hookBlocksOnFailure(result.hook)) return result
   const failure =
-    result.outcome === 'cancelled' && !signal?.aborted
+    // An SDK callback left unanswered is not a failure of the hook.
+    result.outcome === 'cancelled' &&
+    !signal?.aborted &&
+    result.hook.type !== 'callback'
       ? 'timed out'
       : result.outcome === 'non_blocking_error'
         ? 'failed'
@@ -2304,8 +2574,15 @@ function applyHookOnFailure(
     )
     return result
   }
-  const hook = result.hook as HookCommand & { type: 'command' | 'http' }
-  const command = hook.type === 'http' ? hook.url : hook.command
+  const hook = result.hook as
+    | (HookCommand & { type: 'command' | 'http' })
+    | HookCallback
+  const command =
+    hook.type === 'http'
+      ? hook.url
+      : hook.type === 'command'
+        ? hook.command
+        : getHookDisplayText(hook)
   const message = result.message as
     | { type: string; attachment?: { type: string; stderr?: string } }
     | undefined
@@ -2345,6 +2622,8 @@ function applyHookOnFailure(
  * @param messages Optional conversation history for prompt/function hooks
  * @returns Async generator that yields progress messages and hook results
  */
+const hooksReportedWithoutVerdict = new Set<string>()
+
 async function* executeHooks({
   hookInput,
   toolUseID,
@@ -2569,15 +2848,55 @@ async function* executeHooks({
         signal,
         { timeoutMs: callbackTimeoutMs },
       )
-      yield executeHookCallback({
-        toolUseID,
-        hook,
-        hookEvent,
-        hookInput,
-        signal: abortSignal,
-        hookIndex,
-        toolUseContext,
-      }).finally(cleanup)
+      try {
+        yield await executeHookCallback({
+          toolUseID,
+          hook,
+          hookEvent,
+          hookInput,
+          signal: abortSignal,
+          hookIndex,
+          toolUseContext,
+        }).finally(cleanup)
+      } catch (error) {
+        if (hookBlocksOnFailure(hook) && !isAbortError(error)) {
+          yield {
+            // @ts-ignore - recovered code
+            message: createAttachmentMessage({
+              type: 'hook_non_blocking_error',
+              hookName,
+              toolUseID,
+              hookEvent,
+              stderr: errorMessage(error),
+              stdout: '',
+              exitCode: 1,
+              command: getHookDisplayText(hook),
+            }),
+            outcome: 'non_blocking_error',
+            hook,
+          }
+          return
+        }
+        // PreToolUse rethrows so that its caller refuses the tool call.
+        if (!isAbortError(error) || hookEvent === 'PreToolUse') throw error
+        // Only the hook's own timeout counts as unanswered, not an interrupt.
+        const timedOut = abortSignal.aborted && !signal?.aborted
+        if (!timedOut || hookEvent !== 'UserPromptSubmit') {
+          logForDebugging(
+            `${hookName} callback hook ${timedOut ? `timed out after ${callbackTimeoutMs}ms` : 'cancelled'}; continuing without its answer`,
+          )
+          yield { outcome: 'cancelled', hook }
+          return
+        }
+        yield {
+          blockingError: {
+            blockingError: `${hookName} hook callback timed out after ${callbackTimeoutMs}ms`,
+            command: getHookDisplayText(hook),
+          },
+          outcome: 'blocking',
+          hook,
+        }
+      }
       return
     }
 
@@ -2806,7 +3125,7 @@ async function* executeHooks({
             hookEvent,
             output: httpResult.body,
             stdout: httpResult.body,
-            stderr: `JSON validation failed: ${httpValidationError}`,
+            stderr: httpValidationError,
             exitCode: httpResult.statusCode,
             outcome: 'error',
           })
@@ -2817,7 +3136,7 @@ async function* executeHooks({
               hookName,
               toolUseID,
               hookEvent,
-              stderr: `JSON validation failed: ${httpValidationError}`,
+              stderr: httpValidationError,
               stdout: httpResult.body,
               exitCode: httpResult.statusCode ?? 0,
             }),
@@ -2978,14 +3297,19 @@ async function* executeHooks({
       )
 
       if (validationError) {
+        const stderr = withHookStderr(
+          validationError,
+          result.status,
+          result.stderr,
+        )
         emitHookResponse({
           hookId,
           hookName,
           hookEvent,
           output: result.output,
           stdout: result.stdout,
-          stderr: `JSON validation failed: ${validationError}`,
-          exitCode: 1,
+          stderr,
+          exitCode: result.status,
           outcome: 'error',
         })
         yield {
@@ -2995,9 +3319,9 @@ async function* executeHooks({
             hookName,
             toolUseID,
             hookEvent,
-            stderr: `JSON validation failed: ${validationError}`,
+            stderr,
             stdout: result.stdout,
-            exitCode: 1,
+            exitCode: result.status,
             command: hookCommand,
             durationMs,
           }),
@@ -3150,6 +3474,12 @@ async function* executeHooks({
         }),
         outcome: 'non_blocking_error' as const,
         hook,
+        // The hook ran and chose this exit code itself: not killed, and not
+        // the shell's "cannot run" (126) / "not found" (127).
+        ...(!result.signaled &&
+          result.status <= 128 &&
+          result.status !== 126 &&
+          result.status !== 127 && { ranByContract: true }),
       }
       return
     } catch (error) {
@@ -3266,6 +3596,35 @@ async function* executeHooks({
       yield { message: result.message, ...hookMetadata }
     }
 
+    // Like official 2.1.329, SDK hosts are told once per hook when a
+    // PreToolUse hook ended without checking the call.
+    const timedOut =
+      result.outcome === 'cancelled' &&
+      !signal?.aborted &&
+      result.hook.type !== 'callback'
+    if (
+      hookEvent === 'PreToolUse' &&
+      (timedOut ||
+        (result.outcome === 'non_blocking_error' && !result.ranByContract))
+    ) {
+      const hookKey = `${matchedHook?.pluginId ?? ''}\0${getHookDisplayText(result.hook)}`
+      if (!hooksReportedWithoutVerdict.has(hookKey)) {
+        hooksReportedWithoutVerdict.add(hookKey)
+        enqueueSdkEvent({
+          type: 'system',
+          subtype: 'informational',
+          content: `A hook ${timedOut ? "didn't answer in time" : 'gave no usable answer'}, so it didn't check this action.`,
+          level: 'warning',
+          tag: 'hook_no_verdict',
+          hook_no_verdict: {
+            hook_event: 'PreToolUse',
+            tool_use_id: toolUseID,
+            timed_out: timedOut,
+          },
+        })
+      }
+    }
+
     // Yield system message separately if present
     if (result.systemMessage) {
       yield {
@@ -3347,10 +3706,13 @@ async function* executeHooks({
       )
       // Preserve the existing tie rules: latest deny/ask wins, first allow wins.
       // The reason and identity must advance together with the winning decision.
+      const current = permissionDecision?.permissionBehavior
       if (
         result.permissionBehavior === 'deny' ||
+        (result.permissionBehavior === 'defer' && current !== 'deny') ||
         (result.permissionBehavior === 'ask' &&
-          permissionDecision?.permissionBehavior !== 'deny') ||
+          current !== 'deny' &&
+          current !== 'defer') ||
         (result.permissionBehavior === 'allow' && !permissionDecision)
       ) {
         permissionDecision = {
@@ -4825,14 +5187,23 @@ export type ModelSwitchHookInfo = {
   toModel: string
   requestedModel: string | null
   contextTokens: number
+  cache: ModelSwitchCacheFacts
 }
 
-function createModelSwitchHookFields(info: ModelSwitchHookInfo) {
+function createModelSwitchHookFields<S extends string>(
+  info: ModelSwitchHookInfo,
+  source: S,
+) {
   return {
     from_model: info.fromModel,
     to_model: info.toModel,
     requested_model: info.requestedModel,
+    source,
     context_tokens: info.contextTokens,
+    prompt_cache_warm: info.cache.promptCacheWarm,
+    cache_ttl: info.cache.cacheTtl,
+    estimated_cache_write_usd: info.cache.estimatedCacheWriteUsd,
+    pricing: info.cache.pricing,
   }
 }
 
@@ -4853,8 +5224,7 @@ export async function executePreModelSwitchHooks(
   const hookInput: PreModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PreModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   let blockReason: string | undefined
   let ask = false
@@ -4899,8 +5269,7 @@ export async function executePostModelSwitchHooks(
   const hookInput: PostModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PostModelSwitch',
-    ...createModelSwitchHookFields(info),
-    source: info.source,
+    ...createModelSwitchHookFields(info, info.source),
   }
   const contexts: string[] = []
   for await (const result of executeHooks({
@@ -5441,6 +5810,10 @@ export async function executeElicitationHooks({
       elicitationResponse = parsed.response
     }
   }
+  // Official 2.1.329 answers a hook's cancel with empty content.
+  if (elicitationResponse?.action === 'cancel') {
+    elicitationResponse = { action: 'cancel', content: {} }
+  }
 
   return { elicitationResponse, blockingError }
 }
@@ -5943,12 +6316,20 @@ export async function executeWorktreeCreateHook(
   )
 
   if (!successfulResult) {
+    if (results.length === 0) {
+      throw new Error(
+        'WorktreeCreate hook failed: hook is configured but did not run (workspace not trusted or matcher mismatch)',
+      )
+    }
     const failedOutputs = results
       .filter(r => !r.succeeded)
       .map(r => `${r.command}: ${r.output.trim() || 'no output'}`)
-    throw new Error(
-      `WorktreeCreate hook failed: ${failedOutputs.join('; ') || 'no successful output'}`,
-    )
+    if (failedOutputs.length === 0) {
+      throw new Error(
+        'WorktreeCreate hook failed: hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)',
+      )
+    }
+    throw new Error(`WorktreeCreate hook failed: ${failedOutputs.join('; ')}`)
   }
 
   const worktreePath = successfulResult.output.trim()

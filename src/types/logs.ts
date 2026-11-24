@@ -228,6 +228,16 @@ export type WorktreeStateEntry = {
 }
 
 /**
+ * Stamped after the transcript moves to another project directory (entering
+ * or leaving a worktree). relocatedCwd is the directory the session moved to.
+ */
+export type RelocatedEntry = {
+  type: 'relocated'
+  sessionId: UUID
+  relocatedCwd: string
+}
+
+/**
  * Records content blocks whose in-context representation was replaced with a
  * smaller stub (the full content was persisted elsewhere). Replayed on resume
  * for prompt cache stability. Written once per enforcement pass that replaces
@@ -371,6 +381,7 @@ export type Entry =
   | PermissionModeEntry
   | ReplModeEntry
   | WorktreeStateEntry
+  | RelocatedEntry
   | DevModsMessage
   | SessionStartedAtEntry
   | SessionCostStateEntry

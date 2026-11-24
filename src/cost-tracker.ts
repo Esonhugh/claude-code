@@ -22,6 +22,7 @@ import {
   getTotalOutputTokens,
   getTotalToolDuration,
   getTotalWebSearchRequests,
+  getModelUsageSinceLastResult,
   getUsageForModel,
   hasUnknownModelCost,
   resetCostState,
@@ -291,12 +292,13 @@ function round(number: number, precision: number): number {
   return Math.round(number * precision) / precision
 }
 
-function addToTotalModelUsage(
+function addToModelUsage(
+  modelUsage: ModelUsage | undefined,
   cost: number,
   usage: Usage,
   model: string,
 ): ModelUsage {
-  const modelUsage = getUsageForModel(model) ?? {
+  modelUsage ??= {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadInputTokens: 0,
@@ -331,6 +333,20 @@ function addToTotalModelUsage(
   modelUsage.costBasis = MODEL_COSTS[canonical] !== undefined ? 'list' : 'unknown'
   // @ts-ignore - recovered code
   return modelUsage
+}
+
+function addToTotalModelUsage(
+  cost: number,
+  usage: Usage,
+  model: string,
+): ModelUsage {
+  // Official 2.1.329 adds each request to the usage since the last result
+  // the same way it adds it to the session's modelUsage.
+  const sinceLastResult = getModelUsageSinceLastResult()
+  if (sinceLastResult) {
+    sinceLastResult[model] = addToModelUsage(sinceLastResult[model], cost, usage, model)
+  }
+  return addToModelUsage(getUsageForModel(model), cost, usage, model)
 }
 
 export function addToTotalSessionCost(

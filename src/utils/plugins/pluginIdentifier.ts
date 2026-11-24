@@ -121,3 +121,13 @@ export function settingSourceToScope(
 ): Exclude<PluginScope, 'managed'> {
   return SETTING_SOURCE_TO_SCOPE[source] as Exclude<PluginScope, 'managed'>
 }
+
+/** The CLI command for a plugin, or null when its id is not safe to paste. */
+export function pluginCliCommand(
+  action: string,
+  pluginId: string,
+): string | null {
+  return /^\w[\w.@-]*$/.test(pluginId)
+    ? `claude plugin ${action} ${pluginId}`
+    : null
+}

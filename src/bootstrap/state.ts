@@ -69,6 +69,9 @@ type State = {
   hasUnknownModelCost: boolean
   cwd: string
   modelUsage: { [modelName: string]: ModelUsage }
+  // Per-model usage since the last result was written; undefined until a
+  // stream-json host asks for it.
+  modelUsageSinceLastResult: { [modelName: string]: ModelUsage } | undefined
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
   sessionFallbackModels: string[]
@@ -76,6 +79,8 @@ type State = {
   isInteractive: boolean
   // --output-format of a print session ('text' when not given); unset when interactive
   printOutputFormat: string | undefined
+  // --input-format stream-json: more input may arrive after the first turn
+  hasStreamingInput: boolean
   kairosActive: boolean
   // When true, ensureToolResultPairing throws on mismatch instead of
   // repairing with synthetic placeholders. HFI opts in at startup so
@@ -319,12 +324,14 @@ function getInitialState(): State {
     hasUnknownModelCost: false,
     cwd: resolvedCwd,
     modelUsage: {},
+    modelUsageSinceLastResult: undefined,
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
     sessionFallbackModels: [],
     modelStrings: null,
     isInteractive: false,
     printOutputFormat: undefined,
+    hasStreamingInput: false,
     kairosActive: false,
     strictToolResultPairing: false,
     sdkAgentProgressSummariesEnabled: false,
@@ -909,6 +916,24 @@ export function getUsageForModel(model: string): ModelUsage | undefined {
   return STATE.modelUsage[model]
 }
 
+export function trackModelUsageSinceLastResult(): void {
+  STATE.modelUsageSinceLastResult ??= {}
+}
+
+export function getModelUsageSinceLastResult():
+  | { [modelName: string]: ModelUsage }
+  | undefined {
+  return STATE.modelUsageSinceLastResult
+}
+
+export function takeModelUsageSinceLastResult():
+  | { [modelName: string]: ModelUsage }
+  | undefined {
+  const usage = STATE.modelUsageSinceLastResult
+  if (usage !== undefined) STATE.modelUsageSinceLastResult = {}
+  return usage
+}
+
 /**
  * Gets the model override set from the --model CLI flag or after the user
  * updates their configured model.
@@ -1165,6 +1190,14 @@ export function getPrintOutputFormat(): string | undefined {
 
 export function setPrintOutputFormat(value: string | undefined): void {
   STATE.printOutputFormat = value
+}
+
+export function getHasStreamingInput(): boolean {
+  return STATE.hasStreamingInput
+}
+
+export function setHasStreamingInput(value: boolean): void {
+  STATE.hasStreamingInput = value
 }
 
 export function getClientType(): string {

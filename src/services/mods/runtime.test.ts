@@ -1553,6 +1553,27 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'new core' }))).toEqual({ result: 'mod:new core' })
   })
 
+  test('a plugin whose declaration cannot be read keeps its loaded version across a Worker recovery', async () => {
+    const plugin = await fixture(`export function register(on) { on('tool.call', () => ({ result: 'mod' })); }`)
+    const RealWorker = globalThis.Worker
+    const natives: Worker[] = []
+    globalThis.Worker = class extends RealWorker {
+      constructor(url: string | URL, options?: WorkerOptions) { super(url, options); natives.push(this) }
+    } as typeof Worker
+    const died = Promise.withResolvers<void>()
+    let value: ReturnType<typeof createModsRuntime>
+    try { value = createModsRuntime({ onDiagnostic: event => { if (event.stage === 'worker') died.resolve() } }) }
+    finally { globalThis.Worker = RealWorker }
+    cleanups.push(() => value.dispose())
+    await value.reconcile([plugin])
+    await value.reconcile([{ ...plugin, loadError: 'Hook load failed: invalid' }])
+    expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'mod' })
+    natives[0]!.terminate()
+    await died.promise
+    await value.bind({ cwd: plugin.pluginRoot, surface: null, isInteractive: false, sessionId: 'held' })
+    expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'mod' })
+  })
+
   test('allows manual reload after repeated unattributed Worker crashes are disabled', async () => {
     const plugin = await fixture(`export function register(on) { on('tool.call', () => ({ result: 'recovered' })); }`)
     const RealWorker = globalThis.Worker

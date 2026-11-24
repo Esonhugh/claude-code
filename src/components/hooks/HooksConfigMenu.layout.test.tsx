@@ -8,6 +8,7 @@ import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../../state/AppState.js'
 import { getHookEventMetadata } from '../../utils/hooks/hooksConfigManager.js'
 import type { IndividualHookConfig } from '../../utils/hooks/hooksSettings.js'
+import { HooksDisabledDialog } from './HooksConfigMenu.js'
 import { HooksListMode } from './HooksListMode.js'
 import { SelectEventMode } from './SelectEventMode.js'
 import { ViewHookMode } from './ViewHookMode.js'
@@ -157,4 +158,24 @@ test('the hook detail view is titled by hook type', async () => {
   } finally {
     view.unmount()
   }
+})
+
+test('/hooks with disableAllHooks says hooks are off like 2.1.329', async () => {
+  const view = await renderTo(
+    <HooksDisabledDialog
+      totalHooksCount={2}
+      disabledByPolicy={false}
+      managedHooksStillRun={false}
+      onCancel={() => {}}
+    />,
+  )
+  const text = view.lines().map(line => line.trim()).join('\n')
+  view.unmount()
+  expect(text).toContain('Hooks\noff · 2 hooks not running')
+  expect(text.replace(/\s+/g, ' ')).toContain(
+    "While hooks are off, no hook command runs, the status line isn't shown, and tools run without hook checks.",
+  )
+  expect(text.replace(/\s+/g, ' ')).toContain(
+    'To turn hooks back on, remove "disableAllHooks" from settings.json or ask Claude.',
+  )
 })

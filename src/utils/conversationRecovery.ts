@@ -21,7 +21,14 @@ import type {
   NormalizedUserMessage,
 } from '../types/message.js'
 import { PERMISSION_MODES, type PermissionMode } from '../types/permissions.js'
-import { suppressNextSkillListing } from './attachments.js'
+import {
+  suppressNextSkillListing,
+  type Attachment,
+  type DeferredToolMarker,
+} from './attachments.js'
+import { isEnvTruthy } from './envUtils.js'
+import { tailFile } from './fsOperations.js'
+import { safeParseJSON } from './json.js'
 import {
   copyFileHistoryForResume,
   type FileHistorySnapshot,
@@ -47,6 +54,7 @@ import {
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
   normalizeMessages,
+  TOOL_CALL_INTERRUPTED_MESSAGE,
 } from './messages.js'
 import { copyPlanForResume } from './plans.js'
 import { processSessionStartHooks } from './sessionStart.js'
@@ -218,6 +226,47 @@ export function createOrphanedAgentNotices(messages: Message[]): Message[] {
   )
 }
 
+// Official reads the last 1 MB of the transcript for the marker.
+const DEFERRED_TOOL_TAIL_BYTES = 1024 * 1024
+
+/**
+ * The call a PreToolUse hook deferred, if the transcript ends with one that
+ * has no result yet. `-p --resume` / `-p --continue` runs it.
+ */
+export async function findDeferredToolMarker(
+  transcriptPath: string,
+): Promise<DeferredToolMarker | null> {
+  try {
+    const { content, bytesRead, bytesTotal } = await tailFile(
+      transcriptPath,
+      DEFERRED_TOOL_TAIL_BYTES,
+    )
+    const lines = content.split('\n')
+    // The tail may start in the middle of a line.
+    if (bytesRead < bytesTotal) lines.shift()
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]!.includes('"hook_deferred_tool"')) continue
+      const entry = safeParseJSON(lines[i]!.trim(), false) as {
+        type?: string
+        attachment?: Attachment
+      } | null
+      if (
+        entry?.type !== 'attachment' ||
+        entry.attachment?.type !== 'hook_deferred_tool'
+      ) {
+        continue
+      }
+      const resultKey = `"tool_use_id":"${entry.attachment.toolUseID}"`
+      return lines.slice(i + 1).some(line => line.includes(resultKey))
+        ? null
+        : entry.attachment
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Like deserializeMessages, but also detects whether the session was
  * interrupted mid-turn. Used by the SDK resume path to auto-continue
@@ -226,6 +275,8 @@ export function createOrphanedAgentNotices(messages: Message[]): Message[] {
  */
 export function deserializeMessagesWithInterruptDetection(
   serializedMessages: Message[],
+  // A deferred tool call that this resume runs; it is not an interrupted turn.
+  deferredToolUseIds?: ReadonlySet<string>,
 ): DeserializeResult {
   try {
     // Transform legacy attachment types before processing
@@ -247,9 +298,16 @@ export function deserializeMessagesWithInterruptDetection(
       }
     }
 
+    // The session ended while the last reply's tool calls were running: keep
+    // those calls and answer them, so the model knows their outcome is unknown.
+    migratedMessages.push(
+      ...createInterruptedToolResults(migratedMessages, deferredToolUseIds),
+    )
+
     // Filter out unresolved tool uses and any synthetic messages that follow them
     const filteredToolUses = filterUnresolvedToolUses(
       migratedMessages,
+      deferredToolUseIds,
     ) as NormalizedMessage[]
 
     // Filter out orphaned thinking-only assistant messages that can cause API errors
@@ -282,14 +340,20 @@ export function deserializeMessagesWithInterruptDetection(
           m.message.id === lastOriginalMessage.message.id &&
           m.message.content.some(block => 'openAIReasoning' in block),
       )
-    const internalState: InternalInterruptionState = interruptedOpenAIToolCall
-      ? { kind: 'interrupted_turn' }
-      : detectTurnInterruption(filteredMessages)
+    const internalState: InternalInterruptionState = deferredToolUseIds?.size
+      ? { kind: 'none' }
+      : interruptedOpenAIToolCall
+        ? { kind: 'interrupted_turn' }
+        : detectTurnInterruption(filteredMessages)
 
-    // Transform mid-turn interruptions into interrupted_prompt by appending
-    // a synthetic continuation message. This unifies both interruption kinds
-    // so the consumer only needs to handle interrupted_prompt.
+    // Transform mid-turn interruptions into interrupted_prompt with a
+    // synthetic continuation message. This unifies both interruption kinds
+    // so the consumer only needs to handle interrupted_prompt. Like official,
+    // the message joins the history only when the turn is auto-resumed
+    // (print.ts re-enqueues it); otherwise the user's next prompt follows the
+    // interrupted turn directly.
     let turnInterruptionState: TurnInterruptionState
+    let continuationSkipped = false
     if (internalState.kind === 'interrupted_turn') {
       const [continuationMessage] = normalizeMessages([
         createUserMessage({
@@ -297,7 +361,11 @@ export function deserializeMessagesWithInterruptDetection(
           isMeta: true,
         }),
       ])
-      filteredMessages.push(continuationMessage!)
+      if (process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN) {
+        filteredMessages.push(continuationMessage!)
+      } else {
+        continuationSkipped = true
+      }
       turnInterruptionState = {
         kind: 'interrupted_prompt',
         message: continuationMessage!,
@@ -310,14 +378,16 @@ export function deserializeMessagesWithInterruptDetection(
     // the conversation is API-valid if no resume action is taken. Skip past
     // trailing system/progress messages and insert right after the user
     // message so removeInterruptedMessage's splice(idx, 2) removes the
-    // correct pair.
+    // correct pair. A trailing attachment also gets one when no continuation
+    // was appended after it.
     const lastRelevantIdx = filteredMessages.findLastIndex(
       m => m.type !== 'system' && m.type !== 'progress',
     )
+    const lastRelevant = filteredMessages[lastRelevantIdx]
     if (
-      lastRelevantIdx !== -1 &&
-      filteredMessages[lastRelevantIdx]!.type === 'user' &&
-      !isLocalCommandOutput(filteredMessages[lastRelevantIdx]!)
+      lastRelevant &&
+      ((lastRelevant.type === 'user' && !isLocalCommandOutput(lastRelevant)) ||
+        (continuationSkipped && lastRelevant.type === 'attachment'))
     ) {
       filteredMessages.splice(
         lastRelevantIdx + 1,
@@ -333,6 +403,69 @@ export function deserializeMessagesWithInterruptDetection(
     logError(error as Error)
     throw error
   }
+}
+
+/**
+ * Interrupted tool_results for the tool calls of the last assistant reply that
+ * never got a result. Calls the conversation already moved past (a prompt or
+ * a later reply follows them) are not answered; filterUnresolvedToolUses
+ * drops those.
+ */
+function createInterruptedToolResults(
+  messages: Message[],
+  // A deferred call was never started; this resume runs it and answers it.
+  deferredToolUseIds?: ReadonlySet<string>,
+): Message[] {
+  let lastReplyId: string | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (message.type === 'assistant') {
+      lastReplyId = message.message.id
+      break
+    }
+    if (message.type !== 'user') continue
+    const content = message.message.content
+    if (!Array.isArray(content)) return []
+    if (!content.some(block => block.type === 'tool_result')) return []
+  }
+  if (lastReplyId === undefined) return []
+
+  // A result can sit between two parts of the same streamed reply.
+  const answered = new Set<string>(deferredToolUseIds)
+  for (const message of messages) {
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      continue
+    }
+    for (const block of message.message.content) {
+      if (block.type === 'tool_result') answered.add(block.tool_use_id)
+    }
+  }
+
+  return messages.flatMap(message =>
+    message.type === 'assistant' &&
+    message.message.id === lastReplyId &&
+    Array.isArray(message.message.content)
+      ? message.message.content
+          .filter(
+            block => block.type === 'tool_use' && !answered.has(block.id),
+          )
+          .map(block =>
+            createUserMessage({
+              content: [
+                {
+                  type: 'tool_result',
+                  content: TOOL_CALL_INTERRUPTED_MESSAGE,
+                  is_error: true,
+                  tool_use_id: (block as { id: string }).id,
+                },
+              ],
+              toolUseResult: TOOL_CALL_INTERRUPTED_MESSAGE,
+              toolDenialKind: 'interrupted',
+              sourceToolAssistantUUID: message.uuid,
+            }),
+          )
+      : [],
+  )
 }
 
 function isLocalCommandOutput(message: NormalizedMessage): boolean {
@@ -575,6 +708,8 @@ export async function loadConversationForResume(
 ): Promise<{
   messages: Message[]
   turnInterruptionState: TurnInterruptionState
+  /** The call a PreToolUse hook deferred, for `-p` to run on resume. */
+  deferredToolUse?: DeferredToolMarker
   fileHistorySnapshots?: FileHistorySnapshot[]
   attributionSnapshots?: AttributionSnapshotMessage[]
   contentReplacements?: ContentReplacementRecord[]
@@ -687,8 +822,21 @@ export async function loadConversationForResume(
     // This ensures skills survive multiple compaction cycles after resume.
     restoreSkillStateFromMessages(messages!)
 
+    const transcriptPath = log?.fullPath ?? sourceJsonlFile
+    const deferredToolMarker = transcriptPath
+      ? await findDeferredToolMarker(transcriptPath)
+      : null
+    const deferredToolUse =
+      deferredToolMarker &&
+      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_DEFERRED_TOOL_RESUME)
+        ? deferredToolMarker
+        : undefined
+
     // Deserialize messages to handle unresolved tool uses and ensure proper format
-    const deserialized = deserializeMessagesWithInterruptDetection(messages!)
+    const deserialized = deserializeMessagesWithInterruptDetection(
+      messages!,
+      deferredToolUse ? new Set([deferredToolUse.toolUseID]) : undefined,
+    )
     messages = deserialized.messages
     messages.push(...createOrphanedAgentNotices(messages))
     const codeMode = planCodeModeResume(log?.replMode ?? replMode, messages, isCodeModeEnabled())
@@ -709,6 +857,7 @@ export async function loadConversationForResume(
     return {
       messages,
       turnInterruptionState: deserialized.turnInterruptionState,
+      deferredToolUse,
       fileHistorySnapshots: log?.fileHistorySnapshots,
       attributionSnapshots: log?.attributionSnapshots,
       contentReplacements: log?.contentReplacements,

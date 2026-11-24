@@ -22,6 +22,8 @@ import {
   resetScreen,
   type Screen,
   type StylePool,
+  SoftWrap,
+  SW_ELIDED_SEP,
   setCellAt,
   shiftRows,
 } from './screen.js'
@@ -80,13 +82,13 @@ type WriteOperation = {
   /** Background inherited by raw content when its ANSI styles reset. */
   backgroundStyle?: AnsiCode
   /**
-   * Per-line soft-wrap flags, parallel to text.split('\n'). softWrap[i]=true
-   * means line i is a continuation of line i-1 (the `\n` before it was
-   * inserted by word-wrap, not in the source). Index 0 is always false.
-   * Undefined means the producer didn't track wrapping (e.g. fills,
-   * raw-ansi) — the screen's per-row bitmap is left untouched.
+   * Per-line soft-wrap flags, parallel to text.split('\n'). A non-zero
+   * softWrap[i] means line i is a continuation of line i-1 (the `\n` before
+   * it was inserted by word-wrap, not in the source). Index 0 is always
+   * HardBreak. Undefined means the producer didn't track wrapping (e.g.
+   * fills, raw-ansi) — the screen's per-row bitmap is left untouched.
    */
-  softWrap?: boolean[]
+  softWrap?: SoftWrap[]
 }
 
 type ClipOperation = {
@@ -255,7 +257,7 @@ export default class Output {
     x: number,
     y: number,
     text: string,
-    softWrap?: boolean[],
+    softWrap?: SoftWrap[],
     backgroundColor?: Color,
   ): void {
     if (!text) {
@@ -491,7 +493,7 @@ export default class Output {
               // Rows the vertical clip drops are never painted, except that a
               // soft-wrapped first visible row measures the clipped row above.
               let firstRow = clipVertically && y < clip.y1! ? clip.y1! - y : 0
-              if (softWrap?.[firstRow] === true) firstRow--
+              if (softWrap?.[firstRow]) firstRow--
               const endRow = clipVertically && y + lines.length > clip.y2!
                 ? clip.y2! - y
                 : lines.length
@@ -528,7 +530,7 @@ export default class Output {
               // need the clipped previous line's content end so
               // screen.softWrap[lineY] correctly records the join point
               // even though that line's cells were never written.
-              if (softWrap && from > 0 && softWrap[from] === true) {
+              if (softWrap && from > 0 && softWrap[from]) {
                 prevContentEnd = x + stringWidth(lines[from - 1]!)
               }
 
@@ -565,8 +567,12 @@ export default class Output {
             // from writeLineToScreen is tab-expansion-aware, unlike
             // x+stringWidth(line) which treats tabs as width 0.
             if (softWrap) {
-              const isSW = softWrap[swFrom + offsetY] === true
-              swBits[lineY] = isSW ? prevContentEnd : 0
+              const sw = softWrap[swFrom + offsetY]
+              swBits[lineY] = !sw
+                ? 0
+                : sw === SoftWrap.ContinuationElidedSep
+                  ? prevContentEnd | SW_ELIDED_SEP
+                  : prevContentEnd
               prevContentEnd = contentEnd
             }
             offsetY++

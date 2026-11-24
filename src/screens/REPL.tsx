@@ -489,6 +489,7 @@ import {
   isMainReplScriptRunning,
   MAIN_REPL_SESSION,
   onMainReplScriptsChange,
+  resetMainReplSession,
 } from '../tools/REPLTool/sessions.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { useIsOverlayActive } from '../context/overlayContext.js'
@@ -811,11 +812,7 @@ function TranscriptModeFooter({
   /** Minimap while navigating a closed-bar search. Shows n/N hints +
    *  right-aligned count instead of scroll hints. */
   searchBadge?: { current: number; count: number }
-  /** Hide the ctrl+e hint. The [ dump path shares this footer with
-   *  env-opted dump (CLAUDE_CODE_NO_FLICKER=0 / DISABLE_VIRTUAL_SCROLL=1),
-   *  but ctrl+e only works in the env case — useGlobalKeybindings.tsx
-   *  gates on !virtualScrollActive which is env-derived, doesn't know
-   *  [ happened. */
+  /** Hide the ctrl+e hint in the one-shot [ dump path. */
   suppressShowAll?: boolean
   /** Transient status (v-for-editor progress). Notifications render inside
    *  PromptInput which isn't mounted in transcript — addNotification queues
@@ -2587,6 +2584,16 @@ export function REPL({
     pastedContentsRef.current = next
     setPastedContentsState(next)
   }, [])
+  // A typed prompt a UserPromptSubmit hook blocked comes back to the input
+  // box, after anything typed since (official 2.1.329).
+  const handBackPrompt = useCallback((command: QueuedCommand) => {
+    if (typeof command.value !== 'string') return
+    const current = inputValueRef.current
+    setInputMode('prompt')
+    setInputValue(current.trim() === '' ? command.value : `${current}\n${command.value}`)
+    const images = command.pastedContents
+    if (images) setPastedContents(previous => ({ ...previous, ...images }))
+  }, [setInputMode, setInputValue, setPastedContents])
   const [submitCount, setSubmitCount] = useState(0)
   // Ref instead of state to avoid triggering React re-renders on every
   // streaming text_delta. The spinner reads this via its animation timer.
@@ -3234,6 +3241,8 @@ export function REPL({
         // Switch session (id + project dir atomically). fullPath may point to
         // a different project (cross-worktree, /branch); null derives from
         // current originalCwd.
+        // Even a resume of this same session reloads the conversation, so its scripts go too.
+        resetMainReplSession()
         switchSession(
           asSessionId(sessionId),
           log.fullPath ? dirname(log.fullPath) : null,
@@ -5755,7 +5764,10 @@ export function REPL({
 
         const immediateContext = queryGuard.isActive && matchingCommand?.type === 'local-jsx' &&
           (matchingCommand.immediate || options?.fromKeybinding)
-          ? getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel)
+          ? {
+              ...getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel),
+              isMainQueryRunning: () => queryGuard.isActive,
+            }
           : undefined
         const shouldTreatAsImmediate = immediateContext && matchingCommand &&
           (options?.fromKeybinding || isCommandImmediate(matchingCommand, commandArgs, immediateContext))
@@ -6058,6 +6070,7 @@ export function REPL({
           ...(submittedTurnId === undefined ? {} : { turnId: submittedTurnId }),
         },
         onInputChange: restoreInput,
+        onPromptHandedBack: handBackPrompt,
         setPastedContents,
         setToolJSX,
         getToolUseContext,
@@ -6125,6 +6138,7 @@ export function REPL({
       beginModSelectionRun,
       repinScroll,
       sendNow,
+      handBackPrompt,
     ],
   )
 
@@ -6534,6 +6548,7 @@ export function REPL({
         commands,
         onInputChange: () => {},
         setPastedContents: () => {},
+        onPromptHandedBack: handBackPrompt,
         setToolJSX,
         getToolUseContext,
         messages,
@@ -6569,6 +6584,7 @@ export function REPL({
       onBeforeQuery,
       isRemoteExecutionSession,
       beginModSelectionRun,
+      handBackPrompt,
     ],
   )
 
@@ -7180,6 +7196,17 @@ export function REPL({
     if (!inTranscript) setPositions(null)
   }, [inTranscript, searchQuery, setHighlight, setPositions])
 
+  const previousShowAll = useRef(showAllInTranscript)
+  useEffect(() => {
+    if (previousShowAll.current === showAllInTranscript) return
+    previousShowAll.current = showAllInTranscript
+    // Ctrl+E changed the searchable text (Code Mode scripts). Re-count in
+    // place; a fresh setSearchQuery would jump back to the / anchor.
+    if (inTranscript && !dumpMode && searchQuery) {
+      jumpRef.current?.refreshSearch(searchQuery)
+    }
+  }, [showAllInTranscript, inTranscript, dumpMode, searchQuery])
+
   const globalKeybindingProps = {
     screen,
     setScreen,
@@ -7189,7 +7216,8 @@ export function REPL({
       screen === 'transcript' ? transcriptMessageCount : messages.length,
     onEnterTranscript: handleEnterTranscript,
     onExitTranscript: handleExitTranscript,
-    virtualScrollActive,
+    // Even with an uncapped virtual list, Code Mode uses this key to reveal scripts.
+    canToggleTranscriptDetails: !dumpMode && (!virtualScrollActive || isCodeModeEnabled()),
     // Bar-open is a mode (owns keystrokes — j/k type, Esc cancels).
     // Navigating (query set, bar closed) is NOT — Esc exits transcript,
     // same as less q with highlights still visible. useSearchInput

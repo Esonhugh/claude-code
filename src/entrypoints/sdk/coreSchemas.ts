@@ -942,6 +942,22 @@ const ModelSwitchFieldsSchema = lazySchema(() =>
       .describe(
         "Prompt tokens the next request re-sends: the last main-thread response's input + cache_read + cache_creation + output tokens (0 before the first response)",
       ),
+    prompt_cache_warm: z
+      .boolean()
+      .describe(
+        "Whether the current model's prompt cache is likely still warm (a switch then forfeits it)",
+      ),
+    cache_ttl: z.enum(['5m', '1h']),
+    estimated_cache_write_usd: z
+      .number()
+      .describe(
+        'Estimated cost of re-caching context_tokens on to_model at its cache-write rate; excludes the response',
+      ),
+    pricing: z
+      .enum(['configured', 'catalog', 'default'])
+      .describe(
+        'configured: priced at the managed modelPricing setting; catalog: list price; default: to_model unknown, the default tier was assumed',
+      ),
   }),
 )
 
@@ -1088,7 +1104,7 @@ export const AsyncHookJSONOutputSchema = lazySchema(() =>
 export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PreToolUse'),
-    permissionDecision: PermissionBehaviorSchema().optional(),
+    permissionDecision: z.enum(['allow', 'deny', 'ask', 'defer']).optional(),
     permissionDecisionReason: z.string().optional(),
     updatedInput: z.record(z.string(), z.unknown()).optional(),
     additionalContext: z.string().optional(),
@@ -1673,7 +1689,9 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
     'authentication_failed',
     'billing_error',
     'rate_limit',
+    'overloaded',
     'invalid_request',
+    'model_not_found',
     'server_error',
     'unknown',
     'max_output_tokens',
@@ -1702,6 +1720,7 @@ const SDKUserMessageContentSchema = lazySchema(() =>
       .optional()
       .describe('Description of the subagent task that produced this message.'),
     isSynthetic: z.boolean().optional(),
+    refused_message_id: z.string().optional(),
     tool_use_result: z.unknown().optional(),
     tool_result_meta: z
       .array(
@@ -1818,6 +1837,17 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
       .describe('Description of the subagent task that produced this message.'),
     timestamp: z.string().optional(),
     error: SDKAssistantMessageErrorSchema().optional(),
+    is_api_error_message: z.literal(true).optional().describe('Set when the message reports an API error instead of a model response.'),
+    api_error_status: z.number().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional().describe("The `error.type` of the API error body, such as 'invalid_request_error'."),
+    refused_message_id: z.string().optional().describe('On a refusal error: the id of the API message the safety classifier stopped.'),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        "@internal The thinking.display Claude Code put in the API request body for the response that streamed this frame's thinking block, as on a stream event. Sent only on a frame whose one content block is a streamed thinking block, and only when the body had a display.",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     request_id: z.string().optional(),
@@ -1897,6 +1927,48 @@ export const TerminalReasonSchema = lazySchema(() =>
   ]),
 )
 
+export const SDKSubagentStatsSchema = lazySchema(() =>
+  z
+    .object({
+      spawned: z
+        .number()
+        .int()
+        .describe('Subagents actually started; a refused or failed launch is not counted.'),
+      requested: z
+        .object({ background: z.number().int(), foreground: z.number().int(), unset: z.number().int() })
+        .describe(
+          'Spawns by the run_in_background value the model passed; unset when the parameter is omitted or not offered.',
+        ),
+      started_in_background: z
+        .number()
+        .int()
+        .describe('Spawns that started in the background after defaults; the rest blocked the spawning tool call.'),
+      by_type: z.record(z.string(), z.number().int()).describe('Spawns by agent type.'),
+      max_depth: z
+        .number()
+        .int()
+        .describe('Deepest spawn: 1 = started by the main thread, 2 = by a depth-1 subagent.'),
+      spawned_by_subagents: z.number().int().describe('Spawns made from inside another subagent (depth > 1).'),
+      completed: z.number().int(),
+      failed: z.number().int(),
+      killed: z
+        .object({ parent: z.number().int(), user: z.number().int(), system: z.number().int() })
+        .describe(
+          'Stopped before finishing: parent = by another agent through TaskStop; system = by Claude Code itself; user = any other stop, including a foreground subagent cancelled just as it finished (counted here, not as completed).',
+        ),
+      refused: z
+        .object({
+          depth_limit: z.number().int(),
+          concurrency_limit: z.number().int(),
+          budget: z.number().int(),
+        })
+        .describe('Agent tool calls turned down because one of these limits was reached; other denials are not counted.'),
+    })
+    .describe(
+      '@internal Subagents started through the Agent tool in this session, as running totals (forked skills, workflows, teammates and other internal agents are not counted). Cumulative like modelUsage: a resumed session starts fresh and /clear zeroes it, though a background subagent that outlives the /clear still records its outcome. Omitted by hosts without a local Agent tool; all zeros until the Agent tool starts or refuses a subagent. A remote launch counts as spawned but never reports an outcome.',
+    ),
+)
+
 export const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
@@ -1904,8 +1976,26 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     duration_ms: z.number(),
     duration_api_ms: z.number(),
     ttft_ms: z.number().optional(),
+    ttft_stream_ms: z
+      .number()
+      .optional()
+      .describe('Milliseconds from the turn start to the first message_start.'),
+    time_to_request_ms: z
+      .number()
+      .optional()
+      .describe(
+        "Milliseconds from the turn start to dispatching that message_start's request.",
+      ),
+    first_content_frame_ms: z
+      .number()
+      .optional()
+      .describe(
+        'Milliseconds from the turn start to the first content_block_start or content_block_delta.',
+      ),
     is_error: z.boolean(),
     api_error_status: z.number().nullable().optional(),
+    api_error_code: z.string().optional(),
+    api_error_type: z.string().optional(),
     num_turns: z.number(),
     result: z.string(),
     stop_reason: z.string().nullable(),
@@ -1914,10 +2004,25 @@ export const SDKResultSuccessSchema = lazySchema(() =>
     modelUsage: z.record(z.string(), ModelUsageSchema()),
     permission_denials: z.array(SDKPermissionDenialSchema()),
     structured_output: z.unknown().optional(),
+    deferred_tool_use: z
+      .object({
+        id: z.string(),
+        name: z.string(),
+        input: z.record(z.string(), z.unknown()),
+      })
+      .optional(),
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
+    subagent_stats: SDKSubagentStatsSchema().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1947,7 +2052,15 @@ export const SDKResultErrorSchema = lazySchema(() =>
     fast_mode_state: FastModeStateSchema().optional(),
     terminal_reason: TerminalReasonSchema().optional(),
     result_index: z.number().int().optional(),
+    model_usage_since_last_result: z
+      .record(z.string(), ModelUsageSchema())
+      .optional()
+      .describe(
+        '@internal Per-model usage since the previous result, in the shape of modelUsage. Sent to stream-json and SDK hosts.',
+      ),
     queued_turn_count: z.number().int().optional(),
+    safety_stops: z.number().int().nonnegative().optional(),
+    subagent_stats: SDKSubagentStatsSchema().optional(),
     fast_mode_disabled_reason: FastModeDisabledReasonSchema().optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2022,9 +2135,27 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       .describe('@internal Working directory the session started in.'),
     additional_directories: z.array(z.string()).optional(),
     per_turn_effort_active: z.boolean().optional(),
+    ultrathink_available: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when typing `ultrathink` runs the turn at xhigh effort on this frame's `model`.",
+      ),
+    ultrathink_typed_raises: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when a user message that carries `ultrathink_typed: true` runs its turn at xhigh effort on this frame's `model`.",
+      ),
     view_mode: z.enum(['focus', 'default']).optional(),
     analytics_disabled: z.boolean().optional(),
     product_feedback_disabled: z.boolean().optional(),
+    served_by_anthropic: z
+      .boolean()
+      .optional()
+      .describe(
+        "@internal True when this session's model requests go to Anthropic's own API: the first-party provider, with no other base URL or socket. Absent where the process can't tell (an SSH child).",
+      ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -2051,6 +2182,111 @@ export const SDKUINotifyCancelMessageSchema = lazySchema(() => z.object({
   type: z.literal('system'), subtype: z.literal('ui_notify_cancel'), plugin: z.string(), source: z.string(),
   key: z.string().optional(), uuid: UUIDPlaceholder(), session_id: z.string(),
 }))
+
+export const SDKInformationalMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('informational'),
+      content: z.string(),
+      level: z
+        .enum(['info', 'notice', 'warning', 'error', 'suggestion'])
+        .optional(),
+      tool_use_id: z.string().optional(),
+      prevent_continuation: z.boolean().optional(),
+      prompt_submit_outcome: z
+        .object({
+          kind: z.literal('blocked_by_hook'),
+          prompt_kept: z.boolean(),
+          reason: z.string().optional(),
+        })
+        .optional(),
+      tag: z.literal('hook_no_verdict').optional(),
+      hook_no_verdict: z
+        .object({
+          hook_event: z.literal('PreToolUse'),
+          tool_use_id: z.string(),
+          timed_out: z.boolean(),
+        })
+        .optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('An informational line of the conversation, such as a hook notice.'),
+)
+
+export const SDKModelFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_fallback'),
+      trigger: z.enum(['overloaded', 'server_error', 'model_not_found', 'last_resort']),
+      original_model: z.string(),
+      fallback_model: z.string(),
+      content: z.string().optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The turn switched to the fallback model.'),
+)
+
+export const SDKConversationResetMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('conversation_reset'),
+      new_conversation_id: z.string(),
+      uuid: UUIDPlaceholder(),
+      trigger: z.literal('clear'),
+      user_message_uuid: z.string().optional(),
+      timestamp: z.string(),
+      session_id: z.string(),
+    })
+    .describe('/clear began a new conversation; session_id is the session it left.'),
+)
+
+export const SDKModelRefusalNoFallbackMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('model_refusal_no_fallback'),
+      original_model: z.string(),
+      request_id: z.string().nullable(),
+      api_refusal_category: z.string().nullable(),
+      api_refusal_explanation: z.string().nullable(),
+      refused_user_message_uuid: z.string().optional(),
+      content: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The safety classifier stopped the response and no other model is tried; the error follows.'),
+)
+
+export const SDKNotificationMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('notification'),
+      key: z.string(),
+      text: z.string(),
+      priority: z.enum(['immediate', 'high']),
+      color: z.literal('warning').optional(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('A notice the terminal UI shows in its footer.'),
+)
+
+export const SDKSessionTitleChangedMessageSchema = lazySchema(() =>
+  z
+    .object({
+      type: z.literal('system'),
+      subtype: z.literal('session_title_changed'),
+      title: z.string(),
+      uuid: UUIDPlaceholder(),
+      session_id: z.string(),
+    })
+    .describe('The session name, sent at startup when set and on each rename.'),
+)
 
 export const SDKUIToastMessageSchema = lazySchema(() =>
   z
@@ -2098,6 +2334,13 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
     ttft_ms: z.number().optional(),
+    thinking_display: z
+      .string()
+      .optional()
+      .describe(
+        '@internal The thinking.display Claude Code put in the API request body for the response this event belongs to. Set on `message_start`, on a thinking block\'s `content_block_start` and on `thinking_delta` events when the body had a display; absent on every other event.',
+      ),
+    api_message_id: z.string().optional(),
   }),
 )
 
@@ -2623,6 +2866,12 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUILogMessageSchema(),
     SDKUINotifyMessageSchema(),
     SDKUINotifyCancelMessageSchema(),
+    SDKInformationalMessageSchema(),
+    SDKModelFallbackMessageSchema(),
+    SDKModelRefusalNoFallbackMessageSchema(),
+    SDKConversationResetMessageSchema(),
+    SDKNotificationMessageSchema(),
+    SDKSessionTitleChangedMessageSchema(),
     SDKUIToastMessageSchema(),
     SDKUIStatusMessageSchema(),
     SDKScheduledTaskFireMessageSchema(),

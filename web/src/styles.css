@@ -5,19 +5,22 @@
   --ok: #1f8a4c; --ok-soft: #e1f3e8; --warn: #a86a00; --warn-soft: #f8edd6; --bad: #c0392b; --bad-soft: #f8e1de; --idle: #8a93a3;
   --term-bg: #121821; --term-fg: #d7dde7;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --perm-edit: #7c4ca8; --perm-plan: #237373; --perm-auto: #956000; --chan: #1c6f99; --glyph: #c15f3c;
   --f-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
+/* Dark and the palettes are for the screen; a print is always ink on white (@media print below). */
+@media screen {
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark } }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; --glyph: #d97757; color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #0f131a; --surface: #161b24; --sunken: #1c2230; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a3242;
   --accent: #8da2ff; --accent-soft: #232c4a;
   --ok: #4cc17f; --ok-soft: #173326; --warn: #e3a93b; --warn-soft: #342812; --bad: #f07b6e; --bad-soft: #3a1d1a; --idle: #6f7888;
-  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; }
+  --term-bg: #0a0d12; --term-fg: #cfd6e2; color-scheme: dark; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --perm-edit: #b994e6; --perm-plan: #5bbdbd; --perm-auto: #e3a93b; --chan: #5ec2ee; --glyph: #d97757; }
 
 /* color palettes (settings → appearance); each has its own light and dark steps */
 :root[data-palette="clay"] { --bg: #faf9f5; --surface: #ffffff; --sunken: #f2efe7; --fg: #2b2620; --muted: #6f665b; --line: #e5dfd3; --accent: #b0573a; --accent-soft: #f6e6dd; }
@@ -26,6 +29,16 @@
 :root[data-palette="mono"] { --bg: #ffffff; --surface: #ffffff; --sunken: #f3f3f3; --fg: #0a0a0a; --muted: #616161; --line: #e2e2e2; --accent: #111111; --accent-soft: #ececec; }
 @media (prefers-color-scheme: dark) { :root[data-palette="mono"]:not([data-theme="light"]) { --bg: #000000; --surface: #0e0e0e; --sunken: #181818; --fg: #f4f4f4; --muted: #a3a3a3; --line: #282828; --accent: #f4f4f4; --accent-soft: #232323; } }
 :root[data-palette="mono"][data-theme="dark"] { --bg: #000000; --surface: #0e0e0e; --sunken: #181818; --fg: #f4f4f4; --muted: #a3a3a3; --line: #282828; --accent: #f4f4f4; --accent-soft: #232323; }
+/* The terminal colour names Mods draw with (modColor in Mods.tsx; light default palette there), on the root so a decorated draft gets them too. Mono greys only the neutrals, as it keeps the page's own --ok and --bad. */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
+:root[data-theme="dark"] { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
+:root[data-palette="clay"] { --mod-black: #2b2620; --mod-red: #b5402e; --mod-green: #43702a; --mod-yellow: #8a6408; --mod-blue: #3d679e; --mod-magenta: #91508c; --mod-cyan: #2e7570; --mod-white: #9a9286; --mod-gray: #6f665b; --mod-grey: #6f665b }
+@media (prefers-color-scheme: dark) { :root[data-palette="clay"]:not([data-theme="light"]) { --mod-black: #d4cdc1; --mod-red: #ec8a6f; --mod-green: #9cc07a; --mod-yellow: #dcb05c; --mod-blue: #8fb0dd; --mod-magenta: #d1a2cb; --mod-cyan: #7cbdb5; --mod-white: #f4f1ea; --mod-gray: #a8a094; --mod-grey: #a8a094 } }
+:root[data-palette="clay"][data-theme="dark"] { --mod-black: #d4cdc1; --mod-red: #ec8a6f; --mod-green: #9cc07a; --mod-yellow: #dcb05c; --mod-blue: #8fb0dd; --mod-magenta: #d1a2cb; --mod-cyan: #7cbdb5; --mod-white: #f4f1ea; --mod-gray: #a8a094; --mod-grey: #a8a094 }
+:root[data-palette="mono"] { --mod-black: #0a0a0a; --mod-white: #8f8f8f; --mod-gray: #616161; --mod-grey: #616161 }
+@media (prefers-color-scheme: dark) { :root[data-palette="mono"]:not([data-theme="light"]) { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 } }
+:root[data-palette="mono"][data-theme="dark"] { --mod-black: #d0d0d0; --mod-white: #f4f4f4; --mod-gray: #a3a3a3; --mod-grey: #a3a3a3 }
+}
 .swatch { display: inline-flex; width: 12px; height: 12px; border-radius: 999px; margin-right: 6px; vertical-align: -1px; border: 1px solid var(--line); overflow: hidden } .swatch i { flex: 1 }
 
 * { box-sizing: border-box }
@@ -87,7 +100,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .meta { display: flex; gap: 8px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; font-size: 12.5px; color: var(--muted) }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); white-space: nowrap }
 .teambar { display: flex; align-items: center; gap: 8px; padding: 6px 20px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 12.5px; flex-wrap: wrap }
-.avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: #fff; border: 0; padding: 0 }
+.avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; color: var(--surface); border: 0; padding: 0 }
 .feed { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 18px }
 .msg { max-width: var(--col); width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; min-width: 0 }
 /* Claude's side reads as one side of a conversation: left-aligned, the right edge kept clear. */
@@ -133,7 +146,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .dot.idle { background: var(--warn) }
 .dot.failed, .dot.killed { background: var(--bad) }
 .dot.pending { background: transparent; border: 1.5px solid var(--idle) }
-@media (prefers-reduced-motion: no-preference) { .dot.running { animation: pulse 1.6s infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .dot.running { animation: pulse 1.6s infinite } }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px transparent } }
 
 .composer { padding: 6px 20px 12px; background: var(--bg) }
@@ -249,7 +262,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .pop.acctmenu { position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 1px; font-size: 13px; overflow: visible; max-height: none }
 .acctmenu[hidden], .authmenu[hidden] { display: none }
 .acctmenu .ah { display: flex; gap: 10px; align-items: center; padding: 6px 8px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; min-width: 0 } .acctmenu .ah > div { min-width: 0 } .acctmenu .ah b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600 } .acctmenu .ah small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
-.acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent) } .acctmenu .ah .avatar.none { background: var(--idle) }
+.acctmenu .ah .avatar { width: 28px; height: 28px; font-size: 12.5px; flex: none; background: var(--accent); color: var(--surface) } .acctmenu .ah .avatar.none { background: var(--idle) }
 .acctmenu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0 }
 .mi { border: 0; background: transparent; text-align: left; padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: center; cursor: pointer; width: 100%; white-space: nowrap; min-width: 0 }
 .mi:hover, .mi[aria-expanded="true"], .mi:focus-visible { background: var(--sunken) }
@@ -294,7 +307,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .pickmenu { top: calc(100% + 4px); bottom: auto; width: 100%; max-height: 240px; overflow: auto }
 .modsrc { width: 100%; min-height: 220px; font-family: var(--f-mono); font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box }
 .applist { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px }
-.acct .avatar { background: var(--accent); width: 22px; height: 22px; font-size: 11px; flex: none }
+.acct .avatar { background: var(--accent); color: var(--surface); width: 22px; height: 22px; font-size: 11px; flex: none }
 .acct > div { min-width: 0; line-height: 1.25 } .acct b { display: block; font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .acct small { color: var(--muted); display: block; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .menu-btn { display: none; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 4px 9px }
@@ -389,7 +402,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .report .rh .ok { color: var(--ok) }
 .steps .stepsbody { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; color: var(--fg); font-size: 14px }
 .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%, var(--muted) 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent }
-@media (prefers-reduced-motion: no-preference) { .shimmer { animation: shimmer 1.8s linear infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .shimmer { animation: shimmer 1.8s linear infinite } }
 @keyframes shimmer { from { background-position: 100% 0 } to { background-position: -150% 0 } }
 .toolcard { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden }
 .mcp-app { display: block; width: 100%; margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
@@ -405,10 +418,10 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .toolcard .tout { margin: 0; background: var(--term-bg); color: var(--term-fg); padding: 10px 12px; font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; max-height: 220px }
 .toolcard .tfoot { display: flex; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; flex: none }
-@media (prefers-reduced-motion: no-preference) { .spin { animation: rot .8s linear infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .spin { animation: rot .8s linear infinite } }
 @keyframes rot { to { transform: rotate(360deg) } }
 .status-line { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
-.status-line .glyph { color: #d97757; font-family: var(--f-mono); width: 14px; text-align: center }
+.status-line .glyph { color: var(--glyph); font-family: var(--f-mono); width: 14px; text-align: center }
 .status-line .verb { font-weight: 500 }
 .status-line .retry { color: var(--warn) }
 .status-line button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 1px 8px; font-size: 12px; color: var(--muted) }
@@ -514,7 +527,7 @@ body.nosess .col-drag.right, body.art .col-drag.right, body:not(.art) .col-drag.
 .older-sentinel .spin { display: inline-block; vertical-align: -2px; margin-right: 6px }
 .older[hidden] { display: none }
 .status-line .cbar { flex: 0 1 160px; height: 4px; background: var(--sunken); border-radius: 2px; overflow: hidden }
-.status-line .cbar i { display: block; height: 100%; width: 0; background: #d97757; transition: width .2s }
+.status-line .cbar i { display: block; height: 100%; width: 0; background: var(--glyph); transition: width .2s }
 button.chip { cursor: pointer; font: inherit; color: inherit }
 .ctxpop { position: absolute; z-index: 30; width: min(320px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 12px; display: flex; flex-direction: column; gap: 10px; font-size: 13px }
 .ctxpop[hidden] { display: none }
@@ -539,12 +552,12 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .opt select option { color: initial; background: initial }
 .opt select:focus-visible { outline: 2px solid var(--accent); border-radius: 4px }
 .sunrise { width: 14px; height: 14px; vertical-align: -2px; flex: none }
-.db-blue { color: #3b82f6 } .db-red { color: #e5484d }
+.db-blue { color: var(--accent) } .db-red { color: var(--bad) }
 .dbrow { display: flex; align-items: center; gap: 8px; margin: 2px 8px 4px }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden }
 .seg button { font: inherit; font-size: 12.5px; padding: 4px 10px; border: 0; background: var(--bg); color: var(--muted); cursor: pointer }
 .seg button + button { border-left: 1px solid var(--line) }
-.seg button[aria-checked="true"] { background: var(--accent); color: #fff }
+.seg button[aria-checked="true"] { background: var(--accent); color: var(--surface) }
 .usegroup { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 12px }
 .usegroup:last-child { border-bottom: 0 }
 .usegroup h4 { margin: 0; font-size: 13.5px; font-weight: 600 } .usegroup h4 small { font-weight: 400; color: var(--muted); font-size: 12px }
@@ -629,8 +642,8 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer }
 .tag { font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--sunken); color: var(--muted) }
 .bgrow .bgact { grid-column: 2 / -1; margin-top: 4px }
-.msg.channel .bubble { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid #2aa3d8; padding: 9px 13px; border-radius: 3px 12px 12px 12px; max-width: 85% }
-.chan-badge { display: inline-block; font-size: 11px; font-weight: 600; color: #fff; background: #2aa3d8; border-radius: 4px; padding: 0 6px; margin-right: 4px }
+.msg.channel .bubble { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--chan); padding: 9px 13px; border-radius: 3px 12px 12px 12px; max-width: 85% }
+.chan-badge { display: inline-block; font-size: 11px; font-weight: 600; color: var(--surface); background: var(--chan); border-radius: 4px; padding: 0 6px; margin-right: 4px }
 .approve .relay { font-size: 12px }
 .card.elicit { border-color: var(--accent); gap: 8px }
 .card.elicit select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); max-width: 260px }
@@ -641,14 +654,14 @@ button.chip { cursor: pointer; font: inherit; color: inherit }
 .wfout .utable td { vertical-align: top }
 .opt.perm { padding-left: 8px }
 .opt .pmark, .opt .emark { font-size: 11px; color: var(--muted) }
-.opt.perm[data-mode="acceptEdits"] { border-color: #8a5ab8; } .opt.perm[data-mode="acceptEdits"] .pmark, .opt.perm[data-mode="acceptEdits"] select { color: #8a5ab8 }
-.opt.perm[data-mode="plan"] { border-color: #2c8a8a } .opt.perm[data-mode="plan"] .pmark, .opt.perm[data-mode="plan"] select { color: #2c8a8a }
-.opt.perm[data-mode="auto"] { border-color: #a86a00 } .opt.perm[data-mode="auto"] .pmark, .opt.perm[data-mode="auto"] select { color: #a86a00 }
+.opt.perm[data-mode="acceptEdits"] { border-color: var(--perm-edit); } .opt.perm[data-mode="acceptEdits"] .pmark, .opt.perm[data-mode="acceptEdits"] select { color: var(--perm-edit) }
+.opt.perm[data-mode="plan"] { border-color: var(--perm-plan) } .opt.perm[data-mode="plan"] .pmark, .opt.perm[data-mode="plan"] select { color: var(--perm-plan) }
+.opt.perm[data-mode="auto"] { border-color: var(--perm-auto) } .opt.perm[data-mode="auto"] .pmark, .opt.perm[data-mode="auto"] select { color: var(--perm-auto) }
 .opt.perm[data-mode="bypassPermissions"] { border-color: var(--bad) } .opt.perm[data-mode="bypassPermissions"] .pmark, .opt.perm[data-mode="bypassPermissions"] select { color: var(--bad) }
 .footwrap { position: relative } .footwrap.right { margin-left: auto }
 .footbtn { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; padding: 3px 6px; border-radius: 6px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer }
 .footbtn:hover, .footbtn[aria-expanded="true"] { background: var(--sunken); color: var(--fg) }
-.footbtn.perm[data-mode="acceptEdits"] { color: #8a5ab8 } .footbtn.perm[data-mode="plan"] { color: #2c8a8a } .footbtn.perm[data-mode="auto"] { color: #a86a00 } .footbtn.perm[data-mode="bypassPermissions"] { color: var(--bad) }
+.footbtn.perm[data-mode="acceptEdits"] { color: var(--perm-edit) } .footbtn.perm[data-mode="plan"] { color: var(--perm-plan) } .footbtn.perm[data-mode="auto"] { color: var(--perm-auto) } .footbtn.perm[data-mode="bypassPermissions"] { color: var(--bad) }
 .footmenu { position: absolute; bottom: calc(100% + 6px); left: 0; width: min(340px, calc(100vw - 40px)); z-index: 30; padding: 6px; display: flex; flex-direction: column; gap: 2px }
 .footmenu.right { left: auto; right: 0 }
 #goal-wrap:not([hidden]) + .footwrap { margin-left: 4px } #goal-wrap[hidden] + .footwrap { margin-left: auto }
@@ -667,7 +680,7 @@ body.hist #goal-wrap + .footwrap { margin-left: auto }
 .footmenu > *, .wl-pick > * { flex-shrink: 0 }
 .mm-more { display: flex !important; gap: 6px; align-items: center }
 .wl-pick .seg button { display: block; padding: 4px 8px; border-radius: 0; text-align: center; color: var(--muted) }
-.wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: #fff }
+.wl-pick .seg button[aria-checked="true"] { background: var(--accent); color: var(--surface) }
 .wl-pick .mh { font-size: 11px; color: var(--muted); padding: 4px 8px 2px; text-transform: uppercase; letter-spacing: .06em }
 .mm-effort .seg { display: flex; flex-wrap: wrap } .mm-effort .seg button { flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; white-space: nowrap }
 /* Room for four models, More models and the effort row before the list scrolls. */
@@ -935,9 +948,10 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .codeblock-body, .codeblock-body pre.shiki { margin: 0; padding: 10px 12px; overflow-x: auto; white-space: pre; overflow-wrap: normal; background: transparent !important; font-family: var(--f-mono); font-size: 12.5px; line-height: 1.5 }
 .codeblock-body:has(pre.shiki) { padding: 0 }
 .codeblock-body code { background: none; padding: 0 }
-:root[data-theme="dark"] .shiki, :root[data-theme="dark"] .shiki span { color: var(--shiki-dark) !important }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shiki, :root:not([data-theme="light"]) .shiki span { color: var(--shiki-dark) !important } }
-.mermaid { margin: 0 0 8px; overflow-x: auto; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px }
+@media screen { :root[data-theme="dark"] .shiki, :root[data-theme="dark"] .shiki span { color: var(--shiki-dark) !important } }
+@media screen and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shiki, :root:not([data-theme="light"]) .shiki span { color: var(--shiki-dark) !important } }
+.mermaid, .mermaid-print { margin: 0 0 8px; overflow-x: auto; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px }
+.mermaid-print { display: none }
 .math-block { overflow-x: auto; margin: 0 0 8px }
 .math-src { font-family: var(--f-mono) }
 .footnote { font-size: 12.5px; color: var(--muted) }
@@ -1008,6 +1022,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
   .main > .feed .msg .markdown { content-visibility: visible }
   pre { max-height: none !important; overflow: visible }
   .toolcard, .sources { break-inside: avoid }
+  .mermaid.on-screen { display: none }
+  .mermaid-print { display: block; break-inside: avoid }
 }
 @media (max-width: 760px) and (pointer: coarse) { .meta button, .composer button { min-height: 40px } }
 
@@ -1021,6 +1037,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .pjrow .t .pjico { color: var(--muted); font-family: var(--f-mono); margin-right: 6px }
 .pjn { grid-column: 2; font-size: 11px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-variant-numeric: tabular-nums }
 .history .pjrow { padding: 4px 8px; font-size: 13px }
+.history .pjrow.archived .t { color: var(--muted) }
 /* project view: sessions | coordinator session | dispatched task agents */
 body.proj .app { grid-template-columns: var(--left-w, 220px) minmax(0, 1fr) }
 body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { display: none !important }
@@ -1145,8 +1162,6 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .composer:has(> .mod-toasts) { position: relative }
 .mod-toasts { position: absolute; right: 20px; bottom: 100%; margin-bottom: 8px; z-index: 40; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; max-width: min(360px, calc(100vw - 32px)) }
 .mod-toast { text-align: left; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--fg); box-shadow: 0 6px 20px rgba(0,0,0,.18); font-size: 13px }
-:root[data-theme="dark"] :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.mod-view, .mod-site, .mod-foot) { --mod-black: #c9d1d9; --mod-red: #ff7b72; --mod-green: #3fb950; --mod-yellow: #d29922; --mod-blue: #58a6ff; --mod-magenta: #d2a8ff; --mod-cyan: #39c5cf; --mod-white: #f0f6fc; --mod-gray: #8b949e; --mod-grey: #8b949e } }
 /* A page row as Mods draw it: their tree, with the page's row where it says. */
 .mod-site { min-width: 0; overflow-wrap: anywhere }
 .mod-site .mod-btn { font-size: 12px }

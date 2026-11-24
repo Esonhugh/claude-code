@@ -7,6 +7,7 @@ import { disposeModsHosts, endModsSessions } from './gracefulShutdown.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import isEqual from 'lodash-es/isEqual.js'
 import ts from 'typescript'
 import { z } from 'zod/v4'
 import type { ToolUseContext } from '../Tool.js'
@@ -89,7 +90,9 @@ function fixture() {
   >()
   const calls: { command: string; input: Record<string, unknown> }[] = []
   // Commands listed here exit with the given code instead of printing JSON.
-  const exits = new Map<string, { code: number; stderr?: string }>()
+  const exits = new Map<string, { code: number | null; stderr?: string }>()
+  const sdkEvents: Record<string, unknown>[] = []
+  const notifications: Record<string, unknown>[] = []
   // Commands listed here exit after printing, but a background child they
   // started keeps stdout/stderr open (`sleep 300 & echo ...`), so the streams
   // never end and the shell's kill cannot close them. A `drip` keeps that
@@ -109,6 +112,7 @@ function fixture() {
   const controls = {
     trusted: true,
     interactive: true,
+    streamingInput: false,
     allowed: [
       'userSettings',
       'projectSettings',
@@ -127,6 +131,7 @@ function fixture() {
     getPromptId: () => null,
     getSessionCronTasks: () => crons,
     getIsNonInteractiveSession: () => !controls.interactive,
+    getHasStreamingInput: () => controls.streamingInput,
     getRegisteredHooks: () => registered,
     getStatsStore: () => undefined,
     addToTurnHookDuration: noop,
@@ -186,6 +191,7 @@ function fixture() {
     () => settingsModule,
   )
   const snapshot = evaluate('./hooks/hooksConfigSnapshot.ts', (name) => {
+    if (name === 'lodash-es/isEqual.js') return { default: isEqual }
     if (name.endsWith('state.js')) return bootstrap
     if (name.endsWith('envUtils.js')) return { isSafeMode: () => false }
     if (name.endsWith('pluginOnlyPolicy.js')) return pluginPolicy
@@ -287,6 +293,14 @@ function fixture() {
       },
     },
     './gracefulShutdown.js': { endModsSessions },
+    './sdkEventQueue.js': {
+      enqueueSdkEvent: (event: Record<string, unknown>) => sdkEvents.push(event),
+    },
+    '../constants/xml.js': require('../constants/xml.js'),
+    './messageQueueManager.js': {
+      enqueuePendingNotification: (command: Record<string, unknown>) =>
+        notifications.push(command),
+    },
     './file.js': { pathExists: async () => true },
     './plugins/pluginOptionsStorage.js': {
       loadPluginOptions: () => ({ token: 'x; touch pwned' }),
@@ -302,7 +316,18 @@ function fixture() {
           child.stderr.end()
           child.emit('close', 143)
         })
-        return { cleanup: noop }
+        // An asyncRewake hook reads its output from the paused streams once
+        // the child closes.
+        return {
+          cleanup: noop,
+          result: new Promise((resolve) =>
+            child.once('close', (code: number | null) => resolve({ code })),
+          ),
+          taskOutput: {
+            getStdout: async () => String(child.stdout.read() ?? ''),
+            getStderr: () => String(child.stderr.read() ?? ''),
+          },
+        }
       },
     },
     './task/TaskOutput.js': { TaskOutput: class {} },
@@ -317,6 +342,11 @@ function fixture() {
       invalidateSessionEnvCache: noop,
     },
     './subprocessEnv.js': { subprocessEnv: () => ({ HOME: home }) },
+    fs: require('node:fs'),
+    './uuid.js': require('./uuid.js'),
+    './permissions/filesystem.js': {
+      getProjectTempDir: () => join(home, 'project-tmp'),
+    },
     './platform.js': { getPlatform: () => 'macos' },
     './shell/shellProvider.js': { DEFAULT_HOOK_SHELL: 'bash' },
     '../bootstrap/state.js': bootstrap,
@@ -385,8 +415,19 @@ function fixture() {
       isEnvTruthy: (value: string) => value === '1' || value === 'true',
       isSSHLocalUI: () => false,
     },
-    './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
-    './messages.js': { getLastAssistantMessage: () => undefined },
+    './errors.js': {
+      errorMessage: (error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+      getErrnoCode: () => undefined,
+      isAbortError: (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+    },
+    './messages.js': {
+      getLastAssistantMessage: () => undefined,
+      escapeSystemReminderTags: (text: string) => text,
+      wrapInSystemReminder: (text: string) =>
+        `<system-reminder>\n${text}\n</system-reminder>`,
+    },
   }
   // Tracks concurrent evaluator calls; set `gate` to hold them.
   const model: { active: number; max: number; gate?: Promise<void> } = {
@@ -495,6 +536,8 @@ function fixture() {
     registered,
     commands,
     exits,
+    sdkEvents,
+    notifications,
     lingering,
     envs,
     spawns,
@@ -827,7 +870,7 @@ describe('source-scoped hook executor', () => {
     ).toBe(true)
   })
 
-  test('equal command text stays distinct across settings, plugins and skill/session sources', async () => {
+  test('equal command text collapses across settings sources but stays distinct across plugins and skill/session sources', async () => {
     const f = fixture()
     f.add('policySettings', 'PreToolUse', 'same')
     f.add('userSettings', 'PreToolUse', 'same')
@@ -856,7 +899,7 @@ describe('source-scoped hook executor', () => {
       )
     }
     await collect(pre(f))
-    expect(f.calls).toHaveLength(6)
+    expect(f.calls).toHaveLength(5)
     expect(successes.sort()).toEqual(['one', 'two'])
   })
 
@@ -1217,7 +1260,11 @@ describe('source-scoped hook executor', () => {
 
   test('snapshot captures provenance and nested content until explicit update', async () => {
     const f = fixture()
-    f.add('userSettings', 'PreToolUse', 'same')
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'same',
+      timeout: 5,
+    })
     f.add('policySettings', 'PreToolUse', 'same')
     f.snapshot.captureHooksConfigSnapshot()
     const captured = f.snapshot.getHooksConfigFromSnapshot()
@@ -1481,14 +1528,14 @@ describe('source-scoped hook executor', () => {
       hook: { type: 'command', command: 'deny' },
     })
   })
-  test('equal commands execute once per source, while same-source duplicates still collapse', async () => {
+  test('equal commands execute once across settings sources and the managed copy wins (official 2.1.329)', async () => {
     const f = fixture()
     for (const source of [
+      'policySettings',
+      'flagSettings',
       'userSettings',
       'projectSettings',
       'localSettings',
-      'flagSettings',
-      'policySettings',
     ] as const) {
       f.add(source, 'PostToolUse', 'same-command')
       f.add(source, 'PostToolUse', 'same-command')
@@ -1496,15 +1543,104 @@ describe('source-scoped hook executor', () => {
     const results = await collect(
       f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
     )
-    expect(f.calls.map((call) => call.command)).toEqual(
-      Array(5).fill('same-command'),
-    )
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
     expect(
-      results
-        .filter((result) => result.message)
-        .map((result) => result.hookSource),
-    ).toContain('policySettings')
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['policySettings']))
   })
+
+  test('without a managed copy the --settings copy wins over file settings', async () => {
+    const f = fixture()
+    for (const source of [
+      'flagSettings',
+      'userSettings',
+      'projectSettings',
+    ] as const) {
+      f.add(source, 'PostToolUse', 'same-command')
+    }
+    f.add('userSettings', 'PostToolUse', 'user-only')
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command).sort()).toEqual([
+      'same-command',
+      'user-only',
+    ])
+    expect(
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['flagSettings', 'userSettings']))
+  })
+
+  test('a managed matcher that differs from the non-managed one keeps both (official 2.1.329)', async () => {
+    const f = fixture()
+    f.add('policySettings', 'PostToolUse', 'same-command')
+    f.addHook('userSettings', 'PostToolUse', {
+      type: 'command',
+      command: 'same-command',
+      timeout: 5,
+    })
+    f.addHook(
+      'projectSettings',
+      'PostToolUse',
+      { type: 'command', command: 'same-command' },
+      'Read',
+    )
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command)).toEqual([
+      'same-command',
+      'same-command',
+    ])
+    expect(
+      new Set(
+        results
+          .filter((result) => result.message)
+          .map((result) => result.hookSource),
+      ),
+    ).toEqual(new Set(['policySettings', 'projectSettings']))
+  })
+
+  test('a managed matcher written with another key order is still the same matcher', async () => {
+    const f = fixture()
+    f.addHook('policySettings', 'PostToolUse', {
+      type: 'command',
+      command: 'same-command',
+      timeout: 5,
+    })
+    f.addHook('userSettings', 'PostToolUse', {
+      timeout: 5,
+      command: 'same-command',
+      type: 'command',
+    })
+    await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
+  })
+
+  test('the non-managed pass skips a matcher the managed pass already runs', async () => {
+    const f = fixture()
+    f.add('policySettings', 'PreToolUse', 'same-command')
+    f.add('userSettings', 'PreToolUse', 'same-command')
+    f.add('userSettings', 'PreToolUse', 'user-only')
+    await collect(pre(f, 'managed'))
+    expect(f.calls.map((call) => call.command)).toEqual(['same-command'])
+    await collect(pre(f, 'non-managed'))
+    expect(f.calls.map((call) => call.command)).toEqual([
+      'same-command',
+      'user-only',
+    ])
+  })
+
   test('managed executes only policy settings, not user settings or SDK callbacks', async () => {
     const f = fixture()
     f.add('policySettings', 'PostToolUse', 'policy')
@@ -1630,6 +1766,222 @@ describe('onFailure', () => {
   })
 })
 
+describe('hook_no_verdict notice (official 2.1.329)', () => {
+  const noVerdict = (timedOut: boolean) => ({
+    type: 'system',
+    subtype: 'informational',
+    content: `A hook ${timedOut ? "didn't answer in time" : 'gave no usable answer'}, so it didn't check this action.`,
+    level: 'warning',
+    tag: 'hook_no_verdict',
+    hook_no_verdict: {
+      hook_event: 'PreToolUse',
+      tool_use_id: 'tool',
+      timed_out: timedOut,
+    },
+  })
+
+  test('a PreToolUse hook that times out is reported to SDK hosts', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+    })
+    f.commands.set('slow', () => new Promise(() => {}))
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([noVerdict(true)])
+  })
+
+  test('a PreToolUse hook that could not run or was killed is reported', async () => {
+    for (const code of [127, 126, 137, null]) {
+      const f = fixture()
+      f.add('userSettings', 'PreToolUse', `missing-${code}`)
+      f.exits.set(`missing-${code}`, { code })
+      await collect(pre(f))
+      expect(f.sdkEvents).toEqual([noVerdict(false)])
+    }
+  })
+
+  test('the same hook is reported once per session', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'missing-twice')
+    f.exits.set('missing-twice', { code: 127 })
+    await collect(pre(f))
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([noVerdict(false)])
+  })
+
+  test('a hook that ran and exited 1 is not reported', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'exit-one')
+    f.exits.set('exit-one', { code: 1, stderr: 'nope' })
+    await collect(pre(f))
+    expect(f.sdkEvents).toEqual([])
+  })
+
+  test('other events are not reported', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PostToolUse', 'post-missing')
+    f.exits.set('post-missing', { code: 127 })
+    await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(f.sdkEvents).toEqual([])
+  })
+})
+
+describe('SDK callback hooks that fail or time out', () => {
+  const failure =
+    'Hook callback cb1 failed: the SDK host replied with an error or an invalid answer.'
+  const failing = (onFailure?: 'block'): HookCallback => ({
+    type: 'callback',
+    ...(onFailure && { onFailure }),
+    callback: async () => {
+      throw new Error(failure)
+    },
+  })
+  // Like StructuredIO.sendRequest: rejects once the hook's signal aborts.
+  const unanswered: HookCallback = {
+    type: 'callback',
+    timeout: 0.05,
+    callback: (_input, _toolUseID, abort) =>
+      new Promise((_resolve, reject) => {
+        abort!.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+        )
+      }),
+  }
+
+  test('onFailure block turns a failed callback into a blocking error', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(pre(f))
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: `[callback]: failed; blocking because onFailure is "block"\n${failure}`,
+        command: 'callback',
+      })
+  })
+
+  test('onFailure block on a failed Stop callback is ignored', async () => {
+    const f = fixture()
+    f.registered.Stop = [{ matcher: '', hooks: [failing('block')] }]
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+
+  test('an unanswered PreToolUse callback rejects instead of counting as no opinion', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: [unanswered] }]
+    await expect(collect(pre(f))).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  test('an unanswered UserPromptSubmit callback blocks the prompt', async () => {
+    const f = fixture()
+    f.registered.UserPromptSubmit = [{ matcher: '', hooks: [unanswered] }]
+    const results = await collect(
+      f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context),
+    )
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: 'UserPromptSubmit hook callback timed out after 50ms',
+        command: 'callback',
+      })
+  })
+
+  test('an unanswered PostToolUse callback still lets the turn go on', async () => {
+    const f = fixture()
+    f.registered.PostToolUse = [
+      { matcher: '', hooks: [{ ...unanswered, onFailure: 'block' }] },
+    ]
+    const results = await collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+})
+
+describe('asyncRewake command hooks', () => {
+  const run = (f: ReturnType<typeof fixture>) => {
+    f.addHook('userSettings', 'PostToolUse', {
+      type: 'command',
+      command: 'rewake',
+      asyncRewake: true,
+    })
+    f.exits.set('rewake', { code: 2, stderr: 'REWAKE_MSG' })
+    return collect(
+      f.hooks.executePostToolHooks('Read', 'tool', {}, {}, f.context),
+    )
+  }
+
+  test('a single-shot print session waits for the hook and reports its exit 2', async () => {
+    const f = fixture()
+    f.controls.interactive = false
+    const results = await run(f)
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({ blockingError: '[rewake]: REWAKE_MSG', command: 'rewake' })
+  })
+
+  test.each([
+    ['an interactive session', true, false],
+    ['a print session with streaming input', false, true],
+  ] as const)('%s runs the hook in the background', async (_name, interactive, streamingInput) => {
+    const f = fixture()
+    f.controls.interactive = interactive
+    f.controls.streamingInput = streamingInput
+    const results = await run(f)
+    expect(results.some((result) => result.blockingError)).toBe(false)
+    expect(f.logs.some((log) => log.includes('backgrounding process'))).toBe(true)
+  })
+
+  test('an exit 2 in the background wakes the model with a "Stop hook feedback" notification', async () => {
+    const f = fixture()
+    await run(f)
+    for (let i = 0; i < 50 && f.notifications.length === 0; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(f.notifications).toEqual([
+      {
+        value:
+          '<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n' +
+          '<system-reminder>\nStop hook blocking error from command "PostToolUse:Read": REWAKE_MSG\n</system-reminder>',
+        mode: 'task-notification',
+        priority: 'next',
+        skipAttachments: true,
+      },
+    ])
+  })
+})
+
+test('PreToolUse permissionDecision defer is accepted and outranks ask and allow, not deny', async () => {
+  const decide = (permissionDecision: 'allow' | 'ask' | 'deny' | 'defer'): HookCallback => ({
+    type: 'callback',
+    callback: async () => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision },
+    }),
+  })
+  const last = async (...decisions: Parameters<typeof decide>[0][]) => {
+    const f = fixture()
+    f.registered.PreToolUse = [{ matcher: '', hooks: decisions.map(decide) }]
+    const results = await collect(pre(f))
+    return results.findLast((result) => result.permissionBehavior)
+      ?.permissionBehavior
+  }
+  expect(await last('defer')).toBe('defer')
+  expect(await last('allow', 'defer', 'ask')).toBe('defer')
+  expect(await last('defer', 'deny')).toBe('deny')
+  expect(await last('deny', 'defer')).toBe('deny')
+})
+
 test('runs at most 12 prompt hooks of one event at a time without holding command hooks', async () => {
   const f = fixture()
   for (let i = 0; i < 15; i++)
@@ -1732,6 +2084,12 @@ describe('model switch hooks', () => {
     toModel: 'model-b',
     requestedModel: 'b',
     contextTokens: 1234,
+    cache: {
+      promptCacheWarm: true,
+      cacheTtl: '1h' as const,
+      estimatedCacheWriteUsd: 0.0123,
+      pricing: 'catalog' as const,
+    },
   }
 
   test('PreModelSwitch receives the switch and proceeds by default', async () => {
@@ -1748,8 +2106,12 @@ describe('model switch hooks', () => {
       from_model: 'model-a',
       to_model: 'model-b',
       requested_model: 'b',
-      context_tokens: 1234,
       source: 'command',
+      context_tokens: 1234,
+      prompt_cache_warm: true,
+      cache_ttl: '1h',
+      estimated_cache_write_usd: 0.0123,
+      pricing: 'catalog',
     })
   })
 
@@ -1886,6 +2248,12 @@ test('model switch hooks match on to_model', async () => {
     toModel: 'model-b',
     requestedModel: null,
     contextTokens: 0,
+    cache: {
+      promptCacheWarm: false,
+      cacheTtl: '5m',
+      estimatedCacheWriteUsd: 0,
+      pricing: 'default',
+    },
     source: 'sdk',
   })
   expect(f.calls.map((call) => call.command)).toEqual(['mine'])
@@ -2066,4 +2434,18 @@ test('Stop and SubagentStop hooks list in-flight background work and session cro
   expect(f.calls.map(call => call.command)).toEqual(['stop', 'substop'])
   expect(f.calls[0]?.input).toMatchObject({ hook_event_name: 'Stop', ...expected })
   expect(f.calls[1]?.input).toMatchObject({ hook_event_name: 'SubagentStop', ...expected })
+})
+
+test('an Elicitation hook that cancels answers the server with empty content', async () => {
+  const f = fixture()
+  f.add('userSettings', 'Elicitation', 'cancel')
+  f.commands.set('cancel', {
+    hookSpecificOutput: { hookEventName: 'Elicitation', action: 'cancel' },
+  })
+  const { elicitationResponse } = await f.hooks.executeElicitationHooks({
+    serverName: 'el',
+    message: 'Pick a color',
+    signal: new AbortController().signal,
+  })
+  expect(elicitationResponse).toEqual({ action: 'cancel', content: {} })
 })

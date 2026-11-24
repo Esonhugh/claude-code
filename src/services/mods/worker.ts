@@ -343,13 +343,16 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation, modelMethod:wire.modelMethod, mutableResult:wire.mutableResult });
           try {
             if (wire.storeMethod === 'set') {
-              const text = JSON.stringify(args[1]);
-              if (text === undefined) throw TypeError('value must be JSON data');
-              if (text.length > 4194304) throw RangeError('Store value exceeds 4194304 characters');
+              const refuse = message => Object.assign(Error(plugin + ': $.store.set: ' + message), {name:'HooksError'});
+              let text;
+              try { text = JSON.stringify(args[1]); }
+              catch (error) { throw refuse('value is not JSON data (' + (error instanceof Error ? error.message : String(error)) + ')'); }
+              if (typeof text !== 'string') throw refuse('value is not JSON data (' + (args[1] === undefined ? 'undefined' : 'a ' + typeof args[1]) + ')');
+              if (text.length > 4194304) throw refuse('the value is ' + text.length + ' characters, over the 4194304 limit');
               args[1] = JSON.parse(text);
             }
             if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
-              throw TypeError('key must be a nonempty string');
+              throw Object.assign(Error(plugin + ': $.store.' + wire.storeMethod + ' takes a non-empty string key'), {name:'HooksError'});
             let modelAborted, modelAbortReason;
             if (wire.modelMethod === 'complete') {
               const signal = args[1]?.signal;

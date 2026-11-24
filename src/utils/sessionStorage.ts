@@ -4,7 +4,16 @@ import type { Dirent } from 'fs'
 // Sync fs primitives for readFileTailSync — separate from fs/promises
 // imports above. Named (not wildcard) per CLAUDE.md style; no collisions
 // with the async-suffixed names.
-import { closeSync, fstatSync, openSync, readSync } from 'fs'
+import {
+  closeSync,
+  cpSync,
+  fstatSync,
+  openSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'fs'
 import {
   appendFile as fsAppendFile,
   open as fsOpen,
@@ -17,7 +26,7 @@ import {
   writeFile,
 } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, sep } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -79,7 +88,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { isFsInaccessible } from './errors.js'
+import { getErrnoCode, isENOENT, isFsInaccessible } from './errors.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -98,8 +107,10 @@ import {
   LITE_READ_BUF_SIZE,
   readHeadAndTail,
   readTranscriptForLoad,
+  resolveSessionFilePath,
   SKIP_PRECOMPACT_THRESHOLD,
 } from './sessionStoragePortable.js'
+import { enqueueSdkEvent } from './sdkEventQueue.js'
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
@@ -375,6 +386,14 @@ export async function markAgentMetadataStoppedByUser(agentId: AgentId, agentType
   await mutateAgentMetadata(agentId, current => ({ ...current ?? { agentType }, stoppedByUser: true }))
 }
 
+/** The user sent the agent they stopped back to work. */
+export async function clearAgentMetadataStoppedByUser(agentId: AgentId, fallback: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => {
+    const { stoppedByUser: _stopped, ...rest } = current ?? fallback
+    return rest
+  })
+}
+
 export async function readAgentMetadata(agentId: AgentId): Promise<AgentMetadata | null> {
   const path = getAgentMetadataPath(agentId)
   await agentMetadataWrites.get(path)
@@ -478,7 +497,10 @@ export async function listRemoteAgentMetadata(): Promise<
 }
 
 export function sessionIdExists(sessionId: string): boolean {
-  const projectDir = getProjectDir(getOriginalCwd())
+  const projectDir =
+    sessionId === getSessionId()
+      ? dirname(getTranscriptPath())
+      : getProjectDir(getOriginalCwd())
   const sessionFile = join(projectDir, `${sessionId}.jsonl`)
   const fs = getFsImplementation()
   try {
@@ -641,6 +663,8 @@ class Project {
   // object = currently in worktree. reAppendSessionMetadata writes null so
   // --resume knows the session exited (vs. crashed while inside).
   currentSessionWorktree: PersistedWorktreeSession | null | undefined
+  // Directory the transcript last moved to (relocateSessionTranscript).
+  currentSessionRelocatedCwd: string | undefined
   currentSessionPrNumber: number | undefined
   currentSessionPrUrl: string | undefined
   currentSessionPrRepository: string | undefined
@@ -700,6 +724,31 @@ class Project {
       return await fn()
     } finally {
       this.decrementPendingWrites()
+    }
+  }
+
+  /** Points entries still queued for one file at another (the transcript moved). */
+  retargetQueuedWrites(from: string, to: string): void {
+    const queued = this.writeQueues.get(from)
+    if (!queued) return
+    this.writeQueues.delete(from)
+    const existing = this.writeQueues.get(to)
+    this.writeQueues.set(to, existing ? [...existing, ...queued] : queued)
+  }
+
+  /** Records where the transcript moved, at the end of the file it is in now. */
+  stampRelocation(relocatedCwd: string): void {
+    if (this.currentSessionRelocatedCwd === relocatedCwd) return
+    this.currentSessionRelocatedCwd = relocatedCwd
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
+    try {
+      appendEntryToFile(this.sessionFile, {
+        type: 'relocated',
+        sessionId: getSessionId(),
+        relocatedCwd,
+      })
+    } catch (error) {
+      logForDebugging(`relocateSessionTranscript: relocated stamp failed: ${error}`)
     }
   }
 
@@ -882,6 +931,17 @@ class Project {
         }
       }
     }
+    if (this.currentSessionRelocatedCwd === undefined) {
+      const relocatedLine = tailLines.findLast(l =>
+        l.startsWith('{"type":"relocated"'),
+      )
+      if (relocatedLine) {
+        this.currentSessionRelocatedCwd = extractLastJsonStringField(
+          relocatedLine,
+          'relocatedCwd',
+        )
+      }
+    }
     const tagLine = tailLines.findLast(l => l.startsWith('{"type":"tag"'))
     if (tagLine) {
       const tailTag = extractLastJsonStringField(tagLine, 'tag')
@@ -959,11 +1019,20 @@ class Project {
         sessionId,
       })
     }
+    // Not written again while the newest entry of the same type near EOF
+    // already says the same thing (resume adopt + exit would stack copies).
     if (this.currentSessionWorktree !== undefined) {
-      appendEntryToFile(this.sessionFile, {
+      appendUnlessLatestInTail(this.sessionFile, tailLines, {
         type: 'worktree-state',
         worktreeSession: this.currentSessionWorktree,
         sessionId,
+      })
+    }
+    if (this.currentSessionRelocatedCwd !== undefined && tail !== '') {
+      appendUnlessLatestInTail(this.sessionFile, tailLines, {
+        type: 'relocated',
+        sessionId,
+        relocatedCwd: this.currentSessionRelocatedCwd,
       })
     }
     if (
@@ -1359,7 +1428,7 @@ class Project {
     ) {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
-    } else if (entry.type === 'worktree-state') {
+    } else if (entry.type === 'worktree-state' || entry.type === 'relocated') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'session-started-at' || entry.type === 'cost-state') {
       void this.enqueueWrite(sessionFile, entry)
@@ -1705,6 +1774,142 @@ export function adoptResumedSessionFile(): void {
   const project = getProject()
   project.sessionFile = getTranscriptPath()
   project.reAppendSessionMetadata(true)
+}
+
+// Project directories this session's transcript has moved out of. Paths the
+// conversation already holds under <old dir>/<session id>/ (persisted tool
+// results, subagent transcripts) are read from where the files are now.
+const formerSessionProjectDirs = new Set<string>()
+
+/** Maps a path under a former project directory of this session to its new place. */
+export function remapFormerSessionPath(path: string): string {
+  if (formerSessionProjectDirs.size === 0) return path
+  const sessionId = getSessionId()
+  const current = join(dirname(getTranscriptPath()), sessionId) + sep
+  for (const dir of formerSessionProjectDirs) {
+    const former = join(dir, sessionId) + sep
+    if (former !== current && path.startsWith(former)) {
+      return current + path.slice(former.length)
+    }
+  }
+  return path
+}
+
+// rename, or copy and delete when the two paths are on different devices.
+function moveSync(from: string, to: string): void {
+  try {
+    renameSync(from, to)
+  } catch (e) {
+    if (getErrnoCode(e) !== 'EXDEV') throw e
+    cpSync(from, to, { recursive: true, errorOnExist: true, force: false })
+    rmSync(from, { recursive: true, force: true })
+  }
+}
+
+// Keeps whatever already sits at path under a new name; undefined when nothing does.
+function setAsideSync(path: string): string | undefined {
+  const aside = `${path}.superseded-${Date.now()}`
+  try {
+    renameSync(path, aside)
+  } catch (e) {
+    if (isENOENT(e)) return undefined
+    throw e
+  }
+  logForDebugging(`relocateSessionTranscript: existing ${path} set aside at ${aside}`, { level: 'warn' })
+  return aside
+}
+
+function isSameFile(a: string, b: string): boolean {
+  try {
+    const sa = statSync(a)
+    const sb = statSync(b)
+    return sa.dev === sb.dev && sa.ino === sb.ino
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Moves the current session's transcript, with its <session id>/ folder
+ * (subagent transcripts, tool results), to cwd's project directory, and
+ * stamps a `relocated` entry. A session that enters a worktree is resumed
+ * from the worktree's slot; one that leaves it stays resumable from the
+ * directory it was launched in, also once the worktree is removed.
+ *
+ * Safe to run again after an interruption: whatever already sits at the
+ * destination is set aside, not overwritten. On failure the session keeps
+ * writing where its transcript is.
+ */
+export async function relocateSessionTranscript(cwd: string): Promise<void> {
+  const project = getProject()
+  const sessionId = getSessionId()
+  const toDir = getProjectDir(cwd)
+  const to = join(toDir, `${sessionId}.jsonl`)
+  const from = project.sessionFile
+  if (from === null) {
+    // Nothing written yet: the file is created in cwd's project directory.
+    switchSession(sessionId, toDir)
+    project.currentSessionRelocatedCwd = cwd
+    return
+  }
+  if (from === to || isSameFile(from, to)) {
+    project.sessionFile = to
+    switchSession(sessionId, toDir)
+    project.stampRelocation(cwd)
+    return
+  }
+  try {
+    await mkdir(toDir, { recursive: true, mode: 0o700 })
+    await project.flush()
+    // No await from here on: entries appended meanwhile stay queued and are
+    // written to the new file.
+    const setAside = setAsideSync(to)
+    let fileMoved = true
+    try {
+      moveSync(from, to)
+    } catch (e) {
+      if (setAside !== undefined) {
+        try {
+          renameSync(setAside, to)
+        } catch (restoreError) {
+          logError(restoreError)
+        }
+      }
+      if (!isENOENT(e) || setAside !== undefined) throw e
+      logForDebugging(`relocateSessionTranscript: old file missing: ${e}`)
+      fileMoved = false
+    }
+    const fromSessionDir = join(dirname(from), sessionId)
+    const toSessionDir = join(toDir, sessionId)
+    let dirMoved = true
+    try {
+      try {
+        moveSync(fromSessionDir, toSessionDir)
+      } catch (e) {
+        const code = getErrnoCode(e)
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw e
+        setAsideSync(toSessionDir)
+        moveSync(fromSessionDir, toSessionDir)
+      }
+    } catch (e) {
+      dirMoved = false
+      if (!isENOENT(e)) logError(e)
+    }
+    project.retargetQueuedWrites(from, to)
+    project.sessionFile = to
+    switchSession(sessionId, toDir)
+    formerSessionProjectDirs.add(dirname(from))
+    if (fileMoved) project.stampRelocation(cwd)
+    else project.currentSessionRelocatedCwd = cwd
+    if (dirMoved) {
+      const { repointTaskOutputSymlinks } = await import('./task/diskOutput.js')
+      await repointTaskOutputSymlinks(fromSessionDir, toSessionDir).catch(logError)
+    }
+  } catch (e) {
+    // Keep writing where the transcript is, not where originalCwd now points.
+    switchSession(sessionId, dirname(project.sessionFile ?? from))
+    throw e
+  }
 }
 
 /**
@@ -2791,6 +2996,33 @@ function appendEntryToFile(
 }
 
 /**
+ * Append unless the newest entry of the same type within the last half of the
+ * tail window is identical. Readers still find it there, so another copy only
+ * grows the file.
+ */
+function appendUnlessLatestInTail(
+  fullPath: string,
+  tailLines: string[],
+  entry: { type: string } & Record<string, unknown>,
+): void {
+  const prefix = `{"type":"${entry.type}"`
+  let bytes = 0
+  for (let i = tailLines.length - 1; i >= 0; i--) {
+    const line = tailLines[i]!
+    bytes += Buffer.byteLength(line, 'utf8') + 1
+    if (bytes > LITE_READ_BUF_SIZE / 2) break
+    if (!line.startsWith(prefix)) continue
+    try {
+      if (jsonStringify(JSON.parse(line)) === jsonStringify(entry)) return
+    } catch {
+      // Torn line: fall through and write a fresh copy.
+    }
+    break
+  }
+  appendEntryToFile(fullPath, entry)
+}
+
+/**
  * Sync tail read for reAppendSessionMetadata's external-writer check.
  * fstat on the already-open fd (no extra path lookup); reads the same
  * LITE_READ_BUF_SIZE window that readLiteMetadata scans. Returns empty
@@ -2837,6 +3069,11 @@ export async function saveCustomTitle(
   // Cache for current session only (for immediate visibility)
   if (sessionId === getSessionId()) {
     getProject().currentSessionTitle = customTitle
+    enqueueSdkEvent({
+      type: 'system',
+      subtype: 'session_title_changed',
+      title: customTitle,
+    })
   }
   logEvent('tengu_session_renamed', {
     source:
@@ -3019,6 +3256,7 @@ export function clearSessionMetadata(): void {
   project.currentSessionPermissionMode = undefined
   project.currentSessionCodeMode = undefined
   project.currentSessionWorktree = undefined
+  project.currentSessionRelocatedCwd = undefined
   project.currentSessionPrNumber = undefined
   project.currentSessionPrUrl = undefined
   project.currentSessionPrRepository = undefined
@@ -4184,11 +4422,27 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 }> {
+  return loadTranscriptFile(await findSessionFile(sessionId))
+}
+
+/**
+ * The transcript of a session of this project. A session started with
+ * --worktree keeps its transcript under the worktree's project directory, so
+ * when the file is not where this session writes, look in the repository's
+ * other worktrees.
+ */
+async function findSessionFile(sessionId: UUID): Promise<string> {
   const sessionFile = join(
     getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
     `${sessionId}.jsonl`,
   )
-  return loadTranscriptFile(sessionFile)
+  try {
+    await stat(sessionFile)
+    return sessionFile
+  } catch {
+    const found = await resolveSessionFilePath(sessionId, getOriginalCwd())
+    return found?.filePath ?? sessionFile
+  }
 }
 
 /**
@@ -4229,6 +4483,7 @@ export async function doesMessageExistInSession(
 export async function getLastSessionLog(
   sessionId: UUID,
 ): Promise<LogOption | null> {
+  const sessionFile = await findSessionFile(sessionId)
   // Single read: load all session data at once instead of reading the file twice
   const {
     messages,
@@ -4248,7 +4503,7 @@ export async function getLastSessionLog(
     contentReplacements,
     contextCollapseCommits,
     contextCollapseSnapshot,
-  } = await loadSessionFile(sessionId)
+  } = await loadTranscriptFile(sessionFile)
   if (messages.size === 0) return null
   // Prime getSessionMessages cache so recordTranscript (called after REPL
   // mount on --resume) skips a second full file load. -170~227ms on large sessions.
@@ -4281,7 +4536,7 @@ export async function getLastSessionLog(
       customTitle,
       buildFileHistorySnapshotChain(fileHistorySnapshots, transcript),
       tag,
-      getTranscriptPathForSession(sessionId),
+      sessionFile,
       buildAttributionSnapshotChain(attributionSnapshots, transcript),
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
@@ -4716,6 +4971,54 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
     )
     .map(d => d.name.slice('agent-'.length, -'.jsonl'.length))
   return loadSubagentTranscripts(agentIds)
+}
+
+export type RecordedSubagent = {
+  agentId: string
+  agentType?: string
+  description?: string
+  name?: string
+  stoppedByUser: boolean
+  startedAt?: number
+  lastActivityAt?: number
+}
+
+/** The subagents this session has run, oldest first, read from their transcripts on disk. */
+export async function listRecordedSubagents(): Promise<RecordedSubagent[]> {
+  const subagentsDir = join(
+    getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
+    getSessionId(),
+    'subagents',
+  )
+  let entries: Dirent[]
+  try {
+    entries = await readdir(subagentsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const buf = Buffer.alloc(LITE_READ_BUF_SIZE)
+  const recorded: RecordedSubagent[] = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('agent-') || !entry.name.endsWith('.jsonl')) continue
+    const filePath = join(subagentsDir, entry.name)
+    const meta = await readAgentMetadataFile(filePath.replace(/\.jsonl$/, '.meta.json')).catch(() => null)
+    if (meta?.taskKind !== undefined) continue
+    const size = await stat(filePath).then(s => s.size, () => 0)
+    const { head, tail } = await readHeadAndTail(filePath, size, buf)
+    const time = (value: string | undefined) => (value && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : undefined)
+    recorded.push({
+      agentId: entry.name.slice('agent-'.length, -'.jsonl'.length),
+      agentType: meta?.agentType,
+      description: meta?.description,
+      name: meta?.name,
+      stoppedByUser: meta?.stoppedByUser === true,
+      startedAt: time(extractJsonStringField(head, 'timestamp')),
+      lastActivityAt: time(extractLastJsonStringField(tail, 'timestamp')),
+    })
+  }
+  return recorded.sort(
+    (a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.agentId.localeCompare(b.agentId),
+  )
 }
 
 // Exported so useLogMessages can sync-compute the last loggable uuid

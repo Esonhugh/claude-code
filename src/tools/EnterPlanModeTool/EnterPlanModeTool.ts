@@ -14,6 +14,7 @@ import {
   isPlanModeInterviewPhaseEnabled,
   PLAN_MODE_DISABLED_MESSAGE,
 } from '../../utils/planModeV2.js'
+import { isDenyInsteadOfPromptingEnabled } from '../../utils/settings/settings.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from './constants.js'
 import { getEnterPlanModeToolPrompt } from './prompt.js'
 import {
@@ -59,6 +60,7 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
   shouldDefer: true,
   isEnabled() {
     if (!isPlanModeAvailable()) return false
+    if (isDenyInsteadOfPromptingEnabled()) return false
     // When --channels is active, ExitPlanMode is disabled (its approval
     // dialog needs the terminal). Disable entry too so plan mode isn't a
     // trap the model can enter but never leave.

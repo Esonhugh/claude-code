@@ -164,6 +164,20 @@ export function getCurrentWorktreeSession(): WorktreeSession | null {
   return currentWorktreeSession
 }
 
+// The worktree this session created and then kept: the exit hint still names
+// it after the session has left it.
+let resumeHintWorktreeName: string | null = null
+
+/** The worktree the exit hint should pass to --worktree, if any. */
+export function getResumeHintWorktreeName(): string | null {
+  if (currentWorktreeSession) {
+    return currentWorktreeSession.enteredExisting
+      ? null
+      : currentWorktreeSession.worktreeName
+  }
+  return resumeHintWorktreeName
+}
+
 /**
  * Restore the worktree session on --resume. The caller must have already
  * verified the directory exists (via process.chdir) and set the bootstrap
@@ -920,6 +934,7 @@ export async function keepWorktree(): Promise<void> {
     process.chdir(originalCwd)
 
     // Clear the session but keep the worktree intact
+    resumeHintWorktreeName = getResumeHintWorktreeName()
     currentWorktreeSession = null
 
     // Update config
@@ -952,6 +967,7 @@ export async function cleanupWorktree(): Promise<void> {
 
     // Change back to original directory first
     process.chdir(originalCwd)
+    resumeHintWorktreeName = null
 
     if (currentWorktreeSession.enteredExisting) {
       // Not owned by this session: leave the worktree and its branch alone.

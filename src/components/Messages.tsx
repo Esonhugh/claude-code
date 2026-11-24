@@ -884,12 +884,16 @@ const MessagesImpl = ({
   // A second-React-root reconcile approach was tried and ruled out
   // (measured 3.1ms/msg, growing — flushSyncWork processes all roots;
   // component hooks mutate shared state → main root accumulates updates).
-  const searchTextCache = useRef(new WeakMap<RenderableMessage, string>())
+  const showScriptSource = scriptSource?.all === true
+  const searchTextCache = useMemo(
+    () => new WeakMap<RenderableMessage, string>(),
+    [showScriptSource],
+  )
   const extractSearchText = useCallback(
     (msg: RenderableMessage): string => {
-      const cached = searchTextCache.current.get(msg)
+      const cached = searchTextCache.get(msg)
       if (cached !== undefined) return cached
-      let text = renderableSearchText(msg)
+      let text = renderableSearchText(msg, showScriptSource)
       // If this is a tool_result message and the tool implements
       // extractSearchText, prefer that — it's precise (tool-owned)
       // vs renderableSearchText's field-name heuristic.
@@ -916,10 +920,10 @@ const MessagesImpl = ({
       // GC's with messages on transcript exit. Tool methods return raw;
       // renderableSearchText already lowercases (redundant but cheap).
       const lowered = text.toLowerCase()
-      searchTextCache.current.set(msg, lowered)
+      searchTextCache.set(msg, lowered)
       return lowered
     },
-    [tools, lookups],
+    [tools, lookups, searchTextCache, showScriptSource],
   )
 
   return (
@@ -943,8 +947,10 @@ const MessagesImpl = ({
         hiddenMessageCount > 0 &&
         // disableRenderCap (e.g. [ dump-to-scrollback) means we're uncapped
         // as a one-shot escape hatch, not a toggle — ctrl+e is dead and
-        // nothing is actually "hidden" to restore.
-        !disableRenderCap && (
+        // nothing is actually "hidden" to restore. The virtual list never
+        // truncates either; there ctrl+e only reveals Code Mode scripts.
+        !disableRenderCap &&
+        !virtualScrollRuntimeGate && (
           <Divider
             title={`${toggleShowAllShortcut} to hide ${chalk.bold(hiddenMessageCount)} previous messages`}
             width={columns}

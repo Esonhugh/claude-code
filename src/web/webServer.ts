@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { spawn } from 'child_process'
 import { mkdirSync, mkdtempSync, realpathSync, statSync } from 'fs'
+import { rm } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
@@ -18,8 +19,9 @@ import type { ServerLogger } from '../server/serverLog.js'
 import {
   type SessionManager,
   SessionManagerError,
+  type SessionSocket,
 } from '../server/sessionManager.js'
-import { isPathTrusted, savePathTrusted } from '../utils/config.js'
+import { getGlobalConfig, isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { formatPeerAddress } from '../utils/peerProtocol.js'
 import { listAllLiveSessions } from '../utils/udsClient.js'
@@ -61,6 +63,7 @@ import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
+import { serveStdio, STDIO_HOST } from './stdioTransport.js'
 import {
   allowedHosts,
   checkToken,
@@ -100,6 +103,8 @@ export type WebServerConfig = {
   projectsDb?: string
   /** Opens a file or folder with the OS default app; resolves to an error message. Tests pass a fake. */
   openLocal?: (path: string) => Promise<string | undefined>
+  /** Serve over these streams (see `serveStdio`) instead of a port; no sign-in cookie is needed. */
+  stdio?: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream }
 }
 
 type SocketData = { sessionId: string }
@@ -214,6 +219,17 @@ const createProjectBodySchema = lazySchema(() =>
 const patchProjectBodySchema = lazySchema(() => projectFieldsSchema().partial().strict())
 
 /**
+ * The CLI's theme (`/theme`) as the page's light, dark or system: what the page
+ * shows until a theme is picked in its own settings. A custom theme and `auto`
+ * follow the system.
+ */
+export function cliWebTheme(setting: string | undefined): 'system' | 'light' | 'dark' {
+  if (setting?.startsWith('light')) return 'light'
+  if (setting?.startsWith('dark')) return 'dark'
+  return 'system'
+}
+
+/**
  * A project folder as an absolute, normalized real path: `~` is the home
  * folder, anything else must already be absolute. Undefined unless it is a
  * folder.
@@ -237,7 +253,7 @@ const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
 const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -504,7 +520,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme }
  *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
@@ -595,8 +611,10 @@ export function startWebServer(
       return Response.json({ files })
     }
     if (req.method === 'POST' && !pdf) {
-      const length = Number(req.headers.get('content-length'))
-      if (!Number.isFinite(length) || length <= 0) {
+      // An empty file is a valid upload: only a missing or malformed length is refused.
+      const header = req.headers.get('content-length')
+      const length = header === null ? NaN : Number(header)
+      if (!Number.isInteger(length) || length < 0) {
         return errorResponse(411, 'Content-Length required')
       }
       if (length > uploadLimits.fileBytes) {
@@ -841,18 +859,20 @@ export function startWebServer(
   }
 
   /**
-   *   GET    /api/projects                  → projects, newest change first
+   *   GET    /api/projects                  → projects, newest change first; ?archived=1 adds the archived ones
    *   POST   /api/projects                  → create; 409 { needs_trust } for an untrusted folder
    *   PATCH  /api/projects/:id              → name, instructions, worker_model, worker_effort, permission_mode
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   *   POST   /api/projects/:id/unarchive    → the archived project, listed again
    */
   async function handleProjects(req: Request, pathname: string): Promise<Response> {
     if (pathname === '/api/projects') {
       if (req.method === 'GET') {
         const counts = tasks().counts()
-        return Response.json(projects().list().map(p => projectJson(p, counts)))
+        const archived = new URL(req.url).searchParams.get('archived') === '1'
+        return Response.json(projects().list(archived).map(p => projectJson(p, counts)))
       }
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       const parsed = createProjectBodySchema().safeParse(await readJson(req))
@@ -875,6 +895,11 @@ export function startWebServer(
     const match = PROJECT_PATH.exec(pathname)
     const id = match && decodeURIComponent(match[1]!)
     if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
+    if (match![2] === 'unarchive') {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      const restored = projects().unarchive(id)
+      return restored ? Response.json(projectJson(restored)) : errorResponse(404, 'Project not found')
+    }
     const project = projects().get(id)
     if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
     if (match![2] === 'coordinator') {
@@ -1051,6 +1076,8 @@ export function startWebServer(
         version: MACRO.VERSION,
         // The browser runs on this machine, so it may open files there.
         local,
+        // Read each time: `/theme` in a session may have changed it.
+        theme: cliWebTheme(getGlobalConfig().theme),
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
@@ -1218,7 +1245,7 @@ export function startWebServer(
       if (!SESSION_ID.test(id) || typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId)) {
         return errorResponse(400, 'Invalid id')
       }
-      const forkId = await forkSession(id, messageId)
+      const forkId = await forkSession(id, messageId, config.uploadsDir)
       return forkId ? Response.json({ session_id: forkId }) : errorResponse(404, 'Message not found')
     }
     const historyMatch = HISTORY_PATH.exec(pathname)
@@ -1268,6 +1295,8 @@ export function startWebServer(
       if (url.searchParams.get('transcript') === '1') {
         if (!SESSION_ID.test(id)) return errorResponse(400, 'Invalid session id')
         await sessionManager.destroy(id)
+        // Its uploads go too, also for a session that never wrote a transcript.
+        await rm(join(config.uploadsDir, id), { recursive: true, force: true })
         if (!(await deleteTranscript(id))) return errorResponse(404, 'Session not found')
         deleteSessionMeta(db(), id)
         return new Response(null, { status: 204 })
@@ -1280,6 +1309,129 @@ export function startWebServer(
     return errorResponse(404, 'Not found')
   }
 
+  type Srv = {
+    requestIP: (req: Request) => { address: string } | null
+    upgrade: (req: Request, opts: { data: SocketData }) => boolean
+  }
+  const handleRequest = async (req: Request, srv: Srv): Promise<Response | undefined> => {
+    // Before anything else: only loopback and LAN peers are served.
+    const peer = srv.requestIP(req)?.address
+    if (!isAllowedPeer(peer)) {
+      logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
+      return new Response(null, { status: 403 })
+    }
+    const url = new URL(req.url)
+    const { pathname } = url
+    const isApi = pathname === '/api' || pathname.startsWith('/api/')
+    // Same-origin GETs and page loads may omit Origin; anything that can
+    // change state (and every WebSocket handshake) must carry it.
+    const requireOrigin =
+      (req.method !== 'GET' && req.method !== 'HEAD') ||
+      req.headers.get('upgrade')?.toLowerCase() === 'websocket'
+    const reason = untrustedReason(req, hosts, { requireOrigin })
+    if (reason) {
+      logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
+      return withHeaders(errorResponse(403, 'Forbidden'))
+    }
+
+    if (pathname === '/' && url.searchParams.has('token')) {
+      if (!checkToken(config.token, url.searchParams.get('token'))) {
+        logger.warn('rejected an invalid token')
+        return withHeaders(errorResponse(401, 'Invalid token'))
+      }
+      return withHeaders(
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: '/',
+            'Set-Cookie': cookieHeader(
+              signCookie(config.cookieKey),
+              config.tls !== undefined,
+            ),
+          },
+        }),
+      )
+    }
+
+    if (!config.stdio && !verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
+      return withHeaders(
+        isApi
+          ? errorResponse(401, 'Unauthorized')
+          : new Response(
+              'Open the URL printed by `claude web` in the terminal to sign in.\n',
+              {
+                status: 401,
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+              },
+            ),
+      )
+    }
+
+    if (isApi) {
+      let res: Response | undefined
+      try {
+        res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
+      } catch (err) {
+        // A malformed %-escape in a path segment.
+        if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
+        throw err
+      }
+      return res && withHeaders(res)
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return withHeaders(errorResponse(405, 'Method not allowed'))
+    }
+    if (pathname === MODS_FRAME_PATH) {
+      const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+      for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+      res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
+      return res
+    }
+    if (pathname === MCP_APP_FRAME_PATH) {
+      const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+      for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
+      res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
+      return res
+    }
+    const asset = assets.get(pathname) ?? assets.get('/index.html')
+    if (!asset) return withHeaders(errorResponse(404, 'Not found'))
+    return withHeaders(
+      new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
+    )
+  }
+
+  // Without this, Bun answers an uncaught error with its debug page (source lines and paths).
+  const error = (err: Error) => {
+    logger.warn(`request failed: ${err.message}`)
+    return withHeaders(errorResponse(500, 'Internal error'))
+  }
+  const websocket = {
+    open(ws: SessionSocket & { data: SocketData }) {
+      if (!sessionManager.attach(ws.data.sessionId, ws)) {
+        ws.close(1008, 'Session unavailable')
+      }
+    },
+    message(ws: SessionSocket & { data: SocketData }, message: string | Buffer) {
+      sessionManager.write(ws.data.sessionId, message.toString())
+    },
+    close(ws: SessionSocket & { data: SocketData }) {
+      sessionManager.detach(ws.data.sessionId, ws)
+    },
+  }
+
+  if (config.stdio) {
+    hosts = new Set([STDIO_HOST])
+    const stopStdio = serveStdio(config.stdio, { fetch: handleRequest, error, websocket }, logger)
+    logger.info('serving over stdio')
+    return {
+      port: 0,
+      stop: () => {
+        taskStore?.stopLive('restart')
+        stopStdio()
+      },
+    }
+  }
+
   const serve = (hostname: string, port: number) =>
     Bun.serve<SocketData, never>({
       hostname,
@@ -1288,110 +1440,9 @@ export function startWebServer(
         cert: Bun.file(config.tls.cert),
         key: Bun.file(config.tls.key),
       },
-      async fetch(req, srv) {
-        // Before anything else: only loopback and LAN peers are served.
-        const peer = srv.requestIP(req)?.address
-        if (!isAllowedPeer(peer)) {
-          logger.warn(`rejected a connection from ${peer ?? 'an unknown address'}`)
-          return new Response(null, { status: 403 })
-        }
-        const url = new URL(req.url)
-        const { pathname } = url
-        const isApi = pathname === '/api' || pathname.startsWith('/api/')
-        // Same-origin GETs and page loads may omit Origin; anything that can
-        // change state (and every WebSocket handshake) must carry it.
-        const requireOrigin =
-          req.method !== 'GET' ||
-          req.headers.get('upgrade')?.toLowerCase() === 'websocket'
-        const reason = untrustedReason(req, hosts, { requireOrigin })
-        if (reason) {
-          logger.warn(`rejected ${req.method} ${pathname} (untrusted ${reason})`)
-          return withHeaders(errorResponse(403, 'Forbidden'))
-        }
-
-        if (pathname === '/' && url.searchParams.has('token')) {
-          if (!checkToken(config.token, url.searchParams.get('token'))) {
-            logger.warn('rejected an invalid token')
-            return withHeaders(errorResponse(401, 'Invalid token'))
-          }
-          return withHeaders(
-            new Response(null, {
-              status: 302,
-              headers: {
-                Location: '/',
-                'Set-Cookie': cookieHeader(
-                  signCookie(config.cookieKey),
-                  config.tls !== undefined,
-                ),
-              },
-            }),
-          )
-        }
-
-        if (!verifyCookie(config.cookieKey, readCookie(req, COOKIE_NAME))) {
-          return withHeaders(
-            isApi
-              ? errorResponse(401, 'Unauthorized')
-              : new Response(
-                  'Open the URL printed by `claude web` in the terminal to sign in.\n',
-                  {
-                    status: 401,
-                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-                  },
-                ),
-          )
-        }
-
-        if (isApi) {
-          let res: Response | undefined
-          try {
-            res = await handleApi(req, url, srv, addressKind(peer!) === 'loopback')
-          } catch (err) {
-            // A malformed %-escape in a path segment.
-            if (err instanceof URIError) return withHeaders(errorResponse(400, 'Malformed URL'))
-            throw err
-          }
-          return res && withHeaders(res)
-        }
-        if (req.method !== 'GET' && req.method !== 'HEAD') {
-          return withHeaders(errorResponse(405, 'Method not allowed'))
-        }
-        if (pathname === MODS_FRAME_PATH) {
-          const res = new Response(MODS_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
-          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
-          res.headers.set('Content-Security-Policy', MODS_FRAME_CSP)
-          return res
-        }
-        if (pathname === MCP_APP_FRAME_PATH) {
-          const res = new Response(MCP_APP_FRAME_HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
-          for (const [key, value] of Object.entries(SECURITY_HEADERS)) res.headers.set(key, value)
-          res.headers.set('Content-Security-Policy', MCP_APP_FRAME_CSP)
-          return res
-        }
-        const asset = assets.get(pathname) ?? assets.get('/index.html')
-        if (!asset) return withHeaders(errorResponse(404, 'Not found'))
-        return withHeaders(
-          new Response(asset.body as BodyInit, { headers: { 'Content-Type': asset.type } }),
-        )
-      },
-      // Without this, Bun answers an uncaught error with its debug page (source lines and paths).
-      error(err) {
-        logger.warn(`request failed: ${err.message}`)
-        return withHeaders(errorResponse(500, 'Internal error'))
-      },
-      websocket: {
-        open(ws) {
-          if (!sessionManager.attach(ws.data.sessionId, ws)) {
-            ws.close(1008, 'Session unavailable')
-          }
-        },
-        message(ws, message) {
-          sessionManager.write(ws.data.sessionId, message.toString())
-        },
-        close(ws) {
-          sessionManager.detach(ws.data.sessionId, ws)
-        },
-      },
+      fetch: handleRequest,
+      error,
+      websocket,
     })
 
   const servers = listen(config.host, config.port, serve)

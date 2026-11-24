@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import type { Message } from '../../types/message.js'
+import { createRemoteShellTranscript } from '../../ssh/remoteShellTranscript.js'
+import { processTextPrompt } from '../../utils/processUserInput/processTextPrompt.js'
+import type { Message, UserMessage } from '../../types/message.js'
 import { normalizeMessagesForAPI } from '../../utils/messages.js'
 import { buildPostCompactMessages } from './compact.js'
 import {
@@ -47,7 +49,7 @@ describe('codex compact helpers', () => {
   })
 })
 
-function userTextMessage(uuid: string, text: string): Message {
+function userTextMessage(uuid: string, text: string): UserMessage {
   return {
     type: 'user',
     uuid,
@@ -56,7 +58,7 @@ function userTextMessage(uuid: string, text: string): Message {
       role: 'user',
       content: text,
     },
-  } as Message
+  } as UserMessage
 }
 
 function assistantWriteMessage(uuid: string, id: string, content: string): Message {
@@ -194,11 +196,73 @@ describe('selectRetainedMessagesForCodexCompact', () => {
     expect(message.message.content).toBe('look at this')
   })
 
-  test('skips local command rows and their output', () => {
+  test('keeps terminal-looking user text but skips actual shell rows', () => {
+    const output = createRemoteShellTranscript('printf hello', {
+      stdout: 'hello',
+      stderr: '',
+      code: 0,
+      interrupted: false,
+    })
+    const prompts = [
+      '<bash-stdout>hello</bash-stdout> What does this mean?',
+      '<bash-stdout>hello</bash-stdout><bash-stderr></bash-stderr>',
+    ].flatMap(text => processTextPrompt(text, [], [], []).messages)
+
+    const roundTrip = (messages: Message[]): Message[] =>
+      JSON.parse(JSON.stringify(messages))
+    expect(
+      selectRetainedMessagesForCodexCompact(roundTrip([...prompts, ...output]), 1000)
+        .messages,
+    ).toEqual(roundTrip(prompts))
+  })
+
+  test('keeps a legacy prompt with prose after the terminal envelope', () => {
+    const prompt = userTextMessage(
+      '00000000-0000-4000-8000-000000000007',
+      '<bash-stdout>example</bash-stdout> What does this mean?',
+    )
+    expect(selectRetainedMessagesForCodexCompact([prompt], 1000).messages)
+      .toEqual([prompt])
+  })
+
+  test('keeps a legacy prompt between two terminal envelopes', () => {
+    const prompts = [
+      '<bash-stdout>a</bash-stdout> compare with <bash-stdout>b</bash-stdout>',
+      '<bash-input>ls</bash-input> vs <bash-input>pwd</bash-input>',
+      '<local-command-stdout>a</local-command-stdout> why changed to <local-command-stdout>b</local-command-stdout>',
+      '<bash-stdout>a</bash-stdout><bash-stderr></bash-stderr> and <bash-stdout>b</bash-stdout><bash-stderr></bash-stderr>',
+    ].map((text, i) => userTextMessage(`00000000-0000-4000-8000-00000000001${i}`, text))
+    expect(selectRetainedMessagesForCodexCompact(prompts, 1000).messages)
+      .toEqual(prompts)
+  })
+
+  test('skips user text that is only whitespace', () => {
+    const blank = {
+      ...userTextMessage('00000000-0000-4000-8000-000000000020', ''),
+      message: { role: 'user', content: [{ type: 'text', text: '' }, { type: 'text', text: ' ' }] },
+    } as UserMessage
+    expect(selectRetainedMessagesForCodexCompact([blank], 1000)).toEqual({ messages: [], approxTokens: 0 })
+  })
+
+  test('charges one token per one-character reply', () => {
+    const replies = ['a', 'b', 'c'].map((text, i) =>
+      userTextMessage(`00000000-0000-4000-8000-00000000000${i}`, text),
+    )
+
+    expect(selectRetainedMessagesForCodexCompact(replies, 1)).toEqual({
+      messages: [replies[2]!],
+      approxTokens: 1,
+    })
+  })
+
+  test('skips legacy local command rows and their output', () => {
     const result = selectRetainedMessagesForCodexCompact(
       [
         userTextMessage('00000000-0000-4000-8000-000000000001', 'real prompt'),
-        userTextMessage('00000000-0000-4000-8000-000000000002', '<bash-input>cat big.log</bash-input>'),
+        {
+          ...userTextMessage('00000000-0000-4000-8000-000000000002', '<bash-input>cat big.log</bash-input>'),
+          origin: { kind: 'human' },
+        },
         userTextMessage('00000000-0000-4000-8000-000000000003', `<bash-stdout>${'x'.repeat(40_000)}</bash-stdout><bash-stderr></bash-stderr>`),
         userTextMessage('00000000-0000-4000-8000-000000000004', '<local-command-caveat>Caveat: ...</local-command-caveat>'),
         userTextMessage('00000000-0000-4000-8000-000000000005', '<local-command-stdout>Set model to opus</local-command-stdout>'),

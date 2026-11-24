@@ -8,6 +8,9 @@ import {
 import type {
   SDKAssistantMessage,
   SDKCompactBoundaryMessage,
+  SDKInformationalMessage,
+  SDKModelFallbackMessage,
+  SDKModelRefusalNoFallbackMessage,
   SDKMessage,
   SDKRateLimitInfo,
   SDKToolResultMeta,
@@ -18,12 +21,16 @@ import type {
   AssistantMessage,
   CompactMetadata,
   Message,
+  SystemInformationalMessage,
   UserMessage,
 } from 'src/types/message.js'
+import type { HookSystemMessageAttachment } from '../attachments.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import stripAnsi from 'strip-ansi'
-import { createAssistantMessage } from '../messages.js'
+import { logError } from '../log.js'
+import { createAssistantMessage, isCompactBoundaryMessage } from '../messages.js'
 import { getPlan } from '../plans.js'
+import { partiallySanitizeUnicode } from '../sanitization.js'
 
 /**
  * Like official 2.1.311, SDK tool_result_meta for a user message holding one
@@ -114,6 +121,115 @@ export function toInternalMessages(
 }
 
 type SDKCompactMetadata = SDKCompactBoundaryMessage['compact_metadata']
+
+/**
+ * Like official 2.1.329, an informational line of the conversation is sent to
+ * SDK hosts as system/informational; the switch to the fallback model has its
+ * own subtype.
+ */
+export function toSDKSystemNotice(
+  message: SystemInformationalMessage,
+): SDKInformationalMessage | SDKModelFallbackMessage | SDKModelRefusalNoFallbackMessage {
+  const base = { uuid: message.uuid, session_id: getSessionId() }
+  const refusal = message.modelRefusalNoFallback
+  if (refusal) {
+    return {
+      type: 'system' as const,
+      subtype: 'model_refusal_no_fallback' as const,
+      original_model: refusal.originalModel,
+      request_id: refusal.requestId,
+      api_refusal_category: refusal.category,
+      api_refusal_explanation: refusal.explanation,
+      ...(refusal.refusedUserMessageUuid && { refused_user_message_uuid: refusal.refusedUserMessageUuid }),
+      content: '',
+      ...base,
+    }
+  }
+  if (message.modelFallback) {
+    return {
+      type: 'system' as const,
+      subtype: 'model_fallback' as const,
+      trigger: message.modelFallback.trigger,
+      original_model: message.modelFallback.originalModel,
+      fallback_model: message.modelFallback.fallbackModel,
+      content: message.content,
+      ...base,
+    }
+  }
+  const ending = message.promptSubmitEnding
+  return {
+    type: 'system' as const,
+    subtype: 'informational' as const,
+    content: stripAnsi(message.content ?? ''),
+    level: message.level,
+    ...(message.toolUseID && { tool_use_id: message.toolUseID }),
+    ...(message.preventContinuation && { prevent_continuation: true }),
+    ...(ending && {
+      prompt_submit_outcome: {
+        kind: ending.ending.kind,
+        prompt_kept: ending.promptKept,
+        ...(ending.ending.reason !== undefined && { reason: ending.ending.reason }),
+      },
+    }),
+    ...base,
+  }
+}
+
+// Like official 2.1.329, each line loses ANSI codes and invisible characters,
+// and any other control character becomes a space.
+function hookNoticeLines(text: string): string[] {
+  return text
+    .replace(/\r\n?|[\v\f\u0085\u2028\u2029]/g, '\n')
+    .split('\n')
+    .map(line =>
+      partiallySanitizeUnicode(stripAnsi(line)).replace(
+        /[\p{Cc}\p{Cf}\u2028\u2029]+/gu,
+        ' ',
+      ),
+    )
+}
+
+export function hookSystemMessageToSDK(
+  attachment: HookSystemMessageAttachment,
+  uuid: UUID,
+): SDKInformationalMessage {
+  const prefix = `${hookNoticeLines(attachment.hookName).join(' ')} says: `
+  return {
+    type: 'system' as const,
+    subtype: 'informational' as const,
+    content: hookNoticeLines(attachment.content)
+      .map(line => prefix + line)
+      .join('\n'),
+    level: 'notice' as const,
+    uuid,
+    session_id: getSessionId(),
+  }
+}
+
+/**
+ * Like official 2.1.329, the notices for the hook messages among a prompt's
+ * own messages (a UserPromptSubmit hook's systemMessage), sent after
+ * system/init. Messages a compaction kept from before are not sent again.
+ */
+export function hookSystemMessagesToSDK(
+  messages: readonly Message[],
+): SDKInformationalMessage[] {
+  try {
+    const kept = messages.find(isCompactBoundaryMessage)?.compactMetadata
+      ?.preservedMessages
+    const old = new Set<string>(kept?.uuids ?? [])
+    return messages.flatMap(message =>
+      message.type === 'attachment' &&
+      message.attachment.type === 'hook_system_message' &&
+      !old.has(message.uuid)
+        ? [hookSystemMessageToSDK(message.attachment, message.uuid)]
+        : [],
+    )
+  } catch (error) {
+    logError(error)
+    return []
+  }
+}
 
 export function toSDKCompactMetadata(
   meta: CompactMetadata,

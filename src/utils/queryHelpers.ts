@@ -22,8 +22,13 @@ import {
 } from '../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { isGoalStatusAttachment } from '../commands/goal/types.js'
-import type { Message, UserMessage } from '../types/message.js'
+import type {
+  AssistantMessage,
+  Message,
+  UserMessage,
+} from '../types/message.js'
 import type { OrphanedPermission } from '../types/textInputTypes.js'
+import type { DeferredToolMarker } from './attachments.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
@@ -114,6 +119,23 @@ function withToolResultMeta(
   return meta.length > 0 ? { tool_result_meta: meta } : {}
 }
 
+/** What official 2.1.329 adds to the assistant row of an API error. */
+function apiErrorFields(message: AssistantMessage) {
+  return {
+    ...(message.isApiErrorMessage === true && { is_api_error_message: true as const }),
+    ...(message.apiErrorStatus !== undefined && { api_error_status: message.apiErrorStatus }),
+    ...(message.apiErrorCode !== undefined && { api_error_code: message.apiErrorCode }),
+    ...(message.apiErrorType !== undefined && { api_error_type: message.apiErrorType }),
+    ...(message.refusedMessageId !== undefined && { refused_message_id: message.refusedMessageId }),
+  }
+}
+
+/** Official 2.1.329 sends thinking_display only on a frame whose one block is that thinking block. */
+function thinkingDisplayFields(message: AssistantMessage, content: readonly { type: string }[]) {
+  if (message.message.content.length !== 1 || content.length !== 1 || content[0]?.type !== 'thinking') return {}
+  return typeof message.thinkingDisplay === 'string' ? { thinking_display: message.thinkingDisplay } : {}
+}
+
 /**
  * SDK messages for one message of a subagent, tagged with the Agent tool_use
  * that spawned it (parent_tool_use_id).
@@ -151,6 +173,7 @@ export function* normalizeSubagentMessage(
           timestamp: _.timestamp,
           // @ts-ignore - recovered code
           error: _.error,
+          ...apiErrorFields(message as AssistantMessage),
         }
         break
       case 'user':
@@ -167,6 +190,8 @@ export function* normalizeSubagentMessage(
           timestamp: _.timestamp,
           // @ts-ignore - recovered code
           isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
+          // @ts-ignore - recovered code
+          ...(_.refusedMessageId && { refused_message_id: _.refusedMessageId }),
           // @ts-ignore - recovered code
           tool_use_result: _.mcpMeta
             // @ts-ignore - recovered code
@@ -198,6 +223,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           error: _.error,
           timestamp: _.timestamp,
           ...(_.requestId !== undefined && { request_id: _.requestId }),
+          ...apiErrorFields(message),
+          ...thinkingDisplayFields(message, _.message.content),
         }
       }
       return
@@ -284,6 +311,8 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
           uuid: _.uuid,
           timestamp: _.timestamp,
           isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
+          // @ts-ignore - recovered code
+          ...(_.refusedMessageId && { refused_message_id: _.refusedMessageId }),
           tool_use_result: _.mcpMeta
             ? { content: _.toolUseResult, ..._.mcpMeta }
             : _.toolUseResult,
@@ -414,6 +443,66 @@ export async function* handleOrphanedPermission(
       } as SDKMessage
 
       yield sdkMessage
+    }
+  }
+}
+
+/**
+ * Runs the call a PreToolUse hook deferred, with its original tool_use id, so
+ * the hook is asked again. Yields a new hook_deferred_tool attachment when the
+ * hook defers it once more.
+ */
+export async function* handleDeferredToolResume(
+  deferredToolUse: DeferredToolMarker,
+  canUseTool: CanUseToolFn,
+  mutableMessages: Message[],
+  processUserInputContext: ProcessUserInputContext,
+): AsyncGenerator<SDKMessage, void, unknown> {
+  const persistSession = !isSessionPersistenceDisabled()
+  const { toolUseID, toolName } = deferredToolUse
+  const mode =
+    processUserInputContext.getAppState().toolPermissionContext.mode
+  if (mode !== deferredToolUse.permissionMode) {
+    logForDebugging(
+      `Deferred tool resume: permissionMode mismatch (deferred under '${deferredToolUse.permissionMode}', resuming under '${mode}'). --resume does not restore permissionMode — pass --permission-mode ${deferredToolUse.permissionMode} to match.`,
+      { level: 'warn' },
+    )
+  }
+  const assistantMessage = mutableMessages.findLast(
+    (m): m is AssistantMessage =>
+      m.type === 'assistant' &&
+      Array.isArray(m.message.content) &&
+      m.message.content.some(b => b.type === 'tool_use' && b.id === toolUseID),
+  )
+  const toolUseBlock = assistantMessage?.message.content.find(
+    b => b.type === 'tool_use' && b.id === toolUseID,
+  ) as unknown as ToolUseBlock | undefined
+  if (!assistantMessage || !toolUseBlock) {
+    logForDebugging(
+      `Deferred tool resume: tool_use ${toolUseID} not found in transcript`,
+      { level: 'warn' },
+    )
+    return
+  }
+  logForDebugging(
+    `Deferred tool resume: re-emitting ${toolName} (${toolUseID}) through PreToolUse`,
+  )
+  for await (const update of runTools(
+    [toolUseBlock],
+    [assistantMessage],
+    canUseTool,
+    processUserInputContext,
+  )) {
+    if (update.message) {
+      mutableMessages.push(update.message)
+      if (persistSession) {
+        await recordTranscript(mutableMessages)
+      }
+      yield {
+        ...update.message,
+        session_id: getSessionId(),
+        parent_tool_use_id: null,
+      } as SDKMessage
     }
   }
 }

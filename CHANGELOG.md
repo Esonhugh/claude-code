@@ -12,6 +12,31 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-22 - 桌面应用（Electron，实验性）
+
+### 变更内容
+
+#### 新功能
+
+- 新增 `desktop/` 子项目：用 Electron 和 electron-builder 把 claude web 打包成 Windows（NSIS）、macOS（dmg、zip）和 Linux（AppImage、deb）桌面应用。应用内带一份 `claude` binary，启动时运行 `claude web --stdio`，窗口里就是 claude web 的界面。安装包未签名，macOS 首次打开需要右键选“打开”。用法见 `desktop/README.md`。
+- 新增隐藏参数 `claude web --stdio`：不监听端口，HTTP 请求和会话 WebSocket 以 JSON 行的形式走 stdin/stdout，stdin 关闭时退出。只有启动它的进程能通过管道访问，因此不检查登录 cookie，Host 和 Origin 仍然检查；不写 `server.json`，也不检查是否已有 claude web 在运行。
+- 网页界面在桌面应用里通过 preload 暴露的 `window.claudeDesktop` 打开会话连接，在浏览器里仍用 WebSocket。Chromium 转给自定义协议的请求不带 Origin，应用按发起请求的 frame 补上：页面自己的 fetch 带 `claude-app://app`，预览页面等其他 frame 带它们自己的 Origin，表单提交等导航不带，服务端照常拒绝后两种的写请求。
+- 桌面应用的原生外观（标题栏、菜单、滚动条）跟随网页界面的浅深色设置：页面载入和切换时调用 preload 的 `window.claudeDesktop.setTheme(mode)`（`system`、`light`、`dark`，其他值忽略），应用只接受 `claude-app://app` 主框架的调用，设置 `nativeTheme.themeSource` 并存入 userData 的 `appearance.json`，启动时在建窗口前读回，文件缺失或损坏时按 `system`。窗口背景色按当前深浅色取 clay 配色的背景（浅色 `#faf9f5`、深色 `#1f1d1a`），页面载入前不再闪白。
+- 根目录 Makefile 新增桌面应用的构建命令：`make desktop` 先 `make build` 再用 electron-builder 打出本平台的安装包（`desktop/release/`）；`make desktop-package` 用已构建的 binary 打包，`make desktop-start`、`make desktop-test`、`make desktop-e2e`（Linux 无显示时用 xvfb-run）分别启动、测试和端到端检查，`make clean-desktop` 删除 `desktop/sidecar/` 与 `desktop/release/`。默认用 `./built-claude`，`DESKTOP_SIDECAR` 可指定其他 binary。
+- 桌面应用有了自己的图标：陶土色（`#e28b6b`→`#c8623f`）圆角方块上的米白像素蟹，与网页侧边栏的 Clawd 同形。`desktop/build/icon.png`（1024×1024，源文件 `icon.svg`）由 electron-builder 生成 macOS 的 `icon.icns` 与 Windows 的 `.ico`，Linux 直接使用 PNG。
+
+#### CI
+
+- 新增 `.github/workflows/desktop.yml`：手动触发，或 PR 改动 `desktop/**` 时运行；在 Linux x64、Linux arm64、macOS、Windows 上构建 binary、跑 `desktop/` 的测试、用 electron-builder 打包，安装包作为 artifact 上传，不创建 Release。
+
+### 测试覆盖
+
+- `src/web/webServer.test.ts` 新增 `claude web over stdio`：页面不需要 cookie、非帧输出被忽略、`/api/info` 返回 `local: true`；错误的 Host、缺少或外来的 Origin 返回 403；外来 Origin 的会话连接被拒绝，同一会话的第二个连接被拒绝，应用关闭连接后可以重新连接。
+- `desktop/sidecar.test.js` 用真实的 `stdioTransport` 跑一个假服务端：帧前缀和 Host 与服务端一致；请求、请求体、查询串和 204 响应的转发；页面 Origin 换成服务端的 Origin，其他 Origin 原样转发；会话连接双向收发和两端关闭；停止时关闭管道，未完成的连接以 1006 关闭，之后的请求失败。
+- `desktop/theme.test.js`：读回保存的主题，文件缺失、损坏或值不合法时为 `system`；写入后能读回且不留下临时文件；只接受页面的三种模式；背景色与页面一致。
+- `desktop/e2e.mjs`（`bun run e2e`，`desktop.yml` 在四个平台上运行，Linux 用 xvfb）：用临时配置目录打开应用，检查页面渲染、页面能新建会话、会话连接能打开和关闭；Mod 的 Client 在 `/mods-frame` 的 Worker 里运行并画出内容；MCP App 在 `/mcp-app-frame` 里以 opaque origin 运行；控制台没有报错；Claude 登录按 `Account.tsx` 的方式先开空白窗口再指向登录页，登录页交给系统浏览器且不留下窗口，格式错误的授权码返回 400，取消返回 204，取消后提交返回 409；MCP 服务登录（`about:blank`）和 MCP App 的 noopener 链接交给系统浏览器；MCP App 读不到应用 API、父页面和 `window.claudeDesktop`；本地预览页面发出的 no-cors fetch 和表单 POST 被服务端拒绝；页面调用 `setTheme('dark')` 后 `nativeTheme` 变为深色并保存，不合法的值被忽略，`setTheme('system')` 后恢复。
+- macOS 上手动验证（Electron 45.4.1，`make build` 的 binary）：页面加载，控制台没有 CSP 报错；新建会话发消息收到回复；sidecar 不监听任何 TCP 端口；从预览 iframe 发出的 no-cors fetch 和表单 POST 被服务端以 403 拒绝。Claude 登录进行中，sidecar 为 OAuth 回调监听 `localhost` 上的一个临时端口（与命令行 `/login` 相同），取消后关闭。
+
 ## 2026-11-19 - v2.1.298 - Code Mode 与 Advisor（实验性）、客户端版本号可配置、OpenAI ultra effort 原样发送、拒绝规则对符号链接本身生效、Codex 式压缩只保留用户消息、启动输入卡顿与长历史 /clear 修复
 
 ### 版本状态

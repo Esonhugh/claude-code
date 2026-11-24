@@ -13,7 +13,13 @@
 import type { DOMElement } from './dom.js'
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { CellWidth, cellAt, cellAtIndex, setCellStyleId } from './screen.js'
+import {
+  CellWidth,
+  cellAt,
+  cellAtIndex,
+  setCellStyleId,
+  SW_ELIDED_SEP,
+} from './screen.js'
 
 type Point = { col: number; row: number }
 
@@ -654,18 +660,21 @@ export function isCellSelected(
 /** Extract text from one screen row. When the next row is a soft-wrap
  *  continuation (screen.softWrap[row+1]>0), clamp to that content-end
  *  column and skip the trailing trim so the word-separator space survives
- *  the join. See Screen.softWrap for why the clamp is necessary. */
+ *  the join. See Screen.softWrap for why the clamp is necessary.
+ *  joinsPrevious puts back the separator space a continuation row lost. */
 function extractRowText(
   screen: Screen,
   row: number,
   colStart: number,
   colEnd: number,
+  joinsPrevious: boolean,
 ): string {
   const noSelect = screen.noSelect
   const rowOff = row * screen.width
-  const contentEnd = row + 1 < screen.height ? screen.softWrap[row + 1]! : 0
+  const contentEnd =
+    row + 1 < screen.height ? screen.softWrap[row + 1]! & ~SW_ELIDED_SEP : 0
   const lastCol = contentEnd > 0 ? Math.min(colEnd, contentEnd - 1) : colEnd
-  let line = ''
+  let line = joinsPrevious && screen.softWrap[row]! & SW_ELIDED_SEP ? ' ' : ''
   for (let col = colStart; col <= lastCol; col++) {
     // Skip cells marked noSelect (gutters, line numbers, diff sigils).
     // Check before cellAt to avoid the decode cost for excluded cells.
@@ -728,7 +737,11 @@ export function getSelectedText(s: SelectionState, screen: Screen): string {
     const rowStart =
       row === start.row ? Math.max(start.col, edges.lo) : edges.lo
     const rowEnd = row === end.row ? Math.min(end.col, edges.hi) : edges.hi
-    joinRows(lines, extractRowText(screen, row, rowStart, rowEnd), sw[row]! > 0)
+    joinRows(
+      lines,
+      extractRowText(screen, row, rowStart, rowEnd, lines.length > 0),
+      sw[row]! > 0,
+    )
   }
 
   for (let i = 0; i < s.scrolledOffBelow.length; i++) {
@@ -779,7 +792,15 @@ export function captureScrolledRows(
     const colStart =
       row === start.row ? Math.max(start.col, edges.lo) : edges.lo
     const colEnd = row === end.row ? Math.min(end.col, edges.hi) : edges.hi
-    captured.push(extractRowText(screen, row, colStart, colEnd))
+    captured.push(
+      extractRowText(
+        screen,
+        row,
+        colStart,
+        colEnd,
+        row > start.row || s.scrolledOffAbove.length > 0,
+      ),
+    )
     capturedSW.push(sw[row]! > 0)
   }
 

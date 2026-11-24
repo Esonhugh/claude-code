@@ -302,6 +302,7 @@ async function executeForkedSlashCommand(
       }),
     }),
     createUserMessage({
+      isTerminalCommand: true,
       content: `<local-command-stdout>\n${resultText}\n</local-command-stdout>`,
     }),
   ]
@@ -372,6 +373,7 @@ function headlessCommandReply(
         }),
       }),
       createUserMessage({
+        isTerminalCommand: true,
         content: `<local-command-stdout>${text}</local-command-stdout>`,
       }),
     ],
@@ -972,9 +974,11 @@ async function getMessagesForSlashCommand(
                       })),
                       result
                         ? createUserMessage({
+                            isTerminalCommand: true,
                             content: `<local-command-stdout>${result}</local-command-stdout>`,
                           })
                         : createUserMessage({
+                            isTerminalCommand: true,
                             content: `<local-command-stdout>${NO_CONTENT_MESSAGE}</local-command-stdout>`,
                           }),
                       ...metaMessages,
@@ -1066,7 +1070,7 @@ async function getMessagesForSlashCommand(
         try {
           const syntheticCaveatMessage = createSyntheticUserCaveatMessage()
           const mod = await command.load()
-          const result = await mod.call(args, context)
+          const result = await mod.call(args, { ...context, commandMessageUuid: uuid ?? userMessage.uuid })
 
           if (result.type === 'skip') {
             return {
@@ -1086,6 +1090,7 @@ async function getMessagesForSlashCommand(
               ...(result.displayText
                 ? [
                     createUserMessage({
+                      isTerminalCommand: true,
                       content: `<local-command-stdout>${result.displayText}</local-command-stdout>`,
                       // --resume looks at latest timestamp message to determine which message to resume from
                       // This is a perf optimization to avoid having to recaculcate the leaf node every time
@@ -1285,6 +1290,7 @@ async function getMessagesForSlashCommand(
                 }),
               }),
               createUserMessage({
+                isTerminalCommand: true,
                 // 2.1.311 shows a malformed command's message as is, without "Error: ".
                 content: `<local-command-stderr>${e instanceof MalformedCommandError ? e.message : String(e)}</local-command-stderr>`,
               }),

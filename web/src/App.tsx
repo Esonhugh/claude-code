@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
+  deleteTranscript,
   forkSession,
   getInfo,
   getSettings as getWebSettings,
@@ -30,7 +31,7 @@ import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
-import { AppDialog, type Palette, type Theme } from './components/Dialogs'
+import { AppDialog, type Motion, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
 import { canvasTabMods, closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
@@ -88,7 +89,10 @@ const COMMANDS_KEY = 'claude-web-commands'
 const COLUMNS_KEY = 'claude-web-columns'
 const ENV_KEY = 'claude-web-env'
 const THEME_KEY = 'claude-web-theme'
+// The CLI's theme as last seen, the page's theme until one is picked in settings (also read by public/theme-init.js).
+const CLI_THEME_KEY = 'claude-web-cli-theme'
 const PALETTE_KEY = 'claude-web-palette'
+const MOTION_KEY = 'claude-web-motion'
 const DEFAULT_UI_NAME = 'EsonClaw'
 const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
 const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -176,8 +180,9 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, readStored<Theme>(CLI_THEME_KEY, 'system')))
   const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
+  const [motion, setMotionState] = useState<Motion>(() => readStored(MOTION_KEY, 'system'))
   const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
   const setColumns = (next: Columns) => {
     setColumnsState(next)
@@ -209,6 +214,7 @@ export function App() {
   const [keyDialog, setKeyDialog] = useState<AuthProvider>()
   const [webSettings, setWebSettings] = useState<WebSettings>()
   const [projects, setProjects] = useState<Project[]>([])
+  const [archivedProjects, setArchivedProjects] = useState<Project[]>([])
   const projectsRef = useRef(projects)
   projectsRef.current = projects
   // The project shown in place of the chat; its coordinator is `state.view`.
@@ -246,6 +252,10 @@ export function App() {
   const setPalette = (next: Palette) => {
     setPaletteState(next)
     writeStored(PALETTE_KEY, next)
+  }
+  const setMotion = (next: Motion) => {
+    setMotionState(next)
+    writeStored(MOTION_KEY, next)
   }
 
   const chat: SessionChat | undefined = state.view ? state.chats[state.view] : undefined
@@ -477,10 +487,15 @@ export function App() {
   const historyLimit = useRef(HISTORY_PAGE)
   const [sidebarLoaded, setSidebarLoaded] = useState(false)
   const untitledRetries = useRef({ ids: '', count: 0 })
+  // Bumped by each sidebar change made here (archive, pin, delete…): a listing
+  // read before one would put the row back as it was, so it is read again.
+  const sidebarEdits = useRef(0)
   const refreshHistory = useCallback(async (more = false) => {
     if (more) historyLimit.current += HISTORY_PAGE
     try {
+      const edits = sidebarEdits.current
       const [data, running] = await Promise.all([loadSidebar(historyLimit.current), listRunning()])
+      if (edits !== sidebarEdits.current) return void refreshHistory()
       dispatch({ type: 'history', entries: data.sessions, folders: data.folders, more: data.more })
       dispatch({ type: 'running', ids: running.map(r => r.id) })
       // A running session listed by its id has no turn in its transcript yet. A page that is not
@@ -497,7 +512,9 @@ export function App() {
       if (untitled && untitledRetries.current.count < 5) {
         setTimeout(() => void refreshHistory(), 500 * 2 ** untitledRetries.current.count++)
       }
-      setProjects(await listProjects())
+      const all = await listProjects()
+      setProjects(all.filter(p => !p.archived_at))
+      setArchivedProjects(all.filter(p => p.archived_at))
       setSidebarLoaded(true)
     } catch {
       // The sidebar keeps what it has; the next refresh retries.
@@ -513,7 +530,14 @@ export function App() {
     else root.dataset.theme = theme
     if (palette === 'default') delete root.dataset.palette
     else root.dataset.palette = palette
-  }, [theme, palette])
+    if (motion === 'reduce') root.dataset.motion = motion
+    else delete root.dataset.motion
+  }, [theme, palette, motion])
+  useEffect(() => {
+    // In the desktop app, its window's native appearance (title bar, menus, scroll bars) follows.
+    const desktop = (window as { claudeDesktop?: { setTheme?: (mode: Theme) => void } }).claudeDesktop
+    desktop?.setTheme?.(theme)
+  }, [theme])
   useEffect(() => {
     document.title = uiName
   }, [uiName])
@@ -529,6 +553,10 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
+        if (res.theme) {
+          writeStored(CLI_THEME_KEY, res.theme)
+          if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
+        }
         setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
       },
       () => {},
@@ -1261,6 +1289,9 @@ export function App() {
       if (createdId && stateRef.current.chats[createdId]?.mode === 'connecting') {
         dispatch({ type: 'mode', id: createdId, mode: 'readonly' })
       }
+      // Its files could not be prepared, so the session never reached the page: stop it,
+      // or it keeps running where nothing lists it.
+      if (createdId && !stateRef.current.chats[createdId]) void deleteTranscript(createdId).catch(() => {})
     }
   }
 
@@ -2143,8 +2174,12 @@ export function App() {
           setSidebarOpen(false)
           void openSession(entry)
         }}
-        onPatched={(id, patch) => dispatch({ type: 'meta', id, patch })}
+        onPatched={(id, patch) => {
+          sidebarEdits.current++
+          dispatch({ type: 'meta', id, patch })
+        }}
         onDeleted={id => {
+          sidebarEdits.current++
           sockets.current.get(id)?.close()
           sockets.current.delete(id)
           dispatch({ type: 'removed', id })
@@ -2165,6 +2200,11 @@ export function App() {
         onProjectSettings={p => {
           setSidebarOpen(false)
           setProjectDialog(p)
+        }}
+        archivedProjects={archivedProjects}
+        onProjectRestored={restored => {
+          setArchivedProjects(list => list.filter(x => x.id !== restored.id))
+          setProjects(list => [restored, ...list])
         }}
         onProjectChanged={(id, changed) => {
           setProjects(list => (changed ? list.map(x => (x.id === id ? changed : x)) : list.filter(x => x.id !== id)))
@@ -2371,6 +2411,8 @@ export function App() {
             setTheme,
             palette,
             setPalette,
+            motion,
+            setMotion,
             initialTab: settingsTab,
             workspace: info.workspace,
             settings: webSettings,

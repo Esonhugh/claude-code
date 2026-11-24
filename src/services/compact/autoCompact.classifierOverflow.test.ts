@@ -20,6 +20,7 @@ import { getDefaultAppState } from '../../state/AppStateStore.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
 
 const restores: (() => void)[] = []
+let cleanedUp: ReturnType<typeof spyOn<typeof cleanup, 'runPostCompactCleanup'>>
 const savedDisableCompact = process.env.DISABLE_COMPACT
 
 beforeEach(() => {
@@ -29,7 +30,7 @@ beforeEach(() => {
     spyOn(config, 'getGlobalConfig').mockReturnValue({ autoCompactEnabled: true } as never),
     // Far below the autocompact threshold: only the classifier request can trigger it.
     spyOn(tokens, 'tokenCountWithEstimation').mockReturnValue(1000),
-    spyOn(cleanup, 'runPostCompactCleanup').mockImplementation(() => {}),
+    (cleanedUp = spyOn(cleanup, 'runPostCompactCleanup').mockImplementation(() => {})),
     spyOn(memory, 'trySessionMemoryCompaction').mockResolvedValue(null),
     spyOn(compact, 'compactConversation').mockImplementation(async () => ({
       boundaryMarker: createCompactBoundaryMessage('auto', 1000),
@@ -96,4 +97,11 @@ test('an overflow on a transcript head that was already compacted falls back ins
 test('DISABLE_COMPACT keeps the old fallback', () => {
   process.env.DISABLE_COMPACT = '1'
   expect(requestClassifierOverflowCompaction(undefined, context().messages, 'Bash')).toBe(false)
+})
+
+test('a backgrounded main session cleans up after compacting as itself', async () => {
+  const ctx = { ...context(), agentId: 'background-task' } as ToolUseContext
+  const forced = await autoCompactIfNeeded(ctx.messages, ctx, params(ctx), 'repl_main_thread', undefined, undefined, undefined, true)
+  expect(forced.wasCompacted).toBe(true)
+  expect(cleanedUp).toHaveBeenCalledWith('repl_main_thread', 'background-task')
 })

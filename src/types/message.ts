@@ -78,6 +78,8 @@ export interface StreamEvent {
   retryAttempt?: number
   maxRetries?: number
   retryInMs?: number
+  thinkingDisplay?: string
+  requestSentAtMs?: number
   [key: string]: unknown
 }
 
@@ -131,6 +133,8 @@ export interface UserMessage {
   type: 'user'
   uuid: UUID
   timestamp: string
+  /** On the note that follows a refused response: the id of that API message. */
+  refusedMessageId?: string
   message: {
     role: 'user'
     content: string | ContentBlockParam[]
@@ -164,6 +168,8 @@ export interface UserMessage {
   imagePasteIds?: number[]
   sourceToolAssistantUUID?: UUID
   permissionMode?: unknown
+  /** True for terminal transcript rows, false for submitted text; absent on legacy rows. */
+  isTerminalCommand?: boolean
   origin?: MessageOrigin
   planContent?: string
 }
@@ -172,6 +178,10 @@ export interface AssistantMessage {
   type: 'assistant'
   uuid: UUID
   timestamp: string
+  /** On a refusal error: the id of the API message the safety classifier stopped. */
+  refusedMessageId?: string
+  /** On a refusal error: the model whose response was stopped. */
+  refusingModel?: string
   message: {
     id: string
     role: 'assistant'
@@ -198,6 +208,9 @@ export interface AssistantMessage {
   isVirtual?: boolean
   isApiErrorMessage?: boolean
   apiErrorStatus?: number
+  /** The API error body's `error.type` and `error.details.error_code`. */
+  apiErrorType?: string
+  apiErrorCode?: string
   apiError?: {
     status: number
     type: string
@@ -210,6 +223,8 @@ export interface AssistantMessage {
   advisorModel?: string
   /** Model the request named; responses may report a different id. */
   requestedModel?: string
+  /** On a streamed thinking block: the thinking.display the request body had. */
+  thinkingDisplay?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +276,23 @@ export interface SystemCompactBoundaryMessage extends SystemBase {
 
 export interface SystemInformationalMessage extends SystemBase {
   subtype: 'informational'
+  toolUseID?: string
+  preventContinuation?: boolean
+  /** Set on the line that reports a switch to the fallback model. */
+  modelFallback?: { trigger: 'overloaded' | 'server_error' | 'model_not_found' | 'last_resort'; originalModel: string; fallbackModel: string }
+  /** Set on the contentless line that precedes a refusal no model is tried after. */
+  modelRefusalNoFallback?: {
+    originalModel: string
+    requestId: string | null
+    category: string | null
+    explanation: string | null
+    refusedUserMessageUuid?: string
+  }
+  /** Set on the line that reports how a UserPromptSubmit hook ended the prompt. */
+  promptSubmitEnding?: {
+    ending: { kind: 'blocked_by_hook'; reason?: string }
+    promptKept: boolean
+  }
   [key: string]: any
 }
 
@@ -433,6 +465,9 @@ export interface NormalizedAssistantMessage<T = BetaContentBlock> {
   isVirtual?: boolean
   isApiErrorMessage?: boolean
   apiErrorStatus?: number
+  /** The API error body's `error.type` and `error.details.error_code`. */
+  apiErrorType?: string
+  apiErrorCode?: string
   apiError?: {
     status: number
     type: string

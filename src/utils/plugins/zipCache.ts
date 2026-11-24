@@ -175,6 +175,7 @@ export function resetSessionPluginCache(): void {
 export async function atomicWriteToZipCache(
   targetPath: string,
   data: string | Uint8Array,
+  mode?: number,
 ): Promise<void> {
   const dir = dirname(targetPath)
   await getFsImplementation().mkdir(dir)
@@ -184,9 +185,9 @@ export async function atomicWriteToZipCache(
 
   try {
     if (typeof data === 'string') {
-      await writeFile(tmpPath, data, { encoding: 'utf-8' })
+      await writeFile(tmpPath, data, { encoding: 'utf-8', mode })
     } else {
-      await writeFile(tmpPath, data)
+      await writeFile(tmpPath, data, { mode })
     }
     await rename(tmpPath, targetPath)
   } catch (error) {

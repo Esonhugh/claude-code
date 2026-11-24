@@ -48,3 +48,36 @@ test('UserPromptSubmit and UserPromptExpansion share a fresh prompt_id for a sla
   expect(ids.submit).not.toBe('previous-prompt')
   expect(ids.expansion).toBe(ids.submit)
 })
+
+// Official 2.1.329: the result names the prompt that was dropped, and the line
+// carries the outcome SDK hosts read as prompt_submit_outcome.
+test('a prompt blocked by a UserPromptSubmit hook reports the prompt and the outcome', async () => {
+  registerHookCallbacks({
+    UserPromptSubmit: [{ matcher: '', hooks: [{ type: 'callback' as const, callback: async () => ({ decision: 'block', reason: 'UPS_BLOCK' }) }] }],
+  } as never)
+  let appState: AppState = getDefaultAppState()
+  const result = await processUserInput({
+    input: 'hello',
+    mode: 'prompt',
+    setToolJSX: () => {},
+    context: {
+      options: { commands: [], tools: [], isNonInteractiveSession: true, mcpResources: {} },
+      messages: [],
+      abortController: new AbortController(),
+      getAppState: () => appState,
+      setAppState: (updater: (prev: AppState) => AppState) => {
+        appState = updater(appState)
+      },
+    } as never,
+  })
+  expect(result.shouldQuery).toBe(false)
+  expect(result.resultText).toEndWith('\n\nOriginal prompt: hello')
+  expect(result.messages).toEqual([
+    expect.objectContaining({
+      subtype: 'informational',
+      content: result.resultText,
+      preventContinuation: true,
+      promptSubmitEnding: { ending: { kind: 'blocked_by_hook', reason: 'UPS_BLOCK' }, promptKept: false },
+    }),
+  ])
+})

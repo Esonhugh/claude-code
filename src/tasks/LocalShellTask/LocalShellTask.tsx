@@ -28,6 +28,7 @@ import {
   evictTaskOutput,
   getTaskOutputPath,
 } from '../../utils/task/diskOutput.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { registerTask, updateTaskState } from '../../utils/task/framework.js'
 import { escapeXml } from '../../utils/xml.js'
 import {
@@ -154,16 +155,16 @@ function enqueueShellNotification(
   agentId?: AgentId,
   stoppedAtDeadline = false,
 ): void | Promise<void> {
-  // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
-  // enqueueing to avoid sending redundant messages to the model.
+  // enqueueing to avoid sending redundant messages to the model. The flag is
+  // set further down, in this same synchronous run: official 2.1.329 sends
+  // task_notification ahead of the background_tasks_changed that setting it
+  // causes.
   let shouldEnqueue = false
-  updateTaskState(taskId, setAppState, task => {
-    if (task.notified) {
-      return task
-    }
-    shouldEnqueue = true
-    return { ...task, notified: true }
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    shouldEnqueue = task !== undefined && !task.notified
+    return prev
   })
 
   if (!shouldEnqueue) {
@@ -217,11 +218,16 @@ function enqueueShellNotification(
 <${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>${stoppedAtDeadline ? `\n${DEADLINE_STOP_GUIDANCE}` : ''}
 </${TASK_NOTIFICATION_TAG}>`
 
+  // Like official 2.1.329, SDK hosts hear of the end when it happens, not
+  // when the model is told.
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, { toolUseId, summary, outputFile: outputPath })
+  updateTaskState(taskId, setAppState, task => ({ ...task, notified: true }))
   return enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
     priority: feature('MONITOR_TOOL') ? 'next' : 'later',
     agentId,
+    sdkTaskNotificationSent: true,
   })
 }
 
@@ -406,19 +412,10 @@ function backgroundTask(
     return false
   }
 
-  setAppState(prev => {
-    const prevTask = prev.tasks[taskId]
-    if (!isLocalShellTask(prevTask) || prevTask.isBackgrounded) {
-      return prev
-    }
-    return {
-      ...prev,
-      tasks: {
-        ...prev.tasks,
-        [taskId]: { ...prevTask, isBackgrounded: true },
-      },
-    }
-  })
+  // Through updateTaskState, so SDK hosts get the task_updated that says so.
+  updateTaskState<LocalShellTaskState>(taskId, setAppState, prevTask =>
+    prevTask.isBackgrounded ? prevTask : { ...prevTask, isBackgrounded: true },
+  )
 
   const cancelStallWatchdog = startStallWatchdog(
     taskId,
@@ -611,19 +608,12 @@ export function backgroundExistingForegroundTask(
   }
 
   let agentId: AgentId | undefined
-  setAppState(prev => {
-    const prevTask = prev.tasks[taskId]
-    if (!isLocalShellTask(prevTask) || prevTask.isBackgrounded) {
-      return prev
+  updateTaskState<LocalShellTaskState>(taskId, setAppState, prevTask => {
+    if (prevTask.isBackgrounded) {
+      return prevTask
     }
     agentId = prevTask.agentId
-    return {
-      ...prev,
-      tasks: {
-        ...prev.tasks,
-        [taskId]: { ...prevTask, isBackgrounded: true },
-      },
-    }
+    return { ...prevTask, isBackgrounded: true }
   })
 
   const cancelStallWatchdog = startStallWatchdog(
@@ -696,13 +686,16 @@ export function markTaskNotified(
 }
 
 /**
- * Unregister a foreground task when the command completes without being backgrounded.
+ * Unregister a foreground task when its command ends without having been
+ * backgrounded. Given `status`, SDK hosts are told the task ended, as
+ * official 2.1.329 tells them.
  */
 export function unregisterForeground(
   taskId: string,
   setAppState: SetAppState,
+  status?: 'completed' | 'failed' | 'stopped',
 ): void {
-  let cleanupFn: (() => void) | undefined
+  let removed: LocalShellTaskState | undefined
 
   setAppState(prev => {
     const task = prev.tasks[taskId]
@@ -711,15 +704,17 @@ export function unregisterForeground(
       return prev
     }
 
-    // Capture cleanup function to call outside of updater
-    cleanupFn = task.unregisterCleanup
+    removed = task
 
-    const { [taskId]: removed, ...rest } = prev.tasks
+    const { [taskId]: _, ...rest } = prev.tasks
     return { ...prev, tasks: rest }
   })
 
   // Call cleanup outside of the state updater (avoid side effects in updater)
-  cleanupFn?.()
+  removed?.unregisterCleanup?.()
+  if (removed && status && !removed.notified) {
+    emitTaskTerminatedSdk(taskId, status, { toolUseId: removed.toolUseId, summary: removed.description })
+  }
 }
 
 async function flushAndCleanup(shellCommand: ShellCommand): Promise<void> {

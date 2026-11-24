@@ -62,11 +62,20 @@ function isRetainableUserMessage(message: Message): message is UserMessage {
   )
 }
 
-// `!cmd` and local slash commands are stored as user rows wrapped in these
-// tags; their output is no more the user's words than a tool result is.
-function isTerminalOutput(text: string): boolean {
-  const head = text.trimStart()
-  return TERMINAL_OUTPUT_TAGS.some(tag => head.startsWith(`<${tag}>`))
+// Legacy transcripts lack provenance. Only treat complete terminal envelopes
+// as terminal rows, not prompts that quote a tag and then ask a question.
+// A body never crosses its closing tag, so a prompt between two envelopes is kept.
+const envelope = (tag: string) => `<${tag}>(?:(?!</${tag}>)[\\s\\S])*</${tag}>`
+const LEGACY_TERMINAL_ROW = new RegExp(
+  `^(?:${envelope('bash-stdout')}\\s*${envelope('bash-stderr')}|${TERMINAL_OUTPUT_TAGS.map(envelope).join('|')})$`,
+)
+
+function isTerminalRow(message: UserMessage, text: string): boolean {
+  if (message.isTerminalCommand !== undefined) return message.isTerminalCommand
+  if (message.permissionMode !== undefined) {
+    return false
+  }
+  return LEGACY_TERMINAL_ROW.test(text.trim())
 }
 
 function userMessageText(message: UserMessage): string {
@@ -98,8 +107,8 @@ export function selectRetainedMessagesForCodexCompact(
     const message = messages[i]
     if (!message || !isRetainableUserMessage(message)) continue
     const text = userMessageText(message)
-    if (!text || isTerminalOutput(text)) continue
-    const tokens = roughTokenCountEstimation(text)
+    if (!text.trim() || isTerminalRow(message, text)) continue
+    const tokens = Math.max(1, roughTokenCountEstimation(text))
     const content = message.message.content
     const textOnly =
       typeof content === 'string' || content.every(block => block.type === 'text')

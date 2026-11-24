@@ -3,11 +3,14 @@ import {
   type FileHandle,
   mkdir,
   open,
+  readdir,
+  readlink,
+  rename,
   stat,
   symlink,
   unlink,
 } from 'fs/promises'
-import { join } from 'path'
+import { join, sep } from 'path'
 import { getSessionId } from '../../bootstrap/state.js'
 import { getErrnoCode } from '../errors.js'
 import { readFileRange, tailFile } from '../fsOperations.js'
@@ -418,6 +421,39 @@ export function initTaskOutput(taskId: string): Promise<string> {
       return outputPath
     })(),
   )
+}
+
+/**
+ * Points task output symlinks that lead into fromDir at the same files under
+ * toDir, after the session folder they lead into has moved.
+ */
+export async function repointTaskOutputSymlinks(
+  fromDir: string,
+  toDir: string,
+): Promise<void> {
+  const dir = getTaskOutputDir()
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return
+    throw error
+  }
+  for (const name of names) {
+    const link = join(dir, name)
+    let target: string
+    try {
+      target = await readlink(link)
+    } catch {
+      continue // not a symlink
+    }
+    if (!target.startsWith(fromDir + sep)) continue
+    // Replace in one rename so readers never find the link missing.
+    const next = `${link}.repoint`
+    await unlink(next).catch(() => {})
+    await symlink(toDir + target.slice(fromDir.length), next)
+    await rename(next, link)
+  }
 }
 
 /**
