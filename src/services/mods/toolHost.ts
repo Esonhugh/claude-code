@@ -116,10 +116,10 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         if (!await isToolOffered(tool, snapshot, context.agentId, context.agentType, signal)) return {deny:`Tool ${name} is not offered to this agent`}
       }
       const refusal = authorCallRefusals.get(tool?.name ?? name)
-      // Official 2.1.329 answers the Workflow tool on $.agent.call with a refusal the call resolves with.
+      // Official 2.1.329 holds only the Workflow refusal on $.agent.call, and the call resolves with it;
+      // Agent and AskUserQuestion run there as the agent's own calls.
       if (entry === 'agent.call' && tool?.name === WORKFLOW_TOOL_NAME) return {deny:`$.agent.call: ${refusal}`}
-      const agentSpawn = entry === 'agent.call' && tool?.name === AGENT_TOOL_NAME && tool === (await import('../../tools/AgentTool/AgentTool.js')).AgentTool
-      if (refusal && !agentSpawn && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
+      if (refusal && entry !== 'agent.call' && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
       if (!tool) {
         logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} operation=call outcome=unavailable`)
         throw Object.assign(new Error(`${spawnedBy === undefined ? '' : spawnedBy + ': '}$.tool.call: no tool named "${name}" in this session`), { name: 'HooksError' })
