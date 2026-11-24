@@ -210,7 +210,7 @@ describe('author tool host through the real executor', () => {
     expect(await call(denied)).toMatchObject({deny:expect.stringContaining('spawn refused')})
     expect(await call()).toMatchObject({isError:true, text:expect.stringContaining('nesting limit')})
     expect(f.permissions).toHaveLength(1)
-    await expect(call(f.host,{...args,tool:'Workflow'})).rejects.toThrow('runs the Workflow tool')
+    expect(await call(f.host,{...args,tool:'Workflow'})).toEqual({deny:'$.agent.call: runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'})
     expect(f.permissions).toHaveLength(1)
   })
   for (const borrowed of [false, true]) {
