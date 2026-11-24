@@ -146,7 +146,7 @@ export type ModRequestServices = {
     /** False when `$.agent.call` naming `agentId` belongs to another agent's host. */
     serves?(agentId: string | undefined): boolean
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
-    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<unknown>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean, ownLifetime?: boolean): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
@@ -2312,7 +2312,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                 try {
                   result = await callSnapshot.dispatch(op, toolInput, async (question, nextSignal) => {
                     if (typeof question.tool !== 'string' || !question.input || typeof question.input !== 'object' || Array.isArray(question.input)) throw new TypeError('agent.call needs a tool and its input')
-                    const value = await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call')
+                    // Official 2.1.329: a call made outside a hook is not cut by the turn that loop runs.
+                    const value = await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call', undefined, caller === undefined)
                     if (!isCut) kept = {value}
                     return {value}
                   }, {signal:combined.signal, validateInput:value => { if (value.agentId !== toolInput.agentId) throw new Error('agent.call cannot rewrite agentId') }}) as {value?:unknown;deny?:string}

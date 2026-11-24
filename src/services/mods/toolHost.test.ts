@@ -145,6 +145,12 @@ describe('author tool host through the real executor', () => {
     await again.promise
     f.context.abortController.abort()
     expect(await loop).toEqual({deny: MOD_AGENT_CALL_CUT})
+    // A call made outside a hook keeps running after its agent's loop stopped.
+    Object.assign(f.tool, {call: async (_input: unknown, context: ToolUseContext) => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      return { data: { value: context.abortController.signal.aborted ? 'cut' : 'late' } }
+    }})
+    expect(await f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call', undefined, true)).toMatchObject({text: expect.stringContaining('late')})
     // tool.call keeps throwing on abort.
     await expect(f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, AbortSignal.abort('mine'), 'probe')).rejects.toBe('mine')
   })

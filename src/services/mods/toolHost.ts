@@ -92,7 +92,9 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       }
     },
     /** `person` marks a call the person raised themselves (a press or answer); only then does `consent` speak for them. */
-    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<ToolCallResult> {
+    /** `ownLifetime`: an agent call made outside a hook, which its agent's loop being cut does not cut. */
+    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean, ownLifetime?: boolean): Promise<ToolCallResult> {
+      const detached = resting || entry === 'agent.call' && ownLifetime === true
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
         (input.consent !== undefined && typeof input.consent !== 'string'))
@@ -110,7 +112,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         if (!catalog || catalog.agentId !== _agent || !catalog.names.has(tool.name)) return {deny:`Tool ${name} is not loaded in this agent`}
         if (resting && tool.name !== AGENT_TOOL_NAME && args.run_in_background === true)
           return {deny:`${tool.name} was not run: it starts work that outlasts the call, and a resting agent has no loop to hear it or stop it`}
-        if (signal.aborted || !resting && context.abortController.signal.aborted) return {deny:MOD_AGENT_CALL_CUT}
+        if (signal.aborted || !detached && context.abortController.signal.aborted) return {deny:MOD_AGENT_CALL_CUT}
         if (!await isToolOffered(tool, snapshot, context.agentId, context.agentType, signal)) return {deny:`Tool ${name} is not offered to this agent`}
       }
       const refusal = authorCallRefusals.get(tool?.name ?? name)
@@ -127,7 +129,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       // The executor's tools include query/Agent, which bind this host themselves.
       const { runToolUse } = await import('../tools/toolExecution.js')
       const abortController = createAbortController()
-      const parents = new Set(resting ? [signal] : [signal, context.abortController.signal])
+      const parents = new Set(detached ? [signal] : [signal, context.abortController.signal])
       const abort = () => {
         const parent = [...parents].find(parent => parent.aborted)
         if (parent) abortController.abort(parent.reason)

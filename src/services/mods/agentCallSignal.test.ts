@@ -131,3 +131,33 @@ test('malformed arguments are refused with the official host-check text', async 
   expect(await run()).toEqual({ result: Array(6).fill({ name: 'HooksError', message: text }) })
   expect(calls).toHaveLength(0)
 })
+
+test('a call made after its hook returned outlives the turn that hook ran in', async () => {
+  const runtime = createModsRuntime({ services: { toolHost: () => ({
+    tools: () => [],
+    call: async (input, _snapshot, signal, _plugin, _entry, _person, ownLifetime) => {
+      seen.push({ ownLifetime })
+      await new Promise(resolve => setTimeout(resolve, 150))
+      return { result: signal.aborted ? 'cut' : 'late', text: 'late' }
+    },
+    check: async () => ({ decision: 'allow' as const }),
+  }) } })
+  const seen: { ownLifetime?: boolean }[] = []
+  runtimes.push(runtime)
+  const entry = join(root, 'register.ts')
+  await writeFile(entry, `let later
+    export function register(on) {
+      on('tool.call', async $ => {
+        later = new Promise(resolve => setTimeout(() => resolve($.agent.call({ tool: 'Bash', input: { command: 'sleep 6' } })), 20))
+        return { result: 'started' }
+      })
+      on('ui.message', async () => ({ result: await later }))
+    }`)
+  await runtime.reconcile([{ name: 'later', storageId: 'later@test', pluginRoot: root, entrypoints: [entry] }])
+  const turn = new AbortController()
+  expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }), { signal: turn.signal })).toEqual({ result: 'started' })
+  await new Promise(resolve => setTimeout(resolve, 60))
+  turn.abort('interrupted')
+  expect(await runtime.dispatch('ui.message', {}, async () => ({ result: 'core' }))).toEqual({ result: { result: 'late', text: 'late' } })
+  expect(seen).toEqual([{ ownLifetime: true }])
+})
