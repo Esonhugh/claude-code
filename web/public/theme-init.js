@@ -12,7 +12,8 @@
     }
   }
   const root = document.documentElement
-  const theme = read('claude-web-theme', 'system')
+  // Until a theme is picked, the CLI's, as App.tsx last saw it in /api/info.
+  const theme = read('claude-web-theme', read('claude-web-cli-theme', 'system'))
   if (theme === 'light' || theme === 'dark') root.dataset.theme = theme
   const palette = read('claude-web-palette', 'clay')
   if (palette === 'default') delete root.dataset.palette

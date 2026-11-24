@@ -89,6 +89,8 @@ const COMMANDS_KEY = 'claude-web-commands'
 const COLUMNS_KEY = 'claude-web-columns'
 const ENV_KEY = 'claude-web-env'
 const THEME_KEY = 'claude-web-theme'
+// The CLI's theme as last seen, the page's theme until one is picked in settings (also read by public/theme-init.js).
+const CLI_THEME_KEY = 'claude-web-cli-theme'
 const PALETTE_KEY = 'claude-web-palette'
 const DEFAULT_UI_NAME = 'EsonClaw'
 const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
@@ -177,7 +179,7 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, readStored<Theme>(CLI_THEME_KEY, 'system')))
   const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
   const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
   const setColumns = (next: Columns) => {
@@ -543,6 +545,10 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
+        if (res.theme) {
+          writeStored(CLI_THEME_KEY, res.theme)
+          if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
+        }
         setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
       },
       () => {},

@@ -203,7 +203,7 @@
   "uiName": "UI name",
   "uiNameHint": "Shown at the top left and in the browser tab, same as the terminal welcome box; empty shows EsonClaw",
   "appearance": "Appearance",
-  "appearanceHint": "Follow the system, or always light or dark; stored only in this browser",
+  "appearanceHint": "Follow the system, or always light or dark; until picked here, as the CLI's /theme. Stored only in this browser",
   "themeSystem": "System",
   "themeLight": "Light",
   "themeDark": "Dark",

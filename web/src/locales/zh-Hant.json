@@ -203,7 +203,7 @@
   "uiName": "介面名稱",
   "uiNameHint": "顯示在左上角和瀏覽器標籤頁，和終端裡的歡迎框一致；留空顯示 EsonClaw",
   "appearance": "外觀",
-  "appearanceHint": "跟隨系統，或固定淺色、深色；只存在這個瀏覽器裡",
+  "appearanceHint": "跟隨系統，或固定淺色、深色；沒選過時沿用 CLI 的 /theme；只存在這個瀏覽器裡",
   "themeSystem": "跟隨系統",
   "themeLight": "淺色",
   "themeDark": "深色",

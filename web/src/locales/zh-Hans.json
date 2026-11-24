@@ -203,7 +203,7 @@
   "uiName": "界面名称",
   "uiNameHint": "显示在左上角和浏览器标签页，和终端里的欢迎框一致；留空显示 EsonClaw",
   "appearance": "外观",
-  "appearanceHint": "跟随系统，或固定浅色、深色；只存在这个浏览器里",
+  "appearanceHint": "跟随系统，或固定浅色、深色；没选过时沿用 CLI 的 /theme；只存在这个浏览器里",
   "themeSystem": "跟随系统",
   "themeLight": "浅色",
   "themeDark": "深色",

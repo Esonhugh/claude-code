@@ -20,7 +20,7 @@ import {
   type SessionManager,
   SessionManagerError,
 } from '../server/sessionManager.js'
-import { isPathTrusted, savePathTrusted } from '../utils/config.js'
+import { getGlobalConfig, isPathTrusted, savePathTrusted } from '../utils/config.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { formatPeerAddress } from '../utils/peerProtocol.js'
 import { listAllLiveSessions } from '../utils/udsClient.js'
@@ -213,6 +213,17 @@ const createProjectBodySchema = lazySchema(() =>
     .strict(),
 )
 const patchProjectBodySchema = lazySchema(() => projectFieldsSchema().partial().strict())
+
+/**
+ * The CLI's theme (`/theme`) as the page's light, dark or system: what the page
+ * shows until a theme is picked in its own settings. A custom theme and `auto`
+ * follow the system.
+ */
+export function cliWebTheme(setting: string | undefined): 'system' | 'light' | 'dark' {
+  if (setting?.startsWith('light')) return 'light'
+  if (setting?.startsWith('dark')) return 'dark'
+  return 'system'
+}
 
 /**
  * A project folder as an absolute, normalized real path: `~` is the home
@@ -505,7 +516,7 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme }
  *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
@@ -1061,6 +1072,8 @@ export function startWebServer(
         version: MACRO.VERSION,
         // The browser runs on this machine, so it may open files there.
         local,
+        // Read each time: `/theme` in a session may have changed it.
+        theme: cliWebTheme(getGlobalConfig().theme),
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
