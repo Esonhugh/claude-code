@@ -101,19 +101,22 @@ test('a result the tool gave before the cut is kept', async () => {
   } finally { release() }
 })
 
-test('options.signal must be an AbortSignal; an absent one is no option', async () => {
+test('options.signal must be an AbortSignal, null included; an absent one is no option', async () => {
   const { calls, run } = await setup(async () => ({ result: 'ok', text: 'ok' }),
     `const plain = await $.agent.call(args, {})
       const unset = await $.agent.call(args, { signal: undefined })
       const one = await $.agent.call(args)
       let refused
       try { await $.agent.call(args, { signal: 'x' }) } catch (error) { refused = { name: error.name, message: error.message } }
-      return { result: { plain, unset, one, refused } }`)
+      let nulled
+      try { await $.agent.call(args, { signal: null }) } catch (error) { nulled = { name: error.name, message: error.message } }
+      return { result: { plain, unset, one, refused, nulled } }`)
   expect(await run()).toEqual({ result: {
     plain: { result: 'ok', text: 'ok' },
     unset: { result: 'ok', text: 'ok' },
     one: { result: 'ok', text: 'ok' },
     refused: { name: 'HooksError', message: 'cutter: $.agent.call options.signal must be an AbortSignal' },
+    nulled: { name: 'HooksError', message: 'cutter: $.agent.call options.signal must be an AbortSignal' },
   } })
   expect(calls).toHaveLength(3)
 })

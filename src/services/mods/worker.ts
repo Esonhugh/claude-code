@@ -358,7 +358,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
             const signalled = wire.modelMethod === 'complete' || wire.signalOption !== undefined;
             if (signalled) {
               const signal = args[1]?.signal;
-              if (signal !== undefined && signal !== null && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
+              // Official 2.1.329 refuses a null signal on $.agent.call (measured); model.complete keeps passing over one.
+              const notSignal = signal === null ? wire.signalOption !== undefined
+                : signal !== undefined && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function');
+              if (notSignal)
                 throw Object.assign(Error(plugin + ': ' + (wire.signalOption ? '$.' + wire.signalOption + ' ' : '') + 'options.signal must be an AbortSignal'), {name:'HooksError'});
               const reason = () => {
                 const value = signal?.reason;
