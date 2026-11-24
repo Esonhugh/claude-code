@@ -1434,6 +1434,28 @@ describe('UserPromptSubmit runs before a skill or custom command expands (offici
     expect(additionalContexts(result)).toEqual(['screened'])
   })
 
+  test('prompt.submit sees the typed command, applies its context ahead of the expansion and keeps the text (2.1.329)', async () => {
+    const f = fixture([async (event, next) => next({ ...event, text: '/skill rewritten', context: ['mod context'] })], true, promptCommand)
+    const origin = { kind: 'plugin', name: 'g9' }
+    const result = await f.run({ input: '/skill run', promptSubmitMetadata: { origin, wait: false } })
+    expect(f.events).toEqual([{ text: '/skill run', origin, wait: false }])
+    expect(f.calls.slash).toBe(1)
+    expect(f.classicInputs).toEqual(['/skill run'])
+    expect(result.shouldQuery).toBe(true)
+    expect(userTexts(result)).toEqual(['/skill run'])
+    expect(result.messages[0].attachment.content).toEqual(['mod context'])
+  })
+
+  test('a prompt.submit drop stops the command before it expands', async () => {
+    const f = fixture([async () => ({ drop: 'not now' })], true, promptCommand)
+    const result = await f.run({ input: '/skill run' })
+    expect(f.calls.slash).toBe(0)
+    expect(f.classicInputs).toEqual([])
+    expect(result.shouldQuery).toBe(false)
+    expect(result.admission).toEqual({ drop: 'not now' })
+    expect(result.messages).toEqual([{ type: 'system', content: 'not now', level: 'warning' }])
+  })
+
   test('non-prompt commands keep running hooks after the command', async () => {
     const f = fixture([], true, { findCommand: () => ({ type: 'local', name: 'status' }) })
     f.classicResults.push({ blockingError: { blockingError: 'denied', command: 'hook' } })

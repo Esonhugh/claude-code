@@ -202,13 +202,11 @@ export async function processUserInput({
   // blocking hook also stops the shell commands embedded in it (2.1.299).
   let screened: ProcessUserInputBaseResult | undefined
   let screenedPromptId: string | undefined
+  let screenedContext: Message[] = []
   if (!skipHooks && !isRemoteShellInput && !deferCommands && expandsPromptCommand()) {
     screenedPromptId = randomUUID()
     setPromptId(screenedPromptId)
-    screened = await runClassicHooks(
-      { messages: [], shouldQuery: true },
-      getContentText(input) || '',
-    )
+    screened = await screenPromptCommand(getContentText(input) || '')
     if (!screened.shouldQuery) {
       onPromptAdmission?.(screened)
       return screened
@@ -240,7 +238,10 @@ export async function processUserInput({
 
   // A `!` command Claude responds to still skips UserPromptSubmit, like 2.1.311.
   if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened || mode === 'bash') {
-    if (screened && result.shouldQuery) result.messages.push(...screened.messages)
+    if (screened && result.shouldQuery) {
+      result.messages.unshift(...screenedContext)
+      result.messages.push(...screened.messages)
+    }
     applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)
     return result
@@ -401,6 +402,49 @@ export async function processUserInput({
   } finally {
     for (const ask of pendingAsks.values()) ask.finish(false)
     snapshot?.release()
+  }
+
+  // prompt.submit sees a prompt command's typed text before it expands. Like
+  // 2.1.329 its drop and context apply; a text rewrite is logged, not applied.
+  async function screenPromptCommand(text: string): Promise<ProcessUserInputBaseResult> {
+    const screen = () => runClassicHooks({ messages: [], shouldQuery: true }, text)
+    const snapshot = context.mods?.capture({
+      toolCatalog: () => createToolCatalogForContext(context),
+      toolHost: () => createModToolHost(context, canUseTool ?? context.canUseTool ?? hasPermissionsToUseTool),
+    })
+    try {
+      if (!snapshot?.hasHooks('prompt.submit')) return await screen()
+      const { outcome, submissions } = await runModPromptSubmit({
+        snapshot,
+        callerChain: promptSubmitCallerChain,
+        signal: context.abortController.signal,
+        input: { text, ...(promptSubmitMetadata ?? { origin: { kind: 'unclassified' }, wait: false }) },
+        core: async entered => {
+          if (entered.text !== text)
+            logForDebugging(`prompt.submit: text rewritten by a hook (${text.length} -> ${entered.text.length} chars)`)
+          if (entered.context?.length) screenedContext = [createAttachmentMessage({
+            type: 'hook_additional_context',
+            content: await persistModPromptContext(entered.context, context.abortController.signal),
+            hookName: 'prompt.submit',
+            toolUseID: `hook-${randomUUID()}`,
+            hookEvent: 'UserPromptSubmit',
+            modEvent: 'prompt.submit',
+          })]
+          return screen()
+        },
+      })
+      const last = submissions.at(-1)
+      const messages = submissions.flatMap(submitted => submitted.messages)
+      if (outcome.drop !== undefined && !submissions.some(submitted => submitted.admission?.drop === outcome.drop))
+        messages.push(createSystemMessage(outcome.drop, 'warning'))
+      if (!last) {
+        const drop = outcome.drop ?? 'a hook answered without passing the prompt on'
+        return { messages, shouldQuery: false, admission: { drop } }
+      }
+      return { ...last, messages, shouldQuery: outcome.drop === undefined && last.shouldQuery }
+    } finally {
+      snapshot?.release()
+    }
   }
 
   function expandsPromptCommand(): boolean {
