@@ -342,6 +342,11 @@ function fixture() {
       invalidateSessionEnvCache: noop,
     },
     './subprocessEnv.js': { subprocessEnv: () => ({ HOME: home }) },
+    fs: require('node:fs'),
+    './uuid.js': require('./uuid.js'),
+    './permissions/filesystem.js': {
+      getProjectTempDir: () => join(home, 'project-tmp'),
+    },
     './platform.js': { getPlatform: () => 'macos' },
     './shell/shellProvider.js': { DEFAULT_HOOK_SHELL: 'bash' },
     '../bootstrap/state.js': bootstrap,

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { lstatSync, rmSync, symlinkSync } from 'fs'
+import { join } from 'path'
 import { getSessionId, setIsInteractive } from '../bootstrap/state.js'
 import { hookProcessEnv } from './hooks.js'
+import { getProjectTempDir } from './permissions/filesystem.js'
 
 const keys = [
   'CLAUDE_CODE_BUILTIN_MODS_ARCHIVE',
@@ -20,6 +23,7 @@ afterEach(() => {
     else process.env[key] = value
   }
   setIsInteractive(true)
+  rmSync(join(getProjectTempDir(), getSessionId()), { recursive: true, force: true })
 })
 
 test('hooks see the session that ran them (official 2.1.329)', () => {
@@ -50,4 +54,19 @@ test('the packaged binary locations stay out of hook processes', () => {
   const env = hookProcessEnv()
   expect(env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
   expect(env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH).toBeUndefined()
+})
+
+test('hooks get a private directory for the notes of sessions they start (official 2.1.329)', () => {
+  const dir = join(getProjectTempDir(), getSessionId(), 'started')
+  expect(hookProcessEnv().CLAUDE_CODE_CHILD_NOTES_DIR).toBe(dir)
+  expect(lstatSync(dir).isDirectory()).toBe(true)
+  if (process.platform !== 'win32') expect(lstatSync(dir).mode & 0o777).toBe(0o700)
+})
+
+test.skipIf(process.platform === 'win32')('a symlink where the notes directory belongs is not handed to hooks', () => {
+  const sessionDir = join(getProjectTempDir(), getSessionId())
+  hookProcessEnv()
+  rmSync(sessionDir, { recursive: true, force: true })
+  symlinkSync(getProjectTempDir(), sessionDir)
+  expect(hookProcessEnv().CLAUDE_CODE_CHILD_NOTES_DIR).toBeUndefined()
 })
