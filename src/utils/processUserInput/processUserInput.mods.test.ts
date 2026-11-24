@@ -83,7 +83,7 @@ function fixture(
   const diagnostics: string[] = []
   const events: Record<string, unknown>[] = []
   const classicInputs: string[] = []
-  const calls = { captures: 0, releases: 0, slash: 0, bash: 0 }
+  const calls = { captures: 0, releases: 0, slash: 0, bash: 0, personInputs: 0 }
   const classicResults: Record<string, any>[] = []
   const attachmentMessages: Record<string, any>[] = []
   const classicHook: { run?: () => void | Promise<void> } = {}
@@ -204,6 +204,9 @@ function fixture(
     }),
     options: { commands: [] },
     mods: {
+      notePersonInput: () => {
+        calls.personInputs++
+      },
       capture: () => {
         calls.captures++
         return {
@@ -665,6 +668,14 @@ describe('processUserInput prompt.submit', () => {
     expect(result.admission).toEqual({ text: 'original|remaining', origin })
     expect(f.events).toEqual([{ text: 'original', origin, wait: false }])
     expect(f.diagnostics).toEqual([])
+  })
+
+  test('input from the person, and only from the person, ends the refusal after a Stop', async () => {
+    const f = fixture()
+    for (const kind of ['composer', 'sdk', 'bridge', 'plugin', 'peer', 'task-notification', 'unclassified'])
+      await f.run({ promptSubmitMetadata: { origin: kind === 'plugin' ? { kind, name: 'p', asUser: true } : { kind }, wait: false } })
+    await f.run()
+    expect(f.calls.personInputs).toBe(3)
   })
 
   test('a drop without next does not submit or run classic hooks', async () => {

@@ -456,6 +456,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const attachedClients = new Map<string, AttachedClient>()
   const clientTransitions = new Map<string, Promise<void>>()
   let stopped = false
+  // Set by the person's Stop and cleared when they next send input; plugin input is refused meanwhile.
+  let stoppedSinceInput = false
+  const refuseAfterStop = (plugin: string, op: string): void => {
+    if (!stoppedSinceInput) return
+    const reason = 'the session was stopped and nobody has sent input since'
+    logForDebugging(`[Mods] ${op} (${plugin}): refused: ${reason}`)
+    throw Object.assign(new Error(`${plugin}: $.${op}: refused: ${reason}`), { name: 'HooksError' })
+  }
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
   let recovering = false
@@ -2022,9 +2030,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
           }
           if (fn === hostIdentity && op === 'command.run') {
+            refuseAfterStop(owner.declaration.name, op)
             const event = context?.active ? context.next?.event : undefined
             // session.start and plugin.register run inside the load the host awaits before it runs queued input.
-            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.stop','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
+            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
             const prefix = `${owner.declaration.name}: $.command.run`
             if (held) throw Object.assign(new Error(`${owner.declaration.name}: command.run: called from a ${held} hook, it would wait on the turn this hook is holding; ${held === 'command.run' ? 'answer { text } instead, or run it' : 'run it'} from a later event (turn.complete) (host check)`),{name:'HooksError'})
             if (typeof (input as ModInput).args !== 'string') throw Object.assign(new Error(`${prefix} takes { command, args? } (the name without the slash)`),{name:'HooksError'})
@@ -2056,11 +2065,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'prompt.submit') {
             const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
             if (!submit) throw new Error('Prompt submission host is unavailable on this host')
+            refuseAfterStop(owner.declaration.name, op)
             const held = context?.active ? context.next?.event : undefined
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
                 'prompt.attachment', 'prompt.mention', 'prompt.compose', 'tool.describe', 'command.run',
-                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.stop', 'session.start', 'plugin.register'].includes(held) ||
+                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.start', 'plugin.register'].includes(held) ||
               (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
             ))
             if (holdsTurn) {
@@ -4198,6 +4208,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     measure,
     endSession,
     async notifySessionStop(isTurnRunning: boolean): Promise<void> {
+      stoppedSinceInput = true
       if (!runtime.hasHooks('session.stop')) return
       const input = { isTurnRunning }
       try {
@@ -4205,6 +4216,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       } catch (error) {
         diagnostic('engine', 'session.stop', error)
       }
+    },
+    /** The person sent input (composer, SDK or bridge): plugins may queue input again. */
+    notePersonInput(): void {
+      stoppedSinceInput = false
     },
     tools,
     agents,

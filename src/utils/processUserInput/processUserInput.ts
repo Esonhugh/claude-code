@@ -180,6 +180,11 @@ export async function processUserInput({
 
   queryCheckpoint('query_process_user_input_base_start')
 
+  // Input from the person ends the refusal of plugin input that their Stop began.
+  const personKind = promptSubmitMetadata?.origin.kind
+  if (personKind === 'composer' || personKind === 'sdk' || personKind === 'bridge')
+    context.mods?.notePersonInput()
+
   if (promptSubmitMetadata) context = {
     ...context,
     modCommand: {
