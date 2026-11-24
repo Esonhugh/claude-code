@@ -23,6 +23,7 @@
 - 网页界面在桌面应用里通过 preload 暴露的 `window.claudeDesktop` 打开会话连接，在浏览器里仍用 WebSocket。Chromium 转给自定义协议的请求不带 Origin，应用按发起请求的 frame 补上：页面自己的 fetch 带 `claude-app://app`，预览页面等其他 frame 带它们自己的 Origin，表单提交等导航不带，服务端照常拒绝后两种的写请求。
 - 桌面应用的原生外观（标题栏、菜单、滚动条）跟随网页界面的浅深色设置：页面载入和切换时调用 preload 的 `window.claudeDesktop.setTheme(mode)`（`system`、`light`、`dark`，其他值忽略），应用只接受 `claude-app://app` 主框架的调用，设置 `nativeTheme.themeSource` 并存入 userData 的 `appearance.json`，启动时在建窗口前读回，文件缺失或损坏时按 `system`。窗口背景色按当前深浅色取 clay 配色的背景（浅色 `#faf9f5`、深色 `#1f1d1a`），页面载入前不再闪白。
 - 根目录 Makefile 新增桌面应用的构建命令：`make desktop` 先 `make build` 再用 electron-builder 打出本平台的安装包（`desktop/release/`）；`make desktop-package` 用已构建的 binary 打包，`make desktop-start`、`make desktop-test`、`make desktop-e2e`（Linux 无显示时用 xvfb-run）分别启动、测试和端到端检查，`make clean-desktop` 删除 `desktop/sidecar/` 与 `desktop/release/`。默认用 `./built-claude`，`DESKTOP_SIDECAR` 可指定其他 binary。
+- 桌面应用有了自己的图标：陶土色（`#e28b6b`→`#c8623f`）圆角方块上的米白像素蟹，与网页侧边栏的 Clawd 同形。`desktop/build/icon.png`（1024×1024，源文件 `icon.svg`）由 electron-builder 生成 macOS 的 `icon.icns` 与 Windows 的 `.ico`，Linux 直接使用 PNG。
 
 #### CI
 
