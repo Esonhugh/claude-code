@@ -4,6 +4,9 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 export const THEME_MODES = ['system', 'light', 'dark']
 export const isThemeMode = mode => THEME_MODES.includes(mode)
 
+// The page's clay --bg (web/src/styles.css), shown until the page paints.
+export const windowBackground = dark => (dark ? '#1f1d1a' : '#faf9f5')
+
 /** The saved mode; 'system' when the file is missing, unreadable or holds something else. */
 export function readThemeMode(file) {
   try {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isThemeMode, readThemeMode, writeThemeMode } from './theme.js'
+import { isThemeMode, readThemeMode, windowBackground, writeThemeMode } from './theme.js'
 
 let dir
 afterEach(() => {
@@ -38,5 +38,10 @@ describe('theme', () => {
     expect(readThemeMode(path)).toBe('system')
     writeFileSync(path, 'null')
     expect(readThemeMode(path)).toBe('system')
+  })
+
+  it('matches the page background', () => {
+    expect(windowBackground(false)).toBe('#faf9f5')
+    expect(windowBackground(true)).toBe('#1f1d1a')
   })
 })

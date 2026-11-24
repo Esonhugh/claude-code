@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { startSidecar } from './sidecar.js'
-import { isThemeMode, readThemeMode, writeThemeMode } from './theme.js'
+import { isThemeMode, readThemeMode, windowBackground, writeThemeMode } from './theme.js'
 
 const SCHEME = 'claude-app'
 const APP_ORIGIN = `${SCHEME}://app`
@@ -94,6 +94,9 @@ ipcMain.on('theme:set', (event, mode) => {
     console.warn(`could not save the appearance: ${err.message}`)
   }
 })
+nativeTheme.on('updated', () => {
+  for (const win of BrowserWindow.getAllWindows()) win.setBackgroundColor(windowBackground(nativeTheme.shouldUseDarkColors))
+})
 
 app.on('web-contents-created', (_event, contents) => {
   contents.on('destroyed', () => closeSockets(contents.id))
@@ -129,6 +132,7 @@ function createWindow() {
     height: 860,
     show: false,
     title: 'Claude Code',
+    backgroundColor: windowBackground(nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,
