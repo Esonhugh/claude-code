@@ -853,7 +853,7 @@ async function validateHooksJson(
     // Manifest validation reports unreadable or invalid contracts separately.
   }
 
-  for (const [index, modulePath] of (result.data.modules ?? []).entries()) {
+  for (const modulePath of result.data.modules ?? []) {
     const resolved = path.join(path.dirname(filePath), modulePath)
     try {
       const declaration = await loadModDeclaration({
@@ -914,7 +914,7 @@ async function validateHooksJson(
         others: foreignDeclarations ? [...foreignDeclarations] : undefined,
       })
       errors.push(...state.problems.map(message => ({
-        path: `modules[${index}]`,
+        path: `modules.${modulePath}`,
         message,
       })))
       if (state.unchecked.length) {
@@ -924,7 +924,7 @@ async function validateHooksJson(
       }
     } catch (error) {
       errors.push({
-        path: `modules[${index}]`,
+        path: `modules.${modulePath}`,
         message: errorMessage(error),
       })
     }

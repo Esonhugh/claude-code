@@ -116,7 +116,7 @@ describe('hooks module author validation', () => {
         const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
         expect(hooks?.success).toBe(false)
         expect(hooks?.errors).toHaveLength(1)
-        expect(hooks?.errors[0]?.path).toBe('modules[0]')
+        expect(hooks?.errors[0]?.path).toBe(`modules.${modulePath}`)
         expect(hooks?.errors[0]?.message).toContain(message)
       }
     } finally {
