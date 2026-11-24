@@ -51,6 +51,7 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost, MOD_AGENT_CALL_CUT } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { removeInputDiscardedByStop } from '../../utils/messageQueueManager.js'
 import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, createModSignalOptionBridge, createModWasmBridge, type ModEnvironment } from './environment.js'
 import { modWasmBase64Problem, readModWasmFile } from './wasm.js'
 import type { ModWorkerFault } from './protocol.js'
@@ -4303,6 +4304,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     endSession,
     async notifySessionStop(isTurnRunning: boolean): Promise<void> {
       stoppedSinceInput = true
+      // Before the turn's abort lets the queue drain them (2.1.329).
+      removeInputDiscardedByStop()
       if (!runtime.hasHooks('session.stop')) return
       const input = { isTurnRunning }
       try {

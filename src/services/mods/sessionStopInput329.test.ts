@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { enqueueTracked, getCommandQueueSnapshot, resetCommandQueue } from '../../utils/messageQueueManager.js'
+import { createModCommandQueue } from './commandRunQueue.js'
 import { createModsRuntime } from './runtime.js'
 
 let root: string
@@ -10,6 +12,7 @@ beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), 'mods-stop-input-')))
 })
 afterEach(async () => {
+  resetCommandQueue()
   await runtime?.dispose()
   runtime = undefined
   await rm(root, { recursive: true, force: true })
@@ -72,4 +75,23 @@ test('plugin input stays refused after a Stop until the person sends input', asy
   expect(logs).toEqual(['accepted', 'accepted'])
   expect(submitted).toEqual(['later'])
   expect(ran).toEqual(['hello'])
+})
+
+test('a Stop takes queued plugin input out of the queue and settles it', async () => {
+  const value = await start('export function register(){}', [], [], [])
+  const origin = { kind: 'plugin' as const, name: 'stopper' }
+  const command = createModCommandQueue()({ command: 'hello', args: '', origin, signal: new AbortController().signal })
+  const settled = command.then(() => 'ran', (error: Error) => `${error.name}: ${error.message}`)
+  let prompt: unknown
+  enqueueTracked({
+    value: 'queued', mode: 'prompt', priority: 'later', origin,
+    promptSubmitMetadata: { origin, wait: false },
+    promptSubmitReceipt: { admit: result => { prompt = result }, cancel: () => {} },
+  })
+  enqueueTracked({ value: 'typed', mode: 'prompt', priority: 'later' })
+  enqueueTracked({ value: 'sub-agent', mode: 'prompt', priority: 'later', origin, agentId: 'a1' as never })
+  await value.notifySessionStop(true)
+  expect(prompt).toEqual({ drop: 'the prompt was removed from the queue before it ran' })
+  expect(await settled).toBe('HooksError: the command was removed from the queue before it ran')
+  expect(getCommandQueueSnapshot().map(queued => queued.value)).toEqual(['typed', 'sub-agent'])
 })
