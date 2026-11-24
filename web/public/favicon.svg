@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- Clawd (web/src/components/ui.tsx) on a tile that follows the system light or dark scheme. -->
+  <style>
+    .tile { fill: #faf9f5; stroke: #ddd7ca; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #1f1d1a; stroke: #3a3632; }
+    }
+  </style>
+  <rect class="tile" x="0.25" y="0.25" width="15.5" height="15.5" rx="3.5" stroke-width="0.5" />
+  <g fill="#d97757" shape-rendering="crispEdges">
+    <rect x="3" y="4.5" width="10.5" height="1.5" />
+    <rect x="3" y="6" width="1.5" height="1.5" />
+    <rect x="6" y="6" width="4.5" height="1.5" />
+    <rect x="12" y="6" width="1.5" height="1.5" />
+    <rect x="1.5" y="7.5" width="13.5" height="1.5" />
+    <rect x="3" y="9" width="10.5" height="1.5" />
+    <rect x="3" y="10.5" width="1.5" height="1.5" />
+    <rect x="6" y="10.5" width="1.5" height="1.5" />
+    <rect x="9" y="10.5" width="1.5" height="1.5" />
+    <rect x="12" y="10.5" width="1.5" height="1.5" />
+  </g>
+</svg>
