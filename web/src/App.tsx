@@ -524,6 +524,11 @@ export function App() {
     else root.dataset.palette = palette
   }, [theme, palette])
   useEffect(() => {
+    // In the desktop app, its window's native appearance (title bar, menus, scroll bars) follows.
+    const desktop = (window as { claudeDesktop?: { setTheme?: (mode: Theme) => void } }).claudeDesktop
+    desktop?.setTheme?.(theme)
+  }, [theme])
+  useEffect(() => {
     document.title = uiName
   }, [uiName])
   useEffect(() => {
