@@ -6,8 +6,10 @@ import { delimiter, join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
+import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { addressKind } from './network.js'
 import {
+  cliWebTheme,
   contentSecurityPolicy,
   normalizeProjectDir,
   openLocal,
@@ -309,7 +311,11 @@ describe('claude web server', () => {
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', effort: '--max' })).status).toBe(400)
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', model: 'gpt-5.6-terra', effort: 'high' })).status).toBe(200)
     expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'gpt-5.6-terra', effort: 'high' })
+    // The page starts in the CLI's theme until one is picked there.
+    const cliTheme = getGlobalConfig().theme
+    saveGlobalConfig(c => ({ ...c, theme: 'light-daltonized' }))
     const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
+    saveGlobalConfig(c => ({ ...c, theme: cliTheme }))
     expect(await info.json()).toEqual({
       workspace: r.workspace,
       preview_origins: [],
@@ -317,6 +323,7 @@ describe('claude web server', () => {
       home: homedir(),
       local: true,
       version: '9.9.9-test',
+      theme: 'light',
     })
     const models = (await (await fetch(`${r.base}/api/models`, { headers: { cookie } })).json()) as {
       models: { value: string }[]
@@ -1196,6 +1203,20 @@ describe('GET /api/peers', () => {
       if (prevConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = prevConfig
     }
+  })
+})
+
+describe('cliWebTheme', () => {
+  it('maps the CLI theme to light, dark or system', () => {
+    expect(cliWebTheme('light')).toBe('light')
+    expect(cliWebTheme('light-daltonized')).toBe('light')
+    expect(cliWebTheme('light-ansi')).toBe('light')
+    expect(cliWebTheme('dark')).toBe('dark')
+    expect(cliWebTheme('dark-daltonized')).toBe('dark')
+    expect(cliWebTheme('dark-ansi')).toBe('dark')
+    expect(cliWebTheme('auto')).toBe('system')
+    expect(cliWebTheme('custom:light-ish')).toBe('system')
+    expect(cliWebTheme(undefined)).toBe('system')
   })
 })
 

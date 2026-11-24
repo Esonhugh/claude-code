@@ -18,6 +18,7 @@ import React, {
   useState,
 } from 'react'
 import { LANGS, type Lang, translate } from '../i18n'
+import { useDark } from '../theme'
 import { WebPreviewContext } from '../webPreview'
 import { cachedHighlight, highlight } from './highlight'
 import { parseMarkdown, splitSettled } from './parse'
@@ -140,34 +141,36 @@ export function CodeBlock({
 }
 
 let mermaidReady: Promise<typeof import('mermaid').default> | undefined
+let mermaidTheme: string | undefined
 
 function Mermaid({ code, streaming }: { code: string; streaming: boolean }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, '')
   const [svg, setSvg] = useState<{ __html: string }>()
   const [failed, setFailed] = useState(false)
+  // Drawn again in the other colors when the page turns light or dark.
+  const dark = useDark()
   useEffect(() => {
     if (streaming) return
     let live = true
-    mermaidReady ??= import('mermaid').then(mod => {
-      mod.default.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: matchMedia('(prefers-color-scheme: dark)').matches
-          ? 'dark'
-          : 'default',
-      })
-      return mod.default
-    })
+    mermaidReady ??= import('mermaid').then(mod => mod.default)
     mermaidReady
-      .then(mermaid => mermaid.render(`mermaid-${id}`, code))
+      .then(mermaid => {
+        if (!live) return
+        const theme = dark ? 'dark' : 'default'
+        if (mermaidTheme !== theme) {
+          mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme })
+          mermaidTheme = theme
+        }
+        return mermaid.render(`mermaid-${id}`, code)
+      })
       .then(
-        result => live && setSvg({ __html: result.svg }),
+        result => live && result && setSvg({ __html: result.svg }),
         () => live && setFailed(true),
       )
     return () => {
       live = false
     }
-  }, [code, id, streaming])
+  }, [code, id, streaming, dark])
   if (svg && !failed) {
     // Rendered with securityLevel 'strict', which sanitizes labels.
     return <div className="mermaid" dangerouslySetInnerHTML={svg} />

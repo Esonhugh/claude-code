@@ -167,7 +167,16 @@ export const listRunning = () =>
   getJson<{ id: string; work_dir: string; attached: boolean }[]>('/api/sessions')
 
 export const getInfo = () =>
-  getJson<{ workspace: string; preview_origins?: string[]; temp_root?: string; home?: string; version?: string; local?: boolean }>('/api/info')
+  getJson<{
+    workspace: string
+    preview_origins?: string[]
+    temp_root?: string
+    home?: string
+    version?: string
+    local?: boolean
+    // The CLI's theme as the page's, for a page whose own theme was never picked.
+    theme?: 'system' | 'light' | 'dark'
+  }>('/api/info')
 
 /** Files under the session's working directory matching an `@` query, relative to it. */
 export const listWorkspaceFiles = (sessionId: string, query: string) =>

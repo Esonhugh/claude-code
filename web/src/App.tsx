@@ -31,7 +31,7 @@ import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
-import { AppDialog, type Palette, type Theme } from './components/Dialogs'
+import { AppDialog, type Motion, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
 import { canvasTabMods, closeCanvasTab, MOD_CLIENT, MOD_LAYOUT, MOD_SURFACE, ModCanvas, ModSite, ModSitesProvider, ModToasts, ModView } from './components/Mods'
@@ -89,7 +89,10 @@ const COMMANDS_KEY = 'claude-web-commands'
 const COLUMNS_KEY = 'claude-web-columns'
 const ENV_KEY = 'claude-web-env'
 const THEME_KEY = 'claude-web-theme'
+// The CLI's theme as last seen, the page's theme until one is picked in settings (also read by public/theme-init.js).
+const CLI_THEME_KEY = 'claude-web-cli-theme'
 const PALETTE_KEY = 'claude-web-palette'
+const MOTION_KEY = 'claude-web-motion'
 const DEFAULT_UI_NAME = 'EsonClaw'
 const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
 const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -177,8 +180,9 @@ function useTurnStart(busy: boolean | undefined, view: string | null): number | 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialAppState)
   const [lang, setLangState] = useState<Lang>(initialLang)
-  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, 'system'))
+  const [theme, setThemeState] = useState<Theme>(() => readStored(THEME_KEY, readStored<Theme>(CLI_THEME_KEY, 'system')))
   const [palette, setPaletteState] = useState<Palette>(() => readStored(PALETTE_KEY, 'clay'))
+  const [motion, setMotionState] = useState<Motion>(() => readStored(MOTION_KEY, 'system'))
   const [columns, setColumnsState] = useState<Columns>(() => readStored(COLUMNS_KEY, {}))
   const setColumns = (next: Columns) => {
     setColumnsState(next)
@@ -248,6 +252,10 @@ export function App() {
   const setPalette = (next: Palette) => {
     setPaletteState(next)
     writeStored(PALETTE_KEY, next)
+  }
+  const setMotion = (next: Motion) => {
+    setMotionState(next)
+    writeStored(MOTION_KEY, next)
   }
 
   const chat: SessionChat | undefined = state.view ? state.chats[state.view] : undefined
@@ -522,7 +530,14 @@ export function App() {
     else root.dataset.theme = theme
     if (palette === 'default') delete root.dataset.palette
     else root.dataset.palette = palette
-  }, [theme, palette])
+    if (motion === 'reduce') root.dataset.motion = motion
+    else delete root.dataset.motion
+  }, [theme, palette, motion])
+  useEffect(() => {
+    // In the desktop app, its window's native appearance (title bar, menus, scroll bars) follows.
+    const desktop = (window as { claudeDesktop?: { setTheme?: (mode: Theme) => void } }).claudeDesktop
+    desktop?.setTheme?.(theme)
+  }, [theme])
   useEffect(() => {
     document.title = uiName
   }, [uiName])
@@ -538,6 +553,10 @@ export function App() {
     getInfo().then(
       res => {
         setHome(res.home)
+        if (res.theme) {
+          writeStored(CLI_THEME_KEY, res.theme)
+          if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
+        }
         setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
       },
       () => {},
@@ -2392,6 +2411,8 @@ export function App() {
             setTheme,
             palette,
             setPalette,
+            motion,
+            setMotion,
             initialTab: settingsTab,
             workspace: info.workspace,
             settings: webSettings,

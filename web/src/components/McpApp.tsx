@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { type AppServerTool, type AppTool, appCsp, appTools, callToolResult, findAppTool, normalizeMcpName, openableLink, resourceHtml, withCsp } from '../mcpApps'
 import type { Block } from '../protocol'
+import { isDark, useDark } from '../theme'
 import type { Control } from './extShared'
 import type { T } from './ui'
 
@@ -52,6 +53,9 @@ export function McpApp({ block, control, t }: { block: ToolBlock; control?: Cont
   latest.current = block
   const initialized = useRef(false)
   const sentResult = useRef(false)
+  // The theme the app was last told, so a light/dark switch reaches it once it is initialized.
+  const sentTheme = useRef<'light' | 'dark' | undefined>(undefined)
+  const theme = useDark() ? 'dark' : 'light'
 
   useEffect(() => {
     if (!control || !block.name.startsWith('mcp__')) return
@@ -78,6 +82,15 @@ export function McpApp({ block, control, t }: { block: ToolBlock; control?: Cont
   }
 
   useEffect(sendResult, [block.result, block.mcp])
+
+  const sendTheme = () => {
+    const current = isDark() ? 'dark' : 'light'
+    if (!initialized.current || sentTheme.current === current) return
+    sentTheme.current = current
+    post({ method: 'ui/notifications/host-context-changed', params: { theme: current } })
+  }
+
+  useEffect(sendTheme, [theme])
 
   useEffect(() => {
     if (!app || !control) return
@@ -119,15 +132,13 @@ export function McpApp({ block, control, t }: { block: ToolBlock; control?: Cont
       const params = data.params ?? {}
       switch (data.method) {
         case 'ui/initialize': {
-          const dark = document.documentElement.dataset.theme
-            ? document.documentElement.dataset.theme === 'dark'
-            : window.matchMedia('(prefers-color-scheme: dark)').matches
+          sentTheme.current = isDark() ? 'dark' : 'light'
           return reply(data.id, {
             protocolVersion: typeof params.protocolVersion === 'string' ? params.protocolVersion : PROTOCOL_VERSION,
             hostInfo: { name: 'claude-web', version: '1' },
             hostCapabilities: { openLinks: {}, serverTools: {}, serverResources: {}, logging: {} },
             hostContext: {
-              theme: dark ? 'dark' : 'light',
+              theme: sentTheme.current,
               displayMode: 'inline',
               availableDisplayModes: ['inline'],
               locale: navigator.language,
@@ -138,6 +149,7 @@ export function McpApp({ block, control, t }: { block: ToolBlock; control?: Cont
         case 'ui/notifications/initialized':
           initialized.current = true
           post({ method: 'ui/notifications/tool-input', params: { arguments: parsedArguments(latest.current.input) } })
+          sendTheme()
           return sendResult()
         case 'ui/notifications/size-changed':
           if (typeof params.height === 'number') setHeight(Math.min(Math.max(Math.ceil(params.height), 40), 2000))
