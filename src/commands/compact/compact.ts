@@ -55,19 +55,39 @@ export const call: LocalCommandCall = async (args, context) => {
   // model doesn't summarize content that was intentionally removed.
   messages = getMessagesAfterCompactBoundary(messages)
 
-  // Official 2.1.311: an empty conversation compacts to nothing, and one
-  // the model never answered (e.g. only /clear) has too few rounds.
+  // Official 2.1.311: an empty conversation compacts to nothing.
   if (messages.length === 0) {
     return { type: 'text', value: '' }
-  }
-  if (!messages.some(message => message.type === 'assistant')) {
-    throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
   }
 
   const customInstructions = args.trim()
   const compactMode = getCompactMode()
 
   try {
+    // One the model never answered (e.g. only /clear) has too few rounds.
+    // Official 2.1.329 finds that out after PreCompact has run.
+    if (!messages.some(message => message.type === 'assistant')) {
+      context.onCompactProgress?.({
+        type: 'hooks_start',
+        hookType: 'pre_compact',
+      })
+      context.setSDKStatus?.('compacting')
+      let failure: unknown = new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+      try {
+        throwIfCompactionBlocked(
+          await executePreCompactHooks(
+            { trigger: 'manual', customInstructions: customInstructions || null },
+            abortController.signal,
+          ),
+          context,
+        )
+      } catch (error) {
+        failure = error
+      }
+      context.onCompactProgress?.({ type: 'compact_end' })
+      context.setSDKStatus?.(null, compactOutcome(failure))
+      throw failure
+    }
     const outcome = await runModSessionCompact(
       context,
       'manual',

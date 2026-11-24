@@ -9,7 +9,8 @@ import type {
 } from './promptCacheFacts.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { z } from 'zod/v4'
-import { basename } from 'path'
+import { basename, dirname, join } from 'path'
+import { lstatSync, mkdirSync } from 'fs'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
 import { wrapSpawn } from './ShellCommand.js'
@@ -191,6 +192,8 @@ import {
 } from './effort.js'
 import { getMainLoopModel } from './model/model.js'
 import { errorMessage, getErrnoCode, isAbortError } from './errors.js'
+import { getProjectTempDir } from './permissions/filesystem.js'
+import { validateUuid } from './uuid.js'
 
 export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
@@ -617,7 +620,8 @@ export function parseHookOutput(stdout: string): {
     if ('json' in result) {
       return result
     }
-    // For command hooks, include the schema hint in the error message
+    // For command hooks, include the schema hint in the error message.
+    // Official 2.1.329 also lists terminalSequence, which this build ignores.
     const errorMessage = `${result.validationError}\n\nExpected schema:\n${jsonStringify(
       {
         continue: 'boolean (optional)',
@@ -626,7 +630,6 @@ export function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
@@ -634,13 +637,37 @@ export function parseHookOutput(stdout: string): {
             permissionDecisionReason: 'string (optional)',
             updatedInput: 'object (optional) - Modified tool input to use',
           },
+          'for PermissionRequest': {
+            hookEventName: '"PermissionRequest"',
+            decision: {
+              'to allow': {
+                behavior: '"allow"',
+                updatedInput: 'object (optional) - Modified tool input to use',
+                updatedPermissions: 'array (optional) - Permission updates',
+              },
+              'to deny': {
+                behavior: '"deny"',
+                message: 'string (optional)',
+                interrupt: 'boolean (optional)',
+              },
+            },
+          },
           'for UserPromptSubmit': {
             hookEventName: '"UserPromptSubmit"',
-            additionalContext: 'string (required)',
+            additionalContext: 'string (optional)',
           },
           'for PostToolUse': {
             hookEventName: '"PostToolUse"',
             additionalContext: 'string (optional)',
+          },
+          'for PostToolBatch': {
+            hookEventName: '"PostToolBatch"',
+            additionalContext: 'string (optional)',
+          },
+          'for Stop / SubagentStop': {
+            hookEventName: '"Stop" | "SubagentStop"',
+            additionalContext:
+              'string (optional) - Feedback for the model; the conversation continues so the model can act on it',
           },
         },
       },
@@ -1042,6 +1069,28 @@ function isAttendedSession(): boolean {
   )
 }
 
+// Official 2.1.329: where a Claude session started by a hook leaves a note
+// for the session that ran the hook. Owner-only, and never through a symlink.
+function childNotesDirEnv(sessionId: string): NodeJS.ProcessEnv {
+  if (!validateUuid(sessionId)) return {}
+  const dir = join(getProjectTempDir(), sessionId, 'started')
+  const levels = [dirname(dirname(dir)), dirname(dir), dir]
+  try {
+    mkdirSync(dirname(levels[0]!), { recursive: true, mode: 0o700 })
+    for (const level of levels) {
+      try {
+        mkdirSync(level, { mode: 0o700 })
+      } catch (error) {
+        if (getErrnoCode(error) !== 'EEXIST') throw error
+      }
+      if (!lstatSync(level).isDirectory()) return {}
+    }
+    return { CLAUDE_CODE_CHILD_NOTES_DIR: dir }
+  } catch {
+    return {}
+  }
+}
+
 // What a hook process sees of the session that ran it. The packaged binary's
 // own CLAUDE_CODE_BUILTIN_* / CLAUDE_CODE_EMBEDDED_* locations stay out: they
 // point into this process and mean nothing to the hook.
@@ -1062,6 +1111,7 @@ export function hookProcessEnv(): NodeJS.ProcessEnv {
     CLAUDE_CODE_CHILD_SESSION: '1',
     CLAUDE_CODE_SESSION_ATTENDED: isAttendedSession() ? '1' : '0',
     CLAUDE_PID: String(process.pid),
+    ...childNotesDirEnv(getSessionId()),
   }
 }
 
