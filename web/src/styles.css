@@ -950,7 +950,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .codeblock-body code { background: none; padding: 0 }
 @media screen { :root[data-theme="dark"] .shiki, :root[data-theme="dark"] .shiki span { color: var(--shiki-dark) !important } }
 @media screen and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .shiki, :root:not([data-theme="light"]) .shiki span { color: var(--shiki-dark) !important } }
-.mermaid { margin: 0 0 8px; overflow-x: auto; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px }
+.mermaid, .mermaid-print { margin: 0 0 8px; overflow-x: auto; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px }
+.mermaid-print { display: none }
 .math-block { overflow-x: auto; margin: 0 0 8px }
 .math-src { font-family: var(--f-mono) }
 .footnote { font-size: 12.5px; color: var(--muted) }
@@ -1021,6 +1022,8 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
   .main > .feed .msg .markdown { content-visibility: visible }
   pre { max-height: none !important; overflow: visible }
   .toolcard, .sources { break-inside: avoid }
+  .mermaid.on-screen { display: none }
+  .mermaid-print { display: block; break-inside: avoid }
 }
 @media (max-width: 760px) and (pointer: coarse) { .meta button, .composer button { min-height: 40px } }
 

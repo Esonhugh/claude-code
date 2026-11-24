@@ -654,6 +654,24 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await page.locator('.katex').nth(2).waitFor({ timeout: 30_000 })
       expect(await page.locator('.markdown').last().textContent()).not.toContain('\\(')
       await page.locator('.mermaid svg').waitFor({ timeout: 30_000 })
+      // A dark page keeps a light copy of the diagram, shown only in print.
+      const theme = await page.evaluate(() => {
+        const was = document.documentElement.dataset.theme
+        document.documentElement.dataset.theme = 'dark'
+        return was
+      })
+      await page.locator('.mermaid-print svg').waitFor({ state: 'attached', timeout: 30_000 })
+      await page.emulateMedia({ media: 'print' })
+      expect(await page.locator('.mermaid.on-screen').isVisible()).toBe(false)
+      expect(await page.locator('.mermaid-print').isVisible()).toBe(true)
+      expect(
+        await page.locator('.mermaid-print svg .node rect').first().evaluate(el => getComputedStyle(el).fill),
+      ).toBe('rgb(236, 236, 255)')
+      await page.emulateMedia({ media: null })
+      await page.evaluate(was => {
+        if (was) document.documentElement.dataset.theme = was
+        else delete document.documentElement.dataset.theme
+      }, theme)
       expect(await page.locator('a[href^="javascript"]').count()).toBe(0)
       expect(await page.locator('a[href="https://example.com"]').count()).toBe(1)
       expect(await page.getByText('<script>window.__xss=2</script>', { exact: false }).count()).toBe(1)
