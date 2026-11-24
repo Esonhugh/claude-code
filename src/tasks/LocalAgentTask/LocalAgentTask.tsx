@@ -391,10 +391,13 @@ export function enqueueAgentNotification({
   worktreeBranch,
   waiting,
   turnLimit,
+  consumed,
 }: {
   taskId: string
   description: string
   status: 'completed' | 'failed' | 'killed'
+  /** agent.report consumed the report for this reason: the parent is not told. */
+  consumed?: string
   /** Interim notice: the agent stopped with its own background work still running. */
   waiting?: boolean
   /** The agent stopped at its maxTurns limit; its result is partial. */
@@ -435,10 +438,24 @@ export function enqueueAgentNotification({
       }
     }
 
-    return userMessages ? { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, userMessages: undefined } } } : prev
+    return userMessages && consumed === undefined ? { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, userMessages: undefined } } } : prev
   })
 
   if (!shouldEnqueue) return
+  if (consumed !== undefined) {
+    // The parent waits no longer; SDK consumers still see the end, with no output file named.
+    emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
+      toolUseId,
+      summary: consumed,
+      usage: usage && {
+        total_tokens: usage.totalTokens,
+        tool_uses: usage.toolUses,
+        duration_ms: usage.durationMs,
+      },
+    })
+    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({ ...task, notified: true, waitingNotice: undefined }))
+    return
+  }
 
   // Abort any active speculation — background task state changed, so speculated
   // results may reference stale task output. The prompt suggestion text is
