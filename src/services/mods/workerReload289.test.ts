@@ -230,7 +230,9 @@ test('a successful real build clears the old failure gate before the original fa
     await writeFile(bad.entrypoints[0]!,`export function register(on){on('engine.create',async($,e,next)=>{const built=await next(e);await built.clock.now();return built})}`)
     await host.value.reconcile([monitor,bad]);expect(await count(host)).toBe(2)
     await writeFile(bad.entrypoints[0]!,failingSource())
-    await host.value.reconcile([monitor,bad]);expect(await count(host)).toBe(3)
+    // The loaded `failed` hooks engine.create, so this reload loads monitor again too (official 2.1.329
+    // session.start); its fresh count sees the one clock.now of the failing fold.
+    await host.value.reconcile([monitor,bad]);expect(await count(host)).toBe(1)
     expect(host.events.filter(event=>event.plugin==='failed'&&event.stage==='engine.create')).toHaveLength(2)
   }finally{await host.close()}
 })

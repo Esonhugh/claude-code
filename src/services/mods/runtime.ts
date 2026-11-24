@@ -3694,6 +3694,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
     }
+    // Official 2.1.329 session.start: a reload runs changed modules only, all of them if one hooks engine.create or plugin.register.
+    // A module whose folder is gone (keepLoaded) has nothing to load again and stays as it is.
+    if (!recoveringOwners && active.some(owner => owner.environment.registrations.some(registration =>
+      ['engine.create', 'plugin.register'].some(event => matchesModEventPattern(registration.event, event)))) &&
+      active.some(owner => {
+        const next = [...scanned].find(([input]) => input.storageId === owner.declaration.storageId)?.[1]
+        return next !== undefined && (reloading?.has(owner.declaration.storageId) || !sameModDeclaration(owner.declaration, next))
+      }))
+      reloading = new Set([...reloading ?? [], ...inputs.filter(input => !input.keepLoaded && active.some(owner => owner.declaration.storageId === input.storageId)).map(input => input.storageId)])
     const ordered = [...scanned.keys()].sort((a, b) => seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     const foldOrder = ordered.map(input => input.storageId)
     const gated = new Set(ordered.flatMap(input => {
