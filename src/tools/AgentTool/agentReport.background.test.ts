@@ -151,6 +151,14 @@ assert.match(String(queued('agent-report-completed')[0]?.value), /done \(rewritt
 assert.equal(captured, released)
 hook = (input, next) => next(input)
 
+// A failed or stopped run had no review: `off` where the mode runs none (official 2.1.329, outside auto mode).
+const reviews: unknown[] = []
+hook = async (input, next) => {
+  const answer = await next(input)
+  reviews.push((answer as { review?: unknown }).review)
+  return answer
+}
+
 // A failed run is reported failed, with no output of its own.
 await run('agent-report-failed', async function* () {
   yield assistant('partial')
@@ -170,6 +178,8 @@ await run('agent-report-killed', async function* (abort) {
 assert.equal(lastReport()?.agentId, 'agent-report-killed')
 assert.equal(lastReport()?.status, 'stopped')
 assert.equal(lastReport()?.text, 'halfway')
+assert.deepEqual(reviews, ['off', 'off'])
+hook = (input, next) => next(input)
 
 // A consumed report is not told to the parent, which no longer waits for it.
 hook = async () => ({ consumed: 'kept by the mod' })

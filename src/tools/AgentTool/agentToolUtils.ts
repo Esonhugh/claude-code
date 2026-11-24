@@ -892,14 +892,21 @@ type AgentReport = { text: string; review: () => Promise<AgentReportReview> }
 /** Who a run reports as to agent.report; read at launch, as a task drops its agent when the run ends. */
 export type AgentReportTarget = { agent: AgentDefinition; parentAgentId?: string }
 
-/** A failed or stopped run's report: nothing reviewed it. */
-export const unreviewedAgentReport = (text: string): AgentReport => ({ text, review: async () => ({ review: 'none' }) })
+/** Whether the mode runs auto mode's hand-off review; agent.report reports `off` where it does not. */
+const handoffReviewRuns = (toolPermissionContext: ToolPermissionContext): boolean =>
+  feature('TRANSCRIPT_CLASSIFIER') ? toolPermissionContext.mode === 'auto' : false
+
+/** A failed or stopped run's report: nothing reviewed it, `none` in auto mode and `off` in a mode with no review. */
+export const unreviewedAgentReport = (text: string, toolUseContext: Pick<ToolUseContext, 'getAppState'>): AgentReport => ({
+  text,
+  review: async () => ({ review: handoffReviewRuns(toolUseContext.getAppState().toolPermissionContext) ? 'none' : 'off' }),
+})
 
 /** auto mode's handoff review of a finished run, as agent.report's review. */
 export async function reviewAgentHandoff(
   args: Omit<Parameters<typeof classifyHandoffIfNeeded>[0], 'onReview'>,
 ): Promise<AgentReportReview> {
-  if (!feature('TRANSCRIPT_CLASSIFIER') || args.toolPermissionContext.mode !== 'auto') return { review: 'off' }
+  if (!handoffReviewRuns(args.toolPermissionContext)) return { review: 'off' }
   let review: AgentReportReview['review'] = 'none'
   const warning = await classifyHandoffIfNeeded({ ...args, onReview: value => { review = value } })
   return { review, ...(warning && { warning }) }
@@ -1068,8 +1075,8 @@ export function parkedAgentEnd(
   review: () => Promise<AgentReportReview>,
 ): NonNullable<Parameters<typeof parkAgentForChildren>[0]['notifyEnd']> {
   return (notice, result) => {
-    const own = result ? agentReportOf(result, review) : unreviewedAgentReport('')
-    return notifyAgentEnd(toolUseContext, target, notice, notice.status === 'completed' ? own : unreviewedAgentReport(own.text),
+    const own = result ? agentReportOf(result, review) : unreviewedAgentReport('', toolUseContext)
+    return notifyAgentEnd(toolUseContext, target, notice, notice.status === 'completed' ? own : unreviewedAgentReport(own.text, toolUseContext),
       answer => result ? reportedAgentMessage(result, answer) : answer.text || undefined)
   }
 }
@@ -1381,7 +1388,7 @@ export async function runAsyncAgentLifecycle({
           durationMs: Date.now() - metadata.startTime,
         },
         ...worktreeResult,
-      }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? ''), answer => answer.text || undefined)
+      }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
       return
     }
     const msg = errorMessage(error)
@@ -1416,7 +1423,7 @@ export async function runAsyncAgentLifecycle({
         durationMs: Date.now() - metadata.startTime,
       },
       ...worktreeResult,
-    }, unreviewedAgentReport(''), answer => answer.text || undefined)
+    }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
   } finally {
     onRunSettled?.()
     clearInvokedSkillsForAgent(agentIdForCleanup)

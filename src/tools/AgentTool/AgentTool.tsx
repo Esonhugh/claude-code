@@ -1717,7 +1717,7 @@ export const AgentTool = buildTool({
           const reportStopped = () => {
             if (wasBackgrounded) return
             void withAgentReportSnapshot(toolUseContext, snapshot =>
-              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '')))
+              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext)))
           }
           let worktreeResult: {
             worktreePath?: string
@@ -2034,7 +2034,7 @@ export const AgentTool = buildTool({
                             durationMs: Date.now() - metadata.startTime,
                           },
                           ...worktreeResult,
-                        }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? ''), answer => answer.text || undefined)
+                        }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
                         return
                       }
                       const errMsg = errorMessage(error)
@@ -2071,7 +2071,7 @@ export const AgentTool = buildTool({
                           durationMs: Date.now() - metadata.startTime,
                         },
                         ...worktreeResult,
-                      }, unreviewedAgentReport(''), answer => answer.text || undefined)
+                      }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
                     } finally {
                       releaseSlot()
                       if (stopForegroundSummarization) {
@@ -2396,7 +2396,7 @@ export const AgentTool = buildTool({
             if (!hasAssistantMessages) {
               // No messages collected, re-throw the error
               spawnedSubagent?.failed()
-              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport(''))
+              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport('', toolUseContext))
               throw 'consumed' in answer ? new Error(answer.consumed) : syncAgentError
             }
 
