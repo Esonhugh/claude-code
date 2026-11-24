@@ -239,17 +239,60 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
   }
 
+  // Official 2.1.329 follows a name by its spelling across the whole file, not by scope: every
+  // declaration of it must initialise it (to no other name) and nothing may assign it.
+  const fileNames = new Map<Node, { declared: Map<string, (Node | null)[]>; assigned: Set<string> }>()
+  function namesOf(program: Node) {
+    let names = fileNames.get(program)
+    if (names) return names
+    const found = names = { declared: new Map<string, (Node | null)[]>(), assigned: new Set<string>() }
+    const declare = (name: string, init: Node | null) => found.declared.set(name, [...found.declared.get(name) ?? [], init])
+    const pattern = (node: Node | null | undefined, each: (name: string) => void): void => {
+      switch (node?.type) {
+        case 'Identifier': each(node.name); break
+        case 'ObjectPattern': for (const property of node.properties) pattern(property.type === 'RestElement' ? property.argument : property.value, each); break
+        case 'ArrayPattern': for (const element of node.elements) pattern(element, each); break
+        case 'AssignmentPattern': pattern(node.left, each); break
+        case 'RestElement': pattern(node.argument, each); break
+      }
+    }
+    const walk = (node: Node) => {
+      switch (node.type) {
+        case 'VariableDeclarator':
+          if (node.id.type === 'Identifier') declare(node.id.name, node.init ?? null)
+          else pattern(node.id, name => declare(name, null))
+          break
+        case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+          if (node.id) declare(node.id.name, null)
+          for (const param of node.params) pattern(param, name => declare(name, null))
+          break
+        case 'ClassDeclaration': case 'ClassExpression': if (node.id) declare(node.id.name, null); break
+        case 'ImportSpecifier': case 'ImportDefaultSpecifier': case 'ImportNamespaceSpecifier': declare(node.local.name, null); break
+        case 'CatchClause': pattern(node.param, name => declare(name, null)); break
+        case 'AssignmentExpression': pattern(node.left, name => found.assigned.add(name)); break
+        case 'UpdateExpression': pattern(node.argument, name => found.assigned.add(name)); break
+        case 'ForInStatement': case 'ForOfStatement': if (node.left.type !== 'VariableDeclaration') pattern(node.left, name => found.assigned.add(name)); break
+      }
+      for (const child of children(node)) walk(child)
+    }
+    walk(program)
+    fileNames.set(program, found)
+    return found
+  }
+
   // Official 2.1.329: a string-shaped argument that is no literal would name files the scan cannot list.
-  function stringShaped(node: Node, scope: Scope, seen = new Set<Binding>()): boolean {
+  function stringShaped(node: Node): boolean {
     switch (node.type) {
       case 'SpreadElement': case 'Literal': case 'TemplateLiteral': case 'BinaryExpression': return true
-      case 'ConditionalExpression': return stringShaped(node.consequent, scope, seen) || stringShaped(node.alternate, scope, seen)
-      case 'LogicalExpression': return stringShaped(node.right, scope, seen)
+      case 'ConditionalExpression': return stringShaped(node.consequent) || stringShaped(node.alternate)
+      case 'LogicalExpression': return stringShaped(node.right)
       case 'Identifier': {
-        const binding = lookup(node.name, scope)
-        if (!binding?.alias || binding.alias.node.type === 'Identifier' || seen.has(binding)) return false
-        seen.add(binding)
-        return stringShaped(binding.alias.node, binding.alias.scope, seen)
+        const program = programs.get(path)
+        if (!program) return false
+        const { declared, assigned } = namesOf(program)
+        const inits = declared.get(node.name) ?? []
+        return inits.length > 0 && !assigned.has(node.name) &&
+          inits.every(init => init !== null && init.type !== 'Identifier' && stringShaped(init))
       }
       default: return false
     }
@@ -269,7 +312,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     }
   }
 
-  function scanWasm(call: string, node: Node, scope: Scope) {
+  function scanWasm(call: string, node: Node) {
     if (call !== 'wasm.compile') return
     const source = node.arguments[0] as Node | undefined
     const spelling = source && literalString(source)
@@ -277,7 +320,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       wasm.literals.push({ path, spelling })
       return
     }
-    if (!source || stringShaped(source, scope))
+    if (!source || stringShaped(source))
       fail(path, `$.wasm.compile takes a string literal naming a .wasm file of the plugin's own, so the files a module compiles can be listed, or bytes (got ${wasmArgument(source)})`)
     wasm.isMadeAtRunTime = true
   }
@@ -916,7 +959,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           recordCall(call)
           scanEnvironment(call, node)
           scanState(call, node, scope)
-          scanWasm(call, node, scope)
+          scanWasm(call, node)
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {

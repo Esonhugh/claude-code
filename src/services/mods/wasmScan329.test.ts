@@ -59,6 +59,25 @@ test('bytes made at run time are marked, string expressions refused', async () =
   }
 })
 
+test('a name is followed by its spelling across the file, as the official build does', async () => {
+  const root = await fixture({ 'entry.mjs': '' })
+  const refused = "$.wasm.compile takes a string literal naming a .wasm file of the plugin's own, so the files a module compiles can be listed, or bytes (got the variable n)"
+  for (const [source, isRefused] of [
+    ['const n = 123;', true],
+    ['const n = "./a.wasm";', true],
+    ['const n = cond ? new Uint8Array(8) : "./a.wasm";', true],
+    // A declaration in another function, of the same spelling, is no string the scan can see.
+    ['const n = 123; const log = (n) => n;', false],
+    ['let n = "./a.wasm"; n = new Uint8Array(8);', false],
+    ['let n;', false],
+    ['const n = new Uint8Array(8);', false],
+  ] as const) {
+    await writeFile(join(root, 'entry.mjs'), `const cond = Math.random() > 0.5; ${hook(`${source} await $.wasm.compile(n); return {result:1}`)}`)
+    if (isRefused) await expect(declare(root)).rejects.toThrow(refused)
+    else expect((await declare(root)).wasm).toEqual({ files: [], isMadeAtRunTime: true })
+  }
+})
+
 test('a literal path is relative, names a .wasm file and stays in the plugin', async () => {
   const root = await fixture({ 'entry.mjs': '' })
   for (const [spelling, reason] of [
