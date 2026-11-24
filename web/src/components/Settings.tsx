@@ -8,6 +8,7 @@ import { compactHint, formatElapsed, type T } from './ui'
 
 export type Theme = 'system' | 'light' | 'dark'
 export type Palette = 'default' | 'clay' | 'mono'
+export type Motion = 'system' | 'reduce'
 
 const PALETTES: [Palette, 'paletteDefault' | 'paletteClay' | 'paletteMono', string, string][] = [
   ['clay', 'paletteClay', '#b0573a', '#faf9f5'],
@@ -296,6 +297,8 @@ export function SettingsBody({
   setTheme,
   palette,
   setPalette,
+  motion,
+  setMotion,
   initialTab,
   workspace,
   settings,
@@ -311,6 +314,8 @@ export function SettingsBody({
   setTheme: (theme: Theme) => void
   palette: Palette
   setPalette: (palette: Palette) => void
+  motion: Motion
+  setMotion: (motion: Motion) => void
   /** The tab to open on (`/usage` opens Usage). */
   initialTab?: 'general' | 'usage' | 'features'
   workspace?: string
@@ -411,6 +416,21 @@ export function SettingsBody({
                 ),
               }))}
               onChange={setPalette}
+            />
+          </div>
+          <div className="setrow">
+            <div>
+              <b>{t('motion')}</b>
+              <small>{t('motionHint')}</small>
+            </div>
+            <Seg
+              label={t('motion')}
+              value={motion}
+              options={[
+                { value: 'system', label: t('motionSystem') },
+                { value: 'reduce', label: t('motionReduce') },
+              ]}
+              onChange={setMotion}
             />
           </div>
           {workspace && (

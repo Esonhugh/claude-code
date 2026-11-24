@@ -146,7 +146,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .dot.idle { background: var(--warn) }
 .dot.failed, .dot.killed { background: var(--bad) }
 .dot.pending { background: transparent; border: 1.5px solid var(--idle) }
-@media (prefers-reduced-motion: no-preference) { .dot.running { animation: pulse 1.6s infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .dot.running { animation: pulse 1.6s infinite } }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px transparent } }
 
 .composer { padding: 6px 20px 12px; background: var(--bg) }
@@ -402,7 +402,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .report .rh .ok { color: var(--ok) }
 .steps .stepsbody { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; color: var(--fg); font-size: 14px }
 .shimmer { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 40%, var(--fg) 50%, var(--muted) 60%, var(--muted) 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent }
-@media (prefers-reduced-motion: no-preference) { .shimmer { animation: shimmer 1.8s linear infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .shimmer { animation: shimmer 1.8s linear infinite } }
 @keyframes shimmer { from { background-position: 100% 0 } to { background-position: -150% 0 } }
 .toolcard { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden }
 .mcp-app { display: block; width: 100%; margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface) }
@@ -418,7 +418,7 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .toolcard .tout { margin: 0; background: var(--term-bg); color: var(--term-fg); padding: 10px 12px; font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; max-height: 220px }
 .toolcard .tfoot { display: flex; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; flex: none }
-@media (prefers-reduced-motion: no-preference) { .spin { animation: rot .8s linear infinite } }
+@media (prefers-reduced-motion: no-preference) { :root:not([data-motion="reduce"]) .spin { animation: rot .8s linear infinite } }
 @keyframes rot { to { transform: rotate(360deg) } }
 .status-line { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; max-width: var(--col); width: 100%; margin: 0 auto }
 .status-line .glyph { color: var(--glyph); font-family: var(--f-mono); width: 14px; text-align: center }

@@ -1,4 +1,4 @@
-// Applies the saved theme and palette before the page first draws, so a dark or
+// Applies the saved theme, palette and motion setting before the page first draws, so a dark or
 // mono page does not flash the default colors. A plain script in <head>, not a
 // module: the CSP (script-src 'self') allows no inline script. App.tsx owns
 // these settings afterwards; the keys and defaults here are the ones there.
@@ -18,4 +18,5 @@
   const palette = read('claude-web-palette', 'clay')
   if (palette === 'default') delete root.dataset.palette
   else if (palette === 'clay' || palette === 'mono') root.dataset.palette = palette
+  if (read('claude-web-motion', 'system') === 'reduce') root.dataset.motion = 'reduce'
 })()

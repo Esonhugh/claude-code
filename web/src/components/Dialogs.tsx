@@ -12,7 +12,7 @@ import { StatsBody } from './StatsDialog'
 import type { T } from './ui'
 import { zh } from './zhText'
 
-export type { Palette, Theme } from './Settings'
+export type { Motion, Palette, Theme } from './Settings'
 
 const KEY_ROWS: (['inputGroup' | 'chatGroup' | 'pageGroup'] | [Parameters<T>[0], string])[] = [
   ['inputGroup'],
