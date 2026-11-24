@@ -1,8 +1,9 @@
 import { OFFICIAL_CORE_CALLS } from './coreCalls.js'
 import { parse } from 'acorn'
 import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { open, realpath, stat } from 'node:fs/promises'
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
@@ -26,7 +27,7 @@ const tiers: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 const coreNouns = new Set([
   ...OFFICIAL_CORE_CALLS.map(call => call.split('.')[0]!),
   'engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp',
-  'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
+  'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env', 'wasm',
 ])
 const supportedEvents = new Set([
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
@@ -39,7 +40,7 @@ const supportedEvents = new Set([
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.notify', 'ui.selection', 'ui.copy',
   'mcp.connect',
   'ui.place', 'prompt.paint', 'theme.set', 'theme.clear', 'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
-  'telemetry.log', 'telemetry.mark',
+  'telemetry.log', 'telemetry.mark', 'wasm.compile',
 ])
 const telemetryStreams = ['anthropic', 'collector']
 const telemetryStreamHint = '"to" is a string literal, or a list of them, from "anthropic", "collector", written in the call, so the streams a module\'s hooks stand on can be listed'
@@ -92,6 +93,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const env = { reads: new Set<string>(), writes: new Set<string>() }
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
+  const wasm = { literals: [] as { path: string; spelling: string }[], isMadeAtRunTime: false }
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
@@ -235,6 +237,49 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!name.value || /[=\0]/.test(name.value))
       fail(path, 'environment name must be nonempty without NUL or =')
     env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
+  }
+
+  // Official 2.1.329: a string-shaped argument that is no literal would name files the scan cannot list.
+  function stringShaped(node: Node, scope: Scope, seen = new Set<Binding>()): boolean {
+    switch (node.type) {
+      case 'SpreadElement': case 'Literal': case 'TemplateLiteral': case 'BinaryExpression': return true
+      case 'ConditionalExpression': return stringShaped(node.consequent, scope, seen) || stringShaped(node.alternate, scope, seen)
+      case 'LogicalExpression': return stringShaped(node.right, scope, seen)
+      case 'Identifier': {
+        const binding = lookup(node.name, scope)
+        if (!binding?.alias || binding.alias.node.type === 'Identifier' || seen.has(binding)) return false
+        seen.add(binding)
+        return stringShaped(binding.alias.node, binding.alias.scope, seen)
+      }
+      default: return false
+    }
+  }
+
+  function wasmArgument(node: Node | undefined): string {
+    switch (node?.type) {
+      case undefined: return 'no argument'
+      case 'Identifier': return `the variable ${node.name}`
+      case 'TemplateLiteral': return 'a template with a substitution'
+      case 'SpreadElement': return 'a spread'
+      case 'Literal': return `the literal ${node.raw ?? String(node.value)}`
+      case 'MemberExpression': return 'a member read'
+      case 'CallExpression': return 'a call'
+      case 'BinaryExpression': return 'a concatenation'
+      default: return `a ${node.type}`
+    }
+  }
+
+  function scanWasm(call: string, node: Node, scope: Scope) {
+    if (call !== 'wasm.compile') return
+    const source = node.arguments[0] as Node | undefined
+    const spelling = source && literalString(source)
+    if (spelling !== undefined) {
+      wasm.literals.push({ path, spelling })
+      return
+    }
+    if (!source || stringShaped(source, scope))
+      fail(path, `$.wasm.compile takes a string literal naming a .wasm file of the plugin's own, so the files a module compiles can be listed, or bytes (got ${wasmArgument(source)})`)
+    wasm.isMadeAtRunTime = true
   }
 
   function literalString(node: Node): string | undefined {
@@ -506,7 +551,6 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   }
 
   function recordCall(call: string) {
-    if (call === 'wasm.compile') fail(path, 'wasm.compile requires an isolated execution worker; not supported in this build')
     calls.add(call)
     if (collecting) return
     if (helperName === undefined) directCalls.add(call)
@@ -872,6 +916,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           recordCall(call)
           scanEnvironment(call, node)
           scanState(call, node, scope)
+          scanWasm(call, node, scope)
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {
@@ -1004,7 +1049,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry, validation: {
+  return { events, calls, env, state, nextTiers, telemetry, wasm, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
     helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
   } }
@@ -1262,18 +1307,41 @@ export async function loadModDeclaration(input: {
   if (scanned.telemetry?.includes('anthropic') && tier !== 'builtin' && tier !== 'core')
     fail(root, 'hooks module not loaded; its hooks stand on the telemetry stream "anthropic" (a matcher names it, or a telemetry hook names no "to" and so stands on every stream), which is for the plugins built into the CLI; name the collector on each telemetry hook: on("telemetry.log", { to: "collector" }, hook) (policy/scan)')
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
+  const wasmFiles = new Map<string, Set<string>>()
+  for (const { path, spelling } of scanned.wasm.literals) {
+    const refuse = (reason: string) => fail(path, `$.wasm.compile's path "${spelling}" ${reason}`)
+    if (!spelling.startsWith('./') && !spelling.startsWith('../')) refuse('is not relative: spell it from this file ("./engine.wasm")')
+    if (!spelling.endsWith('.wasm')) refuse('does not end in .wasm')
+    const target = resolve(dirname(path), spelling)
+    if (!within(root, target) || target === root) refuse("leaves the plugin's folder")
+    const spellings = wasmFiles.get(relativePath(target)) ?? new Set<string>()
+    spellings.add(spelling)
+    wasmFiles.set(relativePath(target), spellings)
+  }
+  const wasm = wasmFiles.size || scanned.wasm.isMadeAtRunTime ? {
+    files: [...wasmFiles].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, spellings]) => ({ path, spellings: [...spellings].sort() })),
+    ...(scanned.wasm.isMadeAtRunTime ? { isMadeAtRunTime: true as const } : {}),
+  } : undefined
+  // A saved binary changes the declaration, so the mod reloads with it; a missing one hashes as null.
+  const wasmStamps = await Promise.all((wasm?.files ?? []).map(async file => {
+    const hash = createHash('sha256')
+    try {
+      for await (const chunk of createReadStream(resolve(root, ...file.path.split('/')))) hash.update(chunk as Buffer)
+    } catch { return { path: file.path, sha256: null } }
+    return { path: file.path, sha256: hash.digest('hex') }
+  }))
   // Absolute installation locations are plumbing, not declaration identity.
   const fingerprint = createHash('sha256').update(JSON.stringify({
     entrypoints: entrypoints.map(relativePath),
     modules: modules.map(module => ({ path: relativePath(module.path), source: module.source })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     clients: clients.map(client => ({ path: relativePath(client.path), module: client.module })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-    options: fingerprintOptions, tier,
+    options: fingerprintOptions, tier, ...(wasm ? { wasm, wasmStamps } : {}),
   })).digest('hex')
   return {
     name: input.name, storageId: input.storageId, pluginRoot: root,
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
-    entrypoints, modules, links, ...(clients.length ? { clients } : {}), events: [...events], calls: [...calls].sort(), validation: scanned.validation,
+    entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(), validation: scanned.validation,
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {
       reads: [...state.reads.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),
