@@ -499,11 +499,21 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         const expression = item.init?.type === 'AwaitExpression' ? item.init.argument : item.init
         const callee = expression?.type === 'CallExpression' ? capabilityValue(expression.callee, inner) : undefined
         if (callee?.role === 'next' && (!callee.members.length || callee.members.join('.') === 'to')) {
-          if (node.kind !== 'const' || item.id.type !== 'Identifier' || item.init.type !== 'AwaitExpression') {
-            fail(path, 'engine.create next result requires const identifier = await next(input); aliases are unsupported')
+          if (node.kind !== 'const') fail(path, 'the value of next(e) at engine.create is bound with let or var (const only)', node)
+          // Official 2.1.329 withholds a noun as const { fs, ...beneath } = await next(e), leaving fs unread.
+          const properties = item.id.type === 'ObjectPattern' ? item.id.properties : []
+          const rest = properties.at(-1)
+          const withheld = properties.slice(0, -1)
+          const destructured = rest?.type === 'RestElement' && rest.argument.type === 'Identifier' &&
+            withheld.every((property: Node) => property.type === 'Property' && property.shorthand && property.value.type === 'Identifier')
+          if ((item.id.type !== 'Identifier' && !destructured) || item.init.type !== 'AwaitExpression') {
+            fail(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
           }
-          bindings.set(item.id.name, { role: 'beneath' })
+          const beneath = destructured ? rest.argument.name : item.id.name
+          bindings.set(beneath, { role: 'beneath' })
           engineNextBindings.add(expression)
+          refuseMemberValues(body, beneath, true)
+          for (const property of withheld) refuseReads(body, property.value.name, item.id)
         }
       }
     }
@@ -656,6 +666,91 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return event
   }
 
+  function patternNames(pattern: Node | null | undefined, names: string[] = []): string[] {
+    if (pattern?.type === 'Identifier') names.push(pattern.name)
+    else if (pattern?.type === 'AssignmentPattern') patternNames(pattern.left, names)
+    else if (pattern?.type === 'RestElement') patternNames(pattern.argument, names)
+    else if (pattern?.type === 'ArrayPattern') for (const item of pattern.elements) patternNames(item, names)
+    else if (pattern?.type === 'ObjectPattern') {
+      for (const property of pattern.properties) patternNames(property.type === 'RestElement' ? property.argument : property.value, names)
+    }
+    return names
+  }
+
+  // Whether node opens a scope of its own that declares name again.
+  function redeclares(node: Node, name: string): boolean {
+    const declared = (item: Node, kinds: string[]) => item.type === 'VariableDeclaration' && kinds.includes(item.kind) &&
+      item.declarations.some((declarator: Node) => patternNames(declarator.id).includes(name))
+    const lexical = (statements: Node[]) => statements.some(statement => declared(statement, ['let', 'const']) ||
+      (['FunctionDeclaration', 'ClassDeclaration'].includes(statement.type) && statement.id?.name === name))
+    const hoisted = (item: Node): boolean => !isFunction(item) && (declared(item, ['var']) || children(item).some(hoisted))
+    if (isFunction(node)) {
+      return (node.type !== 'FunctionDeclaration' && node.id?.name === name) ||
+        node.params.some((param: Node) => patternNames(param).includes(name)) || children(node.body).some(hoisted)
+    }
+    if (node.type === 'BlockStatement' || node.type === 'StaticBlock') return lexical(node.body)
+    if (node.type === 'SwitchStatement') return lexical(node.cases.flatMap((item: Node) => item.consequent))
+    if (node.type === 'CatchClause') return patternNames(node.param).includes(name)
+    if (['ForStatement', 'ForInStatement', 'ForOfStatement'].includes(node.type)) return declared(node.init ?? node.left ?? { type: '' }, ['let', 'const'])
+    return false
+  }
+
+  // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
+  // the value of next(e) at engine.create is held to the same.
+  const membersChecked = new Map<Node, Set<string>>()
+  function refuseMemberValues(nodes: Node[], name: string, beneath = false) {
+    const walk = (node: Node) => {
+      if (redeclares(node, name)) return
+      if (node.type === 'Identifier' && node.name === name) {
+        let use = node
+        let parent = parents.get(use)
+        while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+        if (beneath && parent?.type === 'VariableDeclarator' && parent.init === use && parent.id.type === 'ObjectPattern') {
+          for (const property of parent.id.properties) if (property.value?.type === 'Identifier') refuseReads(nodes, property.value.name, parent.id)
+        }
+        if (parent?.type !== 'MemberExpression' || parent.object !== use) return
+        if (parent.computed || parent.optional) fail(path, 'a computed or optional member access on $', parent)
+        if (parent.property.type !== 'Identifier') fail(path, 'a member access on $ that is not a name', parent)
+        const noun = parent.property.name
+        const member = parents.get(parent)
+        const named = member?.type === 'MemberExpression' && member.object === parent && !member.computed && !member.optional &&
+          member.property.type === 'Identifier'
+        if (noun === 'plugin') {
+          if (named) return
+          fail(path, '$.plugin is used other than as $.plugin.name or $.plugin.root', parent)
+        }
+        if (!named) fail(path, `$.${noun} is used as a value (a noun of $ bound, passed or read)`, parent)
+        const call = parents.get(member)
+        if (call?.type !== 'CallExpression' || call.callee !== member || call.optional) {
+          fail(path, `$.${noun}.${member.property.name} is used as a value (an event of $ bound, passed or read) instead of called`, member)
+        }
+        return
+      }
+      for (const child of children(node)) walk(child)
+    }
+    for (const node of nodes) {
+      const names = membersChecked.get(node) ?? new Set<string>()
+      if (names.has(name)) continue
+      membersChecked.set(node, names.add(name))
+      walk(node)
+    }
+  }
+
+  // A noun destructured from next(e) at engine.create is withheld, and official 2.1.329 refuses any read of it.
+  function refuseReads(nodes: Node[], name: string, declaration: Node) {
+    const walk = (node: Node) => {
+      if (node === declaration || redeclares(node, name)) return
+      const parent = parents.get(node)
+      const named = (parent?.type === 'MemberExpression' && parent.property === node && !parent.computed) ||
+        (['Property', 'MethodDefinition', 'PropertyDefinition'].includes(parent?.type) && parent.key === node && !parent.computed && !parent.shorthand)
+      if (node.type === 'Identifier' && node.name === name && !named) {
+        fail(path, `"${name}", destructured from $ at engine.create, is read (a noun bound to a name); leave it unread or call it as $.noun.event(...)`, node)
+      }
+      for (const child of children(node)) walk(child)
+    }
+    nodes.forEach(walk)
+  }
+
   function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler = false) {
     if (handler && (event === 'turn.step' || event === 'process.spawn')) {
       if (!node.async || !node.generator) fail(path, `${event} handlers must be async generators`)
@@ -671,6 +766,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         else if (roles.length && param.type === 'Identifier') bindings.set(param.name, { role: null })
       }
       return [...scope, bindings]
+    })
+    node.params.forEach((param: Node, index: number) => {
+      if (roles[index]?.role === 'engine' && !roles[index]!.members.length && param.type === 'Identifier') refuseMemberValues([node.body], param.name)
     })
     if (collecting) {
       if (collectedFunctions.has(inner)) return

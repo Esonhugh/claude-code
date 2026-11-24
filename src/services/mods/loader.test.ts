@@ -420,7 +420,7 @@ test.each([
       on('tool.call', ($, e, next) => { ${body} });
       on('session.start', ($) => { first = $; });
     }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|assignment|itself/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|assignment|itself|used as a value/)
 })
 
 test.each([
@@ -525,7 +525,7 @@ test.each([
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('tool.call', ($, e) => { ${body} });
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|escape|itself/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|escape|itself|used as a value/)
 })
 
 test('treats for-of initialization as an unknown write to a local capture', async () => {
@@ -653,21 +653,24 @@ test('rejects a same-name imported Object instead of assuming the builtin', asyn
   await expect(loadModDeclaration(input)).rejects.toThrow(/escape|itself/)
 })
 
-test('tracks captured method aliases and a single stable helper target', async () => {
-  const input = await plugin({ 'main.ts': `let read, write, to, captured;
+test('tracks a captured Next method alias and a single stable helper target', async () => {
+  const input = await plugin({ 'main.ts': `let to, captured;
     function helper(api) { return api.clock.now(); }
     export function register(on) {
-      on('tool.call', ($, e) => {
-        read('METHOD_READ'); write('METHOD_WRITE', 'value'); captured($); return to(e, 'core');
-      });
-      on('session.start', ($, e, next) => {
-        read = $.env.get; write = $.env.set; to = next.to; captured = helper; captured = helper;
-      });
+      on('tool.call', ($, e) => { captured($); return to(e, 'core'); });
+      on('session.start', ($, e, next) => { to = next.to; captured = helper; captured = helper; });
     }` })
   const result = await loadModDeclaration(input)
-  expect(result.calls).toEqual(['clock.now', 'env.get', 'env.set'])
-  expect(result.env).toEqual({ reads: ['METHOD_READ'], writes: ['METHOD_WRITE'] })
+  expect(result.calls).toEqual(['clock.now'])
   expect(result.nextTiers).toEqual(['core'])
+})
+
+test('refuses a captured method alias of $ with the official text', async () => {
+  const input = await plugin({ 'main.ts': `let read;
+    export function register(on) {
+      on('session.start', ($, e, next) => { read = $.env.get; return next(e); });
+    }` })
+  await expect(loadModDeclaration(input)).rejects.toThrow('main.ts, compiled line 4 `read = $.env.get;`: $.env.get is used as a value (an event of $ bound, passed or read) instead of called; $ is always spelled')
 })
 
 test.each([
@@ -678,7 +681,7 @@ test.each([
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('tool.call', ($, e, next) => { ${body} });
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/mixed.*assignments/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/mixed.*assignments|used as a value/)
 })
 
 test('allows supported capabilities through helper returns', async () => {
@@ -698,9 +701,8 @@ test('follows renamed imports, re-exports and method aliases without guessing pa
       export function register(on) { on('tool.call', ($, e, next) => invoke($, e, next)); }`,
     'barrel.ts': `export { work as forwarded } from './helper';`,
     'helper.ts': `export function work(value, input, continuation) {
-      const env = value.env; const read = env.get;
-      const write = value.env.set; const resume = continuation; const to = resume.to;
-      read('IMPORTED_READ'); write('IMPORTED_WRITE', 'value');
+      const resume = continuation; const to = resume.to;
+      value.env.get('IMPORTED_READ'); value.env.set('IMPORTED_WRITE', 'value');
       return to({...input, budget:resume.budget}, 'core');
     }`,
   })
@@ -741,7 +743,7 @@ test.each([
   `function helper(api) { api.clock.now() }; function wrapper(helper) { helper($) }; wrapper(external)`,
 ])('rejects untrackable or inadmissible helper capability flow: %s', async body => {
   const input = await plugin({ 'main.ts': `export function register(on) { on('tool.call', ($, e, next) => { ${body} }); }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|itself/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|itself|used as a value/)
 })
 
 test('follows the selected module and lexical binding, not same-name or conventional parameters', async () => {
@@ -766,14 +768,15 @@ test('follows the selected module and lexical binding, not same-name or conventi
   expect(result.nextTiers).toEqual(['append'])
 })
 
-test('allows direct engine noun forwarding only at the engine.create return boundary', async () => {
+// Official 2.1.329 holds the value of next(e) at engine.create to the rule for $.
+test('refuses an engine noun of next(e) bound to a name inside engine.create', async () => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('engine.create', async ($, e, next) => {
       const below = await next(e); const clock = below.clock;
       await clock.now(); return { ...below, clock };
     });
   }` })
-  expect((await loadModDeclaration(input)).calls).toEqual(['clock.now'])
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.clock is used as a value (a noun of $ bound, passed or read)')
 })
 
 test('rejects renaming env into store in an engine provider return', async () => {
@@ -781,7 +784,7 @@ test('rejects renaming env into store in an engine provider return', async () =>
     on('engine.create', async ($, e, next) => { const below = await next(e); return {...below, store:below.env}; });
     on('tool.call', ($) => $.store.get('HIDDEN_ENV_NAME'));
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/noun.*alias|alias.*noun/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.env is used as a value (a noun of $ bound, passed or read)')
 })
 
 test('rejects renaming a core noun into a custom provider to bypass call admission', async () => {
@@ -789,7 +792,7 @@ test('rejects renaming a core noun into a custom provider to bypass call admissi
     on('engine.create', async ($, e, next) => { const below = await next(e); return {...below, safe:below.tool}; });
     on('session.start', ($, e) => $.safe.register(e));
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/noun.*alias|alias.*noun/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.tool is used as a value (a noun of $ bound, passed or read)')
 })
 
 test('rejects engine nouns hidden in ordinary objects inside engine.create', async () => {
@@ -799,7 +802,7 @@ test('rejects engine nouns hidden in ordinary objects inside engine.create', asy
       hidden.clock.now(); return below;
     });
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/escape/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.clock is used as a value (a noun of $ bound, passed or read)')
 })
 
 test('rejects an engine returned by recursively calling an inline named handler as a helper', async () => {
@@ -833,7 +836,7 @@ test('rejects capability member growth in recursive helpers', async () => {
     'main.ts': `function descend(api) { return descend(api.more); }
       export function register(on) { on('tool.call', ($) => descend($)); }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/static.*capability|capabilit.*static/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.more is used as a value (a noun of $ bound, passed or read)')
 })
 
 test('builds module bindings before inspecting imported top-level initializer calls', async () => {
@@ -845,16 +848,14 @@ test('builds module bindings before inspecting imported top-level initializer ca
   expect((await loadModDeclaration(input)).calls).toEqual([])
 })
 
-test('records two specializations of one helper without mixing capabilities and Next', async () => {
+test('refuses an event of $ passed to a helper with the official text', async () => {
   const input = await plugin({
     'main.ts': `function invoke(fn, value) { return fn(value); }
       export function register(on) { on('tool.call', ($, e, next) => {
         invoke($.clock.now, e); return invoke(next, e);
       }); }`,
   })
-  const result = await loadModDeclaration(input)
-  expect(result.calls).toEqual(['clock.now'])
-  expect(result.nextTiers).toEqual([])
+  await expect(loadModDeclaration(input)).rejects.toThrow('$.clock.now is used as a value (an event of $ bound, passed or read) instead of called')
 })
 
 test('rejects spread arguments that obscure helper capability parameter positions', async () => {
@@ -882,13 +883,12 @@ test('rejects reassignment of a helper through a loop target', async () => {
   await expect(loadModDeclaration(input)).rejects.toThrow(/assignment/)
 })
 
-test('preserves direct method aliases and local closure helpers with precise calls', async () => {
+test('preserves Next aliases and local closure helpers with precise calls', async () => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('session.start', ($, e, next) => {
-      const invoke = $.clock.now;
       const helper = api => api.clock.sleep(e);
       const alias = next;
-      invoke(e); helper($); return alias(e);
+      $.clock.now(e); helper($); return alias(e);
     });
   }` })
   const result = await loadModDeclaration(input)
@@ -1026,11 +1026,11 @@ test.each([
   [`on('turn.step', () => {})`, /async generators/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
   [`on('session.start', ($, e, next) => $.tool.unknown(e))`, /unsupported core capability/],
-  [`on('session.start', ($, e, next) => $.tool['register'](e))`, /computed/],
+  [`on('session.start', ($, e, next) => $.tool['register'](e))`, /\$\.tool is used as a value/],
   [`on('session.start', ($, e, next) => $['clock'].now(e))`, /computed/],
-  [`on('session.start', ($, e, next) => $.clock['now'](e))`, /computed/],
-  [`on('session.start', ($, e, next) => $.clock?.now(e))`, /optional/],
-  [`on('session.start', ($, e, next) => $.clock.now?.(e))`, /optional/],
+  [`on('session.start', ($, e, next) => $.clock['now'](e))`, /\$\.clock is used as a value/],
+  [`on('session.start', ($, e, next) => $.clock?.now(e))`, /\$\.clock is used as a value/],
+  [`on('session.start', ($, e, next) => $.clock.now?.(e))`, /\$\.clock\.now is used as a value \(an event of \$ bound, passed or read\) instead of called/],
   [`on('session.start', ($, e, next) => { const { clock } = $; clock.now(e) })`, /\$ itself is bound to a name/],
   [`on('session.start', ($, e, next) => next.to(e, e.tier))`, /literal/],
   [`on('session.start', ($, e, next) => next['to'](e, 'core'))`, /literal/],

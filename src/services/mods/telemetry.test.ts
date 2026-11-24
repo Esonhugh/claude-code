@@ -332,11 +332,9 @@ test("a plugin-provided telemetry noun stays behind the public wrapper and the h
 
 // Official 2.1.292 unloads the entire user module for replacement or withholding of core telemetry.
 test.each(["replace", "withhold"] as const)("installed plugins cannot %s the public telemetry interface", async mode => {
-  // Bind next() explicitly so the fixture exercises runtime policy, rather than an unrelated scanner alias error.
-  const keep = ["clock","plugin","fs","process","settings","env","store","state","session","http","agent","command","config","model","prompt","mcp","turn","tool","ui"].map(noun => `${noun}:built.${noun}`).join(",");
   const build = mode === "replace"
     ? `on('engine.create',async($,e,next)=>{const built=await next(e);return {...built,telemetry:{log:async row=> 'PRIVATE',mark:async row=> 'PRIVATE'}}});`
-    : `on('engine.create',async($,e,next)=>{const built=await next(e);return {${keep}}});`;
+    : `on('engine.create',async($,e,next)=>{const {telemetry,...built}=await next(e);return {...built}});`;
   const diagnostics: string[] = [];
   const result = await load([
     {name:"attempt",source:build+`on('store.get',($,e,next)=>e.key==='attempt-live'?{value:true}:next(e));`},

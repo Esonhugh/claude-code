@@ -487,7 +487,7 @@ describe('Mods lifecycle', () => {
   test.each(['engine.*', '*', '!ui.*'])('engine.create folds matching %s registrations with the empty engine interface', async pattern => {
     const plugin = await fixture(`let builds=0, empty; export function register(on) {
       on('${pattern}', ($,e,next) => {
-        if(next.is('engine.create',e)) {builds++;empty=$.plugin===undefined;}
+        if(next.is('engine.create',e)) {builds++;try{empty=$.plugin.name===undefined}catch{empty=true}}
         return next(e);
       });
       on('tool.call', () => ({result:{builds,empty}}));
