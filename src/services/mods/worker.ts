@@ -799,7 +799,7 @@ function createEnvironment(id: number, plugin: string, isWasmOn = false): Enviro
   })
   const sandbox = isWasmOn ? vm.runInContext(`(${createModWasmSandbox.toString()})(WebAssembly)`, context)(
     (bytes: Uint8Array) => modWasmSharedMemoryReason(bytes) !== undefined) as ReturnType<ReturnType<typeof createModWasmSandbox>> : undefined
-  const CompileError = sandbox && vm.runInContext('WebAssembly.CompileError', context) as typeof WebAssembly.CompileError
+  const ModuleError = sandbox && vm.runInContext('Error', context) as ErrorConstructor
   vm.runInContext(`
     for (const name of ['console', 'ShadowRealm', ${isWasmOn ? '' : "'WebAssembly', "}'FinalizationRegistry',
       'WeakRef', 'Atomics', 'SharedArrayBuffer', 'queueMicrotask',
@@ -807,15 +807,15 @@ function createEnvironment(id: number, plugin: string, isWasmOn = false): Enviro
       delete globalThis[name];
     }
   `, context)
-  const wasm = sandbox && CompileError && Object.freeze({
+  const wasm = sandbox && ModuleError && Object.freeze({
     copyOf: sandbox.copyOf,
     encode: (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64'),
-    // Compiled first, as the official build does, then refused if it holds a shared memory.
+    // Compiled first, as the official build does, then refused with a HooksError if it holds a shared memory.
     compile: async (base64: string) => {
       const bytes = new Uint8Array(Buffer.from(base64, 'base64'))
       const module = await sandbox.compile(bytes)
       const reason = modWasmSharedMemoryReason(bytes)
-      if (reason) throw new CompileError(`${plugin}: $.wasm.compile: ${reason}`)
+      if (reason) throw Object.assign(new ModuleError(`${plugin}: $.wasm.compile: ${reason}`), { name: 'HooksError' })
       return module
     },
   })

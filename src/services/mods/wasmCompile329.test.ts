@@ -119,8 +119,8 @@ test('bytes are copied as the call is made, capped at 64 MiB, and a shared memor
     over: { name: 'RangeError', message: '$.wasm.compile takes at most 67108864 bytes' },
     type: { name: 'TypeError', message: '$.wasm.compile takes a literal path, or bytes as an ArrayBuffer or a view of one' },
     garbage: { isCompileError: true },
-    defines: { isCompileError: true, message: 'probe: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
-    imports: { isCompileError: true, message: 'probe: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
+    defines: { name: 'HooksError', isCompileError: false, message: 'probe: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
+    imports: { name: 'HooksError', isCompileError: false, message: 'probe: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
   })
 })
 
