@@ -31,6 +31,16 @@ assert.throws(
   error => error instanceof Error && error.message === SUBAGENT_DEPTH_LIMIT_MESSAGE,
 )
 
+const priorDepth = process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH
+try {
+  process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = '2'
+  assert.throws(() => assertCanSpawnNestedSubagent({ subagentDepth: 2 }), /limit reached \(2\)/)
+  assert.doesNotThrow(() => assertCanSpawnNestedSubagent({ subagentDepth: 1 }))
+} finally {
+  if (priorDepth === undefined) delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH
+  else process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = priorDepth
+}
+
 const parentContext = {
   options: {
     commands: [],

@@ -52,6 +52,12 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   storeMethods.set(call, method)
   return call
 }
+const wasmBridges = new WeakSet<HostFunction>()
+/** Marks `$.wasm.compile`: the Worker copies its bytes and compiles the answer in the caller's environment. */
+export function createModWasmBridge<T extends HostFunction>(call: T): T {
+  wasmBridges.add(call)
+  return call
+}
 const interfaceBridges = new WeakMap<HostFunction, string>()
 export function createModInterfaceBridge<T extends HostFunction>(call: T, operation: string): T {
   interfaceBridges.set(call, operation)
@@ -62,6 +68,12 @@ const timerWaits = new WeakSet<HostFunction>()
 const modelMethods = new WeakMap<HostFunction, 'complete' | 'fork' | 'classify'>()
 export function createModModelBridge<T extends HostFunction>(call: T, method: 'complete' | 'fork' | 'classify'): T {
   modelMethods.set(call, method)
+  return call
+}
+// Capabilities whose second argument may carry `{ signal }`, which the Worker cannot send.
+const signalOptions = new WeakMap<HostFunction, 'agent.call'>()
+export function createModSignalOptionBridge<T extends HostFunction>(call: T, operation: 'agent.call'): T {
+  signalOptions.set(call, operation)
   return call
 }
 export function createModStreamBridge<T extends HostFunction>(call: T, lifetime: 'invocation' | 'environment' = 'invocation'): T {
@@ -327,7 +339,8 @@ export function createModEnvironmentHost({
       const storeMethod = storeMethods.get(value as HostFunction)
       const stateMethod = stateMethods.get(value as HostFunction)
       const modelMethod = modelMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(mutableResults.has(value as HostFunction) ? {mutableResult:true} : {}), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}) }
+      const signalOption = signalOptions.get(value as HostFunction)
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(mutableResults.has(value as HostFunction) ? {mutableResult:true} : {}), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}), ...(signalOption ? {signalOption} : {}), ...(wasmBridges.has(value as HostFunction) ? {wasmMethod:'compile' as const} : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)
@@ -476,6 +489,11 @@ export function createModEnvironmentHost({
     }
     drawing.onmessage = (event: MessageEvent<ModWorkerReply>) => {
       const message = event.data
+      if (message.type === 'console-error') {
+        if (message.environment === environment && environments.get(environment) === state)
+          logForDebugging(`[Mods:${state.declaration.name}] ${message.text}`)
+        return
+      }
       if (message.type === 'client-turn-complete') {
         if (message.environment === environment && retiring?.id === message.id) stop(stopped!)
         return
@@ -553,6 +571,11 @@ export function createModEnvironmentHost({
   const streamAbortErrors = new WeakSet<Error>()
   worker.onmessage = async (event: MessageEvent<ModWorkerReply>) => {
     const message = event.data
+    if (message.type === 'console-error') {
+      const owner = environments.get(message.environment)
+      if (owner) logForDebugging(`[Mods:${owner.declaration.name}] ${message.text}`)
+      return
+    }
     if (message.type === 'pong') { if (message.n === pingSent?.n) pingSent = undefined; return }
     // Phase updates belong to a dedicated Client Worker, never the hook Worker.
     if (message.type === 'client-phase' || message.type === 'client-fault' || message.type === 'client-turn-complete') return
@@ -565,7 +588,7 @@ export function createModEnvironmentHost({
     changed()
     if (message.type === 'model-abort') {
       const cancellation = modelCalls.get(`${message.environment}:${message.call}`)
-      logForDebugging(`[Mods] model.complete signal: environment=${message.environment} call=${message.call} active=${Boolean(cancellation)}`)
+      logForDebugging(`[Mods] call signal: environment=${message.environment} call=${message.call} active=${Boolean(cancellation)}`)
       cancellation?.abort(Object.assign(new Error(message.reason.message), {name:message.reason.name}))
       return
     }
@@ -624,8 +647,9 @@ export function createModEnvironmentHost({
       if (fn?.environment !== message.environment || typeof fn.call !== 'function') throw new Error('Unknown or unloaded module capability')
       if (fn.invocation !== undefined && (fn.invocation !== message.invocation || !contexts.has(fn.invocation))) throw new Error('Module invocation already settled')
       const args = message.args.map(value => decode(message.environment, value))
-      if (modelMethods.get(fn.call) === 'complete') {
-        if (args.length !== 1) throw new TypeError('model.complete requires one request')
+      const signalOption = modelMethods.get(fn.call) === 'complete' ? 'model.complete' : signalOptions.get(fn.call)
+      if (signalOption) {
+        if (args.length !== 1) throw new TypeError(`${signalOption} requires one request`)
         const state = stateFor(message.environment)
         const key = `${message.environment}:${message.call}`
         const cancellation = new AbortController()

@@ -19,6 +19,7 @@ import { resolveModToolDescriptions } from '../../utils/api.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
 import {
   createToolCatalogForContext,
+  projectOfferedTools,
   type ModToolDescription,
 } from '../../services/mods/toolCatalog.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -371,7 +372,7 @@ export const ToolSearchTool = buildTool({
     const currentContext = currentTools === options.tools
       ? context
       : { ...context, options: { ...options, tools: currentTools } }
-    const tools = currentTools.filter(
+    let tools = currentTools.filter(
       tool =>
         isPlanModeAvailable() ||
         (tool.name !== ENTER_PLAN_MODE_TOOL_NAME &&
@@ -384,6 +385,9 @@ export const ToolSearchTool = buildTool({
     })
     let modDescriptions: ReadonlyMap<Tool, ModToolDescription> | undefined
     try {
+      if (snapshot?.hasHooks('tool.offer')) {
+        tools = [...await projectOfferedTools(tools, snapshot, context.agentId, context.agentType, context.abortController.signal)]
+      }
       if (snapshot?.hasHooks('tool.describe')) {
         modDescriptions = await resolveModToolDescriptions(tools, {
           tools: currentTools,

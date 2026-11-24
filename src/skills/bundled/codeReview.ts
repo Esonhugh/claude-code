@@ -6,7 +6,7 @@ import { toolMatchesName } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import {
   getCurrentSubagentDepth,
-  MAX_SUBAGENT_DEPTH,
+  getMaxSubagentDepth,
 } from '../../tools/AgentTool/subagentDepth.js'
 import { getPrintOutputFormat } from '../../bootstrap/state.js'
 import { isCommandEnabled } from '../../types/command.js'
@@ -147,7 +147,7 @@ function isSkillPreload(context: ToolUseContext | undefined): boolean {
 }
 
 export function canSpawnAgents(context: ToolUseContext): boolean {
-  if (getCurrentSubagentDepth(context.options) >= MAX_SUBAGENT_DEPTH)
+  if (getCurrentSubagentDepth(context.options) >= getMaxSubagentDepth())
     return false
   const tools = context.options?.tools
   if (!tools) return true

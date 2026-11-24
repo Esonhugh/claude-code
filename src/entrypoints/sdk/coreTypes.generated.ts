@@ -461,6 +461,15 @@ export type SDKUIToastMessage = {
   uuid: string
   session_id: string
 }
+export type SDKUINotifyMessage = {
+  type: 'system'; subtype: 'ui_notify'; plugin: string; source: string; title: string; text: string;
+  rewritten: boolean; key?: string; at?: number; delay_ms?: number; until_back?: boolean;
+  uuid: string; session_id: string
+}
+export type SDKUINotifyCancelMessage = {
+  type: 'system'; subtype: 'ui_notify_cancel'; plugin: string; source: string; key?: string;
+  uuid: string; session_id: string
+}
 export type SDKUIStatusMessage = {
   type: 'system'
   subtype: 'ui_status'
@@ -812,11 +821,13 @@ export type SDKSessionInfo = {
 export type SDKUIFocusMessage = import('./modsControlTypes.js').SDKUIFocusMessage
 export type SDKUIScrollMessage = import('./modsControlTypes.js').SDKUIScrollMessage
 export type SDKUIPanesMessage = import('./modsControlTypes.js').SDKUIPanesMessage
+export type SDKUIPlacedMessage = import('./modsControlTypes.js').SDKUIPlacedMessage
 export type SDKUIInvalidateMessage = import('./modsControlTypes.js').SDKUIInvalidateMessage
 
 export type SDKMessage =
   | SDKUIInvalidateMessage
   | SDKUIPanesMessage
+  | SDKUIPlacedMessage
   | SDKUIScrollMessage
   | SDKUIFocusMessage
   | SDKAssistantMessage
@@ -825,6 +836,8 @@ export type SDKMessage =
   | SDKResultMessage
   | SDKSystemMessage
   | SDKUILogMessage
+  | SDKUINotifyMessage
+  | SDKUINotifyCancelMessage
   | SDKInformationalMessage
   | SDKModelFallbackMessage
   | SDKModelRefusalNoFallbackMessage

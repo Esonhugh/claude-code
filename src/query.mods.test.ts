@@ -3417,3 +3417,42 @@ test('main query publishes completed cache-safe fork snapshot and sends tool-les
   await drain(query(h.params))
   expect(snapshots).toHaveLength(1)
 })
+
+test('$.agent.call reaches a subagent whose query has finished, resting', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-agent-call-resting-'))
+  const runtime = createModsRuntime()
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('tool.call', {tool:'probe'}, async ($, e) => ({result: await $.agent.call({tool:'Echo', input:e.echo, agentId:'sub1'})}))
+    }`)
+    await runtime.reconcile([{name:'probe', storageId:'probe@inline', pluginRoot:root, entrypoints:[entry]}])
+    const {z} = await import('zod/v4')
+    const ran: unknown[] = []
+    const echo = buildTool({name:'Echo', inputSchema:z.strictObject({value:z.string(), run_in_background:z.boolean().optional()}), maxResultSizeChars:Infinity, isConcurrencySafe:() => true,
+      description:async () => 'Echo fixture',
+      prompt:async () => 'Echo fixture',
+      renderToolUseMessage:() => null,
+      checkPermissions:async input => ({behavior:'allow', updatedInput:input}),
+      call:async (input: unknown) => { ran.push(input); return {data:input} },
+      mapToolResultToToolResultBlockParam:(data: unknown, id: string) => ({type:'tool_result', tool_use_id:id, content:JSON.stringify(data)}),
+    })
+    const h = harness(async function* (request) {
+      request.options.onRequestToolCatalog?.(request.tools)
+      yield* streamedResponse('sub-final', 'done')
+    })
+    h.context.mods = runtime
+    h.context.agentId = asAgentId('sub1')
+    h.context.options.tools = [echo]
+    h.params.querySource = 'agent:custom'
+    h.params.canUseTool = async (_tool, input) => ({behavior:'allow', updatedInput:input})
+    const call = (echoInput: Record<string, unknown>) => runtime.dispatch('tool.call', {tool:'probe', echo:echoInput}, async () => ({result:null}))
+    expect(await call({value:'early'})).toEqual({result:{deny:'$.agent.call: No transcript found for agent ID: sub1'}})
+    await drain(query(h.params))
+    // Its abort controller is spent once it ends; a resting agent's calls do not hang on it.
+    h.context.abortController.abort()
+    expect(await call({value:'later'})).toMatchObject({result:{result:{value:'later'}, text:JSON.stringify({value:'later'})}})
+    expect(await call({value:'later', run_in_background:true})).toEqual({result:{deny:'Echo was not run: it starts work that outlasts the call, and a resting agent has no loop to hear it or stop it'}})
+    expect(ran).toEqual([{value:'later'}])
+  } finally { await runtime.dispose(); await rm(root, {recursive:true, force:true}) }
+})

@@ -849,6 +849,7 @@ export type Options = {
   /** turn.step already resolved and may have rewritten or removed effort. */
   effortResolved?: boolean
   mcpTools: Tools
+  onRequestToolCatalog?: (tools: Tools) => void
   modsSnapshot?: import('../mods/runtime.js').ModSnapshot
   composeSystemPrompt?: (model: string, tools: string[], signal: AbortSignal) => Promise<SystemPrompt>
   hasPendingMcpServers?: boolean
@@ -1696,6 +1697,7 @@ async function* queryModelRequest(
     allowDeferLoading: useToolSearch,
   })
   filteredTools = catalog.tools
+  options.onRequestToolCatalog?.(filteredTools)
   const toolSchemas = catalog.schemas
 
   // Official 2.1.325: with the tool-change beta the advisor entry is declared

@@ -171,6 +171,7 @@ export function createModsSession(options: ModsSessionOptions) {
   }
   const uiListeners = new Set<() => void>()
   const emptyPanes: readonly ModUiPane[] = Object.freeze([])
+  let unsubscribePlaced: (() => void) | undefined
   let unsubscribeUi: (() => void) | undefined
   const ui = {
     getSnapshot: () => runtime?.ui.getSnapshot() ?? emptyPanes,
@@ -750,6 +751,7 @@ export function createModsSession(options: ModsSessionOptions) {
       unsubscribeRender = runtime.renderHooks.subscribe(publishRender)
       publishRender()
       runtimeBound = binding !== undefined
+      unsubscribePlaced = runtime.placed?.subscribe(() => {for (const listener of uiListeners) listener()})
       unsubscribeUi = runtime.ui.subscribe(() => {
         for (const listener of uiListeners) listener()
       })
@@ -1020,6 +1022,7 @@ export function createModsSession(options: ModsSessionOptions) {
         } finally {
           await queue
           diagnosticSecrets.clear()
+          unsubscribePlaced?.()
           unsubscribeUi?.()
           uiListeners.clear()
           unsubscribeCommands?.()

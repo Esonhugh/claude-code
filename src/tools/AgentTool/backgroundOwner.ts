@@ -28,11 +28,17 @@ export function parkAgentForChildren({
   toolUseContext,
   resume,
   getWorktreeResult,
+  notifyEnd,
 }: {
   taskId: string
   toolUseContext: ToolUseContext
   resume?: (prompt: string, promptIsMeta?: boolean) => Promise<unknown>
   getWorktreeResult: () => Promise<{ worktreePath?: string; worktreeBranch?: string }>
+  /** Sends the owner's last notification (through agent.report); by default it is enqueued as is. */
+  notifyEnd?: (
+    notice: Omit<Parameters<typeof enqueueAgentNotification>[0], 'finalMessage' | 'consumed'>,
+    result: LocalAgentTaskState['result'],
+  ) => Promise<unknown>
 }): boolean {
   if (!resume) return false
   const get = toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState
@@ -100,13 +106,12 @@ export function parkAgentForChildren({
         current.waitingNotice ? { ...current, notified: false, waitingNotice: undefined } : current)
     }
     const result = task.result
-    enqueueAgentNotification({
+    const notice = {
       taskId,
       description: task.description,
       status,
       error,
       setAppState: set,
-      finalMessage: result ? extractTextContent(result.content, '\n') : undefined,
       usage: result ? {
         totalTokens: result.totalTokens,
         toolUses: result.totalToolUseCount,
@@ -114,7 +119,9 @@ export function parkAgentForChildren({
       } : undefined,
       toolUseId: task.toolUseId,
       ...worktree,
-    })
+    }
+    if (notifyEnd) await notifyEnd(notice, result)
+    else enqueueAgentNotification({ ...notice, finalMessage: result ? extractTextContent(result.content, '\n') : undefined })
   }
   const check = async () => {
     if (disposed) return

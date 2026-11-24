@@ -92,6 +92,7 @@ const requests = [
   },
   { subtype: 'ui_copy', ...route, plugin: 'p', text: 'copy' },
   { subtype: 'ui_prompt_read', ...route },
+  { subtype: 'ui_prompt_paint', ...route, layer: 'p' },
   {
     subtype: 'ui_prompt_fill',
     ...route,
@@ -155,6 +156,7 @@ const responses = {
   ui_client_fault: { handled: true },
   ui_copy: { copied: true },
   ui_prompt_read: { text: 'draft', cursor: 5 },
+  ui_prompt_paint: { painted: true },
   ui_prompt_fill: { filled: true },
   ui_prompt_suggest: { shown: false },
   ui_read_selection: { text: 'selected', instance_id: 'pane' },
@@ -278,6 +280,7 @@ describe('official 2.1.292 Mods UI wire contracts', () => {
       const loop = [
         'ui_copy',
         'ui_prompt_read',
+        'ui_prompt_paint',
         'ui_prompt_fill',
         'ui_prompt_suggest',
         'ui_read_selection',

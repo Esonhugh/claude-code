@@ -74,6 +74,8 @@ export type ModDeclaration = {
   modules: ModModule[]
   links: { from: string; specifier: string; to: string }[]
   clients?: { path: string; module: string }[]
+  /** Files `$.wasm.compile` literals name (plugin-relative, `/`-separated) and whether bytes are also passed. */
+  wasm?: { files: { path: string; spellings: string[] }[]; isMadeAtRunTime?: true }
   events: string[]
   calls: string[]
   /** Static command names carried by an original shipped module scan. */

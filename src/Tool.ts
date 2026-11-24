@@ -221,6 +221,7 @@ export type ToolUseContext = {
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSession?: import('./services/mods/session.js').ModsSession
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
+  modRequestTools?: { agentId: ToolUseContext['agentId']; names: ReadonlySet<string> }
   /** Invocation-local author result sink; never inherited by nested tools. */
   modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
   /** Plugin that initiated an active host call, when the call came from Mods. */

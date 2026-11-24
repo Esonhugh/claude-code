@@ -78,7 +78,8 @@ function waitsForStoppedResult(name: string, snapshot: ModSnapshot | undefined):
     name === REPL_TOOL_NAME &&
     isCodeModeEnabled() &&
     isReplModeEnabled() &&
-    snapshot?.hasHooks('tool.call', { tool: name }) !== true
+    snapshot?.hasHooks('tool.call', { tool: name }) !== true &&
+    snapshot?.hasHooks('tool.run', { tool: name }) !== true
   )
 }
 

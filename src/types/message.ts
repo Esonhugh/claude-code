@@ -359,6 +359,7 @@ export interface SystemAgentsKilledMessage extends SystemBase {
 }
 
 export type SystemMessage =
+  | (SystemBase & {subtype:'placed';id:string;plugin:string})
   | SystemAPIErrorMessage
   | SystemApiMetricsMessage
   | SystemAwaySummaryMessage

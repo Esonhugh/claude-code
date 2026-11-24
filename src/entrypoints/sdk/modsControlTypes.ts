@@ -29,6 +29,11 @@ export type SDKUIRenderComponent =
   | 'PromptHint'
   | 'AbovePrompt'
   | 'Pane'
+  | 'AbovePromptList'
+  | 'AgentRow'
+  | 'ContextMenu'
+  | 'Placed'
+  | 'Theme'
 export type SDKUIScrollComponent = 'Pane' | 'AbovePrompt'
 export type SDKUIOnScreen = { first: number; last: number; of: number }
 export type SDKUIKeyedRows = {
@@ -147,6 +152,7 @@ export type SDKControlUIAttachRequest = {
   client_id: string
   viewport?: SDKUIViewport
   answers?: SDKUIAnswer[]
+  draws?: string[]
 }
 export type SDKControlUIDetachRequest = {
   subtype: 'ui_detach'
@@ -350,7 +356,7 @@ export type SDKControlUIClientPressResponse = {
   handled: boolean
   reached?: Record<string, unknown>
 }
-export type SDKControlUIMessageRequest = SDKUIClientAddress & {
+export type SDKControlUIMessageRequest = SDKUIClientAddress & SDKUIClientRoute & {
   subtype: 'ui_message'
   data: unknown
 }
@@ -372,6 +378,13 @@ export type SDKControlUIPromptReadRequest = SDKUIResponderRoute & {
   subtype: 'ui_prompt_read'
 }
 export type SDKControlUIPromptReadResponse = { text: string; cursor: number }
+export type SDKControlUIPromptPaintRequest = SDKUIResponderRoute & {
+  subtype: 'ui_prompt_paint'
+  layer: string
+  text?: string
+  decorations?: SDKUIPromptDecoration[]
+}
+export type SDKControlUIPromptPaintResponse = { painted: boolean }
 export type SDKControlUIPromptFillRequest = SDKUIResponderRoute & {
   subtype: 'ui_prompt_fill'
   text: string
@@ -416,6 +429,7 @@ export type SDKControlUIClientRequest =
 export type SDKControlUILoopRequest =
   | SDKControlUICopyRequest
   | SDKControlUIPromptReadRequest
+  | SDKControlUIPromptPaintRequest
   | SDKControlUIPromptFillRequest
   | SDKControlUIPromptSuggestRequest
   | SDKControlUIReadSelectionRequest
@@ -443,6 +457,7 @@ export type SDKControlUIResponseBySubtype = {
   ui_client_fault: SDKControlUIClientFaultResponse
   ui_copy: SDKControlUICopyResponse
   ui_prompt_read: SDKControlUIPromptReadResponse
+  ui_prompt_paint: SDKControlUIPromptPaintResponse
   ui_prompt_fill: SDKControlUIPromptFillResponse
   ui_prompt_suggest: SDKControlUIPromptSuggestResponse
   ui_read_selection: SDKControlUIReadSelectionResponse
@@ -451,6 +466,10 @@ export type SDKControlUIResponseFor<T extends SDKControlUIRequest> =
   SDKControlUIResponseBySubtype[T['subtype']]
 
 type SDKUISystemEnvelope = { type: 'system'; uuid: string; session_id: string }
+export type SDKUIPlacedMessage = SDKUISystemEnvelope & {
+  subtype:'ui_placed'
+  rows:{plugin:string;id:string;request_id:string;after_uuid?:string}[]
+}
 export type SDKUIPanesMessage = SDKUISystemEnvelope &
   SDKControlUIPanesResponse & { subtype: 'ui_panes' }
 export type SDKUIScrollMessage = SDKUISystemEnvelope & {
@@ -482,5 +501,6 @@ export type SDKUIInvalidateMessage = SDKUISystemEnvelope & {
 export type SDKUISystemMessage =
   | SDKUIInvalidateMessage
   | SDKUIPanesMessage
+  | SDKUIPlacedMessage
   | SDKUIScrollMessage
   | SDKUIFocusMessage

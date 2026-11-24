@@ -407,6 +407,7 @@ export async function dispatchModEvent(options: {
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
   callerChain?: ModCallerChain
+  projectNext?: (plugin:string, result:unknown) => Promise<unknown>
   budgetMs?: number
   catchGraceMs?: number
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
@@ -435,6 +436,8 @@ export async function dispatchModEvent(options: {
   const pinned = (
     options.event === 'tool.call'
       ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'tool.judge'
+        ? ['tool', 'input', 'tool_use_id', 'agentId', 'isReadOnly']
       : options.event === 'tool.check'
         ? ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling']
       : options.event === 'telemetry.log'
@@ -447,6 +450,10 @@ export async function dispatchModEvent(options: {
           ? ['command', 'origin', 'presentation']
           : options.event === 'env.get' || options.event === 'env.set'
             ? ['name']
+          : options.event === 'wasm.compile'
+            ? ['path']
+            : options.event === 'session.stop'
+              ? ['isTurnRunning']
             : options.event === 'session.end'
               ? ['reason', 'sessionId', 'resume']
               : options.event === 'session.attach'
@@ -526,6 +533,15 @@ export async function dispatchModEvent(options: {
         : { plugin: hook.plugin, results: [] as unknown[] }
       : undefined
     function settleToolResult(value: unknown): unknown {
+      if (options.event === 'tool.judge' && hook && value && typeof value === 'object') {
+        const { decision, reason, plugin } = value as ModInput
+        const matches = nextResults.filter((r): r is ModInput => !!r && typeof r === 'object' &&
+          'decision' in r && r.decision === decision && (r as ModInput).reason === reason)
+        // A matching receipt keeps its host-pinned author even after a Worker round trip.
+        const prior = matches.find(r => r.plugin === plugin) ?? matches[0]
+        const owner = prior && plugin !== '' ? prior.plugin : hook.plugin
+        return { decision, ...(reason !== undefined && {reason}), ...(owner !== undefined && {plugin:owner}) }
+      }
       if (!toolFrame || toolFrame === parentToolFrame) return value
       return restoreToolCallReadOnly(value, toolFrame.results)
     }
@@ -711,6 +727,8 @@ export async function dispatchModEvent(options: {
               ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed ${key} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`), {name:'HooksError'})
               : options.event === 'telemetry.log'
               ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed to (pinned)`), {name:'HooksError'})
+              : options.event === 'wasm.compile'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed path (the file asked for; next(e) passes it on)`), {name:'HooksError'})
               : new Error(`Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`),
           )
       }
@@ -835,6 +853,7 @@ export async function dispatchModEvent(options: {
               new Error(`Mod ${hook.plugin} next is no longer active`),
           )
         }
+        if (options.event === 'tool.run' && !catching && inFlight) return Promise.resolve({deny:'This admitted tool call has already run'})
         const result = catching
           ? replay(rewritten, target)
           : below(rewritten, target)
@@ -842,7 +861,7 @@ export async function dispatchModEvent(options: {
           (value) => { nextResults.push(value) },
           () => {},
         )
-        return result
+        return options.projectNext ? result.then(value => options.projectNext!(hook.plugin,value)) : result
       }
       const next = ((rewritten: ModInput) =>
         continueBelow(rewritten)) as ModNext

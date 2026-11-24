@@ -131,9 +131,11 @@ export function endSubagentHandback(agentId: string): void {
   }
 }
 
+const UNAVAILABLE_LEAD = 'Note: '
+
 export function subagentHandbackWarning(review: SubagentHandbackReview): string {
   if (review.kind === 'unavailable') {
-    return `Note: ${review.model ? `${review.model} (the safety classifier)` : 'The safety classifier'} was unavailable when reviewing this subagent's work. Please carefully verify the subagent's actions and output before acting on them.`
+    return `${UNAVAILABLE_LEAD}${review.model ? `${review.model} (the safety classifier)` : 'The safety classifier'} was unavailable when reviewing this subagent's work. Please carefully verify the subagent's actions and output before acting on them.`
   }
   const reason = sanitizeSubagentOutput(review.reason.slice(0, 500), { prependMarker: false }).replace(/\.$/, '')
   return `SECURITY WARNING: auto mode blocked this subagent's report. Reason: ${reason}. The report follows; review the subagent's actions carefully before acting on it.`
@@ -164,6 +166,35 @@ export function takeSubagentHandbackResult(agentId: string, canContinue: boolean
   }
   const { report, warning } = state.delivered
   const content: TextBlockParam[] = [...(warning === undefined ? [] : [{ type: 'text' as const, text: warning }]), { type: 'text', text: report }]
+  return {
+    handback: warning === undefined ? 'send' : 'flagged',
+    content,
+    harnessNoteCount: warning === undefined ? 0 : 1,
+    harnessTailCount: 0,
+    harnessSectionHash: hashSubagentHandbackSections(content),
+  }
+}
+
+type HandbackResult = SubagentHandback & { handback: SubagentHandbackOutcome }
+
+/**
+ * A finished hand-back run as agent.report sees it: the report without its
+ * harness notes and the verdict reviewing it gave. A withheld run's text is
+ * the engine's note that no report came.
+ */
+export function subagentHandbackReport(result: HandbackResult): { text: string; review: 'cleared' | 'flagged' | 'unavailable' | 'none'; warning?: string } {
+  if (result.handback === 'withheld') return { text: result.content.map(block => block.text).join('\n'), review: 'none' }
+  const notes = result.harnessNoteCount ?? 0
+  const warning = result.content.slice(0, notes).map(block => block.text).join('\n') || undefined
+  const text = result.content.slice(notes, result.content.length - (result.harnessTailCount ?? 0)).map(block => block.text).join('\n')
+  if (warning === undefined) return { text, review: 'cleared' }
+  return { text, review: warning.startsWith(UNAVAILABLE_LEAD) ? 'unavailable' : 'flagged', warning }
+}
+
+/** A hand-back result carrying agent.report's answer, its warning a harness note above the report. */
+export function withSubagentHandbackReport(result: HandbackResult, text: string, warning: string | undefined): HandbackResult {
+  const content: TextBlockParam[] = [...(warning === undefined ? [] : [{ type: 'text' as const, text: warning }]), { type: 'text', text }]
+  if (result.handback === 'withheld') return { handback: 'withheld', content }
   return {
     handback: warning === undefined ? 'send' : 'flagged',
     content,

@@ -1251,8 +1251,11 @@ export async function runHeadless(
         (message.subtype === 'session_state_changed' ||
           message.subtype === 'ui_log' ||
           message.subtype === 'ui_toast' ||
+          message.subtype === 'ui_notify' ||
+          message.subtype === 'ui_notify_cancel' ||
           message.subtype === 'ui_status' ||
           message.subtype === 'ui_invalidate' ||
+          message.subtype === 'ui_placed' ||
           message.subtype === 'ui_panes' ||
           message.subtype === 'ui_scroll' ||
           message.subtype === 'ui_focus' ||
@@ -3456,10 +3459,16 @@ function runHeadlessStreaming(
       if (options.outputFormat !== 'stream-json') return logForDebugging(`[${plugin}] $.ui.status: ${text ?? '(cleared)'}`)
       output.enqueue({ type: 'system', subtype: 'ui_status', plugin, text: text ?? null, uuid: randomUUID(), session_id: getSessionId() })
     },
-    // No terminal draws here: the person's Notification hooks alone run.
-    uiNotify: async notification => {
+    uiNotify: async (notification, frame) => {
       await executeNotificationHooks(notification)
-      return 'no_surface'
+      if (!remoteUiHost || !frame) return 'no_surface'
+      output.enqueue({...frame, uuid:randomUUID(), session_id:getSessionId()})
+      return 'client'
+    },
+    uiCancelNotify: frame => {
+      if (!remoteUiHost) return false
+      output.enqueue({type:'system',subtype:'ui_notify_cancel',...frame,uuid:randomUUID(),session_id:getSessionId()})
+      return true
     },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
@@ -3630,6 +3639,7 @@ function runHeadlessStreaming(
     ready: () => inboundBinding ?? Promise.resolve(),
     runtime: () => options.modsSession?.runtime ?? undefined,
     invalidate: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    placed: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
     panes: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
     focus: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
     scroll: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
@@ -3711,6 +3721,7 @@ function runHeadlessStreaming(
           continue
         }
         if (message.request.subtype === 'interrupt') {
+          void options.modsSession?.runtime?.notifySessionStop(options.modsSession.runtime.activePublicTurnId !== undefined)
           // Track escapes for attribution (ant-only feature)
           if (feature('COMMIT_ATTRIBUTION')) {
             setAppState(prev => ({

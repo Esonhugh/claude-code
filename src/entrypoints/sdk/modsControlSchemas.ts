@@ -41,6 +41,11 @@ export const SDKUIRenderComponentSchema = lazySchema(() =>
     'PromptHint',
     'AbovePrompt',
     'Pane',
+    'AbovePromptList',
+    'AgentRow',
+    'ContextMenu',
+    'Placed',
+    'Theme',
   ]),
 )
 export const SDKUIScrollComponentSchema = lazySchema(() =>
@@ -201,6 +206,7 @@ export const SDKControlUIAttachRequestSchema = lazySchema(() =>
     client_id: SDKUIClientIdSchema(),
     viewport: SDKUIViewportSchema().optional(),
     answers: z.array(z.enum(uiAnswers)).max(uiAnswers.length).optional(),
+    draws: z.array(z.string().max(64)).max(16).optional(),
   }),
 )
 export const SDKControlUIDetachRequestSchema = lazySchema(() =>
@@ -389,6 +395,7 @@ export const SDKControlUIMessageRequestSchema = lazySchema(() =>
   SDKUIClientAddressSchema()
     .extend({
       subtype: z.literal('ui_message'),
+      ...clientRoute(),
       data: z.unknown(),
     })
     .refine((value) => Object.hasOwn(value, 'data')),
@@ -414,6 +421,10 @@ export const SDKControlUICopyRequestSchema = lazySchema(() =>
 )
 export const SDKControlUIPromptReadRequestSchema = lazySchema(() =>
   z.object({ subtype: z.literal('ui_prompt_read'), ...responderRoute() }),
+)
+export const SDKControlUIPromptPaintRequestSchema = lazySchema(() =>
+  z.object({subtype:z.literal('ui_prompt_paint'), ...responderRoute(), layer:z.string(),
+    text:z.string().max(1000000).optional(), decorations:z.array(SDKUIPromptDecorationSchema()).optional()}),
 )
 export const SDKControlUIPromptFillRequestSchema = lazySchema(() =>
   z.object({
@@ -461,6 +472,7 @@ export const SDKControlUILoopRequestSchema = lazySchema(() =>
   z.discriminatedUnion('subtype', [
     SDKControlUICopyRequestSchema(),
     SDKControlUIPromptReadRequestSchema(),
+    SDKControlUIPromptPaintRequestSchema(),
     SDKControlUIPromptFillRequestSchema(),
     SDKControlUIPromptSuggestRequestSchema(),
     SDKControlUIReadSelectionRequestSchema(),
@@ -627,6 +639,7 @@ export const SDKControlUIResponseSchemas = {
   ui_client_fault: SDKControlUIClientFaultResponseSchema,
   ui_copy: SDKControlUICopyResponseSchema,
   ui_prompt_read: SDKControlUIPromptReadResponseSchema,
+  ui_prompt_paint: lazySchema(() => z.object({painted:z.boolean()})),
   ui_prompt_fill: SDKControlUIPromptFillResponseSchema,
   ui_prompt_suggest: SDKControlUIPromptSuggestResponseSchema,
   ui_read_selection: SDKControlUIReadSelectionResponseSchema,
@@ -674,7 +687,11 @@ export const SDKUISystemMessageSchema = lazySchema(() =>
   z.discriminatedUnion('subtype', [
     SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),
+    SDKUIPlacedMessageSchema(),
     SDKUIScrollMessageSchema(),
     SDKUIFocusMessageSchema(),
   ]),
+)
+export const SDKUIPlacedMessageSchema = lazySchema(() =>
+  z.object({...systemEnvelope(),subtype:z.literal('ui_placed'), rows:z.array(z.object({plugin:z.string(),id:z.string(),request_id:z.string(),after_uuid:z.string().optional()}))}),
 )

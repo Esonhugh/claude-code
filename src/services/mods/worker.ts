@@ -15,10 +15,11 @@ import { createModClientRealm, copyModClientData } from './clientRealm.js'
 import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 import { createModWebRealm } from './webRealm.js'
 import { modStateLibrarySource } from './stateLibrary.js'
+import { createModWasmSandbox, modWasmSharedMemoryReason } from './wasm.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation) => {
+const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation, debugLog, wasm) => {
   const normalizeStateValue = value => {
     let text;
     try { text = JSON.stringify(value); }
@@ -46,7 +47,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (value && typeof value === 'object') return {type:'object', entries:Object.entries(value).map(([key,item]) => [key,matcherWire(item)])};
     return {type:'value', value};
   };
-  Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
+  Object.defineProperties(globalThis, {
+    h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment},
+    console: {value:Object.freeze({error: (...args) => { debugLog(args.map(String).join(' ')); }})},
+  });
   const drawings = new Map();
   const drawingCallbacks = new WeakMap();
   const keepDrawingCallback = (callback, handles, allocated) => {
@@ -351,10 +355,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
             if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
               throw Object.assign(Error(plugin + ': $.store.' + wire.storeMethod + ' takes a non-empty string key'), {name:'HooksError'});
             let modelAborted, modelAbortReason;
-            if (wire.modelMethod === 'complete') {
+            const signalled = wire.modelMethod === 'complete' || wire.signalOption !== undefined;
+            if (signalled) {
               const signal = args[1]?.signal;
               if (signal !== undefined && signal !== null && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
-                throw Object.assign(Error(plugin + ': options.signal must be an AbortSignal'), {name:'HooksError'});
+                throw Object.assign(Error(plugin + ': ' + (wire.signalOption ? '$.' + wire.signalOption + ' ' : '') + 'options.signal must be an AbortSignal'), {name:'HooksError'});
               const reason = () => {
                 const value = signal?.reason;
                 return value instanceof Error ? {name:value.name,message:value.message}
@@ -367,7 +372,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
               if (modelAborted) modelAbortReason = reason();
               args = [args[0]];
             }
-            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(wire.modelMethod === 'complete' ? {modelAborted,modelAbortReason} : {}) }));
+            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(signalled ? {modelAborted,modelAbortReason} : {}) }));
           } catch (error) { pending.delete(call); reject(error); }
         });
         return result.finally(() => cleanup?.());
@@ -397,6 +402,15 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         if (signal?.aborted === true) return abortedModelComplete;
         try { return await invokeHost(normalizeModelComplete(request), {signal}); }
         catch (error) { if (Boolean(signal?.aborted)) return abortedModelComplete; throw error; }
+      } : wire.wasmMethod === 'compile' ? async source => {
+        if (!wasm) throw Error('Module capability wasm.compile is absent from scan');
+        // Bytes are copied as the call is made; the module compiles in this environment.
+        const answer = await invokeHost(typeof source === 'string' ? {path:source} : {base64:wasm.encode(wasm.copyOf(source))});
+        if (typeof answer?.base64 !== 'string') throw Error('Invalid wasm.compile answer');
+        if (disposed) throw Error('Module environment unloaded');
+        const module = await wasm.compile(answer.base64);
+        if (disposed) throw Error('Module environment unloaded');
+        return module;
       } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
@@ -423,14 +437,14 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (!registering) throw Error('on() is only available during register()');
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
-    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
-    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env', 'wasm']);
+    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
       'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
-      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.identity', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'session.info', 'session.machine', 'process.hookEnv', 'ui.cancelNotify', 'session.identity', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.notify', 'ui.selection', 'ui.copy',
-      'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
-      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
-      'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
+      'ui.place', 'prompt.paint', 'theme.set', 'theme.clear', 'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
+      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'tool.judge', 'tool.run', 'tool.offer', 'agent.report', 'agent.offer',
+      'agent.spawn', 'agent.register', 'agent.list', 'agent.limits', 'agent.call', 'tool.register', 'tool.list', 'wasm.compile']);
     if (event === '!*') throw Error(emptyEventPatternError);
     if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
     checkHandler(event, handler);
@@ -778,17 +792,33 @@ process.on('unhandledRejection', (error, promise) => {
 })
 
 
-function createEnvironment(id: number, plugin: string): Environment {
+function createEnvironment(id: number, plugin: string, isWasmOn = false): Environment {
+  // Only a module whose scan calls $.wasm.compile may compile WebAssembly, in its own context.
   const context = vm.createContext(Object.create(null), {
-    codeGeneration: { strings: false, wasm: false },
+    codeGeneration: { strings: false, wasm: isWasmOn },
   })
+  const sandbox = isWasmOn ? vm.runInContext(`(${createModWasmSandbox.toString()})(WebAssembly)`, context)(
+    (bytes: Uint8Array) => modWasmSharedMemoryReason(bytes) !== undefined) as ReturnType<ReturnType<typeof createModWasmSandbox>> : undefined
+  const CompileError = sandbox && vm.runInContext('WebAssembly.CompileError', context) as typeof WebAssembly.CompileError
   vm.runInContext(`
-    for (const name of ['console', 'ShadowRealm', 'WebAssembly', 'FinalizationRegistry',
+    for (const name of ['console', 'ShadowRealm', ${isWasmOn ? '' : "'WebAssembly', "}'FinalizationRegistry',
       'WeakRef', 'Atomics', 'SharedArrayBuffer', 'queueMicrotask',
       '$vm', 'gc', 'edenGC', 'fullGC', 'print', 'readFile', 'Loader']) {
       delete globalThis[name];
     }
   `, context)
+  const wasm = sandbox && CompileError && Object.freeze({
+    copyOf: sandbox.copyOf,
+    encode: (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64'),
+    // Compiled first, as the official build does, then refused if it holds a shared memory.
+    compile: async (base64: string) => {
+      const bytes = new Uint8Array(Buffer.from(base64, 'base64'))
+      const module = await sandbox.compile(bytes)
+      const reason = modWasmSharedMemoryReason(bytes)
+      if (reason) throw new CompileError(`${plugin}: $.wasm.compile: ${reason}`)
+      return module
+    },
+  })
   vm.runInContext(`(${createModWebRealm.toString()})`, context)({
     URL: HostURL,
     URLSearchParams: HostURLSearchParams,
@@ -864,7 +894,9 @@ function createEnvironment(id: number, plugin: string): Environment {
       const elapsed = started === 0n ? 0 : performance.timeOrigin + performance.now() - Number(started) / 1000
       return Math.max(0, Number(available) / 1000 - elapsed)
     }
-  }, () => invocations.getStore()) as Environment['api']
+  }, () => invocations.getStore(), (text: unknown) => {
+    if (typeof text === 'string') reply({type:'console-error',environment:id,text})
+  }, wasm) as Environment['api']
   const dispose = api.dispose
   api.dispose = () => {timerRealm.dispose();dispose()}
   const lifetime = { id, disposed: false }
@@ -1027,7 +1059,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       return
     }
     if (environments.has(request.environment)) throw new Error('Duplicate module environment')
-    const environment = createEnvironment(request.environment, request.declaration.name)
+    const environment = createEnvironment(request.environment, request.declaration.name, request.declaration.calls.includes('wasm.compile'))
     environments.set(request.environment, environment)
     const declaration = request.declaration
     const modules = new Map<string, vm.SourceTextModule>()

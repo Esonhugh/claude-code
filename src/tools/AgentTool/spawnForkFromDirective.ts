@@ -16,7 +16,7 @@ import { createAgentId } from '../../utils/uuid.js'
 import { runAsyncAgentLifecycle } from './agentToolUtils.js'
 import { FORK_AGENT } from './forkSubagent.js'
 import { runAgent } from './runAgent.js'
-import { getNextSubagentDepth, MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
+import { getNextSubagentDepth, getMaxSubagentDepth } from './subagentDepth.js'
 
 /** 2.1.311: the fork's name comes from the directive's first three words. */
 export function forkNameFromDirective(directive: string): string {
@@ -47,7 +47,7 @@ export async function spawnForkFromDirective(
 ): Promise<{ agentId: string; name: string } | null> {
   if (isCoordinatorMode()) return null
   const spawnDepth = getNextSubagentDepth(context.options)
-  if (spawnDepth > MAX_SUBAGENT_DEPTH) return null
+  if (spawnDepth > getMaxSubagentDepth()) return null
 
   const appState = context.getAppState()
   const systemPrompt =

@@ -117,16 +117,26 @@ import {
 } from '../WorkflowTool/workflowAgentToolPolicy.js'
 import { setAgentColor } from './agentColorManager.js'
 import {
+  agentReportOf,
+  type AgentReportTarget,
   agentToolResultSchema,
-  classifyHandoffIfNeeded,
+  applyAgentReport,
+  backgroundHandoffReview,
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
   getAgentTerminalError,
   getLastToolUseName,
+  notifyAgentEnd,
+  parkedAgentEnd,
+  reportAgentEnd,
+  reportedAgentMessage,
   resolveAgentTools,
+  reviewAgentHandoff,
   runAsyncAgentLifecycle,
   reportObservedAgentProgress,
+  unreviewedAgentReport,
+  withAgentReportSnapshot,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { normalizeAgentType, resolveAgentType } from './agentTypeResolver.js'
@@ -1509,6 +1519,7 @@ export const AgentTool = buildTool({
             getWorktreeResult: cleanupWorktreeIfNeeded,
             onRunSettled: releaseSlot,
             resume: resumeOwner,
+            unreported: workflowFraming !== undefined,
           }),
         ),
       )
@@ -1697,6 +1708,17 @@ export const AgentTool = buildTool({
           // Track if an error occurred during iteration
           let syncAgentError: Error | undefined
           let wasAborted = false
+          // A workflow's agent() raises no agent.report.
+          const reportTarget: AgentReportTarget | undefined = workflowFraming ? undefined : {
+            agent: selectedAgent,
+            ...(toolUseContext.agentId && { parentAgentId: toolUseContext.agentId }),
+          }
+          // An interrupted foreground run is reported stopped; the report may outlive the turn.
+          const reportStopped = () => {
+            if (wasBackgrounded) return
+            void withAgentReportSnapshot(toolUseContext, snapshot =>
+              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '')))
+          }
           let worktreeResult: {
             worktreePath?: string
             worktreeBranch?: string
@@ -1881,56 +1903,32 @@ export const AgentTool = buildTool({
                       // the status transition (gh-20236).
                       releaseSlot()
                       completeAsyncAgent(agentResult, rootSetAppState)
+                      const review = backgroundHandoffReview({
+                        taskId: backgroundedTaskId,
+                        agentMessages,
+                        toolUseContext,
+                        abortSignal: task.abortController!.signal,
+                        subagentType: selectedAgent.agentType,
+                        totalToolUseCount: agentResult.totalToolUseCount,
+                        setAppState: rootSetAppState,
+                        failureWarning: postProcessingWarning,
+                      })
                       if (parkAgentForChildren({
                         taskId: backgroundedTaskId,
                         toolUseContext,
                         resume: resumeOwner,
                         getWorktreeResult: cleanupWorktreeIfNeeded,
+                        notifyEnd: parkedAgentEnd(toolUseContext, reportTarget, review),
                       })) return
                       logForDebugging(
                         `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=completed tool_uses=${agentResult.totalToolUseCount}`,
                       )
 
-                      // Extract text from agent result content for the notification
-                      let finalMessage = subagentResultText(agentResult)
-
-                      if (
-                        feature('TRANSCRIPT_CLASSIFIER') &&
-                        agentResult.handback === undefined
-                      ) {
-                        try {
-                          const backgroundedAppState =
-                            toolUseContext.getAppState()
-                          const handoffWarning = await classifyHandoffIfNeeded({
-                            agentMessages,
-                            tools: toolUseContext.options.tools,
-                            toolPermissionContext:
-                              backgroundedAppState.toolPermissionContext,
-                            abortSignal: task.abortController!.signal,
-                            subagentType: selectedAgent.agentType,
-                            totalToolUseCount: agentResult.totalToolUseCount,
-                          })
-                          if (handoffWarning) {
-                            finalMessage = `${handoffWarning}\n\n${finalMessage}`
-                          }
-                        } catch (error) {
-                          logForDebugging(
-                            `Agent handoff classification failed after completion: ${errorMessage(error)}`,
-                            { level: 'warn' },
-                          )
-                          addAgentTaskWarning(
-                            backgroundedTaskId,
-                            postProcessingWarning,
-                            rootSetAppState,
-                          )
-                          finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
-                        }
-                      }
-
                       // Clean up worktree before notification so we can include it
                       let worktreeResult: Awaited<
                         ReturnType<typeof cleanupWorktreeIfNeeded>
                       > = {}
+                      let worktreeWarning: string | undefined
                       try {
                         worktreeResult = await cleanupWorktreeIfNeeded()
                       } catch (error) {
@@ -1943,15 +1941,14 @@ export const AgentTool = buildTool({
                           postProcessingWarning,
                           rootSetAppState,
                         )
-                        finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
+                        worktreeWarning = postProcessingWarning
                       }
 
-                      enqueueAgentNotification({
+                      await notifyAgentEnd(toolUseContext, reportTarget, {
                         taskId: backgroundedTaskId,
                         description,
                         status: 'completed',
                         setAppState: rootSetAppState,
-                        finalMessage,
                         turnLimit: agentResult.turnLimit,
                         usage: {
                           totalTokens: finalProgress.tokenCount,
@@ -1960,7 +1957,7 @@ export const AgentTool = buildTool({
                         },
                         toolUseId: toolUseContext.toolUseId,
                         ...worktreeResult,
-                      })
+                      }, agentReportOf(agentResult, review), answer => reportedAgentMessage(agentResult, answer, worktreeWarning))
                     } catch (error) {
                       releaseSlot()
                       const currentTask =
@@ -2024,23 +2021,20 @@ export const AgentTool = buildTool({
                             { level: 'warn' },
                           )
                         }
-                        const partialResult =
-                          extractPartialResult(agentMessages)
                         const progress = getProgressUpdate(tracker)
-                        enqueueAgentNotification({
+                        await notifyAgentEnd(toolUseContext, reportTarget, {
                           taskId: backgroundedTaskId,
                           description,
                           status: 'killed',
                           setAppState: rootSetAppState,
                           toolUseId: toolUseContext.toolUseId,
-                          finalMessage: partialResult,
                           usage: {
                             totalTokens: progress.tokenCount,
                             toolUses: progress.toolUseCount,
                             durationMs: Date.now() - metadata.startTime,
                           },
                           ...worktreeResult,
-                        })
+                        }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? ''), answer => answer.text || undefined)
                         return
                       }
                       const errMsg = errorMessage(error)
@@ -2064,7 +2058,7 @@ export const AgentTool = buildTool({
                         )
                       }
                       const progress = getProgressUpdate(tracker)
-                      enqueueAgentNotification({
+                      await notifyAgentEnd(toolUseContext, reportTarget, {
                         taskId: backgroundedTaskId,
                         description,
                         status: 'failed',
@@ -2077,7 +2071,7 @@ export const AgentTool = buildTool({
                           durationMs: Date.now() - metadata.startTime,
                         },
                         ...worktreeResult,
-                      })
+                      }, unreviewedAgentReport(''), answer => answer.text || undefined)
                     } finally {
                       releaseSlot()
                       if (stopForegroundSummarization) {
@@ -2259,6 +2253,7 @@ export const AgentTool = buildTool({
                 reason:
                   'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               })
+              reportStopped()
               throw error
             }
 
@@ -2385,6 +2380,7 @@ export const AgentTool = buildTool({
                 'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
             })
             spawnedSubagent?.cancelledAfterCompletion()
+            reportStopped()
             throw new AbortError()
           }
 
@@ -2400,7 +2396,8 @@ export const AgentTool = buildTool({
             if (!hasAssistantMessages) {
               // No messages collected, re-throw the error
               spawnedSubagent?.failed()
-              throw syncAgentError
+              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport(''))
+              throw 'consumed' in answer ? new Error(answer.consumed) : syncAgentError
             }
 
             // We have some messages, try to finalize and return them
@@ -2417,32 +2414,23 @@ export const AgentTool = buildTool({
           )
           spawnedSubagent?.completed()
 
-          if (
-            feature('TRANSCRIPT_CLASSIFIER') &&
-            agentResult.handback === undefined
-          ) {
-            const currentAppState = toolUseContext.getAppState()
-            const handoffWarning = await classifyHandoffIfNeeded({
-              agentMessages,
-              tools: toolUseContext.options.tools,
-              toolPermissionContext: currentAppState.toolPermissionContext,
-              abortSignal: toolUseContext.abortController.signal,
-              subagentType: selectedAgent.agentType,
-              totalToolUseCount: agentResult.totalToolUseCount,
-            })
-            if (handoffWarning) {
-              agentResult.content = [
-                { type: 'text' as const, text: handoffWarning },
-                ...agentResult.content,
-              ]
-            }
-          }
+          // A partial result after an error is still what the parent reads, so it is reviewed too.
+          const report = agentReportOf(agentResult, () => reviewAgentHandoff({
+            agentMessages,
+            tools: toolUseContext.options.tools,
+            toolPermissionContext: toolUseContext.getAppState().toolPermissionContext,
+            abortSignal: toolUseContext.abortController.signal,
+            subagentType: selectedAgent.agentType,
+            totalToolUseCount: agentResult.totalToolUseCount,
+          }))
+          const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, syncAgentError ? 'failed' : 'completed', report)
+          const reported = applyAgentReport(agentResult, report, answer)
 
           return {
             data: {
               status: 'completed' as const,
               prompt,
-              ...agentResult,
+              ...reported,
               ...worktreeResult,
               canContinueAgent: canContinueAgent(toolUseContext.options.tools),
             },
