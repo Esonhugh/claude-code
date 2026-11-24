@@ -169,7 +169,7 @@ const call = (context: TestContext, description: string) =>
   assert.doesNotMatch(JSON.stringify(result.data), /REPORT-ALPHA/)
 }
 
-// Interrupting the parent stops the foreground run and leaves no task running.
+// Interrupting the parent stops the foreground run, which is reported stopped and leaves no task running.
 {
   script = 'interrupted'
   reports.length = 0
@@ -183,6 +183,12 @@ const call = (context: TestContext, description: string) =>
   context.abortController.abort()
   await assert.rejects(pending, AbortError)
   assert.equal(childSignal?.aborted, true)
+  for (let i = 0; i < 20 && reports.length === 0; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(reports.length, 1)
+  assert.equal(reports[0]?.status, 'stopped')
+  assert.equal(reports[0]?.text, 'halfway')
   const running = Object.values(context.getAppState().tasks).filter(
     task => isLocalAgentTask(task) && task.status === 'running',
   )

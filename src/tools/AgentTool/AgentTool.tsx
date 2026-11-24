@@ -136,6 +136,7 @@ import {
   runAsyncAgentLifecycle,
   reportObservedAgentProgress,
   unreviewedAgentReport,
+  withAgentReportSnapshot,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { normalizeAgentType, resolveAgentType } from './agentTypeResolver.js'
@@ -1712,6 +1713,12 @@ export const AgentTool = buildTool({
             agent: selectedAgent,
             ...(toolUseContext.agentId && { parentAgentId: toolUseContext.agentId }),
           }
+          // An interrupted foreground run is reported stopped; the report may outlive the turn.
+          const reportStopped = () => {
+            if (wasBackgrounded) return
+            void withAgentReportSnapshot(toolUseContext, snapshot =>
+              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '')))
+          }
           let worktreeResult: {
             worktreePath?: string
             worktreeBranch?: string
@@ -2246,6 +2253,7 @@ export const AgentTool = buildTool({
                 reason:
                   'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               })
+              reportStopped()
               throw error
             }
 
@@ -2372,6 +2380,7 @@ export const AgentTool = buildTool({
                 'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
             })
             spawnedSubagent?.cancelledAfterCompletion()
+            reportStopped()
             throw new AbortError()
           }
 
