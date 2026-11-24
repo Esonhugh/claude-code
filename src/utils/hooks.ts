@@ -620,7 +620,8 @@ export function parseHookOutput(stdout: string): {
     if ('json' in result) {
       return result
     }
-    // For command hooks, include the schema hint in the error message
+    // For command hooks, include the schema hint in the error message.
+    // Official 2.1.329 also lists terminalSequence, which this build ignores.
     const errorMessage = `${result.validationError}\n\nExpected schema:\n${jsonStringify(
       {
         continue: 'boolean (optional)',
@@ -629,7 +630,6 @@ export function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
@@ -637,13 +637,37 @@ export function parseHookOutput(stdout: string): {
             permissionDecisionReason: 'string (optional)',
             updatedInput: 'object (optional) - Modified tool input to use',
           },
+          'for PermissionRequest': {
+            hookEventName: '"PermissionRequest"',
+            decision: {
+              'to allow': {
+                behavior: '"allow"',
+                updatedInput: 'object (optional) - Modified tool input to use',
+                updatedPermissions: 'array (optional) - Permission updates',
+              },
+              'to deny': {
+                behavior: '"deny"',
+                message: 'string (optional)',
+                interrupt: 'boolean (optional)',
+              },
+            },
+          },
           'for UserPromptSubmit': {
             hookEventName: '"UserPromptSubmit"',
-            additionalContext: 'string (required)',
+            additionalContext: 'string (optional)',
           },
           'for PostToolUse': {
             hookEventName: '"PostToolUse"',
             additionalContext: 'string (optional)',
+          },
+          'for PostToolBatch': {
+            hookEventName: '"PostToolBatch"',
+            additionalContext: 'string (optional)',
+          },
+          'for Stop / SubagentStop': {
+            hookEventName: '"Stop" | "SubagentStop"',
+            additionalContext:
+              'string (optional) - Feedback for the model; the conversation continues so the model can act on it',
           },
         },
       },
