@@ -1,10 +1,10 @@
 // End-to-end check of the app on this machine, run by CI after staging the
 // sidecar: `bun run e2e` (under xvfb-run on Linux). Exits 1 on the first failure.
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, shell } from 'electron'
+import { app, BrowserWindow, dialog, nativeTheme, shell } from 'electron'
 
 const home = mkdtempSync(join(tmpdir(), 'claude-desktop-e2e-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, 'config')
@@ -165,6 +165,15 @@ async function run() {
   })`)
   if (events[0] !== 'open' || events.at(-1) !== 'close 1000') throw new Error(`session socket: ${events.join(', ')}`)
   log('ok   session socket opens and closes')
+
+  const saved = () => JSON.parse(readFileSync(join(home, 'electron', 'appearance.json'), 'utf8')).theme
+  await page(`window.claudeDesktop.setTheme('dark')`)
+  await until('the window to turn dark', () => nativeTheme.themeSource === 'dark' && nativeTheme.shouldUseDarkColors)
+  if (saved() !== 'dark') throw new Error(`saved appearance: ${saved()}`)
+  await page(`window.claudeDesktop.setTheme('auto'), window.claudeDesktop.setTheme('system')`)
+  await until('the window to follow the system', () => nativeTheme.themeSource === 'system')
+  if (saved() !== 'system') throw new Error(`saved appearance: ${saved()}`)
+  log('ok   the page sets and saves the native theme')
 
   const mod = await page(MOD_CLIENT)
   if (mod.op !== 'tree' || mod.text !== JSON.stringify({ text: 'drawn in a Worker' })) throw new Error(`mods frame: ${JSON.stringify(mod)}`)
