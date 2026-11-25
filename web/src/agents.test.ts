@@ -9,7 +9,6 @@ import {
   unresolvedIssuers,
   agentOutput,
   workflowAgent,
-  workflowPhases,
 } from './agents'
 import { addUserMessage, initialState, reduce } from './protocol'
 
@@ -74,52 +73,56 @@ describe('agent tasks', () => {
     expect(reduceTasks({}, sys('task_progress', { task_id: 'b1', description: 'Late' })).b1!.description).toBe('Late')
   })
 
-  it('builds workflow phases from the progress snapshot', () => {
-    const tasks = reduceTasks(
-      reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow', workflow_name: 'spec' })),
-      sys('task_progress', {
-        task_id: 'w1',
-        description: 'Plan',
-        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
-        workflow_progress: [
-          { type: 'phase', index: 0, label: 'gather', status: 'completed', message: 'Collect' },
-          { type: 'agent', index: 0, phaseIndex: 0, label: 'ag1', status: 'completed' },
-          { type: 'phase', index: 1, label: 'write', status: 'running' },
-          { type: 'agent', index: 0, phaseIndex: 1, label: 'ag2', status: 'running' },
-          { type: 'agent', index: 1, phaseIndex: 1, label: 'ag3', status: 'pending' },
-        ],
-      }),
-    )
+  // Rows as official 2.1.329 sends them: phases first, then one row per agent() call.
+  const rows = [
+    { type: 'workflow_phase', index: 1, title: 'gather' },
+    { type: 'workflow_phase', index: 2, title: 'write' },
+    { type: 'workflow_agent', index: 1, phaseIndex: 1, phaseTitle: 'gather', label: 'ag1', agentId: 'a1', state: 'done', startedAt: 1, tokens: 50, toolCalls: 2, durationMs: 900 },
+    { type: 'workflow_agent', index: 2, phaseIndex: 2, phaseTitle: 'write', label: 'ag2', agentId: 'a2', state: 'progress', startedAt: 2, queuedAt: 1, tokens: 10, lastToolName: 'Read' },
+    { type: 'workflow_agent', index: 3, phaseIndex: 2, phaseTitle: 'write', label: 'ag3', state: 'start', queuedAt: 1 },
+  ]
+  const progress = (workflow_progress?: unknown[]) =>
+    sys('task_progress', { task_id: 'w1', tool_use_id: 'toolu_wf', description: 'Plan', usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 }, workflow_progress })
+
+  it('builds workflow phases from the progress rows', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow', workflow_name: 'spec' }))
+    tasks = reduceTasks(tasks, progress(rows))
     const phases = tasks.w1!.phases!
-    expect(phases.map(p => [p.label, p.agents.map(a => a.label)])).toEqual([
-      ['gather', ['ag1']],
-      ['write', ['ag2', 'ag3']],
+    expect(phases.map(p => [p.label, p.status, p.agents.map(a => [a.label, a.status])])).toEqual([
+      ['gather', 'completed', [['ag1', 'completed']]],
+      ['write', 'running', [['ag2', 'running'], ['ag3', 'queued']]],
     ])
     expect(currentPhase(phases)).toBe(1)
+    // Agent activity alone comes without rows; the phases stay.
+    expect(reduceTasks(tasks, progress()).w1!.phases).toEqual(phases)
   })
 
   it('a stopped workflow ends the phases and agents that were still running', () => {
     let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow' }))
-    tasks = reduceTasks(
-      tasks,
-      sys('task_progress', {
-        task_id: 'w1',
-        description: 'Plan',
-        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
-        workflow_progress: [
-          { type: 'phase', index: 0, label: 'gather', status: 'completed' },
-          { type: 'agent', index: 0, phaseIndex: 0, label: 'ag1', status: 'completed' },
-          { type: 'phase', index: 1, label: 'write', status: 'running' },
-          { type: 'agent', index: 0, phaseIndex: 1, label: 'ag2', status: 'running' },
-          { type: 'agent', index: 1, phaseIndex: 1, label: 'ag3', status: 'pending' },
-        ],
-      }),
-    )
+    tasks = reduceTasks(tasks, progress(rows))
+    // The last rows end the started agent with the run; the queued one gets none.
+    const stopped = { ...rows[3], state: 'error', error: 'Stopped because the workflow was stopped', endedWithRun: 'stopped' }
+    tasks = reduceTasks(tasks, progress([...rows.slice(0, 3), stopped, rows[4]]))
     tasks = reduceTasks(tasks, sys('task_notification', { task_id: 'w1', status: 'stopped' }))
     expect(tasks.w1!.phases!.map(p => [p.status, p.agents.map(a => a.status)])).toEqual([
       ['completed', ['completed']],
-      ['stopped', ['stopped', 'pending']],
+      ['stopped', ['stopped', 'stopped']],
     ])
+  })
+
+  it('a failed agent fails its phase', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', description: 'Plan', task_type: 'local_workflow' }))
+    tasks = reduceTasks(tasks, progress([rows[0], { ...rows[2], state: 'error', error: 'boom' }]))
+    expect(tasks.w1!.phases!.map(p => [p.status, p.agents.map(a => a.status)])).toEqual([['failed', ['failed']]])
+  })
+
+  it('a workflow card follows the agent its row names', () => {
+    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', task_type: 'local_workflow', tool_use_id: 'toolu_wf', description: 'Plan' }))
+    tasks = reduceTasks(tasks, progress(rows))
+    expect(workflowAgent(tasks.w1!, 'ag2')).toMatchObject({ id: 'a2', status: 'running', tokens: 10, lastTool: 'Read', toolUseId: 'toolu_wf' })
+    expect(workflowAgent(tasks.w1!, 'ag1')).toMatchObject({ id: 'a1', status: 'completed', toolUses: 2, durationMs: 900 })
+    // Still waiting for a slot: no transcript yet.
+    expect(workflowAgent(tasks.w1!, 'ag3')).toBeUndefined()
   })
 
   it('marks tasks missing from a background snapshot as ended and adds new ones', () => {
@@ -155,11 +158,6 @@ describe('agent tasks', () => {
     expect(nested.running.map(t => t.id)).toEqual(['w1', 'p1'])
     expect(nested.children.get('p1')!.map(t => t.id)).toEqual(['c1'])
     expect(nested.children.has('w1')).toBe(false)
-    expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
-    // A running agent reports its current activity as the description; the name it started with stays (#631), so it is still found.
-    tasks = reduceTasks(tasks, sys('task_progress', { task_id: 'wa', tool_use_id: 'toolu_wf', description: 'Running wait', usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } }))
-    expect(tasks.wa!.description).toBe('spec: gather-a')
-    expect(workflowAgent(tasks, tasks.w1!, 'gather-a')?.id).toBe('wa')
   })
 
   it("an agent's output is its structured output, else its last reply", () => {
@@ -173,26 +171,6 @@ describe('agent tasks', () => {
         say({ type: 'text', text: 'Done.' }),
       ]),
     ).toEqual({ text: '{\n  "claims": [\n    "a"\n  ]\n}', structured: true })
-  })
-
-  it('a workflow agent listed as running before its task starts is queued', () => {
-    let tasks = reduceTasks({}, sys('task_started', { task_id: 'w1', task_type: 'local_workflow', tool_use_id: 'toolu_wf', description: 'Plan' }))
-    tasks = reduceTasks(tasks, sys('task_started', { task_id: 'wa', task_type: 'local_agent', tool_use_id: 'toolu_wf', description: 'spec: a' }))
-    tasks = reduceTasks(
-      tasks,
-      sys('task_progress', {
-        task_id: 'w1',
-        description: 'Plan',
-        usage: { total_tokens: 0, tool_uses: 0, duration_ms: 0 },
-        workflow_progress: [
-          { type: 'phase', index: 0, label: 'p', status: 'running' },
-          { type: 'agent', index: 0, phaseIndex: 0, label: 'a', status: 'running' },
-          { type: 'agent', index: 1, phaseIndex: 0, label: 'b', status: 'running' },
-          { type: 'agent', index: 2, phaseIndex: 0, label: 'c', status: 'completed' },
-        ],
-      }),
-    )
-    expect(workflowPhases(tasks, tasks.w1!)[0]!.agents.map(a => a.status)).toEqual(['running', 'queued', 'completed'])
   })
 
   it('the current phase is the latest one running, so pipelined phases move it on', () => {
