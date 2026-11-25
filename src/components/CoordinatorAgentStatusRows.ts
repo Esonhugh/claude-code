@@ -29,7 +29,7 @@ import type { Theme } from '../utils/theme.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 
 /** Official 2.1.311 folds idle teammates past the first three into one row. */
-const IDLE_TEAMMATES_SHOWN = 3
+export const IDLE_TEAMMATES_SHOWN = 3
 export type CoordinatorIdleSummary = {
   type: 'idle_summary'
   id: 'idle-teammate-summary'
