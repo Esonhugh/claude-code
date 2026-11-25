@@ -456,9 +456,13 @@ export function enqueueAgentNotification({
   if (!shouldEnqueue) return
   if (consumed !== undefined) {
     // The parent waits no longer; SDK consumers still see the end, with no output file named.
+    // Like official 2.1.329, the summary is the description: the reason is the mod's, for the model.
+    // Its report is then only that reason, a harness note, so summary_is_report never holds; a
+    // withheld hand-back stays withheld, with no report to render.
     emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
       toolUseId,
-      summary: consumed,
+      summary: description,
+      ...(status === 'completed' && handback === 'withheld' && { handback }),
       usage: usage && {
         total_tokens: usage.totalTokens,
         tool_uses: usage.toolUses,

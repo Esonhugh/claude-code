@@ -1040,7 +1040,7 @@ export async function notifyAgentEnd(
   const answer = await withAgentReportSnapshot(toolUseContext, snapshot =>
     reportAgentEnd(snapshot, target, notice.taskId, status, report))
   if (!deliver) return answer
-  if ('consumed' in answer) enqueueAgentNotification({ ...notice, consumed: answer.consumed })
+  if ('consumed' in answer) enqueueAgentNotification({ ...notice, consumed: answer.consumed, ...(report.handback === 'withheld' && { handback: report.handback }) })
   else enqueueAgentNotification({ ...notice, finalMessage: message(answer), ...reportForSdk(report, answer) })
   return answer
 }

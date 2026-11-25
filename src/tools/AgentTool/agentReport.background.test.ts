@@ -210,6 +210,32 @@ const consumedTask = await run('agent-report-consumed', async function* () {
 })
 assert.equal(queued('agent-report-consumed').length, 0)
 assert.equal(consumedTask.notified, true)
+// SDK hosts see the description, not the mod's reason, and no report (official 2.1.329).
+const consumedNotice = sdkNotice('agent-report-consumed')
+assert.equal(consumedNotice?.status, 'completed')
+assert.equal(consumedNotice.summary, 'agent-report-consumed')
+assert.equal(consumedNotice.summary_is_report, undefined)
+assert.equal(consumedNotice.handback, undefined)
+
+// A consumed hand-back that delivered nothing stays withheld; one that delivered names no hand-back.
+beginSubagentHandback('agent-report-consumed-withheld', true)
+await run('agent-report-consumed-withheld', async function* () {
+  yield assistant('unsent')
+})
+const withheldNotice = sdkNotice('agent-report-consumed-withheld')
+assert.equal(withheldNotice?.summary, 'agent-report-consumed-withheld')
+assert.equal(withheldNotice.handback, 'withheld')
+assert.equal(withheldNotice.handback_report, undefined)
+beginSubagentHandback('agent-report-consumed-sent', true)
+await run('agent-report-consumed-sent', async function* () {
+  deliverSubagentHandback('agent-report-consumed-sent', 'REPORT-GAMMA', undefined, 'toolu_gamma')
+  yield assistant('sent')
+})
+const sentNotice = sdkNotice('agent-report-consumed-sent')
+assert.equal(sentNotice?.summary, 'agent-report-consumed-sent')
+assert.equal(sentNotice.handback, undefined)
+assert.equal(sentNotice.handback_report, undefined)
+assert.equal(sentNotice.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
 // A hand-back run reports its delivered report; the answer replaces it under the frame.
