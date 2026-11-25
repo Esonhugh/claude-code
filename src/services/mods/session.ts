@@ -409,7 +409,7 @@ export function createModsSession(options: ModsSessionOptions) {
       const watched = inline && (watch === undefined ? !headless : watch !== '0' && watch !== 'false')
       const shown = line.replace(/[\r\n]/g, ' ')
       if (!watched) logForDebugging(`${event.plugin}: ${shown}`, { level: 'error' })
-      else logForDebugging(`[${event.plugin}] $.ui.log: ${shown}`)
+      else if (!headless) logForDebugging(`[${event.plugin}] $.ui.log: ${shown}`)
       if (!headless) { if (services.uiDiagnostic && !cascade) services.uiDiagnostic(event.plugin, shown) }
       else if (watched) services.uiLog?.(event.plugin, shown, 'transcript')
       if (headless && inline && getPrintOutputFormat() === 'text' && process.env.CLAUDE_CODE_SESSION_KIND !== 'bg')
