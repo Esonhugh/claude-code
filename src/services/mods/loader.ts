@@ -910,7 +910,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const handler = node.arguments.at(-1) as Node
     const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
     const helper = resolved && !resolved.members.length && resolved.binding.fn
-    if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
+    // Official 2.1.329 takes a function declaration or a top-level const bound to a function, never let or var.
+    if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || (handler.type === 'Identifier' && lookup(handler.name, scope)?.writes)))
       fail(path, handler.type === 'Identifier'
         ? `the hook "${handler.name}" is not a function declared at the top of this file (a function declaration, or a const bound to a function), nor imported from one of the module's own files`
         : 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')

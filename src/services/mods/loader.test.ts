@@ -995,6 +995,19 @@ test('tracks renamed capabilities, closures, provider function parameters, and c
   expect(result.calls).toEqual(['arithmetic.add', 'clock.now', 'clock.sleep'])
 })
 
+test.each([
+  `const h = async ($, e, next) => next(e)`,
+  `const h = function ($, e, next) { return next(e) }`,
+])('admits a hook bound to a top-level const like official: %s', async binding => {
+  const input = await plugin({ 'main.ts': `${binding}\nexport function register(on) { on('session.start', h) }` })
+  expect((await loadModDeclaration(input)).events).toEqual(['session.start'])
+})
+
+test('refuses a hook bound with let', async () => {
+  const input = await plugin({ 'main.ts': `let h = async ($, e, next) => next(e)\nexport function register(on) { on('session.start', h) }` })
+  await expect(loadModDeclaration(input)).rejects.toThrow('the hook "h" is not a function declared at the top of this file')
+})
+
 test('rejects registration handle escape that would hide catch-handler capabilities', async () => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     const handle = on('tool.call', (host, event, next) => next(event))
