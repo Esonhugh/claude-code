@@ -1218,6 +1218,36 @@ export function killWorkflowTask(
 }
 
 /**
+ * Drop a finished workflow from the panel at once, as official 2.1.329's
+ * footer `x` does (gge): no grace period, unlike timed eviction. Its finished
+ * agents go with it; the panel hides them only while the workflow is listed.
+ */
+export function dismissWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+): void {
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (task?.type !== 'local_workflow' || !isTerminalTaskStatus(task.status)) {
+      return prev
+    }
+    const tasks = Object.fromEntries(
+      Object.entries(prev.tasks).filter(
+        ([id, t]) =>
+          id !== taskId &&
+          !(
+            task.toolUseId &&
+            t.type === 'local_agent' &&
+            t.toolUseId === task.toolUseId &&
+            isTerminalTaskStatus(t.status)
+          ),
+      ),
+    )
+    return { ...prev, tasks }
+  })
+}
+
+/**
  * Stop the running workflows, as official 2.1.329 does on a print-mode
  * interrupt: each ends stopped for SDK consumers, and the run's own stop
  * notification is not queued for the model.

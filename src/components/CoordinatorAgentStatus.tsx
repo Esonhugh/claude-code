@@ -14,6 +14,7 @@ import { Ansi } from "../ink/Ansi.js";
 import { Box, Text } from "../ink.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
+import { isTerminalTaskStatus } from "../taskStatus.js";
 import {
   enterTeammateView,
   exitTeammateView,
@@ -292,7 +293,7 @@ export function CoordinatorTaskPanel({
  * The footer line while a panel row is selected, in place of the mode line,
  * as official 2.1.329 draws it (oV, ~326512000): main offers only selection
  * (and view while an agent is viewed), the viewed agent only selection, any
- * other agent view and stop or clear, an idle summary expand.
+ * other agent or workflow view and stop or clear, an idle summary expand.
  */
 export function CoordinatorSelectionHint(): React.ReactNode {
   const tasks = useAppState((s) => s.tasks);
@@ -329,6 +330,16 @@ export function CoordinatorSelectionHint(): React.ReactNode {
       viewSelectionMode === "viewing-agent" ? [select, open("view")] : [select];
   } else if (row.kind === "idle_summary") {
     hints = [open("expand")];
+  } else if (row.kind === "workflow") {
+    // Official's workflows branch: view and stop or clear, nothing else.
+    const task = row.taskId ? tasks[row.taskId] : undefined;
+    hints = [
+      open("view"),
+      {
+        shortcut: keys.close.toLowerCase(),
+        action: task && isTerminalTaskStatus(task.status) ? "clear" : "stop",
+      },
+    ];
   } else {
     const task = row.taskId ? tasks[row.taskId] : undefined;
     hints =

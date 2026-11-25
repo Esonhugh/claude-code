@@ -245,3 +245,23 @@ test('idle teammate summary row advertises expand, and expanded rows advertise c
     'enter to view · x to stop · esc to collapse',
   )
 })
+
+test('selected workflow row advertises view and stop or clear only', async () => {
+  const workflow = (status: string) => ({
+    workflow: {
+      id: 'workflow', type: 'local_workflow', status, workflowName: 'review', description: 'Review',
+      startTime: Date.now() - 5_000, ...(status !== 'running' && { endTime: Date.now() }),
+      tokenCount: 10, agentCount: 1, phases: [], results: [],
+    },
+    a: { id: 'a', type: 'local_agent', status: 'running', agentId: 'a', agentType: 'Explore', description: 'A', startTime: 1, progress: { tokenCount: 1, toolUseCount: 0 } },
+    b: { id: 'b', type: 'local_agent', status: 'running', agentId: 'b', agentType: 'Plan', description: 'B', startTime: 2, progress: { tokenCount: 1, toolUseCount: 0 } },
+  }) as unknown as AppState['tasks']
+  const index = async (tasks: AppState['tasks']) => {
+    const lines = await panelLines(100, false, { tasks })
+    return lines.findIndex(line => line.includes('review'))
+  }
+  const running = workflow('running')
+  expect(await hintLine(100, { tasks: running, coordinatorTaskIndex: await index(running) })).toBe('enter to view · x to stop')
+  const done = workflow('completed')
+  expect(await hintLine(100, { tasks: done, coordinatorTaskIndex: await index(done) })).toBe('enter to view · x to clear')
+})
