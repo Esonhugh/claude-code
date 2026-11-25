@@ -1064,8 +1064,9 @@ export function completeWorkflowTask(
   taskId: string,
   setAppState: SetAppState,
 ): void {
-  withWorkflowTask(taskId, setAppState, task => {
-    if (isTerminalTaskStatus(task.status)) return task
+  // Through updateTaskState, so SDK hosts get the task_updated that says so.
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.type !== 'local_workflow' || isTerminalTaskStatus(task.status)) return task
     endWorkflowProgressRows(taskId, 'completed')
     const endTime = Date.now()
     return {
@@ -1088,8 +1089,8 @@ export function failWorkflowTask(
   error: string,
   setAppState: SetAppState,
 ): void {
-  withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.type !== 'local_workflow' || task.status !== 'running') return task
     endWorkflowProgressRows(taskId, 'failed')
     abortWorkflowControllers(task, 'workflow-failed')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))

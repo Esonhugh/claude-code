@@ -98,9 +98,16 @@ for (const entry of ['plan', 'script'] as const) {
       expect(text).toContain('<subagent_tokens>110</subagent_tokens><tool_uses>1</tool_uses>')
       expect(text).toMatch(/<duration_ms>\d+<\/duration_ms>/)
       expect(finished.notified).toBe(true)
-      // print.ts turns the <status>-bearing XML into the SDK task_notification;
-      // a direct emit on the same path would close the task twice.
-      expect(notifications.length + sdk.length).toBe(1)
+      // SDK hosts get the end at once; print.ts does not send it again from the XML.
+      expect(notifications[0]!.sdkTaskNotificationSent).toBe(true)
+      expect(sdk).toHaveLength(1)
+      expect(sdk[0]).toMatchObject({
+        task_id: finished.id,
+        tool_use_id: 'toolu_terminal',
+        status: status === 'killed' ? 'stopped' : status,
+        output_file: finished.outputFile,
+        usage: { total_tokens: 110, tool_uses: 1 },
+      })
       if (status === 'completed') expect(text).toContain('result &lt;ok&gt;')
       if (status === 'failed') expect(text).toContain('terminal &lt;failure&gt;')
       expect(await readFile(finished.outputFile, 'utf8')).not.toBe('')

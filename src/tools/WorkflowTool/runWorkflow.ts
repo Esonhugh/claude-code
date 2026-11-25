@@ -76,6 +76,7 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import {
   applyRequestedAgentPermissionMode,
   capAgentPermissionMode,
@@ -449,7 +450,10 @@ async function enqueueWorkflowNotification({
 <result>${truncatedResult}</result>
 <usage><subagent_tokens>${usage.total_tokens}</subagent_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
-  await enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  // Like official 2.1.329, SDK hosts get task_notification as the run ends,
+  // before it leaves background_tasks_changed.
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, { toolUseId, summary, outputFile, usage })
+  await enqueuePendingNotification({ value: message, mode: 'task-notification', sdkTaskNotificationSent: true })
   setAppState(prev => {
     const task = prev.tasks[taskId]
     if (task?.type !== 'local_workflow' || task.notified) return prev

@@ -32,9 +32,8 @@ import { AgentApiError } from '../AgentTool/agentToolUtils.js'
 // the fake agents here match on raw prompts.
 process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
 
-// Terminal status/usage/output reach SDK consumers through the XML task
-// notification that print.ts parses into task_notification; the runtime emits
-// no direct SDK event on those paths. Read the queued XML without consuming it.
+// Terminal status/usage/output also reach the model through the XML task
+// notification. Read the queued XML without consuming it.
 function parseTerminalNotification(text: string) {
   const usage = text.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
   return {
@@ -317,9 +316,8 @@ assert.equal(
   true,
 )
 
-// The terminal bookend reaches SDK consumers through the XML notification that
-// print.ts parses into task_notification; no direct event is emitted here.
-assert.equal(events.some(event => event.subtype === 'task_notification'), false)
+// SDK hosts get the terminal bookend as the run ends; print.ts does not send it again.
+assert.equal(events.some(event => event.subtype === 'task_notification' && event.status === 'completed'), true)
 const completionNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(completionNotification)
 assert.match(String(completionNotification.value), new RegExp(`<task-id>${started?.task_id}</task-id>`))
@@ -1262,7 +1260,7 @@ assert.equal(
       event.subtype === 'task_notification' &&
       event.task_id === functionResultTask.id,
   ),
-  false,
+  true,
 )
 
 const unserializableResultScript = `export const meta = {
@@ -1545,7 +1543,7 @@ const userRetryUsageTask = Object.values(userRetryUsageState.tasks).find(
 )
 assert.ok(userRetryUsageTask)
 const userRetryUsageEvents = drainSdkEvents()
-assert.equal(userRetryUsageEvents.some(event => event.subtype === 'task_notification'), false)
+assert.equal(userRetryUsageEvents.some(event => event.subtype === 'task_notification'), true)
 const userRetryUsageSdkTermination = peekTerminalNotification(userRetryUsageTask.id)
 assert.ok(userRetryUsageSdkTermination)
 assert.ok(userRetryUsageSdkTermination.output_file)
@@ -2069,7 +2067,7 @@ assert.deepEqual({
   toolUseCount: 3,
 })
 const automaticRetryUsageEvents = drainSdkEvents()
-assert.equal(automaticRetryUsageEvents.some(event => event.subtype === 'task_notification'), false)
+assert.equal(automaticRetryUsageEvents.some(event => event.subtype === 'task_notification'), true)
 const automaticRetryUsageSdkTermination = peekTerminalNotification(automaticRetryUsageTask?.id)
 assert.ok(automaticRetryUsageSdkTermination)
 assert.ok(automaticRetryUsageSdkTermination.output_file)
@@ -2491,7 +2489,7 @@ assert.deepEqual({
   toolUseCount: 2,
 })
 const missingSchemaUsageEvents = drainSdkEvents()
-assert.equal(missingSchemaUsageEvents.some(event => event.subtype === 'task_notification'), false)
+assert.equal(missingSchemaUsageEvents.some(event => event.subtype === 'task_notification'), true)
 const missingSchemaUsageSdkTermination = peekTerminalNotification(missingSchemaUsageTask?.id)
 assert.ok(missingSchemaUsageSdkTermination)
 assert.equal(missingSchemaUsageSdkTermination.status, 'completed')
@@ -2685,7 +2683,7 @@ const skipTask = Object.values(skipState.tasks).find(
 )
 assert.ok(skipTask)
 const skipSdkEvents = drainSdkEvents()
-assert.equal(skipSdkEvents.some(event => event.subtype === 'task_notification'), false)
+assert.equal(skipSdkEvents.some(event => event.subtype === 'task_notification'), true)
 const skipSdkTermination = parseTerminalNotification(String(skipNotification.value))
 assert.ok(skipSdkTermination.output_file)
 const skipOutput = await readFile(skipSdkTermination.output_file, 'utf8')
@@ -2859,7 +2857,7 @@ assert.equal(
   drainSdkEvents().some(
     event => event.subtype === 'task_notification' && event.task_id === failedTask?.id,
   ),
-  false,
+  true,
 )
 
 const promptTooLongScript = `export const meta = {
@@ -3195,7 +3193,7 @@ assert.equal(
       event.subtype === 'task_notification' &&
       event.task_id === stalledParallelTask?.id,
   ),
-  false,
+  true,
 )
 releaseStalledAgent?.()
 await Promise.resolve()
@@ -3727,7 +3725,7 @@ assert.equal(
   drainSdkEvents().some(
     event => event.subtype === 'task_notification' && event.task_id === unawaitedKillTask?.id,
   ),
-  false,
+  true,
 )
 // print.ts maps the XML 'killed' status to the SDK 'stopped' status.
 assert.equal(peekTerminalNotification(unawaitedKillTask?.id)?.status, 'killed')
@@ -3801,7 +3799,7 @@ assert.equal(
     event =>
       event.subtype === 'task_notification' && event.task_id === killedTask.id,
   ),
-  false,
+  true,
 )
 assert.equal(peekTerminalNotification(killedTask.id)?.status, 'killed')
 
