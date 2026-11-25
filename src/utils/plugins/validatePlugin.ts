@@ -842,7 +842,9 @@ async function validateHooksJson(
   const errors: ValidationError[] = []
   const warnings: ValidationWarning[] = []
   const notes: string[] = []
-  let owner = path.basename(pluginRoot)
+  // Official 2.1.329 names the plugin by its directory in a module's refusals and owns state by the manifest name.
+  const directory = path.basename(pluginRoot)
+  let owner = directory
   let declared: ModStateDeclaration[] = []
   try {
     const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json')
@@ -857,7 +859,7 @@ async function validateHooksJson(
     const resolved = path.join(path.dirname(filePath), modulePath)
     try {
       const declaration = await loadModDeclaration({
-        name: owner,
+        name: directory,
         storageId: owner,
         pluginRoot,
         entrypoints: [resolved],
@@ -877,7 +879,7 @@ async function validateHooksJson(
         const fail = (message: string) => errors.push({ path: `modules.${modulePath}`, message })
         let bytes: Buffer
         try {
-          bytes = Buffer.from(await readModWasmFile(pluginRoot, file.path, owner), 'base64')
+          bytes = Buffer.from(await readModWasmFile(pluginRoot, file.path, directory), 'base64')
         } catch (error) {
           fail(errorMessage(error))
           continue
@@ -891,7 +893,7 @@ async function validateHooksJson(
         }
         const shared = modWasmSharedMemoryReason(bytes)
         if (shared) {
-          fail(`${file.path}: ${owner}: $.wasm.compile: ${shared}`)
+          fail(`${file.path}: ${directory}: $.wasm.compile: ${shared}`)
           continue
         }
         notes.push(

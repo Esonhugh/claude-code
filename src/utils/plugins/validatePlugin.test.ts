@@ -180,8 +180,8 @@ describe('hooks module author validation', () => {
       const refused = await validate(`await $.wasm.compile('./garbage.wasm'); await $.wasm.compile('./shared.wasm'); await $.wasm.compile('./missing.wasm')`)
       expect(refused.errors).toEqual([
         { path: 'modules../m.mjs', message: "hooks/garbage.wasm: WebAssembly.Module doesn't parse at byte 0: expected a module of at least 8 bytes" },
-        { path: 'modules../m.mjs', message: `owner: ${join(root, 'hooks', 'missing.wasm')}: no such file` },
-        { path: 'modules../m.mjs', message: 'hooks/shared.wasm: owner: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
+        { path: 'modules../m.mjs', message: `${basename(root)}: ${join(root, 'hooks', 'missing.wasm')}: no such file` },
+        { path: 'modules../m.mjs', message: `hooks/shared.wasm: ${basename(root)}: $.wasm.compile: the module declares a shared memory, which no hooks module may hold` },
       ])
       expect(refused.notes).toEqual(['./m.mjs hooks: session.start', './m.mjs calls: $.wasm.compile'])
     } finally {
