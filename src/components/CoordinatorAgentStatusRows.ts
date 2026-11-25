@@ -1,6 +1,7 @@
 import type { AppState } from '../state/AppState.js'
 import {
   isCompletedBackgroundAgent,
+  isLiveLocalAgentTask,
   isLocalAgentTask,
   isPanelAgentTask,
   type LocalAgentTaskState,
@@ -25,6 +26,7 @@ import {
 import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
 import { PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
 
 /** Official 2.1.311 folds idle teammates past the first three into one row. */
 const IDLE_TEAMMATES_SHOWN = 3
@@ -59,6 +61,8 @@ export type CoordinatorSessionRow = {
   /** Official "Large workflow" size warning, shown while the run is over the agent/token cap. */
   warning?: string
   color?: keyof Theme
+  /** Official end-status icon colour: green for completed, red for failed or stopped. */
+  iconColor?: keyof Theme
   depth: number
   branch: CoordinatorPanelBranch
 }
@@ -475,6 +479,13 @@ function tokenArrow(lastActivity: unknown): string {
   return lastActivity ? '↓' : '↑'
 }
 
+// Official 2.1.329 colours the icon of a finished row by its end status,
+// except for a parked owner that still waits on its background children.
+function endIconColor(task: LocalAgentTaskState | InProcessTeammateTaskState): keyof Theme | undefined {
+  if (!isTerminalTaskStatus(task.status) || isLiveLocalAgentTask(task)) return undefined
+  return task.status === 'completed' ? 'success' : 'error'
+}
+
 function teammateThemeColor(color: string | undefined): keyof Theme | undefined {
   return color && AGENT_COLORS.includes(color as AgentColorName)
     ? AGENT_COLOR_TO_THEME_COLOR[color as AgentColorName]
@@ -563,6 +574,7 @@ export function getCoordinatorSessionRows({
         statusText: AGENT_END_LABELS[task.status] ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: teammateThemeColor(task.identity.color),
+        iconColor: endIconColor(task),
         depth: 0,
         branch: 'none',
       }
@@ -592,6 +604,7 @@ export function getCoordinatorSessionRows({
         statusText: endLabel ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: getAgentColor(task.agentType),
+        iconColor: endIconColor(task),
         depth: entry.depth,
         branch: entry.branch,
       }

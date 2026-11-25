@@ -662,6 +662,23 @@ assert.equal(stoppedEmptyRow.selected, true)
 assert.equal(stoppedEmptyRow.icon, '◯')
 assert.equal(stoppedEmptyRow.tokens, '')
 assert.equal(stoppedEmptyRow.elapsed, 'stopped · 2m 40s')
+// Official colours a finished icon by its end status, but a parked owner
+// that still waits on background children keeps the plain icon.
+assert.equal(stoppedEmptyRow.iconColor, 'error')
+for (const [overrides, iconColor] of [
+  [{ status: 'running' }, undefined],
+  [{ status: 'failed', endTime: 161_000 }, 'error'],
+  [{ status: 'completed', endTime: 161_000 }, 'success'],
+  [{ status: 'completed', endTime: 161_000, keepaliveReasons: new Set(['agent:child']) }, undefined],
+] as const) {
+  assert.equal(
+    getCoordinatorSessionRows({
+      tasks: { 'agent-1': { ...agentTask, ...overrides, retain: true } } as unknown as AppState['tasks'],
+      now: 200_000,
+    })[1]?.iconColor,
+    iconColor,
+  )
+}
 assert.equal(
   getCoordinatorSessionRows({
     tasks: stoppedEmptyTasks,

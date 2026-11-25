@@ -384,7 +384,14 @@ function SessionRow({
     >
       <Box width={4} flexShrink={0}>
         <Text bold={active || row.viewed} dimColor={!active && !row.viewed}>
-          {active ? figures.pointer : " "} {row.icon}{" "}
+          {active ? figures.pointer : " "}{" "}
+        </Text>
+        <Text
+          color={row.iconColor ?? (active ? "suggestion" : undefined)}
+          bold={row.viewed}
+          dimColor={!row.iconColor && !active && !row.viewed}
+        >
+          {row.icon}{" "}
         </Text>
       </Box>
       <Box
