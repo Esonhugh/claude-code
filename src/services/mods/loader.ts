@@ -74,6 +74,29 @@ export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts'
 // loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
 class ModLoadError extends Error {}
 
+// A string written as a literal or a template with no substitution.
+function literalString(node: Node | undefined): string | undefined {
+  if (node?.type === 'Literal') return typeof node.value === 'string' ? node.value : undefined
+  if (node?.type !== 'TemplateLiteral' || node.expressions.length) return
+  return node.quasis[0]?.value.cooked ?? undefined
+}
+
+// How official 2.1.329 names an argument that had to be written as a literal.
+function spelled(node: Node | undefined): string {
+  switch (node?.type) {
+    case undefined: return 'no argument'
+    case 'Identifier': return `the variable ${node.name}`
+    case 'TemplateLiteral': return 'a template with a substitution'
+    case 'SpreadElement': return 'a spread'
+    case 'Literal': return `the literal ${node.raw ?? String(node.value)}`
+    case 'MemberExpression': return 'a member read'
+    case 'CallExpression': return 'a call'
+    case 'BinaryExpression': return 'a concatenation'
+    case 'ObjectExpression': return 'an object whose plugin or key is not a string literal'
+    default: return `a ${node.type}`
+  }
+}
+
 function fail(path: string, message: string): never {
   throw new ModLoadError(`${path}: ${message}`)
 }
@@ -280,12 +303,13 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
 
   function scanEnvironment(call: string, node: Node) {
     if (call !== 'env.get' && call !== 'env.set') return
-    const name = node.arguments[0]
-    if (name?.type !== 'Literal' || typeof name.value !== 'string')
-      fail(path, 'environment access requires a string literal name')
-    if (!name.value || /[=\0]/.test(name.value))
+    const argument = node.arguments[0]
+    const name = argument?.type === 'SpreadElement' ? undefined : literalString(argument)
+    if (name === undefined)
+      fail(path, `$.${call} takes a literal name as its first argument, so the variables a module reads and writes can be listed (got ${spelled(argument)})`, argument ?? node)
+    if (!name || /[=\0]/.test(name))
       fail(path, 'environment name must be nonempty without NUL or =')
-    env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
+    env[call === 'env.get' ? 'reads' : 'writes'].add(name)
   }
 
   // Official 2.1.329 follows a name by its spelling across the whole file, not by scope: every
@@ -449,10 +473,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function scanState(call: string, node: Node, scope: Scope) {
     if (call !== 'state.get' && call !== 'state.set') return
     const reference = node.arguments[0]
-    if (!reference || reference.type === 'SpreadElement')
-      fail(path, 'state access requires a reference with literal plugin and key')
-    const resolved = stateReference(reference, scope)
-    if (!resolved) fail(path, 'state access requires a reference with literal plugin and key; only id may be computed')
+    const resolved = reference && reference.type !== 'SpreadElement' ? stateReference(reference, scope) : undefined
+    if (!resolved) fail(path, `$.${call} takes a reference whose plugin and key are string literals ({ plugin: "p", key: "k" }, written there or in a const of this file; only id may be computed), so the values a module reads and writes can be listed (got ${spelled(reference)})`, reference ?? node)
     state[call === 'state.get' ? 'reads' : 'writes'].set(`${resolved.plugin}\0${resolved.key}`, resolved)
   }
 
