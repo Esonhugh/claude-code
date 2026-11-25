@@ -726,7 +726,7 @@ test('does not treat a helper return as an engine.create handler return', async 
         return (await reveal($, e, next)).tool.register(e);
       }); }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/escape/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('"next" is passed on or bound inside an engine.create hook (its value is $)')
 })
 
 test.each([
@@ -812,14 +812,14 @@ test('rejects an engine returned by recursively calling an inline named handler 
       return hidden.tool.register(e);
     });
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/escape/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('"next" is passed on or bound inside an engine.create hook (its value is $)')
 })
 
 test('rejects a hidden engine returned through a Next method alias', async () => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('engine.create', async ($, e, next) => { const to = next.to; return (await to(e, 'core')).tool.register(e); });
   }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/escape/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('next.to is used as a value (bound, passed or read) instead of called as next.to(e, "<tier>")')
 })
 
 test('rejects unresolved higher-order helper targets even with a known capability argument', async () => {

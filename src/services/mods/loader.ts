@@ -756,6 +756,32 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     walk(body)
   }
 
+  // Official 2.1.329 lets an engine.create hook only call its next, read a non-to member of it, or call next.to.
+  function refuseNextValues(body: Node, name: string) {
+    const walk = (node: Node, parent: Node | undefined, grandparent: Node | undefined) => {
+      if (node.type === 'Identifier' && node.name === name && !(parent?.type === 'MemberExpression' && parent.property === node && !parent.computed) &&
+        !(parent?.type === 'Property' && parent.key === node && !parent.computed && !parent.shorthand)) {
+        if (parent?.type === 'CallExpression' && parent.callee === node && !parent.optional) return
+        if (parent?.type === 'MemberExpression' && parent.object === node) {
+          if (parent.computed) {
+            if (parent.property.type === 'Literal' && typeof parent.property.value === 'string' && parent.property.value !== 'to') return
+            fail(path, `a computed member access on "${name}" (it may reach next.to)`, parent)
+          }
+          if (parent.property.name !== 'to') return
+          if (parent.optional) fail(path, 'next.to is reached through optional chaining', parent)
+          const call = grandparent
+          if (!(call?.type === 'CallExpression' && call.callee === parent && !call.optional)) {
+            fail(path, 'next.to is used as a value (bound, passed or read) instead of called as next.to(e, "<tier>")', parent)
+          }
+          return
+        }
+        fail(path, `"${name}" is passed on or bound inside an engine.create hook (its value is $)`, node)
+      }
+      for (const child of children(node)) walk(child, node, parent)
+    }
+    walk(body, undefined, undefined)
+  }
+
   // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
   // the value of next(e) at engine.create is held to the same.
   const membersChecked = new Map<Node, Set<string>>()
@@ -832,6 +858,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       if (roles[index]?.role === 'engine' && !roles[index]!.members.length && param.type === 'Identifier') refuseMemberValues([node.body], param.name)
       if ((roles[index]?.role === 'engine' || roles[index]?.role === 'next') && !roles[index]!.members.length && param.type === 'Identifier') {
         refuseShadow(node.body, param.name, roles[index]!.role === 'engine' ? 'holds $' : 'next')
+      }
+      if (handler && event === 'engine.create' && roles[index]?.role === 'next' && !roles[index]!.members.length && param.type === 'Identifier') {
+        refuseNextValues(node.body, param.name)
       }
     })
     if (collecting) {
