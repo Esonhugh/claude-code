@@ -87,7 +87,7 @@ import {
 } from '../../utils/planModeV2.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
-import { enqueueSdkEvent, reportTaskOnlyThroughWorkflow } from '../../utils/sdkEventQueue.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
 import { ensureSessionTeam } from '../../utils/swarm/sessionTeam.js'
@@ -1444,7 +1444,6 @@ export const AgentTool = buildTool({
     const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
     let ownsSlot = true
     try {
-    if (toolUseContext.workflowAgentSystemPrompt !== undefined) reportTaskOnlyThroughWorkflow(earlyAgentId)
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId
       const agentBackgroundTask = registerAsyncAgent({
