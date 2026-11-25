@@ -179,3 +179,22 @@ export function idleSubscriptionMessage(result: PeerIdleSubscribeResult, label: 
     case 'send-failed': return 'notify_when_idle: the subscription could not be sent — no notice will arrive.'
   }
 }
+
+/** Transcript line for a notify_when_idle subscription, shown to the user instead of the model text. */
+export function idleSubscriptionDisplay(result: PeerIdleSubscribeResult, label: string): string {
+  if (!('reason' in result)) {
+    return result.peerKnownCapable
+      ? `You will be told here when ${label} is next idle.`
+      : `Idle subscription sent to ${label}; whether it supports idle notices is unknown.`
+  }
+  switch (result.reason) {
+    case 'peer-gone': return `No session is listening at ${label}'s address any more; no idle subscription.`
+    case 'peer-unsupported': return `${label} runs a version without idle notices; no idle subscription.`
+    case 'self-target': return 'That address is this session; no idle subscription.'
+    case 'send-failed':
+    case 'requester-refuses-inbound':
+    case 'no-inbox':
+    case 'cap':
+      return `The idle subscription for ${label} could not be set up; you will not be told when it goes idle.`
+  }
+}
