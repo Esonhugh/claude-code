@@ -107,6 +107,8 @@ import {
   consume as consumeFromQueue,
   countRemainingWakePollEventsAfter,
   getCommandsByMaxPriority,
+  getCommandQueueSnapshot,
+  isPassiveMainThreadCommand,
   isSlashCommand,
   settlePollEventsDelivered,
   subscribeToCommandQueue,
@@ -954,6 +956,30 @@ async function* queryLoop(
       if (folded) {
         yield folded
         messagesForQuery.push(folded)
+      }
+    }
+
+    // Official 2.1.329 turn-start passive fold: a notice that never starts a
+    // turn (a task the user stopped) goes after this turn's prompt. Official
+    // sends it as a role:"system" turn; here it joins the prompt's user turn,
+    // after the prompt (an attachment would move ahead of it).
+    if (
+      turnCount === 1 &&
+      toolUseContext.agentId === undefined &&
+      (querySource.startsWith('repl_main_thread') || querySource === 'sdk')
+    ) {
+      const passive = getCommandQueueSnapshot().filter(isPassiveMainThreadCommand)
+      if (passive.length > 0 && !toolUseContext.abortController.signal.aborted) {
+        consumeFromQueue(passive, { reason: 'absorbed_mid_turn' })
+        for (const cmd of passive) {
+          const msg = createUserMessage({
+            content: cmd.value,
+            isMeta: true,
+            origin: { kind: 'task-notification' },
+          })
+          yield msg
+          messagesForQuery.push(msg)
+        }
       }
     }
 

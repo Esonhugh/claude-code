@@ -18,7 +18,7 @@ import {
 import type { AgentId } from './types/ids.js'
 import type { Message } from './types/message.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
-import { enqueuePollEvent, getCommandQueueSnapshot, resetCommandQueue } from './utils/messageQueueManager.js'
+import { enqueue, enqueuePollEvent, getCommandQueueSnapshot, resetCommandQueue } from './utils/messageQueueManager.js'
 import { createAssistantMessage, createUserMessage, normalizeMessagesForAPI } from './utils/messages.js'
 import {
   getSessionSettingsCache,
@@ -179,6 +179,26 @@ describe('poll events fold into the turn (official 2.1.325)', () => {
     const [own] = await run([createUserMessage({ content: 'work' })], { agentId: 'a-sub' as AgentId })
     expect(pollEventsOf(own!)).toHaveLength(1)
     expect(getCommandQueueSnapshot()).toEqual([])
+  })
+})
+
+describe('a passive notice folds into the next turn (official 2.1.329)', () => {
+  test("it goes after the turn's prompt, in its first request, and only the main thread takes it", async () => {
+    const notice = '<task-notification>\n<task-id>a1</task-id>\n<status>killed</status>\n</task-notification>'
+    enqueue({ value: notice, mode: 'task-notification', priority: 'next', passive: true })
+    const [own] = await run([createUserMessage({ content: 'work' })], { agentId: 'a-sub' as AgentId })
+    expect(own!.filter(m => m.type === 'attachment')).toEqual([])
+    expect(getCommandQueueSnapshot()).toHaveLength(1)
+
+    const [first] = await run([createUserMessage({ content: 'FOLLOWUP' })])
+    expect(getCommandQueueSnapshot()).toEqual([])
+    const api = normalizeMessagesForAPI(first!)
+    const texts = api.map(m => typeof m.message.content === 'string'
+      ? m.message.content
+      : (m.message.content as { type: string; text?: string }[]).map(b => b.text ?? '').join('\n'))
+    expect(texts[0]).toStartWith('FOLLOWUP')
+    expect(texts.join('\n')).toContain('[SYSTEM NOTIFICATION - NOT USER INPUT]')
+    expect(texts.join('\n').indexOf(notice)).toBeGreaterThan(texts.join('\n').indexOf('FOLLOWUP'))
   })
 })
 

@@ -10,6 +10,11 @@ import { getDefaultAppState, type AppState } from '../../state/AppStateStore.js'
 import type { ModelUsage } from '../../entrypoints/agentSdkTypes.js'
 import type { TaskState } from '../../tasks/types.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import {
+  enqueue,
+  getCommandQueueSnapshot,
+  resetCommandQueue,
+} from '../../utils/messageQueueManager.js'
 import { drainSdkOutput } from '../../utils/sdkEventQueue.js'
 import { clearConversation } from './conversation.js'
 
@@ -78,4 +83,16 @@ test('interactive /clear sends no conversation_reset', async () => {
   setIsInteractive(true)
   await clearConversation(context())
   expect(drainSdkOutput()).toEqual([])
+})
+
+test('/clear drops the stop notices the next turn would take, and keeps the rest', async () => {
+  resetCommandQueue()
+  enqueue({ value: 'stopped', mode: 'task-notification', passive: true })
+  enqueue({ value: 'done', mode: 'task-notification' })
+  enqueue({ value: 'sub', mode: 'task-notification', passive: true, agentId: 'a1' as never })
+
+  await clearConversation(context())
+
+  expect(getCommandQueueSnapshot().map(cmd => cmd.value)).toEqual(['done', 'sub'])
+  resetCommandQueue()
 })

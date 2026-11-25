@@ -76,6 +76,7 @@ import {
   enqueue,
   enqueueTracked,
   hasCommandsInQueue,
+  isDrainableMainThreadCommand,
   peek,
   remove,
   subscribeToCommandQueue,
@@ -326,6 +327,7 @@ import {
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
 import { isLocalAgentTask, stopBackgroundAgentTasks } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import { stopRunningWorkflowTasks } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { enqueueStopSweepNotices } from '../tasks/userStopNotice.js'
 import { createSendNow, isSendNowPrompt } from '../utils/sendNow.js'
 import {
   setupSdkMcpClients,
@@ -2439,7 +2441,7 @@ function runHeadlessStreaming(
     // Keep draining them even after stdin closes; their hooks must finish before output closes.
     if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
     // A stopped agent notifies once its abort settles, which can be after run() stopped waiting for it.
-    if (!inputClosed && peek(cmd => cmd.agentId === undefined && cmd.mode === 'task-notification')) void run()
+    if (!inputClosed && peek(cmd => isDrainableMainThreadCommand(cmd) && cmd.mode === 'task-notification')) void run()
     const urgent = getCommandsByMaxPriority('now')
     if (abortController && urgent.length > 0) {
       // Bash and slash commands run only after the turn, so they still cut it.
@@ -2519,7 +2521,8 @@ function runHeadlessStreaming(
     // notifications are drained by the subagent's mid-turn gate in query.ts.
     // Defined outside the try block so it's accessible in the post-finally
     // queue re-checks at the bottom of run().
-    const isMainThread = (cmd: QueuedCommand) => cmd.agentId === undefined
+    // A passive notice waits for the next prompt's turn instead of starting one.
+    const isMainThread = isDrainableMainThreadCommand
 
     try {
       let command: QueuedCommand | undefined
@@ -3737,8 +3740,10 @@ function runHeadlessStreaming(
             abortController.abort()
           }
           // Like official, an interrupt also stops running background agents and workflows, idle session or not.
-          stopBackgroundAgentTasks(getAppState().tasks, setAppState)
-          stopRunningWorkflowTasks(getAppState().tasks, setAppState)
+          const stoppedForMain = [
+            ...stopBackgroundAgentTasks(getAppState().tasks, setAppState),
+            ...stopRunningWorkflowTasks(getAppState().tasks, setAppState),
+          ]
           shellAbortController?.abort('user-cancel')
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
@@ -3757,6 +3762,8 @@ function runHeadlessStreaming(
           // Like official 2.1.329, the background agents it stopped end ahead of its response.
           for (const event of drainSdkOutput()) output.enqueue(event)
           sendControlResponseSuccess(message, response)
+          // The model hears of them with its next prompt, which they don't start.
+          enqueueStopSweepNotices(stoppedForMain, 'client')
         } else if (message.request.subtype === 'end_session') {
           logForDebugging(
             `[print.ts] end_session received, reason=${message.request.reason ?? 'unspecified'}`,
@@ -3967,7 +3974,7 @@ function runHeadlessStreaming(
                   shellAbortController = undefined
                   shellCommandRunning = false
                   const hasQueuedPrompt =
-                    peek(command => command.agentId === undefined) !== undefined
+                    peek(isDrainableMainThreadCommand) !== undefined
                   logForDebugging(
                     `[print.ts] direct SSH shell lifecycle released requestId=${request.request_id} queuedPrompt=${hasQueuedPrompt} inputClosed=${inputClosed}`,
                   )
@@ -5981,7 +5988,7 @@ function runHeadlessStreaming(
       suggestionState.abortController?.abort()
       suggestionState.abortController = null
       await options.modsSession?.runtime?.settleTurns()
-      if (running || peek(cmd => cmd.agentId === undefined) !== undefined) return
+      if (running || peek(isDrainableMainThreadCommand) !== undefined) return
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
@@ -6013,7 +6020,7 @@ function runHeadlessStreaming(
   if (
     udsMessagingModule &&
     !inputClosed &&
-    peek(cmd => cmd.agentId === undefined)
+    peek(isDrainableMainThreadCommand)
   ) {
     void run()
   }

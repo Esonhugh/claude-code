@@ -37,6 +37,10 @@ import {
   getSessionEndHookTimeoutMs,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
+import {
+  isPassiveMainThreadCommand,
+  removeByFilter,
+} from '../../utils/messageQueueManager.js'
 import { resetSafetyStops } from '../../services/api/errors.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
@@ -107,6 +111,9 @@ export async function clearConversation({
         lastRequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
   }
+
+  // Official `Cy(xX)`: a stop notice speaks of the conversation /clear ends.
+  removeByFilter(isPassiveMainThreadCommand)
 
   // Compute preserved tasks up front so their per-agent state survives the
   // cache wipe below. A task is preserved unless it explicitly has

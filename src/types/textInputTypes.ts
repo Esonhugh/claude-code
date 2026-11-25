@@ -422,6 +422,11 @@ export type QueuedCommand = {
   taskId?: string
   /** The task already sent its SDK task_notification; print.ts must not send it again. */
   sdkTaskNotificationSent?: true
+  /**
+   * Official `passive`: it never starts a turn. The next turn's first request
+   * takes it, after that turn's prompt (a stop notice the user caused).
+   */
+  passive?: true
   /** The event a `poll-event` command carries (official 2.1.325 `pollEvent`). */
   pollEvent?: QueuedPollEvent
 }
