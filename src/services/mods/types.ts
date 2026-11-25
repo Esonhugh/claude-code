@@ -85,6 +85,8 @@ export type ModDeclaration = {
   validation?: {
     registrations: readonly string[]
     helperCalls: Readonly<Record<string, readonly string[]>>
+    /** Registrations on an event a hook can refuse, and whether each has a .catch. */
+    gates?: readonly { registration: string; hasCatch: boolean }[]
     /** Read for validate only: the engine.create hook in its one form, or where it leaves it. */
     engineForm?: EngineForm & { at?: string }
     /** Read for validate only: a refusal of a spelling official 2.1.329 loads, which this loader refuses. */

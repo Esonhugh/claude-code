@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs'
 import { open, realpath, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { engineFormOf } from './engineForm.js'
-import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
+import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
@@ -122,7 +122,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   }
   const events = new Set<string>()
   const calls = new Set<string>()
-  const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
+  const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope; hasCatch: boolean }>()
   const firstRegistrations = new Map<string, { path: string; line?: number }>()
   const directCalls = new Set<string>()
   const callsVia = new Map<string, Set<string>>()
@@ -834,7 +834,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
       fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
-    if (!collecting) registrationDescriptions.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), scope })
+    if (!collecting) {
+      const parent = parents.get(node)
+      const hasCatch = parent?.type === 'MemberExpression' && parent.object === node && !parent.computed && parent.property.type === 'Identifier' && parent.property.name === 'catch'
+      registrationDescriptions.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), scope, hasCatch })
+    }
     const callerPath = path
     try {
       if (helper) path = helper.path
@@ -1272,8 +1276,28 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
   return { events, calls, env, state, nextTiers, telemetry, wasm, engineSpelling, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
+    gates: [...registrationDescriptions.values()].filter(({ event }) => isGate(event)).map(({ event, matcher, scope, hasCatch }) => ({
+      registration: matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`,
+      hasCatch,
+    })),
     helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
   } }
+}
+
+// Official 2.1.329's events and whether a hook on each can refuse it (a gate); a pattern no known event matches counts as one.
+const eventGates: Record<string, boolean> = Object.fromEntries([
+  ...['tool.call', 'tool.check', 'tool.judge', 'tool.run', 'tool.offer', 'agent.offer', 'agent.spawn', 'agent.report', 'prompt.submit', 'prompt.mention',
+    'command.run', 'config.set', 'telemetry.log', 'telemetry.mark', 'plugin.register', 'session.receive', 'session.append', 'session.send',
+    'session.compact', 'ui.scroll', 'ui.focus'].map(event => [event, true]),
+  ...['tool.describe', 'prompt.fill', 'prompt.suggest', 'prompt.edit', 'prompt.change', 'prompt.autocomplete', 'prompt.section', 'prompt.context',
+    'prompt.attachment', 'prompt.compose', 'command.describe', 'config.describe', 'skill.prompt', 'attribution.text', 'session.start', 'session.attach',
+    'session.detach', 'session.measure', 'session.stop', 'session.end', 'turn.start', 'turn.step', 'turn.complete', 'ui.render', 'ui.resolve', 'ui.press',
+    'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'ui.pointer', 'engine.create'].map(event => [event, false]),
+])
+
+function isGate(pattern: string): boolean {
+  const events = isModBroadEventPattern(pattern) ? Object.keys(eventGates).filter(event => matchesModEventPattern(pattern, event)) : [pattern]
+  return events.length === 0 || events.some(event => eventGates[event] !== false)
 }
 
 function within(root: string, path: string): boolean {

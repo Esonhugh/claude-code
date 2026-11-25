@@ -240,6 +240,29 @@ describe('hooks module author validation', () => {
     }
   })
 
+  test('lists a gating hook and whether it has a .catch, as 2.1.329 does', async () => {
+    const root = await pluginRoot()
+    await mkdir(join(root, 'hooks'))
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'owner' }))
+    await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./m.mjs'] }))
+    await writeFile(join(root, 'hooks', 'm.mjs'), `export function register(on){
+  on("tool.call", async ($,e,next)=> next(e)).catch(async ($,e,next)=> next(e))
+  on("session.start", async ($,e,next)=> next(e))
+  on("ui.*", async ($,e,next)=> next(e))
+}`)
+    try {
+      const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+      expect(hooks?.notes).toEqual([
+        './m.mjs hooks: tool.call, session.start, ui.*',
+        './m.mjs gating hook with .catch: tool.call',
+        './m.mjs gating hook without .catch: ui.*',
+        './m.mjs calls: nothing on $',
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('rejects a second hooks module before loading either entrypoint', async () => {
     const root = await pluginRoot()
     await mkdir(join(root, 'hooks'))

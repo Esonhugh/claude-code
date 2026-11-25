@@ -869,6 +869,7 @@ async function validateHooksJson(
       const form = declaration.validation?.engineForm
       notes.push(
         `${modulePath} hooks: ${(declaration.validation?.registrations ?? declaration.events).join(', ') || 'nothing'}`,
+        ...(declaration.validation?.gates ?? []).map(({ registration, hasCatch }) => `${modulePath} gating hook ${hasCatch ? 'with' : 'without'} .catch: ${registration}`),
         `${modulePath} calls: ${[
           ...declaration.calls.map(call => {
             const via = declaration.validation?.helperCalls[call]
@@ -885,6 +886,35 @@ async function validateHooksJson(
         })
       } else if (form === undefined && declaration.validation?.engineSpelling) {
         errors.push({ path: `modules.${modulePath}`, message: `${directory}: ${declaration.validation.engineSpelling}` })
+      }
+      // Official 2.1.329 lists env, then state, then each wasm file.
+      if (declaration.env && (declaration.env.writes.length || declaration.env.reads.length)) {
+        notes.push(
+          `${modulePath} env writes: ${declaration.env.writes.join(', ') || 'nothing'}`,
+          `${modulePath} env reads: ${declaration.env.reads.join(', ') || 'nothing'}`,
+        )
+      }
+      if (declaration.state && (declaration.state.writes.length || declaration.state.reads.length)) {
+      for (const direction of ['writes', 'reads'] as const) {
+        notes.push(
+          `${modulePath} state ${direction}: ${declaration.state[direction].map(({ plugin, key }) => `${plugin}.${key}`).join(', ') || 'nothing'}`,
+        )
+      }
+      const state = validateModStateReferences({
+        owner,
+        references: declaration.state,
+        declared,
+        others: foreignDeclarations ? [...foreignDeclarations] : undefined,
+      })
+      errors.push(...state.problems.map(message => ({
+        path: `modules.${modulePath}`,
+        message,
+      })))
+      if (state.unchecked.length) {
+        notes.push(
+          `${modulePath} state of other plugins, not checked (validate with their contracts available): ${state.unchecked.join(', ')}`,
+        )
+      }
       }
       // Each listed binary is read and compiled as $.wasm.compile would; one that fails is an error.
       for (const file of declaration.wasm?.files ?? []) {
@@ -915,27 +945,6 @@ async function validateHooksJson(
         )
       }
       if (declaration.wasm?.isMadeAtRunTime) notes.push(`${modulePath} wasm: bytes made at run time`)
-      if (!declaration.state) continue
-      for (const direction of ['writes', 'reads'] as const) {
-        notes.push(
-          `${modulePath} state ${direction}: ${declaration.state[direction].map(({ plugin, key }) => `${plugin}.${key}`).join(', ') || 'nothing'}`,
-        )
-      }
-      const state = validateModStateReferences({
-        owner,
-        references: declaration.state,
-        declared,
-        others: foreignDeclarations ? [...foreignDeclarations] : undefined,
-      })
-      errors.push(...state.problems.map(message => ({
-        path: `modules.${modulePath}`,
-        message,
-      })))
-      if (state.unchecked.length) {
-        notes.push(
-          `${modulePath} state of other plugins, not checked (validate with their contracts available): ${state.unchecked.join(', ')}`,
-        )
-      }
     } catch (error) {
       errors.push({
         path: `modules.${modulePath}`,
