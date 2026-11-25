@@ -24,7 +24,7 @@ import {
   getAgentColor,
 } from '../tools/AgentTool/agentColorManager.js'
 import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
-import { PAUSE_ICON } from '../constants/figures.js'
+import { BLACK_CIRCLE, PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
 import { isTerminalTaskStatus } from '../taskStatus.js'
 
@@ -564,7 +564,7 @@ export function getCoordinatorSessionRows({
         selected,
         viewed: viewingAgentTaskId === task.id,
         // Official 2.1.329 draws teammates with the agent row code.
-        icon: viewingAgentTaskId === task.id ? '⏺' : '◯',
+        icon: viewingAgentTaskId === task.id ? BLACK_CIRCLE : '◯',
         primaryText: task.identity.agentName,
         secondaryText: task.description,
         tokens: showTokens ? `${formatNumber(task.progress!.tokenCount)} tokens` : '',
@@ -591,7 +591,7 @@ export function getCoordinatorSessionRows({
         kind: 'agent',
         selected,
         viewed: viewingAgentTaskId === task.id,
-        icon: viewingAgentTaskId === task.id ? '⏺' : '◯',
+        icon: viewingAgentTaskId === task.id ? BLACK_CIRCLE : '◯',
         primaryText: agentPrimaryText(
           task,
           entry.collapsedDescendantCount,
@@ -641,7 +641,7 @@ export function getCoordinatorSessionRows({
       kind: 'main',
       selected: selectedIndex === 0,
       viewed: viewingAgentTaskId === undefined,
-      icon: viewingAgentTaskId === undefined ? '●' : '○',
+      icon: viewingAgentTaskId === undefined ? BLACK_CIRCLE : '◯',
       primaryText: 'main',
       secondaryText: '',
       tokens: '',

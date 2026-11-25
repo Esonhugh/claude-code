@@ -180,7 +180,7 @@ export function CoordinatorTaskPanel({
   const selectedTask = selectedRow?.taskId
     ? tasks[selectedRow.taskId]
     : undefined;
-  const contentWidth = Math.max(0, columns - 4);
+  const contentWidth = Math.max(0, columns - 2);
   const showMetrics = contentWidth >= 60;
   const showDetails = verbose && contentWidth >= 100;
   const showTools = showDetails || hasWorkflowTasks;
@@ -219,7 +219,7 @@ export function CoordinatorTaskPanel({
   );
 
   return (
-    <Box flexDirection="column" marginTop={0} paddingX={2}>
+    <Box flexDirection="column" marginTop={1} paddingRight={2}>
       {!mainRow && moreAbove > 0 && (
         <Text dimColor>
           {`  ↑ ${moreAbove} more`}

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { DEFAULT_BINDINGS } from '../keybindings/defaultBindings.js'
+import { BLACK_CIRCLE } from '../constants/figures.js'
 
 assert.equal(
   DEFAULT_BINDINGS.find(block => block.context === 'Footer')?.bindings.x,
@@ -232,7 +233,7 @@ assert.deepEqual(rows[0], {
   kind: 'main',
   selected: false,
   viewed: true,
-  icon: '●',
+  icon: BLACK_CIRCLE,
   primaryText: 'main',
   secondaryText: '',
   tokens: '',
@@ -445,7 +446,7 @@ assert.deepEqual(
     { id: 'workflow-1', depth: 0, branch: 'none', viewed: false },
   ],
 )
-assert.equal(viewingTopRows[1]?.icon, '⏺')
+assert.equal(viewingTopRows[1]?.icon, BLACK_CIRCLE)
 assert.equal(viewingTopRows[1]?.primaryText, 'general-purpose')
 assert.equal(viewingTopRows[1]?.secondaryText, 'Research user reports')
 assert.equal(viewingTopRows[2]?.icon, '◯')
@@ -462,7 +463,7 @@ const selectedChildRows = getCoordinatorSessionRows({
 })
 // Official 2.1.329 fills the icon for the viewed agent, not the selected one.
 assert.equal(selectedChildRows[1]?.viewed, true)
-assert.equal(selectedChildRows[1]?.icon, '⏺')
+assert.equal(selectedChildRows[1]?.icon, BLACK_CIRCLE)
 assert.equal(selectedChildRows[2]?.selected, true)
 assert.equal(selectedChildRows[2]?.icon, '◯')
 
@@ -471,7 +472,7 @@ const viewedWithoutSelectionRows = getCoordinatorSessionRows({
   viewingAgentTaskId: 'agent-1',
   now: 5_000,
 })
-assert.equal(viewedWithoutSelectionRows[1]?.icon, '⏺')
+assert.equal(viewedWithoutSelectionRows[1]?.icon, BLACK_CIRCLE)
 
 const viewingChildRows = getCoordinatorSessionRows({
   tasks,
@@ -514,7 +515,7 @@ assert.deepEqual(
       branch: 'last',
       selected: true,
       viewed: true,
-      icon: '⏺',
+      icon: BLACK_CIRCLE,
       primaryText: 'Explore',
       secondaryText: 'Nested child agent',
     },
@@ -686,7 +687,7 @@ assert.equal(
     viewingAgentTaskId: 'agent-1',
     now: 200_000,
   })[1]?.icon,
-  '⏺',
+  BLACK_CIRCLE,
 )
 assert.equal(
   getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.activity,
