@@ -78,7 +78,8 @@ import {
 } from './advisor.js'
 import {
   createAdvisorToolChangeMarker,
-  isAdvisorToolChangeMarker,
+  createSystemNoticeMarker,
+  isSystemTurnMarker,
 } from './advisorToolChangeWire.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
@@ -2231,6 +2232,7 @@ export function normalizeMessagesForAPI(
   tools: Tools = [],
   {
     advisorToolChanges = false,
+    systemNotices = false,
   }: {
     /**
      * The request declares the advisor deferred under the mid-conversation
@@ -2238,6 +2240,11 @@ export function normalizeMessagesForAPI(
      * an AdvisorToolChangeMarker instead of a reminder.
      */
     advisorToolChanges?: boolean
+    /**
+     * The request takes role:"system" turns: a `systemTurn` notice becomes a
+     * SystemNoticeMarker instead of a reminder.
+     */
+    systemNotices?: boolean
   } = {},
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
@@ -2362,8 +2369,25 @@ export function normalizeMessagesForAPI(
             )
           }
 
-          // @ts-ignore - recovered code
-          if (normalizedMessage.origin?.kind === 'task-notification') {
+          // Official 2.1.329 sends a stop notice as its own role:"system"
+          // turn after the user turn, with no reminder wrapper.
+          if (
+            systemNotices &&
+            normalizedMessage.systemTurn === true &&
+            typeof normalizedMessage.message.content === 'string'
+          ) {
+            normalizedMessage = {
+              ...normalizedMessage,
+              message: {
+                ...normalizedMessage.message,
+                content: [
+                  createSystemNoticeMarker(
+                    frameTaskNotification(normalizedMessage.message.content),
+                  ),
+                ],
+              },
+            }
+          } else if (normalizedMessage.origin?.kind === 'task-notification') {
             const content = normalizedMessage.message.content
             normalizedMessage = {
               ...normalizedMessage,
@@ -2947,12 +2971,12 @@ export function mergeUserContentBlocks(
   // Universal smoosh (gated): fold all non-tool_result block types (text,
   // image, document, search_result) into tool_result.content. tool_result
   // blocks stay as siblings (hoisted later by hoistToolResults).
-  // Advisor tool-change markers become system turns, so they stay siblings.
+  // System-turn markers become system turns, so they stay siblings.
   const toSmoosh = b.filter(
-    x => x.type !== 'tool_result' && !isAdvisorToolChangeMarker(x),
+    x => x.type !== 'tool_result' && !isSystemTurnMarker(x),
   )
   const toolResults = b.filter(
-    x => x.type === 'tool_result' || isAdvisorToolChangeMarker(x),
+    x => x.type === 'tool_result' || isSystemTurnMarker(x),
   )
   if (toSmoosh.length === 0) {
     return [...a, ...b]

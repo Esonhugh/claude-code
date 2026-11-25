@@ -960,9 +960,9 @@ async function* queryLoop(
     }
 
     // Official 2.1.329 turn-start passive fold: a notice that never starts a
-    // turn (a task the user stopped) goes after this turn's prompt. Official
-    // sends it as a role:"system" turn; here it joins the prompt's user turn,
-    // after the prompt (an attachment would move ahead of it).
+    // turn (a task the user stopped) goes after this turn's prompt, as a
+    // role:"system" turn where the request takes them (systemTurn) and in the
+    // prompt's user turn otherwise (an attachment would move ahead of it).
     if (
       turnCount === 1 &&
       toolUseContext.agentId === undefined &&
@@ -972,11 +972,14 @@ async function* queryLoop(
       if (passive.length > 0 && !toolUseContext.abortController.signal.aborted) {
         consumeFromQueue(passive, { reason: 'absorbed_mid_turn' })
         for (const cmd of passive) {
-          const msg = createUserMessage({
-            content: cmd.value,
-            isMeta: true,
-            origin: { kind: 'task-notification' },
-          })
+          const msg: UserMessage = {
+            ...createUserMessage({
+              content: cmd.value,
+              isMeta: true,
+              origin: { kind: 'task-notification' },
+            }),
+            systemTurn: true,
+          }
           yield msg
           messagesForQuery.push(msg)
         }

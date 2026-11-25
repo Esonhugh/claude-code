@@ -117,6 +117,25 @@ export function toolChangesRide(
   )
 }
 
+/**
+ * Official `ub`: the next request for `model` sends a notice that never
+ * started a turn (a stop notice) as its own role:"system" turn. Official
+ * sends these without a beta header and on every provider; this build keeps
+ * them to the first-party API, and a request without conversation state
+ * keeps the reminder. A rejection keeps them off until /clear or /compact.
+ */
+export function systemNoticesRide(
+  sticky: ToolChangeSticky | undefined,
+  model: string,
+): boolean {
+  return (
+    sticky !== undefined &&
+    sticky.systemRejected !== true &&
+    getAPIProvider() === 'firstParty' &&
+    modelSupportsSystemTurns(model)
+  )
+}
+
 const TOOL_CHANGE_BETAS = [
   MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
   MID_CONVERSATION_SYSTEM_BETA_HEADER,

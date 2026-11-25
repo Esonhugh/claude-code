@@ -232,9 +232,10 @@ import {
   modelSupportsToolChanges,
   recordSystemTurnRejection,
   recordToolChangeRejection,
+  systemNoticesRide,
   type ToolChangeSticky,
 } from '../../utils/advisorToolChanges.js'
-import { splitAdvisorToolChanges } from '../../utils/advisorToolChangeWire.js'
+import { splitSystemTurns } from '../../utils/advisorToolChangeWire.js'
 import {
   formatDeferredToolLines,
   isDeferredTool,
@@ -1723,6 +1724,10 @@ async function* queryModelRequest(
     options.advisorDeferred === true &&
     betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER) &&
     modelSupportsToolChanges(options.model)
+  // A retry after a refused request sends no role:"system" turn.
+  const systemNotices =
+    !options.toolChangesStripped &&
+    systemNoticesRide(options.toolChanges, options.model)
 
   // MCP tools are per-user → dynamic tool section → the system prompt behind
   // them can't be globally cached, so it falls back to org-scoped markers.
@@ -1843,7 +1848,7 @@ async function* queryModelRequest(
         )
       : schemaMessages,
     filteredTools,
-    { advisorToolChanges },
+    { advisorToolChanges, systemNotices },
   )
   queryCheckpoint('query_message_normalization_end')
 
@@ -1968,8 +1973,9 @@ async function* queryModelRequest(
   // Consume once because request params are assembled repeatedly for logging and retries.
   const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
   const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
-  // Advisor tool changes ride as role:"system" turns (no-op without them).
-  const messagesWithCacheBreakpoints = splitAdvisorToolChanges(addCacheBreakpoints(
+  // Advisor tool changes and stop notices ride as role:"system" turns
+  // (no-op without them).
+  const messagesWithCacheBreakpoints = splitSystemTurns(addCacheBreakpoints(
     messagesForAPI,
     enablePromptCaching,
     options.querySource,
@@ -3637,13 +3643,23 @@ async function* queryModelRequest(
         errorModel = errorFromRetry.retryContext.model
       }
 
+      const toolChangeHeader = betas.includes(
+        MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER,
+      )
+      const sentSystemNotice =
+        systemNotices &&
+        messagesWithCacheBreakpoints.some(
+          m => (m as { role: string }).role === 'system',
+        )
       if (
         !options.toolChangesStripped &&
-        betas.includes(MID_CONVERSATION_TOOL_CHANGES_BETA_HEADER)
+        (toolChangeHeader || sentSystemNotice)
       ) {
         const kind = isSystemTurnRejection(error)
           ? 'system_turn'
-          : classifyToolChangeRejection(error)
+          : toolChangeHeader
+            ? classifyToolChangeRejection(error)
+            : undefined
         if (kind !== undefined) {
           throw new ToolChangesRejectedError(error as APIError, kind)
         }
