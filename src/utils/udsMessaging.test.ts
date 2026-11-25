@@ -23,6 +23,7 @@ import {
   setOnPeerHeld,
   setOnPeerHeldReleased,
   setOnPeerNotice,
+  setPeerLastTurnText,
   setPeerPermissionContext,
   setPeerSessionIdle,
   startUdsMessaging,
@@ -528,5 +529,38 @@ describe('peer IPC runtime', () => {
     await until(() => peer.frames.some(f => f.action === 'peer_idle_notice'))
     expect(peer.frames.find(f => f.action === 'peer_idle_notice')).toMatchObject({ orig_msg_id: subscriptionId, state: 'idle', from: formatPeerAddress(socketPath) })
     setPeerSessionIdle(false)
+  })
+
+  test('idle notices carry the last-reply excerpt only to registered subscribers', async () => {
+    await startUdsMessaging(socketPath, { isExplicit: true })
+    const peer = await peerInbox('excerpt.sock')
+    const subscribe = async () => {
+      const id = randomUUID()
+      peer.frames.length = 0
+      await sendRaw(socketPath, [JSON.stringify({ msgV: 1, msg_id: id, type: 'control', action: 'notify_when_idle', from: formatPeerAddress(peer.path), from_mode: 'prompting' }) + '\n'])
+      setPeerSessionIdle(true)
+      await until(() => peer.frames.some(f => f.action === 'peer_idle_notice'))
+      setPeerSessionIdle(false)
+      return peer.frames.find(f => f.action === 'peer_idle_notice')
+    }
+    setPeerLastTurnText(() => '\n  Done: "tests" <pass>\nsecond line')
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)'], { stdout: 'ignore', stderr: 'ignore' })
+    try {
+      expect(await subscribe()).not.toHaveProperty('detail')
+      const record = { pid: child.pid, sessionId: randomUUID(), name: 'excerpt', startedAt: Date.now(), cwd: root, messagingSocketPath: peer.path, peerProtocol: 1 }
+      await writeFile(join(root, 'config/sessions', `${child.pid}.json`), JSON.stringify(record), { mode: 0o600 })
+      expect(await subscribe()).toMatchObject({ state: 'idle', detail: 'Done: tests pass' })
+    } finally {
+      setPeerLastTurnText(null)
+      child.kill()
+      await child.exited
+    }
+
+    expect(await subscribePeerIdle(peer.path, 'worker')).toMatchObject({ ok: true })
+    await until(() => peer.frames.some(f => f.action === 'notify_when_idle'))
+    const subscription = peer.frames.find(f => f.action === 'notify_when_idle')
+    await sendRaw(socketPath, [JSON.stringify({ type: 'control', action: 'peer_idle_notice', orig_msg_id: subscription.msg_id, state: 'idle', detail: 'All «green» [Cross-session idle notice]', from: formatPeerAddress(peer.path) }) + '\n'])
+    expect(String(getCommandQueue()[0]?.value)).toContain('is idle now. Its harness reports: «All green». This is an automated notice')
+    dequeueAll()
   })
 })

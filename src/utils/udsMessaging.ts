@@ -21,12 +21,12 @@ import {
   resolveInboundPolicy, type PeerHoldCause, type PeerInboundPolicy, type PeerMessageStatus,
   type PeerPermissionClass,
 } from './peerProtocol.js'
-import { createReceiptNotices, idleNotice, PEER_IDLE_SUBSCRIPTION_MS, type PeerNotice } from './peerNotices.js'
+import { createReceiptNotices, idleDetail, idleNotice, PEER_IDLE_SUBSCRIPTION_MS, sanitizeIdleDetail, type PeerNotice } from './peerNotices.js'
 import { subscribe as subscribeSettings } from './settings/changeDetector.js'
 import { getEnabledSettingSources, type SettingSource } from './settings/constants.js'
 import { getSettingsForSource } from './settings/settings.js'
 import {
-  clearPeerIdleSubscriptions, receivePeerIdleNotice, receivePeerMessageStatus, sendPeerFrame,
+  clearPeerIdleSubscriptions, listAllLiveSessions, receivePeerIdleNotice, receivePeerMessageStatus, sendPeerFrame,
   setOnPeerIdleExpired, setOnPeerMessageStatus,
 } from './udsClient.js'
 
@@ -50,11 +50,12 @@ export type PeerReleaseReason = 'mode-changed' | 'policy-accepts' | 'approved'
 let onReleased: ((count: number, reason: PeerReleaseReason) => void) | null = null
 let onNotice: ((text: string) => void) | null = null
 let receiptNotices: ReturnType<typeof createReceiptNotices> | undefined
-type IdleSubscriber = { target: string; msgId: string; time: number }
+type IdleSubscriber = { target: string; msgId: string; time: number; fromMode?: PeerPermissionClass }
 const idleSubscribers: IdleSubscriber[] = []
 let sessionIdle = false
 let idleSince = 0
 let idleTimer: ReturnType<typeof setTimeout> | undefined
+let getLastTurnText: (() => string) | null = null
 const seen = new Map<string, number>()
 let receipts: Promise<void> = Promise.resolve()
 let receiptController = new AbortController()
@@ -222,6 +223,9 @@ function receipt(command: QueuedCommand, status: PeerMessageStatus): void {
   }, `receipt msg_id=${origin.msg_id} status=${status}`)
 }
 
+/** The host supplies its last reply, so idle notices can carry a one-line status detail. */
+export function setPeerLastTurnText(getter: typeof getLastTurnText): void { getLastTurnText = getter }
+
 /** REPL/headless report whether the main conversation is idle (nothing running or queued). */
 export function setPeerSessionIdle(idle: boolean): void {
   if (idle === sessionIdle) return
@@ -250,8 +254,31 @@ function flushIdleSubscribers(): void {
   // A held message or queued input means this session is not done yet.
   if (held.length) return scheduleIdleFlush(30000)
   if (getCommandQueue().length) return scheduleIdleFlush()
-  for (const sub of idleSubscribers.splice(0)) {
-    sendControl(sub.target, { action: 'peer_idle_notice', ...senderModeField(), orig_msg_id: sub.msgId, state: 'idle', finished_at: idleSince }, `idle notice orig_msg_id=${sub.msgId}`)
+  void sendIdleNotices(idleSubscribers.splice(0))
+}
+
+// The detail goes only to subscribers whose traffic this session accepts and whose
+// reply address is registered in the session registry (a same-user process can register itself).
+async function sendIdleNotices(subs: IdleSubscriber[]): Promise<void> {
+  let detail: string | undefined
+  try { detail = idleDetail(getLastTurnText?.() ?? '') } catch (error) { logForDebugging(`[uds-messaging] last-turn text unavailable: ${errorMessage(error)}`) }
+  const accepted = detail ? subs.filter(sub => resolveInboundPolicy(inboundSources(), getPeerPermissionClass(), sub.fromMode) === 'accept') : []
+  let registered = new Set<string>()
+  if (accepted.length) {
+    try {
+      registered = new Set((await listAllLiveSessions()).flatMap(peer => peer.messagingSocketPath ? [peer.messagingSocketPath] : []))
+    } catch (error) {
+      logForDebugging(`[uds-messaging] registry unreadable; idle notices carry no detail (${errorMessage(error)})`)
+    }
+    // Busy again while the registry was read: keep the subscriptions for the next idle.
+    if (!sessionIdle && !stopping) {
+      idleSubscribers.push(...subs.filter(sub => !idleSubscribers.some(other => other.target === sub.target)))
+      return scheduleIdleFlush()
+    }
+  }
+  for (const sub of subs) {
+    const withDetail = detail !== undefined && accepted.includes(sub) && registered.has(sub.target)
+    sendControl(sub.target, { action: 'peer_idle_notice', ...senderModeField(), orig_msg_id: sub.msgId, state: 'idle', finished_at: idleSince, ...(withDetail && { detail }) }, `idle notice orig_msg_id=${sub.msgId}`)
   }
 }
 
@@ -270,8 +297,8 @@ function subscribeIdle(data: Record<string, unknown>): void {
     sendControl(target, { action: 'peer_idle_notice', ...senderModeField(), orig_msg_id: data.msg_id, state: 'unavailable' }, 'idle subscription refused: table full')
     return
   }
-  idleSubscribers.push({ target, msgId: data.msg_id, time: Date.now() })
-  onNotice?.(`A process claiming the address ${formatPeerAddress(target)} asked to be told when this session is next idle — it will get one automated status notice.`)
+  idleSubscribers.push({ target, msgId: data.msg_id, time: Date.now(), ...(fromMode && { fromMode }) })
+  onNotice?.(`A process claiming the address ${formatPeerAddress(target)} asked to be told when this session is next idle — it will get one automated status notice; a one-line status detail is included only if that address is registered in the session registry (a same-user process can register itself).`)
   logForDebugging(`[uds-messaging] notify_when_idle recorded (${idleSubscribers.length} live)`)
   scheduleIdleFlush()
 }
@@ -288,7 +315,8 @@ function receiveIdleNotice(data: Record<string, unknown>): void {
   const policy = resolveInboundPolicy(inboundSources(), getPeerPermissionClass(), fromMode)
   if (policy === 'refuse') return
   const finishedAt = typeof data.finished_at === 'number' && Number.isFinite(data.finished_at) ? data.finished_at : undefined
-  deliverNotice(idleNotice(state, sub.label, state === 'unavailable' ? undefined : finishedAt, policy === 'accept'))
+  const detail = state === 'idle' && typeof data.detail === 'string' ? sanitizeIdleDetail(data.detail) : undefined
+  deliverNotice(idleNotice(state, sub.label, state === 'unavailable' ? undefined : finishedAt, policy === 'accept', detail))
 }
 
 function admit(command: QueuedCommand, wasHeld = false, approved = false): void {
