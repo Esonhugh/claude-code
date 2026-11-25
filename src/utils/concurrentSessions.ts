@@ -63,6 +63,16 @@ export function isBgSession(): boolean {
 }
 
 /**
+ * Official name for an interactive session not named at launch: a slug of the
+ * directory name plus a random byte, so sessions in one directory differ.
+ */
+export function derivedSessionName(cwd: string): string {
+  const slug = basename(cwd).split(/\s+/).filter(Boolean).slice(0, 4).join(' ').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-+|-+$/g, '')
+  return `${slug || 'claude'}-${randomBytes(1).toString('hex')}`
+}
+
+/**
  * Write a PID file for this session and register cleanup.
  *
  * Registers all top-level sessions — interactive CLI, SDK (vscode, desktop,
@@ -80,7 +90,8 @@ export async function registerSession(): Promise<boolean> {
   const dir = getSessionsDir()
   const pidFile = join(dir, `${process.pid}.json`)
   unregistering = false
-  registeredName = cleanPeerName(process.env.CLAUDE_CODE_SESSION_NAME || basename(getOriginalCwd())) || `claude-${process.pid}`
+  const envName = process.env.CLAUDE_CODE_SESSION_NAME
+  registeredName = (envName ? cleanPeerName(envName) : kind === 'interactive' ? derivedSessionName(getOriginalCwd()) : cleanPeerName(basename(getOriginalCwd()))) || `claude-${process.pid}`
 
   let unsubscribeSession: (() => void) | undefined
   const unregisterCleanup = registerCleanup(async () => {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtemp, readFile, rm } from 'fs/promises'
 import { join } from 'path'
 import { runCleanupFunctions } from './cleanupRegistry.js'
-import { registerSession, updateSessionActivity } from './concurrentSessions.js'
+import { derivedSessionName, getRegisteredSessionName, registerSession, updateSessionActivity } from './concurrentSessions.js'
 
 let root: string
 let oldConfig: string | undefined
@@ -35,4 +35,22 @@ test('activity reported while registration is in flight is not lost', async () =
   expect(await registered).toBe(true)
   await update
   expect(JSON.parse(await readFile(pidFile(), 'utf8'))).toMatchObject({ status: 'busy' })
+})
+
+test('interactive sessions not named at launch get the official derived name', async () => {
+  const oldName = process.env.CLAUDE_CODE_SESSION_NAME
+  delete process.env.CLAUDE_CODE_SESSION_NAME
+  try {
+    expect(derivedSessionName('/work/My Project.v2')).toMatch(/^my-project-v2-[0-9a-f]{2}$/)
+    expect(derivedSessionName('/work/项目')).toMatch(/^claude-[0-9a-f]{2}$/)
+    expect(await registerSession()).toBe(true)
+    expect(getRegisteredSessionName()).toMatch(/^[a-z0-9-]+-[0-9a-f]{2}$/)
+    process.env.CLAUDE_CODE_SESSION_NAME = 'worker'
+    await runCleanupFunctions()
+    expect(await registerSession()).toBe(true)
+    expect(getRegisteredSessionName()).toBe('worker')
+  } finally {
+    if (oldName === undefined) delete process.env.CLAUDE_CODE_SESSION_NAME
+    else process.env.CLAUDE_CODE_SESSION_NAME = oldName
+  }
 })
