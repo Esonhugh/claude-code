@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test'
+import { BLACK_CIRCLE } from '../constants/figures.js'
 import type { AppState } from '../state/AppState.js'
 import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import {
@@ -101,7 +102,7 @@ test('teammate rows use the agent row status and icon', () => {
   expect(row({ status: 'killed', isIdle: true })).toMatchObject({ elapsed: 'stopped', statusText: '' })
   expect(row({ status: 'failed' })).toMatchObject({ elapsed: 'failed · 5s', statusText: '' })
   expect(row({}, { selectedIndex: 1 })).toMatchObject({ selected: true, icon: '◯' })
-  expect(row({}, { viewingAgentTaskId: 'mate@team' })).toMatchObject({ viewed: true, icon: '⏺' })
+  expect(row({}, { viewingAgentTaskId: 'mate@team' })).toMatchObject({ viewed: true, icon: BLACK_CIRCLE })
   expect(row({})).toMatchObject({ tokens: '1.2k tokens', tokenArrow: '↑' })
   expect(row({}).iconColor).toBeUndefined()
   expect(row({ status: 'killed' }).iconColor).toBe('error')
