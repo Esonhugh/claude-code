@@ -97,6 +97,29 @@ test('tool.check rejects a non-string classic hook and projects only verdict fie
   expect(await runtime.dispatch('tool.check',{tool:'FixtureRead',input:{file_path:'a'}},async () => ({decision:'ask'}))).toEqual({decision:'allow',hook:'PreToolUse'})
 })
 
+// Official 2.1.329 (measured with -p) rejects these with one HooksError, and drops keys besides tool and input.
+test('$.tool.check words a malformed input like 2.1.329', async () => {
+  const caller = await plugin('checker',`export function register(on) {
+    on('command.run',async $ => {
+      const inputs = [undefined, {tool:'Offline'}, {tool:'Offline',input:'x'}, {tool:'',input:{}}, {tool:'Offline',input:[]}, [], {tool:'Offline',input:null}, {tool:1,input:{}}, {tool:'Offline',input:{},extra:1}];
+      const out = [];
+      for (const input of inputs) {
+        try { await $.tool.check(input); out.push('answered') }
+        catch (error) { out.push(error.name + ': ' + error.message) }
+      }
+      return {text:JSON.stringify(out)};
+    });
+  }`)
+  const runtime = createModsRuntime({onDiagnostic:() => {}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller])
+  const answer = await runtime.dispatch('command.run',{command:'probe',args:''},async () => ({text:'core'})) as {text:string}
+  const refused = "HooksError: checker: $.tool.check takes { tool, input }: the tool's name and its arguments, an object"
+  // The extra key passes the shape check and reaches the host, which this runtime lacks.
+  expect(JSON.parse(answer.text)).toEqual([...Array(8).fill(refused), 'Error: Tool permission host is unavailable on this host'])
+})
+
 test('Worker author tools reach sibling middleware, executor, mapper and permission consumer with pinned identities', async () => {
   const caller = await plugin('caller',`let entries=0; export function register(on) {
     on('command.run',async $ => ({text:JSON.stringify({

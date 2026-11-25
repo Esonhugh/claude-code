@@ -1205,12 +1205,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return {turnId: (input as ModInput).turnId}
       }
       case 'tool.check': {
-        const input = args[0]
-        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
-            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool ||
-            !Object.hasOwn(input, 'input') || Object.keys(input).some(key => key !== 'tool' && key !== 'input'))
-          throw new TypeError('tool.check takes { tool, input }')
-        return input as ModInput
+        // Official 2.1.329 reads only tool and input, so other keys pass and are dropped.
+        const input = args[0] as ModInput | undefined
+        const isObject = (value: unknown) => typeof value === 'object' && value !== null && !Array.isArray(value)
+        if (!isObject(input) || typeof input!.tool !== 'string' || input!.tool === '' || !isObject(input!.input))
+          throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}$.tool.check takes { tool, input }: the tool's name and its arguments, an object`), {name:'HooksError'})
+        return {tool: input!.tool, input: input!.input}
       }
       case 'fs.read': case 'fs.stat': {
         const options = args[1] === undefined ? {} : args[1]
