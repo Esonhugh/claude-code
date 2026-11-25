@@ -45,6 +45,7 @@ if (process.env[childFlag] !== '1') {
   const {getDefaultAppState} = await import('../state/AppStateStore.js')
   const {createModsSession} = await import('../services/mods/session.js')
   const {dequeueAllMatching} = await import('../utils/messageQueueManager.js')
+  const bootstrap = await import('../bootstrap/state.js')
 
   for (const format of ['text', 'json', 'stream-json'] as const) {
     test(`${format}: Worker logs use the selected output sink without entering model history`, async () => {
@@ -143,8 +144,15 @@ if (process.env[childFlag] !== '1') {
     })
   }
 
-  for (const format of ['text', 'stream-json'] as const) {
-    test(`${format}: a Mod hook that throws reaches the client as a transcript line in stream-json (#975)`, async () => {
+  // Official 2.1.329 sends a skipped hook to stream-json as ui_log only while the plugin directory is
+  // watched, and to stderr only in text output.
+  for (const format of ['text', 'stream-json'] as const) for (const watch of ['1', undefined] as const) {
+    test(`${format}${watch ? ' (watched)' : ''}: a Mod hook that throws reaches the client as a transcript line in stream-json (#975)`, async () => {
+      const savedWatch = process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+      if (watch === undefined) delete process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+      else process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH = watch
+      const savedFormat = bootstrap.getPrintOutputFormat()
+      bootstrap.setPrintOutputFormat(format)
       const root = mkdtempSync(join(tmpdir(), 'print-diag-plugin-'))
       const path = join(root, 'thrower')
       mkdirSync(path)
@@ -185,11 +193,15 @@ if (process.env[childFlag] !== '1') {
           outputFormat:format,verbose:true,modsSession:mods,sessionStartHooksPromise:Promise.resolve([]),
         } as Parameters<typeof runHeadless>[7])
         const lines = writes.filter((message: any) => message.type === 'system' && message.subtype === 'ui_log')
-        if (format === 'stream-json') {
-          expect(lines).toEqual([expect.objectContaining({plugin:'thrower',text:expect.stringContaining('command.run: DIAG-BOOM')})])
+        if (format === 'stream-json' && watch) {
+          expect(lines).toEqual([expect.objectContaining({plugin:'thrower',text:'command.run hook skipped: threw Error: DIAG-BOOM'})])
         } else expect(lines).toEqual([])
-        expect(stderr.join('')).toContain('DIAG-BOOM')
+        if (format === 'text') expect(stderr.join('')).toContain('thrower: command.run hook skipped: threw Error: DIAG-BOOM')
+        else expect(stderr.join('')).not.toContain('DIAG-BOOM')
       } finally {
+        if (savedWatch === undefined) delete process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+        else process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH = savedWatch
+        bootstrap.setPrintOutputFormat(savedFormat)
         await mods.dispose()
         dequeueAllMatching(() => true)
         for (const mock of mocks) mock.mockRestore()
