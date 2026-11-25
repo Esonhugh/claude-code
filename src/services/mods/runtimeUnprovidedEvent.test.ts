@@ -57,7 +57,7 @@ async function fixture(source: string, name = 'fixture') {
   return { name, storageId: name + '@inline', pluginRoot: root, entrypoints: [entry] }
 }
 function runtime() {
-  const events: { plugin: string; stage: string; message: string }[] = []
+  const events: { plugin: string; stage: string; message: string; storageId?: string }[] = []
   const value = createModsRuntime({ onDiagnostic: event => events.push(event) })
   cleanups.push(() => value.dispose())
   return { value, events }
