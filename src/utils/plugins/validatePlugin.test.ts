@@ -286,7 +286,7 @@ describe('hooks module author validation', () => {
     const results = await validatePluginContents(root)
     const hooks = results.find(result => result.fileType === 'hooks')!
     expect(hooks.success).toBe(false)
-    expect(hooks.errors.some(error => /only a value's owner may write/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /only a value's owner writes it/.test(error.message))).toBe(true)
     expect(hooks.errors.some(error => /owner\.missing.*not declared/.test(error.message))).toBe(true)
     expect(hooks.notes?.some(note => /not checked.*other\.value/.test(note))).toBe(true)
   })
@@ -333,7 +333,7 @@ describe('hooks module author validation', () => {
     ], 'owner')
     expect(resolved.warning).toBeUndefined()
     const hooks = (await validatePluginContents(owner, resolved.declarations)).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /other\.missing.*not declared in any available/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /other\.missing.*not declared: no enabled plugin's contract names it/.test(error.message))).toBe(true)
     expect(hooks.errors.some(error => /other\.value/.test(error.message))).toBe(false)
     expect(hooks.notes?.some(note => /not checked/.test(note))).toBe(false)
   })
@@ -345,7 +345,7 @@ describe('hooks module author validation', () => {
     await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
     await writeFile(join(root, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
     const hooks = (await validatePluginContents(root, [])).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /other\.value.*not declared in any available/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /other\.value.*not declared: no enabled plugin's contract names it/.test(error.message))).toBe(true)
     expect(hooks.notes?.some(note => /not checked/.test(note))).toBe(false)
   })
 
@@ -377,7 +377,7 @@ describe('hooks module author validation', () => {
       loadedPlugin(foreign, 'other', './contract.d.ts'),
     ], 'owner')
     const hooks = (await validatePluginContents(owner, resolved.declarations)).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /only a value's owner may write/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /only a value's owner writes it/.test(error.message))).toBe(true)
   })
 
   test('accepts only each loaded plugin own namespace and makes any load failure unavailable', async () => {
