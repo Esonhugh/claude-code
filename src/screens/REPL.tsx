@@ -6403,6 +6403,17 @@ export function REPL({
     inkInstances.get(process.stdout)?.forceRedraw()
   }, [rewindRepaint])
 
+  // Main screen: entering or leaving an agent's view swaps the whole
+  // transcript, and the frame diff leaves the old one's cells behind. Repaint
+  // the viewport once the switched transcript is committed, as after a rewind.
+  const viewedAgentTaskId = viewedAgentTask?.id
+  const lastViewedAgentTaskId = useRef(viewedAgentTaskId)
+  useEffect(() => {
+    if (lastViewedAgentTaskId.current === viewedAgentTaskId) return
+    lastViewedAgentTaskId.current = viewedAgentTaskId
+    if (!isFullscreenEnvEnabled()) inkInstances.get(process.stdout)?.forceRedraw()
+  }, [viewedAgentTaskId])
+
   // Not memoized — hook stores caps via ref, reads latest closure at dispatch.
   // 24-char prefix: deriveUUID preserves first 24, renderable uuid prefix-matches raw source.
   const findRawIndex = (uuid: string) => {
