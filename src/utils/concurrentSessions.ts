@@ -24,6 +24,8 @@ export type SessionStatus = 'busy' | 'idle' | 'waiting'
 let registeredName: string | undefined
 let pidFileWriteChain: Promise<void> = Promise.resolve()
 let unregistering = false
+// Latest activity patch; the REPL reports it before registration finishes.
+let activity: Record<string, unknown> = {}
 
 export function getRegisteredSessionName(): string | undefined {
   return registeredName
@@ -95,6 +97,7 @@ export async function registerSession(): Promise<boolean> {
     await chmod(dir, 0o700)
     const messagingSocketPath = getUdsMessagingSocketPath()
     const temp = `${pidFile}.${randomBytes(8).toString('hex')}.tmp`
+    let written = activity
     try {
       await writeFile(temp, jsonStringify({
         pid: process.pid,
@@ -114,6 +117,8 @@ export async function registerSession(): Promise<boolean> {
               agent: process.env.CLAUDE_CODE_AGENT,
             }
           : {}),
+        // Read last: activity can change during the awaits above.
+        ...(written = activity),
       }), { mode: 0o600, flag: 'wx' })
       await rename(temp, pidFile)
     } finally {
@@ -125,6 +130,8 @@ export async function registerSession(): Promise<boolean> {
     unsubscribeSession = onSessionSwitch(id => {
       void updatePidFile({ sessionId: id })
     })
+    // Activity reported after the record was built missed the file (no file yet).
+    if (activity !== written) await updatePidFile(activity)
     return true
   } catch (e) {
     unregisterCleanup()
@@ -185,7 +192,8 @@ export async function updateSessionActivity(patch: {
   status?: SessionStatus
   waitingFor?: string
 }): Promise<void> {
-  await updatePidFile({ ...patch, updatedAt: Date.now() })
+  activity = { ...activity, ...patch, updatedAt: Date.now() }
+  await updatePidFile(activity)
 }
 
 /**
