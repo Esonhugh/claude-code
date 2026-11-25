@@ -259,6 +259,8 @@ class WorkflowAgentAttemptError extends Error {
     message: string,
     readonly usage: WorkflowAgentAttemptUsage,
     readonly quotaLimits?: ClaudeAILimits,
+    /** What the agent's row shows: an API error as the response said it. */
+    readonly rowError?: string,
   ) {
     super(message)
     this.name = 'WorkflowAgentAttemptError'
@@ -1060,7 +1062,7 @@ export async function runWorkflowScript({
               ? 'retry requested by user'
               : msg === 'stalled'
                 ? `stalled \u2014 no progress for ${stallMs}ms`
-                : msg,
+                : (error instanceof WorkflowAgentAttemptError && error.rowError) || msg,
           ...(msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON ? { skipped: true } : {}),
           ...(error instanceof WorkflowAgentAttemptError
             ? {
@@ -1627,6 +1629,7 @@ export async function runWorkflowScript({
         workflowErrorMessage(error, `Workflow agent failed without error details: ${agentId}`),
         attemptUsage,
         error instanceof AgentApiError ? error.quotaLimits : undefined,
+        error instanceof AgentApiError ? error.responseText : undefined,
       )
     } finally {
       stagger.done()
