@@ -2,7 +2,7 @@ import { join } from 'path'
 import { expandEnvVarsInString } from '../../services/mcp/envExpansion.js'
 import {
   type McpServerConfig,
-  McpServerConfigSchema,
+  PluginMcpServerConfigSchema,
   type ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
@@ -224,7 +224,7 @@ export async function loadPluginMcpServers(
  * This is a simplified version that doesn't expand environment variables
  * and is specifically for plugin MCP configs
  */
-async function loadMcpServersFromFile(
+export async function loadMcpServersFromFile(
   plugin: LoadedPlugin,
   relativePath: string,
   errors: PluginError[],
@@ -259,7 +259,7 @@ async function loadMcpServersFromFile(
     // Validate each server config
     const validatedServers: Record<string, McpServerConfig> = {}
     for (const [name, config] of Object.entries(mcpServers)) {
-      const result = McpServerConfigSchema().safeParse(config)
+      const result = PluginMcpServerConfigSchema().safeParse(config)
       if (result.success) {
         validatedServers[name] = result.data
       } else {

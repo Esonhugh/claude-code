@@ -50,6 +50,7 @@ import {
   saveMarketplaceToSettings,
 } from '../../utils/plugins/marketplaceManager.js'
 import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
+import { formatPluginProvides, listPluginProvides } from '../../utils/plugins/pluginProvides.js'
 import { parseMarketplaceInput } from '../../utils/plugins/parseMarketplaceInput.js'
 import { getTrustedPluginConfigs } from '../../utils/plugins/mcpbHandler.js'
 import {
@@ -496,9 +497,11 @@ export async function pluginValidateHandler(
     // hooks). Works whether the user passed a directory or the plugin.json
     // path directly.
     let contentResults: ValidationResult[] = []
+    let pluginRoot: string | undefined
     if (pluginResult) {
       const manifestDir = dirname(pluginResult.filePath)
       if (basename(manifestDir) === '.claude-plugin') {
+        pluginRoot = dirname(manifestDir)
         let foreignDeclarations: Awaited<ReturnType<typeof resolveForeignModStateDeclarations>>['declarations']
         let foreignWarning: string | undefined
         const cachedPlugins = loadAllPluginsCacheOnly.cache?.get(undefined)
@@ -523,9 +526,12 @@ export async function pluginValidateHandler(
         } catch (error) {
           foreignWarning = `Could not use ${cachedPlugins ? 'cached plugin' : 'plugin contract'} context: ${errorMessage(error)}. Foreign state references were left unchecked.`
         }
+        // Official 2.1.329 checks foreign state only against a session's plugins; contracts discovered
+        // outside a session confirm a key they name, and one they do not name stays unchecked.
         contentResults = await validatePluginContents(
           dirname(manifestDir),
           foreignDeclarations,
+          !!cachedPlugins,
         )
         if (foreignWarning) {
           const hooksResult = contentResults.find(r => r.fileType === 'hooks')
@@ -540,6 +546,20 @@ export async function pluginValidateHandler(
           printValidationResult(r)
         }
       }
+    }
+
+    // Official 2.1.329 lists what a plugin with no errors provides and the hosts its parts reach.
+    const noErrors = [result, pluginResult, ...contentResults].every(r => !r || r.errors.length === 0)
+    const directoryWarned = contentResults.some(r => r.fileType === 'hooks' && r.warnings.some(w => w.path === 'directory'))
+    if (pluginRoot && noErrors && !directoryWarned) {
+      const listing = await listPluginProvides(pluginRoot, contentResults)
+      const lines = listing ? formatPluginProvides(listing.provides) : []
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      if (lines.length) console.log(['Provides:', '', ...lines.map(line => `  ${figures.pointer} ${line}`), ''].join('\n'))
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      else if (!listing) console.log('Provides: not listed, as a file could not be read\n')
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      if (listing?.hosts.length) console.log([...listing.hosts, ''].join('\n'))
     }
 
     const allSuccess =

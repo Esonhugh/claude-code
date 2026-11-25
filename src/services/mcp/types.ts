@@ -162,6 +162,35 @@ export const McpServerConfigSchema = lazySchema(() =>
   ]),
 )
 
+// The hosts a part of a plugin reaches, as its author states them, for `claude plugin validate` to list (official
+// 2.1.329's network field). A value that is not an object of a hosts list reads as unstated.
+export const PluginNetworkSchema = lazySchema(() =>
+  z.preprocess(
+    value => typeof value === 'object' && value !== null && Array.isArray((value as { hosts?: unknown }).hosts)
+      ? { hosts: ((value as { hosts: unknown[] }).hosts).slice(0, 256).map(host => typeof host === 'string' ? host : '') }
+      : undefined,
+    z.object({
+      hosts: z.array(z.string()).describe('Hosts in sandbox.network.allowedDomains syntax: a host, with an optional leading "*." and an optional ":port" (e.g. "api.example.com", "*.example.com", "db.example.com:5432"). An empty list says that none is needed.'),
+    }).optional(),
+  ).optional(),
+)
+
+// A plugin's MCP server, whose stdio form may also state the hosts it reaches.
+export const PluginMcpServerConfigSchema = lazySchema(() =>
+  z.union([
+    McpStdioServerConfigSchema().extend({
+      network: PluginNetworkSchema().describe('The network hosts this server reaches, as its author states them, for `claude plugin validate` to list. Shown only: it is not checked, allows no host, limits nothing and is not passed to the server.'),
+    }),
+    McpSSEServerConfigSchema(),
+    McpSSEIDEServerConfigSchema(),
+    McpWebSocketIDEServerConfigSchema(),
+    McpHTTPServerConfigSchema(),
+    McpWebSocketServerConfigSchema(),
+    McpSdkServerConfigSchema(),
+    McpClaudeAIProxyServerConfigSchema(),
+  ]),
+)
+
 export type McpStdioServerConfig = z.infer<
   ReturnType<typeof McpStdioServerConfigSchema>
 >

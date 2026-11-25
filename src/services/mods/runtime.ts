@@ -200,7 +200,11 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
 }
-export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault; storageId?: string }
+export type ModDiagnostic = {
+  plugin: string; stage: string; message: string; workerFault?: ModWorkerFault; storageId?: string
+  /** Set for a failed hook: how it failed, as official 2.1.329 words it after "<event> hook skipped: ". */
+  hook?: { kind: string; why: string }
+}
 export type ModDispatchOptions = {
   /** Host-pinned caller identity, never read from the event's input. */
   origin?: ModOrigin
@@ -301,6 +305,10 @@ type AttachedClient = {
 }
 const tierOrder: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 // Identity-only entries; all calls, including beneath, use engineFor's bridge.
+// Official 2.1.329 keeps $ in this noun order; a noun it doesn't list follows, in the order it was added.
+const officialNounOrder = ['plugin', 'ui', 'theme', 'model', 'audio', 'mcp', 'session', 'prompt', 'turn', 'tool', 'command', 'config', 'telemetry', 'agent', 'fs', 'store', 'state', 'clock', 'http', 'process', 'settings', 'env', 'wasm']
+const nounRank = (noun: string) => { const index = officialNounOrder.indexOf(noun); return index === -1 ? officialNounOrder.length : index }
+const inOfficialNounOrder = <T>(entries: [string, T][]) => entries.sort(([left], [right]) => nounRank(left) - nounRank(right))
 const clockIdentity = () => { throw new Error('Clock calls must use the environment bridge') }
 const coreClock = Object.freeze({
   now: clockIdentity, sleep: clockIdentity, after: clockIdentity, every: clockIdentity,
@@ -735,6 +743,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault, storageId?: string) => onDiagnostic?.({
     plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}), ...(storageId && {storageId}),
   })
+  // Official 2.1.329 words a failed hook by how it failed (its Wa and JSr): "threw <name>: <message>"
+  // (no name for a HooksError or a non-Error) or "returned the wrong shape (<shape>)", one line of 120 chars.
+  const hookFailed = (plugin: string, event: string, error: unknown) => {
+    const line = (text: string) => {
+      const first = (text.split(/\r?\n/u)[0] ?? '').trim()
+      return first.length <= 120 ? first : `${first.slice(0, 117)}...`
+    }
+    const failure = error && typeof error === 'object' ? error as { shape?: unknown; thrownName?: unknown } : {}
+    const name = 'thrownName' in failure ? failure.thrownName : error instanceof Error ? error.name : undefined
+    const hook = typeof failure.shape === 'string'
+      ? { kind: 'shape', why: `returned the wrong shape (${line(failure.shape)})` }
+      : { kind: 'threw', why: `threw ${line(`${typeof name === 'string' && name !== 'HooksError' ? `${name}: ` : ''}${error instanceof Error ? error.message : String(error)}`)}` }
+    const storageId = declarations.find(input => input.name === plugin)?.storageId
+    onDiagnostic?.({ plugin, stage: event, message: error instanceof Error ? error.message : String(error), hook, ...(storageId && {storageId}) })
+  }
   const loadFailed = (input: { name: string; storageId: string }, error: unknown, old: boolean) => {
     diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error), undefined, input.storageId)
   }
@@ -1182,12 +1205,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return {turnId: (input as ModInput).turnId}
       }
       case 'tool.check': {
-        const input = args[0]
-        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
-            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool ||
-            !Object.hasOwn(input, 'input') || Object.keys(input).some(key => key !== 'tool' && key !== 'input'))
-          throw new TypeError('tool.check takes { tool, input }')
-        return input as ModInput
+        // Official 2.1.329 reads only tool and input, so other keys pass and are dropped.
+        const input = args[0] as ModInput | undefined
+        const isObject = (value: unknown) => typeof value === 'object' && value !== null && !Array.isArray(value)
+        if (!isObject(input) || typeof input!.tool !== 'string' || input!.tool === '' || !isObject(input!.input))
+          throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}$.tool.check takes { tool, input }: the tool's name and its arguments, an object`), {name:'HooksError'})
+        return {tool: input!.tool, input: input!.input}
       }
       case 'fs.read': case 'fs.stat': {
         const options = args[1] === undefined ? {} : args[1]
@@ -1922,6 +1945,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       for (const [method, bound] of Object.entries(methods)) wrapped[method] = async (...args) => {
         const {snapshot,table,lease}=scope()
         const op = `${noun}.${method}`
+        // Official 2.1.329's $.tool.call checks its input before it reaches the host.
+        if (op === 'tool.call') {
+          const call = args[0] as ModInput | undefined
+          if (call === null || typeof call !== 'object' || Array.isArray(call))
+            throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: input must be an object`), {name:'HooksError'})
+          if (typeof call.tool !== 'string' || call.tool.length === 0)
+            throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call takes the event's input: { tool, ...args }`), {name:'HooksError'})
+        }
         checkCall(owner, op, table, lease)
         const fn=noun === 'telemetry' ? hostIdentity : (dynamic ? table[noun]?.[method] : bound)!
         const ask = fn === hostIdentity && op === 'ui.ask' ? createModUiAskRequest(args, owner.declaration.name) : undefined
@@ -2611,7 +2642,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ? createModUiBridge(wrapped)
         : Object.freeze(wrapped)
     }
-    return Object.freeze(result)
+    return Object.freeze(Object.fromEntries(inOfficialNounOrder(Object.entries(result))))
   }
 
   // The host reads only a file the scan listed under the spelling the call used, then
@@ -2881,7 +2912,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const envelope = result as { value?: { base64?: unknown } | null; deny?: unknown } | null
       if (typeof envelope?.deny === 'string' && envelope.value === undefined) return
       const problem = envelope?.value && typeof envelope.value === 'object' ? modWasmBase64Problem(envelope.value.base64) : 'no value'
-      if (problem) throw new TypeError(`wasm.compile must return { value: { base64 } } or { deny } (got ${problem})`)
+      if (problem) throw Object.assign(new TypeError(`wasm.compile must return { value: { base64 } } or { deny } (got ${problem})`), { shape: problem })
       return
     }
     if (event === 'agent.report') {
@@ -3225,7 +3256,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             options.validateResult?.(result, previous)
           },
-          onFailure: (plugin, error) => diagnostic(plugin, event, error),
+          onFailure: (plugin, error) => hookFailed(plugin, event, error),
         })
         let thrown: { error: unknown } | undefined
         for (;;) {
@@ -3390,7 +3421,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                       return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook', 'setting', 'decider'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
                     }
                   : options.restoreResult,
-        onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
+        onFailure: (plugin, error) => { hookFailed(plugin, event, error); options.onFailure?.(error) },
       }))
       if (event === 'ui.render') {
         const instance = `${String(input.surface)}\0${String(input.component)}\0${String(input.requestId)}`
@@ -3481,11 +3512,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             to: { value: (input: ModInput, tier: ModTier) => descend(input, tier) },
           }) as ModNext
           const result = await hook.invoke(input, continuation, catching) as Nouns
-          if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('engine.create must return an interface')
+          if (!result || typeof result !== 'object')
+            throw Object.assign(new Error(`${owner.declaration.name}: engine.create must return $ ({ ...await next(e), <noun>: { <event>() {} } }), not ${typeof result}`), {name:'HooksError'})
+          if (Array.isArray(result)) throw new Error('engine.create must return an interface')
           if (!called) state.endedBy = owner.declaration.name
           const table: Nouns = Object.create(null)
           for (const [noun, methods] of Object.entries(result)) {
-            if (!methods || typeof methods !== 'object' || Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
+            if (!methods || typeof methods !== 'object')
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${noun} must be an object of methods, not ${typeof methods}`), {name:'HooksError'})
+            if (Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
             // Ordinary noun objects are cloned across the Worker; their host
             // callable identities survive, while the clock has its own wire tag.
             const inherited = views.find(item => item.noun === noun && (item.view === methods ||
@@ -3494,7 +3529,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             if (inherited) { table[noun] = inherited; continue }
             if (noun === 'plugin') throw new Error('engine.create may not replace plugin identity')
             const entries = Object.entries(methods)
-            if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
+            const [method] = entries.find(([, fn]) => typeof fn !== 'function') ?? []
+            if (method !== undefined)
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${noun}.${method} is not a function; an interface is an object of methods (a value another plugin can call)`), {name:'HooksError'})
             const provider = state.owners.get(noun)
             const legacyTelemetry = noun === 'telemetry' && provider === 'engine' &&
               (owner.declaration.tier === 'builtin' || owner.declaration.tier === 'core')
@@ -3517,8 +3554,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               return [method, wrapped]
             }))
           }
-          for (const [noun, methods] of Object.entries(before)) {
+          for (const [noun, methods] of inOfficialNounOrder(Object.entries(before))) {
             if (Object.hasOwn(result, noun)) continue
+            // Official 2.1.329 gives each plugin its own $.plugin outside the fold's table, so none withholds it.
+            if (noun === 'plugin') { table[noun] = methods; continue }
             if (owner.declaration.tier === 'user')
               throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.${noun}, added by ${state.owners.get(noun) === 'engine' ? 'core' : state.owners.get(noun)}; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
             const withholders = state.withheld.get(noun) ?? new Set<string>()
@@ -3541,7 +3580,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             // Worker death instead abandons this fold and must never become a gate.
             if (failed && !hostDead && !controller.signal.aborted)
               unloadedSteps.set(failed.declaration.storageId, { declaration: failed.declaration, order: [...order] })
-            diagnostic(plugin, 'engine.create', error)
+            // Official 2.1.329 unloads the module and says so as a load failure, its message without the plugin prefix.
+            const message = error instanceof Error ? error.message : String(error)
+            const words = message.startsWith(`${plugin}: `) ? message.slice(plugin.length + 2) : message
+            if (failed && !hostDead) diagnostic(plugin, 'load', `hooks module did not load: engine.create failed (${words})`, undefined, failed.declaration.storageId)
+            else diagnostic(plugin, 'engine.create', error)
           },
         }) as Nouns
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.

@@ -60,19 +60,24 @@ const scanOnlyEvents = new Set([
 ])
 // Nouns whose events the engine dispatches itself; an event on any other noun needs a loaded plugin to provide it.
 export const engineEventNouns = new Set([...coreNouns, ...[...supportedEvents, ...scanOnlyEvents].map(event => event.split('.')[0]!), 'classic', 'theme'])
-const supportedCalls = new Set([...supportedEvents].filter(event => ![
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
-  'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
-].includes(event)))
-for (const call of OFFICIAL_CORE_CALLS) supportedCalls.add(call)
-supportedCalls.add('config.list')
-supportedCalls.add('mcp.call')
-const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.register'])
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
 export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
 
 // loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
 class ModLoadError extends Error {}
+
+const urlCallSpellings = ['audio.play', 'http.fetch']
+const urlTextLimit = 2048
+const urlHostPattern = /^(?:[\w-]+(?:\.[\w-]+)*|\[[\da-f:.]+\])$/
+
+/** The host (and port) of a literal http(s) or ws(s) URL, or undefined when a ${slot} before its host leaves it unnamed. */
+export function urlHost(url: string): string | undefined {
+  const slot = url.indexOf('${')
+  const parsed = URL.parse(slot === -1 ? url : `${url.slice(0, slot)}@slot.invalid`)
+  const host = parsed?.hostname.replace(/\.$/, '') ?? ''
+  if (parsed === null || !/^(?:http|ws)s?:$/.test(parsed.protocol) || host === 'slot.invalid' || !urlHostPattern.test(host)) return undefined
+  return parsed.port === '' ? host : `${host}:${parsed.port}`
+}
 
 // A string written as a literal or a template with no substitution.
 function literalString(node: Node | undefined): string | undefined {
@@ -136,12 +141,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
   }
   // Official 2.1.329 loads these spellings of an engine.create hook and judges them as it runs; its validate
-  // names the hook outside its form instead, so validate reads on past them.
+  // names the hook outside its form instead, so both read on past them.
   let engineSpelling: string | undefined
   function failEngineSpelling(file: string, message: string, node: Node | undefined = at) {
-    const error = refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
-    if (!defersEngineSpelling) throw error
-    engineSpelling ??= error.message
+    if (defersEngineSpelling) engineSpelling ??= refusal(file, node?.loc?.start.line, compiledLines.get(file), message).message
   }
   const events = new Set<string>()
   const calls = new Set<string>()
@@ -155,6 +158,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
   const wasm = { literals: [] as { path: string; spelling: string; line?: number }[], isMadeAtRunTime: false }
+  const urlCalls: { call: string; node: Node; scope: Scope }[] = []
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
@@ -247,7 +251,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
 
   function resolveValue(node: Node, scope: Scope, seen = new Set<Binding>(), trail = new Set<string>()): Resolved | undefined {
     if (node.type === 'MemberExpression' && !node.computed && !node.optional) {
-      const value = resolveValue(node.object, scope, seen, trail)
+      // Official 2.1.329 reads (await $).noun as $.noun: awaiting $ yields $.
+      let object = node.object
+      while (object.type === 'AwaitExpression') object = object.argument
+      const value = resolveValue(object, scope, seen, trail)
       if (value?.binding.namespace) return exported(value.binding.namespace, node.property.name, seen, trail)
       if (value) return { binding: value.binding, members: [...value.members, node.property.name] }
       return
@@ -401,6 +408,57 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function literalString(node: Node): string | undefined {
     if (node.type === 'Literal' && typeof node.value === 'string') return node.value
     if (node.type === 'TemplateLiteral' && !node.expressions.length) return node.quasis[0]?.value.cooked ?? undefined
+  }
+
+  // The text a URL argument spells, as official 2.1.329 reads it (its Ge): a literal, a const naming one, or a
+  // template up to its first substitution that is neither.
+  function urlText(node: Node, scope: Scope, seen = new Set<Binding>()): string | undefined {
+    if (node.type === 'Identifier') {
+      const binding = lookup(node.name, scope)
+      if (!binding?.alias || seen.has(binding)) return
+      return urlText(binding.alias.node, binding.alias.scope, new Set(seen).add(binding))
+    }
+    if (node.type !== 'TemplateLiteral') {
+      const text = literalString(node)
+      return (text?.length ?? 0) > urlTextLimit ? undefined : text
+    }
+    let text = ''
+    for (const [index, quasi] of (node.quasis as Node[]).entries()) {
+      text += quasi.value.cooked
+      const expression = node.expressions[index] as Node | undefined
+      if (expression !== undefined) text += urlText(expression, scope, seen) ?? '${'
+      if (text.length > urlTextLimit) return
+      if (text.includes('${')) break
+    }
+    return text
+  }
+
+  // The hosts $.http.fetch and $.audio.play calls name, and the calls whose host is not read (official 2.1.329's Yt).
+  function urlHosts(): { named: string[]; unread: string[] } | undefined {
+    if (!urlCalls.length) return
+    const named = new Set<string>()
+    const unread = new Set<string>()
+    const isPlain = (item: Node) => !(item.type === 'SpreadElement' || item.computed || item.kind !== 'init')
+    const isNamed = (item: Node, name: string) => item.type === 'Property' &&
+      (item.key.type === 'Identifier' && item.key.name === name || item.key.type === 'Literal' && item.key.value === name)
+    for (const { call, node, scope } of urlCalls) {
+      const [first, second] = node.arguments as (Node | undefined)[]
+      const isFetch = call === 'http.fetch'
+      const options = isFetch ? second : first
+      const isRead = first?.type !== 'SpreadElement' && options?.type === 'ObjectExpression' &&
+        !options.properties.some((item: Node) => !isPlain(item) || isNamed(item, '__proto__'))
+      const field = isRead ? (options!.properties as Node[]).findLast(item => isNamed(item, isFetch ? 'socketPath' : 'url')) : undefined
+      const fieldText = field?.type === 'Property' ? urlText(field.value, scope) : undefined
+      const hasNoField = isRead && field === undefined
+      if (!isFetch && hasNoField) continue
+      const viaSocket = isFetch && fieldText !== undefined
+      const hasUnreadOptions = isFetch && second !== undefined && !hasNoField
+      const url = isFetch ? first && urlText(first, scope) : fieldText
+      const host = url === undefined || viaSocket ? undefined : urlHost(url)
+      if (host !== undefined) named.add(host)
+      if (host === undefined || hasUnreadOptions) unread.add(call)
+    }
+    return { named: [...named].sort(), unread: [...unread].sort() }
   }
 
   function stateReference(node: Node, scope: Scope, resolving = new Set<Binding>()): ModStateReference | undefined {
@@ -729,6 +787,64 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return false
   }
 
+  // Official 2.1.329 refuses any declaration, at any depth, of the name a hook or helper receives $ or next by.
+  const shadowChecked = new Map<Node, Set<string>>()
+  function refuseShadow(body: Node, name: string, holds: 'holds $' | 'next') {
+    const names = shadowChecked.get(body) ?? new Set<string>()
+    if (names.has(name)) return
+    shadowChecked.set(body, names.add(name))
+    const ids = (pattern: Node | null | undefined, found: Node[] = []): Node[] => {
+      if (pattern?.type === 'Identifier') found.push(pattern)
+      else if (pattern?.type === 'AssignmentPattern') ids(pattern.left, found)
+      else if (pattern?.type === 'RestElement') ids(pattern.argument, found)
+      else if (pattern?.type === 'ArrayPattern') for (const item of pattern.elements) ids(item, found)
+      else if (pattern?.type === 'ObjectPattern') {
+        for (const property of pattern.properties) ids(property.type === 'RestElement' ? property.argument : property.value, found)
+      }
+      return found
+    }
+    const walk = (node: Node) => {
+      const declared = isFunction(node) ? [...ids(node.id), ...node.params.flatMap((param: Node) => ids(param))]
+        : node.type === 'VariableDeclarator' ? ids(node.id)
+        : node.type === 'CatchClause' ? ids(node.param)
+        : node.type === 'ClassDeclaration' || node.type === 'ClassExpression' ? ids(node.id) : []
+      const again = declared.find(id => id.name === name)
+      if (again) {
+        fail(path, holds === 'next'
+          ? `"${name}" (the continuation) is declared again (shadowed); rename the inner binding`
+          : `"${name}" (which holds $) is declared again (shadowed)`, again)
+      }
+      for (const child of children(node)) walk(child)
+    }
+    walk(body)
+  }
+
+  // Official 2.1.329 lets an engine.create hook only call its next, read a non-to member of it, or call next.to.
+  function refuseNextValues(body: Node, name: string) {
+    const walk = (node: Node, parent: Node | undefined, grandparent: Node | undefined) => {
+      if (node.type === 'Identifier' && node.name === name && !(parent?.type === 'MemberExpression' && parent.property === node && !parent.computed) &&
+        !(parent?.type === 'Property' && parent.key === node && !parent.computed && !parent.shorthand)) {
+        if (parent?.type === 'CallExpression' && parent.callee === node && !parent.optional) return
+        if (parent?.type === 'MemberExpression' && parent.object === node) {
+          if (parent.computed) {
+            if (parent.property.type === 'Literal' && typeof parent.property.value === 'string' && parent.property.value !== 'to') return
+            fail(path, `a computed member access on "${name}" (it may reach next.to)`, parent)
+          }
+          if (parent.property.name !== 'to') return
+          if (parent.optional) fail(path, 'next.to is reached through optional chaining', parent)
+          const call = grandparent
+          if (!(call?.type === 'CallExpression' && call.callee === parent && !call.optional)) {
+            fail(path, 'next.to is used as a value (bound, passed or read) instead of called as next.to(e, "<tier>")', parent)
+          }
+          return
+        }
+        fail(path, `"${name}" is passed on or bound inside an engine.create hook (its value is $)`, node)
+      }
+      for (const child of children(node)) walk(child, node, parent)
+    }
+    walk(body, undefined, undefined)
+  }
+
   // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
   // the value of next(e) at engine.create is held to the same.
   const membersChecked = new Map<Node, Set<string>>()
@@ -785,11 +901,15 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     nodes.forEach(walk)
   }
 
-  function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler = false) {
-    if (handler && (event === 'turn.step' || event === 'process.spawn')) {
-      if (!node.async || !node.generator) fail(path, `${event} handlers must be async generators`)
-    } else if (roles.length && node.generator) fail(path, 'generator register/handlers are unsupported')
-    const inner = cachedScope(node, scope, JSON.stringify([event, handler, roles]), () => {
+  // Official 2.1.329 checks only the async generator form, and only on a hook or .catch handler; a plain generator passes.
+  function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler: false | 'the hook' | 'the .catch handler' = false) {
+    if (handler) {
+      const streaming = event === 'turn.step' || event === 'process.spawn'
+      const asyncGenerator = node.async === true && node.generator === true
+      if (streaming && !asyncGenerator) fail(path, `${handler} on "${event}" is not an async generator: ${event} streams, so it takes async function* ($, e, next) { ... }, which yields the chunks and returns the result`)
+      if (!streaming && asyncGenerator) fail(path, `${handler} on "${event}" is an async generator: only a streaming event named as itself (turn.step, process.spawn) takes one; this pattern takes ($, e, next) => result`)
+    }
+    const inner = cachedScope(node, scope, JSON.stringify([event, !!handler, roles]), () => {
       const bindings = new Map<string, Binding>()
       if (node.id) bindings.set(node.id.name, { role: registers.has(node) ? 'register' : null, fn: { node, scope, path } })
       for (let i = 0; i < node.params.length; i++) {
@@ -803,6 +923,12 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     })
     node.params.forEach((param: Node, index: number) => {
       if (roles[index]?.role === 'engine' && !roles[index]!.members.length && param.type === 'Identifier') refuseMemberValues([node.body], param.name)
+      if ((roles[index]?.role === 'engine' || roles[index]?.role === 'next') && !roles[index]!.members.length && param.type === 'Identifier') {
+        refuseShadow(node.body, param.name, roles[index]!.role === 'engine' ? 'holds $' : 'next')
+      }
+      if (handler && event === 'engine.create' && roles[index]?.role === 'next' && !roles[index]!.members.length && param.type === 'Identifier') {
+        refuseNextValues(node.body, param.name)
+      }
     })
     if (collecting) {
       if (collectedFunctions.has(inner)) return
@@ -812,7 +938,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const outerReturningRegister = returningRegister
     const outerEngineReturns = engineReturns
     engineReturns = new Set()
-    returningEngine = handler && event === 'engine.create'
+    returningEngine = !!handler && event === 'engine.create'
     returningRegister = registers.has(node)
     for (const param of node.params) visitPattern(param, inner, event)
     if ((returningEngine || returningRegister) && node.body.type !== 'BlockStatement') {
@@ -853,8 +979,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const handler = node.arguments.at(-1) as Node
     const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
     const helper = resolved && !resolved.members.length && resolved.binding.fn
-    if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
-      fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
+    // Official 2.1.329 takes a function declaration or a top-level const bound to a function, never let or var.
+    if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || (handler.type === 'Identifier' && lookup(handler.name, scope)?.writes)))
+      fail(path, handler.type === 'Identifier'
+        ? `the hook "${handler.name}" is not a function declared at the top of this file (a function declaration, or a const bound to a function), nor imported from one of the module's own files`
+        : 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
     if (!collecting) {
       const parent = parents.get(node)
@@ -865,7 +994,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     try {
       if (helper) path = helper.path
       visitFunction(helper?.node ?? handler, helper?.scope ?? scope,
-        [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, true)
+        [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, 'the hook')
     } finally { path = callerPath }
     return event
   }
@@ -876,9 +1005,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const parts = value.members
     if (parts.length !== 2) fail(path, 'capabilities require static $.noun.method calls; computed/optional access is unsupported')
     const [noun, method] = parts as [string, string]
-    if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !supportedCalls.has(`${noun}.${method}`) && !scanOnlyCalls.has(`${noun}.${method}`))) {
-      fail(path, `unsupported core capability ${noun}.${method}`)
-    }
+    // Official 2.1.329 scans any $.noun.method; one the table lacks, $.clock.constructor included, fails when the hook calls it.
     return `${noun}.${method}`
   }
 
@@ -1050,15 +1177,17 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           return
         }
         if (capabilityValue(node, scope)) {
-          const parent = parents.get(node)
-          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
+          let use = node
+          let parent = parents.get(use)
+          while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === use)) refuseItself(node)
           const message = `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`
           if (capabilityValue(node, scope)?.role !== 'beneath') fail(path, message)
           failEngineSpelling(path, message)
         }
-        if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
+        if (node.name === 'arguments') fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
-      case 'ImportExpression': fail(path, 'dynamic import is unsupported; use static relative imports')
+      case 'ImportExpression': fail(path, 'a dynamic import(); a hooks module imports its own files with an import declaration, as in import { name } from "./file.js"')
       case 'MetaProperty': fail(path, 'import.meta is unsupported')
       case 'CallExpression': {
         if (roleOf(node.callee, scope) === 'on') {
@@ -1075,7 +1204,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           const hookEvent = registration(callee.object, scope)!
           if (hookEvent === 'engine.create') fail(path, 'engine.create catch is unsupported')
           if (node.arguments.length !== 1 || !isFunction(node.arguments[0])) fail(path, 'catch requires one inline handler')
-          visitFunction(node.arguments[0], scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], hookEvent, true)
+          visitFunction(node.arguments[0], scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], hookEvent, 'the .catch handler')
           return
         }
         const stateOperation = stateHelper(node, scope)
@@ -1164,6 +1293,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           scanEnvironment(call, node)
           scanState(call, node, scope)
           scanWasm(call, node)
+          if (urlCallSpellings.includes(call)) urlCalls.push({ call, node, scope })
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {
@@ -1243,7 +1373,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       }
     }
     const value = exported(module, 'register', new Set())
-    if (!value?.binding.fn) fail(path, 'entrypoint must export a named register function')
+    if (!value?.binding.fn) fail(path, 'no export named register (export function register(on, options) {...})')
     if (value.binding.fn.path !== module) fail(path, 're-exported register is unsupported; define register in the entrypoint')
     registers.add(value.binding.fn.node)
     value.binding.role = 'register'
@@ -1296,7 +1426,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry, wasm, engineSpelling, validation: {
+  const hosts = urlHosts()
+  return { events, calls, env, state, nextTiers, telemetry, wasm, hosts, engineSpelling, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
     gates: [...registrationDescriptions.values()].filter(({ event }) => isGate(event)).map(({ event, matcher, scope, hasCatch }) => ({
       registration: matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`,
@@ -1434,7 +1565,10 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
       fail(from, `${description} must be relative: ${specifier}`)
     }
     const requested = resolve(from, '..', specifier)
-    if (!within(root, requested)) fail(from, `${description} is outside plugin root: ${specifier}`)
+    if (!within(root, requested)) {
+      if (description === 'relative import') importFail(from, specifier, `it is outside the plugin's folder (${root})`)
+      fail(from, `${description} is outside plugin root: ${specifier}`)
+    }
     const extension = extname(requested)
     const emittedExtension = extension === '.js' ? ['.ts', '.tsx'] : extension === '.jsx' ? ['.tsx'] : []
     const direct = extension ? [requested, ...emittedExtension.map(value => requested.slice(0, -extension.length) + value)] :
@@ -1450,7 +1584,12 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ENOTDIR') throw error
       }
     }
+    if (description === 'relative import') importFail(from, specifier, `no such file under ${root}`)
     fail(from, `cannot resolve ${description} ${specifier}`)
+  }
+  // Wording of official 2.1.329: an import a hooks module cannot follow names the importer by its path under the root.
+  function importFail(from: string, specifier: string, reason: string): never {
+    throw new ModLoadError(`cannot import "${specifier}" (from ${relative(root, from).split(sep).join('/') || from}): ${reason}`)
   }
   async function load(path: string) {
     if (seen.has(path)) return
@@ -1544,7 +1683,7 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
         links.push({ from: path, specifier, to: 'claude-code' })
         continue
       }
-      if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) fail(path, `bare/absolute imports are unsupported: ${specifier}`)
+      if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) importFail(path, specifier, 'a hooks module imports its own files by relative path and "claude-code", nothing else')
       const to = await resolveModule(path, specifier, 'relative import')
       links.push({ from: path, specifier, to })
       await load(to)
@@ -1631,6 +1770,7 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
     entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(),
+    ...(scanned.hosts ? { hosts: scanned.hosts } : {}),
     validation: { ...scanned.validation, ...(engineForm && { engineForm }), ...(scanned.engineSpelling && { engineSpelling: scanned.engineSpelling }) },
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {

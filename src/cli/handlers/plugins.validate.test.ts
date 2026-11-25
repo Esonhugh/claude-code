@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import type { LoadedPlugin, PluginLoadResult } from '../../types/plugin.js'
 import * as pluginLoader from '../../utils/plugins/pluginLoader.js'
+import { formatPluginProvides, listPluginProvides } from '../../utils/plugins/pluginProvides.js'
 import { resolveForeignModStateDeclarations, validateManifest, validatePluginContents, type ValidationResult } from '../../utils/plugins/validatePlugin.js'
 import { pluginValidateHandler } from './plugins.js'
 
@@ -192,6 +193,7 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
     const forbidden = () => { throw new Error('materializing loader forbidden') }
     const bindings = {
       validateManifest, validatePluginContents, resolveForeignModStateDeclarations,
+      listPluginProvides, formatPluginProvides,
       dirname, basename, plural, figures,
       readFile: async (path: string) => readFileSync(path, 'utf8'),
       jsonParse: JSON.parse,
@@ -220,17 +222,20 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
     if (['incomplete', 'incomplete-empty', 'throw', 'broken-types'].includes(mode)) {
       expect(output).toMatch(/not checked.*other\.value/)
       expect(output).toContain('Validation passed with warnings')
-      expect(output).not.toContain('not declared in any available')
+      expect(output).not.toContain("not declared: no enabled plugin's contract names it")
       expect(output).toContain(mode === 'incomplete' ? 'builtin unavailable' : mode === 'incomplete-empty' ? 'is incomplete' : mode === 'throw' ? 'unreadable context' : 'missing.d.ts')
       expect(exits).toEqual([0])
     } else if (mode === 'empty' || mode === 'complete-missing') {
-      expect(output).toMatch(/other\.value.*not declared in any available/)
-      expect(exits).toEqual([1])
+      expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
+      expect(output).not.toContain("not declared: no enabled plugin's contract names it")
+      expect(exits).toEqual([0])
     } else if (mode === 'foreign-write') {
-      expect(output).toContain("only a value's owner may write")
+      expect(output).toContain("only a value's owner writes it")
       expect(exits).toEqual([1])
     } else {
       expect(output).not.toContain('not checked')
+      expect(output).toContain(`Provides:\n\n  ${figures.pointer} modules: hooks/register.ts`)
+      expect(output).not.toContain('Hosts')
       expect(exits).toEqual([0])
     }
   },
@@ -263,8 +268,8 @@ test('cold real handler discovers builtin contracts without invoking runtime loa
     expect(full).not.toHaveBeenCalled()
     expect(cached).not.toHaveBeenCalled()
     expect(output).not.toMatch(/incomplete/i)
-    expect(output).not.toContain('not checked')
-    expect(output).toMatch(/other\.value.*not declared in any available/)
+    expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
+    expect(output).not.toContain("not declared: no enabled plugin's contract names it")
   } finally {
     full.mockRestore()
     cached.mockRestore()
@@ -286,7 +291,7 @@ test('plugin validate uses complete cached contracts for foreign state', async (
   pluginLoader.loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve(cached))
   const output = await runValidate(owner)
   expect(output).not.toContain('not checked')
-  expect(output).not.toContain('not declared in any available')
+  expect(output).not.toContain("not declared: no enabled plugin's contract names it")
   expect(output).toContain('Validation passed')
 })
 
@@ -301,7 +306,7 @@ test('plugin validate treats an empty successful cache as a complete context', a
     errors: [],
   }))
   const output = await runValidate(owner)
-  expect(output).toMatch(/other\.value.*not declared in any available/)
+  expect(output).toMatch(/other\.value.*not declared: no enabled plugin's contract names it/)
   expect(output).not.toContain('not checked')
 })
 

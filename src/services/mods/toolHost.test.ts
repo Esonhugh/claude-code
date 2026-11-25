@@ -709,6 +709,8 @@ describe('author tool host through the real executor', () => {
     for (const input of [null, [], {}, { tool: '' }, { tool: f.tool.name }, { tool: f.tool.name, input: { value: 1 } }])
       await expect(f.host.check(input as { tool: string; input: unknown }, new AbortController().signal)).rejects.toThrow()
     await expect(f.host.check({ tool: 'Missing', input: {} }, new AbortController().signal, 'author')).rejects.toMatchObject({ name: 'HooksError', message: 'author: $.tool.check: no tool named "Missing" in this session' })
+    // Official 2.1.329's host check words a non-object input apart from the engine's shape check.
+    await expect(f.host.check({ tool: 'Missing', input: [] }, new AbortController().signal, 'author')).rejects.toMatchObject({ name: 'HooksError', message: "author: $.tool.check: input is the tool's arguments, an object" })
     const controller = new AbortController()
     const entered = Promise.withResolvers<AbortSignal>()
     const finish = Promise.withResolvers<void>()

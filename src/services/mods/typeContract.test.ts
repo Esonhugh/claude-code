@@ -158,8 +158,8 @@ describe('Mod state contract validation', () => {
       declared: [{ plugin: 'owner', keys: ['shared'] }],
     })).toEqual({
       problems: [
-        '$.state.set refers to reader.value, which reader owns; only a value\'s owner may write it',
-        'owner.missing is not declared in the manifest types contract',
+        '$.state.set refers to reader.value, which reader owns: only a value\'s owner writes it (to change what is written, hook reader\'s state.set and rewrite e.value)',
+        'owner.missing is not declared: the manifest\'s types contract must name it in interface PluginState { owner: { missing: ... } }',
       ],
       unchecked: ['reader.unknown', 'reader.value'],
     })

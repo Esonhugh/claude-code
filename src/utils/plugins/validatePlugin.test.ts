@@ -80,6 +80,61 @@ describe('plugin types validation', () => {
   })
 })
 
+describe('network hosts validation', () => {
+  test('warns on network entries the loader drops, as 2.1.329 does', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({
+      name: 'net',
+      version: '1.0.0',
+      description: 'd',
+      author: { name: 'a' },
+      network: { hosts: [5, 'ok.example.com', ...Array.from({ length: 255 }, (_, i) => `h${i}.example.com`)], why: 1 },
+      mcpServers: {
+        remote: { type: 'http', url: 'https://r.example.com', network: { hosts: ['r.example.com'] } },
+        local: { command: 'node', network: { hosts: ['https://bad.example.com', '[::1]:80', '*.ok.example.com'] } },
+      },
+    }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.success).toBe(true)
+    expect(result.warnings.map(warning => warning.path)).toEqual([
+      'mcpServers.remote.network',
+      'mcpServers.local.network.hosts[0]',
+      'network.why',
+      'network.hosts[0]',
+      'network.hosts',
+    ])
+  })
+
+  test('warns on a network that is not an object with hosts', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'net', network: 'nope' }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.success).toBe(true)
+    expect(result.warnings[0]).toEqual({
+      path: 'network',
+      message: `'network' must be an object with a list of hosts, such as { "hosts": ["api.example.com"] }. It will be ignored at load time.`,
+    })
+  })
+
+  test('warns on marketplace entry networks', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+      name: 'mk',
+      owner: { name: 'o' },
+      plugins: [
+        { name: 'a', source: './a', network: 'x' },
+        { name: 'b', source: './b', network: { hosts: ['ftp://x'] }, mcpServers: { w: { type: 'sse', url: 'https://w.example.com', network: { hosts: [] } } } },
+      ],
+    }))
+    const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
+    expect(result.warnings.map(warning => warning.path).slice(0, 3)).toEqual([
+      'plugins[0].network',
+      'plugins[1].network.hosts[0]',
+      'plugins[1].mcpServers.w.network',
+    ])
+  })
+})
+
 describe('hooks module author validation', () => {
   test.each(['register.mjs', 'nested/register.mjs', '../register.mjs'])('resolves a module filename from hooks.json: %s', async modulePath => {
     const root = await pluginRoot()
@@ -286,7 +341,7 @@ describe('hooks module author validation', () => {
     const results = await validatePluginContents(root)
     const hooks = results.find(result => result.fileType === 'hooks')!
     expect(hooks.success).toBe(false)
-    expect(hooks.errors.some(error => /only a value's owner may write/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /only a value's owner writes it/.test(error.message))).toBe(true)
     expect(hooks.errors.some(error => /owner\.missing.*not declared/.test(error.message))).toBe(true)
     expect(hooks.notes?.some(note => /not checked.*other\.value/.test(note))).toBe(true)
   })
@@ -333,7 +388,7 @@ describe('hooks module author validation', () => {
     ], 'owner')
     expect(resolved.warning).toBeUndefined()
     const hooks = (await validatePluginContents(owner, resolved.declarations)).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /other\.missing.*not declared in any available/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /other\.missing.*not declared: no enabled plugin's contract names it/.test(error.message))).toBe(true)
     expect(hooks.errors.some(error => /other\.value/.test(error.message))).toBe(false)
     expect(hooks.notes?.some(note => /not checked/.test(note))).toBe(false)
   })
@@ -345,7 +400,7 @@ describe('hooks module author validation', () => {
     await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
     await writeFile(join(root, 'hooks', 'register.ts'), `export function register(on) { on('tool.call', async ($) => { await $.state.get({plugin:'other', key:'value'}); }); }`)
     const hooks = (await validatePluginContents(root, [])).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /other\.value.*not declared in any available/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /other\.value.*not declared: no enabled plugin's contract names it/.test(error.message))).toBe(true)
     expect(hooks.notes?.some(note => /not checked/.test(note))).toBe(false)
   })
 
@@ -377,7 +432,7 @@ describe('hooks module author validation', () => {
       loadedPlugin(foreign, 'other', './contract.d.ts'),
     ], 'owner')
     const hooks = (await validatePluginContents(owner, resolved.declarations)).find(result => result.fileType === 'hooks')!
-    expect(hooks.errors.some(error => /only a value's owner may write/.test(error.message))).toBe(true)
+    expect(hooks.errors.some(error => /only a value's owner writes it/.test(error.message))).toBe(true)
   })
 
   test('accepts only each loaded plugin own namespace and makes any load failure unavailable', async () => {

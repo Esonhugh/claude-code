@@ -200,10 +200,11 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       }
     },
     async check(input: { tool: string; input: unknown }, signal: AbortSignal, author?: string) {
-      if (!input || typeof input !== 'object' || Array.isArray(input) ||
-        typeof input.tool !== 'string' || !input.tool.trim() ||
-        !Object.hasOwn(input, 'input'))
-        throw new TypeError('tool.check requires tool and input')
+      const prefix = author === undefined ? '' : author + ': '
+      if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.tool !== 'string' || !input.tool.trim())
+        throw Object.assign(new Error(`${prefix}$.tool.check takes { tool, input }: the tool's name and its arguments, an object`), { name: 'HooksError' })
+      if (typeof input.input !== 'object' || input.input === null || Array.isArray(input.input))
+        throw Object.assign(new Error(`${prefix}$.tool.check: input is the tool's arguments, an object`), { name: 'HooksError' })
       signal.throwIfAborted()
       const tools = getTools()
       const tool = findToolByName(tools, input.tool)

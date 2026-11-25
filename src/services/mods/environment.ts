@@ -608,7 +608,7 @@ export function createModEnvironmentHost({
         else {
           const signal = message.invocation === undefined ? undefined : frames.get(message.invocation)?.next.signal
           const error = message.aborted && signal?.aborted && signal.reason instanceof Error
-            ? signal.reason : new Error(message.error)
+            ? signal.reason : Object.assign(new Error(message.error), { thrownName: message.errorName })
           if (message.aborted) streamAbortErrors.add(error)
           pending.reject(error)
         }
