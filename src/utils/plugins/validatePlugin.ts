@@ -49,6 +49,8 @@ export type ValidationResult = {
   errors: ValidationError[]
   warnings: ValidationWarning[]
   notes?: string[]
+  /** Each hooks module scanned, by its path from the plugin root, for the provides listing. */
+  modules?: { path: string; calls: readonly string[]; events: readonly string[] }[]
   filePath: string
   fileType: 'plugin' | 'marketplace' | 'skill' | 'agent' | 'command' | 'hooks'
 }
@@ -843,6 +845,7 @@ async function validateHooksJson(
   const errors: ValidationError[] = []
   const warnings: ValidationWarning[] = []
   const notes: string[] = []
+  const scanned: NonNullable<ValidationResult['modules']> = []
   // Official 2.1.329 names the plugin by its directory in a module's refusals and owns state by the manifest name.
   const directory = path.basename(pluginRoot)
   let owner = directory
@@ -866,6 +869,7 @@ async function validateHooksJson(
         pluginRoot,
         entrypoints: [resolved],
       })
+      scanned.push({ path: path.relative(pluginRoot, resolved).split(path.sep).join('/'), calls: declaration.calls, events: declaration.events })
       const form = declaration.validation?.engineForm
       notes.push(
         `${modulePath} hooks: ${(declaration.validation?.registrations ?? declaration.events).join(', ') || 'nothing'}`,
@@ -958,6 +962,7 @@ async function validateHooksJson(
     errors,
     warnings,
     ...(notes.length ? { notes } : {}),
+    ...(scanned.length ? { modules: scanned } : {}),
     filePath,
     fileType: 'hooks',
   }

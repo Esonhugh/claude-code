@@ -224,7 +224,7 @@ export async function loadPluginMcpServers(
  * This is a simplified version that doesn't expand environment variables
  * and is specifically for plugin MCP configs
  */
-async function loadMcpServersFromFile(
+export async function loadMcpServersFromFile(
   plugin: LoadedPlugin,
   relativePath: string,
   errors: PluginError[],

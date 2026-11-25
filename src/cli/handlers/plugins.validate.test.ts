@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import type { LoadedPlugin, PluginLoadResult } from '../../types/plugin.js'
 import * as pluginLoader from '../../utils/plugins/pluginLoader.js'
+import { formatPluginProvides, listPluginProvides } from '../../utils/plugins/pluginProvides.js'
 import { resolveForeignModStateDeclarations, validateManifest, validatePluginContents, type ValidationResult } from '../../utils/plugins/validatePlugin.js'
 import { pluginValidateHandler } from './plugins.js'
 
@@ -192,6 +193,7 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
     const forbidden = () => { throw new Error('materializing loader forbidden') }
     const bindings = {
       validateManifest, validatePluginContents, resolveForeignModStateDeclarations,
+      listPluginProvides, formatPluginProvides,
       dirname, basename, plural, figures,
       readFile: async (path: string) => readFileSync(path, 'utf8'),
       jsonParse: JSON.parse,
@@ -231,6 +233,8 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
       expect(exits).toEqual([1])
     } else {
       expect(output).not.toContain('not checked')
+      expect(output).toContain(`Provides:\n\n  ${figures.pointer} modules: hooks/register.ts`)
+      expect(output).not.toContain('Hosts')
       expect(exits).toEqual([0])
     }
   },
