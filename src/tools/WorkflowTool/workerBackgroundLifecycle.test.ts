@@ -134,6 +134,7 @@ if (process.env[childFlag] !== '1') {
     expect(failure.error).toBeInstanceOf(AgentApiError)
     expect(failure.error.message).toContain("You've hit your limit")
     expect(failure.error.quotaLimits).toEqual(quotaLimits)
+    expect(failure.error.responseText).toBe("You've hit your limit · resets 3pm")
   })
 
   test('cancel preserves the reason and leaves an unrelated real background agent running', async () => {

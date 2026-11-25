@@ -125,6 +125,7 @@ import {
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
+  AgentApiError,
   agentApiTerminationText,
   getAgentTerminalError,
   getLastToolUseName,
@@ -2403,7 +2404,10 @@ export const AgentTool = buildTool({
               spawnedSubagent?.failed()
               const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport('', toolUseContext))
               if ('consumed' in answer) throw new Error(answer.consumed)
-              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), { name: 'AgentApiErrorTerminationError' })
+              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), {
+                name: 'AgentApiErrorTerminationError',
+                responseText: syncAgentError instanceof AgentApiError ? syncAgentError.responseText : undefined,
+              })
             }
 
             // We have some messages, try to finalize and return them

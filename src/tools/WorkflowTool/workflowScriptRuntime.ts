@@ -1633,7 +1633,7 @@ export async function runWorkflowScript({
         workflowErrorMessage(error, `Workflow agent failed without error details: ${agentId}`),
         attemptUsage,
         error instanceof AgentApiError ? error.quotaLimits : undefined,
-        error instanceof AgentApiError ? error.responseText : undefined,
+        error instanceof Error && 'responseText' in error && typeof error.responseText === 'string' ? error.responseText : undefined,
       )
     } finally {
       stagger.done()
