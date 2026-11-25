@@ -1,6 +1,6 @@
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { PANEL_GRACE_MS, updateTaskState } from '../../utils/task/framework.js'
-import { emitTaskTerminatedSdk, enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
+import { emitTaskTerminatedSdk, enqueueSdkEvent, startTaskRun } from '../../utils/sdkEventQueue.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPhase,
@@ -282,6 +282,8 @@ export function registerWorkflowTask({
     events: [],
   }
 
+  // Before the task lands, so its background_tasks_changed entry has the run id.
+  startTaskRun(taskState.id)
   setAppState(prev => ({
     ...prev,
     tasks: {
