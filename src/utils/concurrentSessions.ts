@@ -24,6 +24,8 @@ export type SessionStatus = 'busy' | 'idle' | 'waiting'
 let registeredName: string | undefined
 let pidFileWriteChain: Promise<void> = Promise.resolve()
 let unregistering = false
+// Latest activity patch; the REPL reports it before registration finishes.
+let activity: Record<string, unknown> = {}
 
 export function getRegisteredSessionName(): string | undefined {
   return registeredName
@@ -61,6 +63,16 @@ export function isBgSession(): boolean {
 }
 
 /**
+ * Official name for an interactive session not named at launch: a slug of the
+ * directory name plus a random byte, so sessions in one directory differ.
+ */
+export function derivedSessionName(cwd: string): string {
+  const slug = basename(cwd).split(/\s+/).filter(Boolean).slice(0, 4).join(' ').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/^-+|-+$/g, '')
+  return `${slug || 'claude'}-${randomBytes(1).toString('hex')}`
+}
+
+/**
  * Write a PID file for this session and register cleanup.
  *
  * Registers all top-level sessions — interactive CLI, SDK (vscode, desktop,
@@ -78,7 +90,8 @@ export async function registerSession(): Promise<boolean> {
   const dir = getSessionsDir()
   const pidFile = join(dir, `${process.pid}.json`)
   unregistering = false
-  registeredName = cleanPeerName(process.env.CLAUDE_CODE_SESSION_NAME || basename(getOriginalCwd())) || `claude-${process.pid}`
+  const envName = process.env.CLAUDE_CODE_SESSION_NAME
+  registeredName = (envName ? cleanPeerName(envName) : kind === 'interactive' ? derivedSessionName(getOriginalCwd()) : cleanPeerName(basename(getOriginalCwd()))) || `claude-${process.pid}`
 
   let unsubscribeSession: (() => void) | undefined
   const unregisterCleanup = registerCleanup(async () => {
@@ -95,6 +108,7 @@ export async function registerSession(): Promise<boolean> {
     await chmod(dir, 0o700)
     const messagingSocketPath = getUdsMessagingSocketPath()
     const temp = `${pidFile}.${randomBytes(8).toString('hex')}.tmp`
+    let written = activity
     try {
       await writeFile(temp, jsonStringify({
         pid: process.pid,
@@ -114,6 +128,8 @@ export async function registerSession(): Promise<boolean> {
               agent: process.env.CLAUDE_CODE_AGENT,
             }
           : {}),
+        // Read last: activity can change during the awaits above.
+        ...(written = activity),
       }), { mode: 0o600, flag: 'wx' })
       await rename(temp, pidFile)
     } finally {
@@ -125,6 +141,8 @@ export async function registerSession(): Promise<boolean> {
     unsubscribeSession = onSessionSwitch(id => {
       void updatePidFile({ sessionId: id })
     })
+    // Activity reported after the record was built missed the file (no file yet).
+    if (activity !== written) await updatePidFile(activity)
     return true
   } catch (e) {
     unregisterCleanup()
@@ -185,7 +203,8 @@ export async function updateSessionActivity(patch: {
   status?: SessionStatus
   waitingFor?: string
 }): Promise<void> {
-  await updatePidFile({ ...patch, updatedAt: Date.now() })
+  activity = { ...activity, ...patch, updatedAt: Date.now() }
+  await updatePidFile(activity)
 }
 
 /**

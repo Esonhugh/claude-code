@@ -104,6 +104,7 @@ const peerInputSchema = lazySchema(() => inputSchema().extend({
   message: z.string().default('').describe('Plain text message content'),
 }))
 const NOTIFY_WHEN_IDLE_DESCRIPTION = 'Ask a session ON THIS MACHINE to send you ONE notice when it next goes idle (finishes its turn with nothing queued) or exits — opt-in, one-shot, no polling. With a message: deliver it now AND subscribe. Without a message (omit it): a pure subscription that costs the other session nothing.'
+const PEER_IDENTITY = 'another Claude session on this machine'
 const NOTIFY_LOCAL_ONLY = 'notify_when_idle is only supported for Claude sessions on this machine in this release (not teammates, subagents, Remote Control or cloud sessions).'
 type InputSchema = ReturnType<typeof inputSchema> | ReturnType<typeof peerInputSchema>
 
@@ -847,7 +848,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       const notify = feature('UDS_INBOX') ? 'notify_when_idle' in input && input.notify_when_idle === true : false
       const sendPeer = async (target: string, message: string, label: string, toName?: string): Promise<{data:SendMessageToolOutput}> => {
         const { sendToUdsSocket, subscribePeerIdle } = await import('../../utils/udsClient.js')
-        const { idleSubscriptionMessage } = await import('../../utils/peerNotices.js')
+        const { idleSubscriptionDisplay, idleSubscriptionMessage } = await import('../../utils/peerNotices.js')
         const { getPeerInboundSetting, getUnassertedPeerInboundPolicy } = await import('../../utils/udsMessaging.js')
         const permissions = context.getAppState().toolPermissionContext
         const fromMode = permissions.mode === 'bypassPermissions' || (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable) ? 'bypass' : 'prompting'
@@ -861,15 +862,31 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               })
             : undefined
           const subscription = notify ? await subscribePeerIdle(target, label, fromMode) : undefined
+          const idle = subscription && {
+            model: idleSubscriptionMessage(subscription, label, getPeerInboundSetting(), getUnassertedPeerInboundPolicy(), getIsNonInteractiveSession()),
+            display: idleSubscriptionDisplay(subscription, label),
+          }
+          if (!sent) {
+            // Subscription only; official wraps both lines in the identity note unless the peer is gone.
+            const gone = subscription && 'reason' in subscription && subscription.reason === 'peer-gone'
+            return {
+              data: {
+                success: subscription?.ok === true,
+                message: gone ? idle!.model : `${idle?.model ?? ''} (${label} is ${PEER_IDENTITY})`,
+                display: gone ? idle!.display : `${idle?.display ?? ''} (${PEER_IDENTITY})`,
+              },
+            }
+          }
           const preview = input.summary || truncate(message, 50)
+          const inboxNote = getUdsMessagingSocketPath()
+            ? "; in that session's inbox, not yet read by its Claude — a [Cross-session delivery notice] follows if that session holds it (usually a different permission mode) or refuses it"
+            : "; in that session's inbox, not yet read by its Claude — that session may hold it (usually a different permission mode) or refuse it, and with no inbox bound here nothing reports back, so never treat silence as agreement"
           return {
             data: {
-              success: sent !== undefined || subscription?.ok === true,
-              message: [
-                ...(sent ? [`“${preview}” → ${label}; in that session's inbox, not yet read by its Claude — a [Cross-session delivery notice] follows if that session holds it (usually a different permission mode) or refuses it`] : []),
-                ...(subscription ? [idleSubscriptionMessage(subscription, label, getPeerInboundSetting(), getUnassertedPeerInboundPolicy(), getIsNonInteractiveSession())] : []),
-              ].join('\n'),
-              ...(sent && { msg_id: sent.msg_id }),
+              success: true,
+              message: `“${preview}” → ${label} (${PEER_IDENTITY}${inboxNote})${idle ? ` ${idle.model}` : ''}`,
+              display: `“${preview}” → sent to ${label} — ${PEER_IDENTITY}${idle ? ` ${idle.display}` : ''}`,
+              msg_id: sent.msg_id,
             },
           }
         } catch (e) {
@@ -1133,7 +1150,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   },
                 }
               }
-              return sendPeer(peer.messagingSocketPath, input.message, `${peer.name} [${peer.ref}]`, peer.name)
+              return sendPeer(peer.messagingSocketPath, input.message, peer.name, peer.name)
             }
           } catch (e) {
             return {

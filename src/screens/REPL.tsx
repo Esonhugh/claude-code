@@ -2004,6 +2004,9 @@ export function REPL({
     const uds = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
     const warn = (text: string) => setMessages(previous => [...previous, createSystemMessage(text, 'warning')])
     uds.setOnPeerNotice(warn)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { lastTurnText } = require('../utils/peerNotices.js') as typeof import('../utils/peerNotices.js')
+    uds.setPeerLastTurnText(() => lastTurnText(messagesRef.current))
     uds.setOnPeerHeld((message, count) => {
       const preview = message.preview.replace(/\s+/g, ' ').trim()
       warn(`Held peer message — from ${message.from}${message.claimedName ? ` (peer claims name: ${message.claimedName})` : ''}${preview ? `; preview: «${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}»` : ''} — not delivered to Claude (${count} held). ${peerHoldReason(message.cause)}`)
@@ -2013,6 +2016,7 @@ export function REPL({
     uds.setOnPeerHeldReleased((count, reason) => warn(`Released ${count} held cross-session ${count === 1 ? 'message' : 'messages'} to Claude's queue (${{ 'mode-changed': 'permissions are prompting again', 'policy-accepts': 'crossSessionInbound now accepts', approved: 'you approved it' }[reason]}).`))
     return () => {
       uds.setOnPeerNotice(null)
+      uds.setPeerLastTurnText(null)
       uds.setOnPeerHeld(null)
       uds.setOnPeerHeldGone(null)
       uds.setOnPeerHeldReleased(null)
