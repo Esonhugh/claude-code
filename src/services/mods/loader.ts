@@ -60,14 +60,6 @@ const scanOnlyEvents = new Set([
 ])
 // Nouns whose events the engine dispatches itself; an event on any other noun needs a loaded plugin to provide it.
 export const engineEventNouns = new Set([...coreNouns, ...[...supportedEvents, ...scanOnlyEvents].map(event => event.split('.')[0]!), 'classic', 'theme'])
-const supportedCalls = new Set([...supportedEvents].filter(event => ![
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.stop', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
-  'ui.pointer', 'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
-].includes(event)))
-for (const call of OFFICIAL_CORE_CALLS) supportedCalls.add(call)
-supportedCalls.add('config.list')
-supportedCalls.add('mcp.call')
-const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.register'])
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
 export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
 
@@ -247,7 +239,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
 
   function resolveValue(node: Node, scope: Scope, seen = new Set<Binding>(), trail = new Set<string>()): Resolved | undefined {
     if (node.type === 'MemberExpression' && !node.computed && !node.optional) {
-      const value = resolveValue(node.object, scope, seen, trail)
+      // Official 2.1.329 reads (await $).noun as $.noun: awaiting $ yields $.
+      let object = node.object
+      while (object.type === 'AwaitExpression') object = object.argument
+      const value = resolveValue(object, scope, seen, trail)
       if (value?.binding.namespace) return exported(value.binding.namespace, node.property.name, seen, trail)
       if (value) return { binding: value.binding, members: [...value.members, node.property.name] }
       return
@@ -729,6 +724,38 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return false
   }
 
+  // Official 2.1.329 refuses any declaration, at any depth, of the name a hook or helper receives $ or next by.
+  const shadowChecked = new Map<Node, Set<string>>()
+  function refuseShadow(body: Node, name: string, holds: 'holds $' | 'next') {
+    const names = shadowChecked.get(body) ?? new Set<string>()
+    if (names.has(name)) return
+    shadowChecked.set(body, names.add(name))
+    const ids = (pattern: Node | null | undefined, found: Node[] = []): Node[] => {
+      if (pattern?.type === 'Identifier') found.push(pattern)
+      else if (pattern?.type === 'AssignmentPattern') ids(pattern.left, found)
+      else if (pattern?.type === 'RestElement') ids(pattern.argument, found)
+      else if (pattern?.type === 'ArrayPattern') for (const item of pattern.elements) ids(item, found)
+      else if (pattern?.type === 'ObjectPattern') {
+        for (const property of pattern.properties) ids(property.type === 'RestElement' ? property.argument : property.value, found)
+      }
+      return found
+    }
+    const walk = (node: Node) => {
+      const declared = isFunction(node) ? [...ids(node.id), ...node.params.flatMap((param: Node) => ids(param))]
+        : node.type === 'VariableDeclarator' ? ids(node.id)
+        : node.type === 'CatchClause' ? ids(node.param)
+        : node.type === 'ClassDeclaration' || node.type === 'ClassExpression' ? ids(node.id) : []
+      const again = declared.find(id => id.name === name)
+      if (again) {
+        fail(path, holds === 'next'
+          ? `"${name}" (the continuation) is declared again (shadowed); rename the inner binding`
+          : `"${name}" (which holds $) is declared again (shadowed)`, again)
+      }
+      for (const child of children(node)) walk(child)
+    }
+    walk(body)
+  }
+
   // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
   // the value of next(e) at engine.create is held to the same.
   const membersChecked = new Map<Node, Set<string>>()
@@ -803,6 +830,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     })
     node.params.forEach((param: Node, index: number) => {
       if (roles[index]?.role === 'engine' && !roles[index]!.members.length && param.type === 'Identifier') refuseMemberValues([node.body], param.name)
+      if ((roles[index]?.role === 'engine' || roles[index]?.role === 'next') && !roles[index]!.members.length && param.type === 'Identifier') {
+        refuseShadow(node.body, param.name, roles[index]!.role === 'engine' ? 'holds $' : 'next')
+      }
     })
     if (collecting) {
       if (collectedFunctions.has(inner)) return
@@ -878,9 +908,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const parts = value.members
     if (parts.length !== 2) fail(path, 'capabilities require static $.noun.method calls; computed/optional access is unsupported')
     const [noun, method] = parts as [string, string]
-    if (reserved.has(noun) || reserved.has(method) || (coreNouns.has(noun) && !supportedCalls.has(`${noun}.${method}`) && !scanOnlyCalls.has(`${noun}.${method}`))) {
-      fail(path, `unsupported core capability ${noun}.${method}`)
-    }
+    // Official 2.1.329 scans any $.noun.method; one the table lacks fails when the hook calls it.
+    if (reserved.has(noun) || reserved.has(method)) fail(path, `unsupported core capability ${noun}.${method}`)
     return `${noun}.${method}`
   }
 
@@ -1052,13 +1081,15 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           return
         }
         if (capabilityValue(node, scope)) {
-          const parent = parents.get(node)
-          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
+          let use = node
+          let parent = parents.get(use)
+          while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === use)) refuseItself(node)
           const message = `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`
           if (capabilityValue(node, scope)?.role !== 'beneath') fail(path, message)
           failEngineSpelling(path, message)
         }
-        if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
+        if (node.name === 'arguments') fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
       case 'ImportExpression': fail(path, 'a dynamic import(); a hooks module imports its own files with an import declaration, as in import { name } from "./file.js"')
       case 'MetaProperty': fail(path, 'import.meta is unsupported')

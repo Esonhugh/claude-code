@@ -278,7 +278,7 @@ test('rejects top-level await in imported files, including files also used as en
   await expect(loadModDeclaration({ ...input, entrypoints: [...input.entrypoints, join(input.pluginRoot, 'helper.ts')] })).rejects.toThrow('top-level await')
 })
 
-test('admits official active prompt capabilities while rejecting unknown ones', async () => {
+test('admits official active prompt capabilities and, like official, unknown ones', async () => {
   const result = await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('prompt.fill', ($, e, next) => next(e));
     on('prompt.suggest', ($, e, next) => next(e));
@@ -291,9 +291,9 @@ test('admits official active prompt capabilities while rejecting unknown ones', 
   }`}))
   expect(result.events).toEqual(['prompt.fill', 'prompt.suggest', 'tool.call'])
   expect(result.calls).toEqual(['prompt.fill', 'prompt.read', 'prompt.submit', 'prompt.suggest'])
-  await expect(loadModDeclaration(await plugin({'main.ts': `export function register(on) {
+  expect((await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('tool.call', async $ => ({result:await $.prompt.unknown({text:'x'})}));
-  }` }))).rejects.toThrow('unsupported core capability prompt.unknown')
+  }` }))).calls).toEqual(['prompt.unknown'])
 })
 
 test('admits active agent.spawn calls and records the capability', async () => {
@@ -303,10 +303,10 @@ test('admits active agent.spawn calls and records the capability', async () => {
   expect(result.calls).toEqual(['agent.spawn'])
 })
 
-test('rejects session.receive as an active plugin call', async () => {
-  await expect(loadModDeclaration(await plugin({'main.ts': `export function register(on) {
+test('scans session.receive as a call like official; the table has no such method to run', async () => {
+  expect((await loadModDeclaration(await plugin({'main.ts': `export function register(on) {
     on('tool.call', async $ => ({result:await $.session.receive({origin:{kind:'peer'},text:'x'})}));
-  }` }))).rejects.toThrow('unsupported core capability session.receive')
+  }` }))).calls).toEqual(['session.receive'])
 })
 
 test('admits positional MCP calls and records the capability', async () => {
@@ -480,7 +480,6 @@ test.each([
   `return api.env.get(input.name)`,
   `return resume.to(input, input.tier)`,
   `return unknown(api)`,
-  `return api.tool.unknown(input)`,
 ])('retains env, tiers and callee admission in captured helpers: %s', async body => {
   const input = await plugin({ 'main.ts': `let captured;
     export function register(on) {
@@ -970,17 +969,17 @@ test('tracks renamed capabilities, closures, provider function parameters, and c
     'main.ts': `export function register(listen) {
       listen('engine.create', async (host, input, resume) => {
         const beneath = await resume(input)
-        function calculate(host) { return host + 1 }
+        function calculate(value) { return value + 1 }
         return { ...beneath, arithmetic: {
           add: async (left, right, third) => ({ value: calculate(left.value) + right }),
           time: async (input) => beneath.clock.now(input),
         } }
       })
       listen('session.start', async (host, input, resume) => {
-        const calculate = (host, resume) => host + resume
-        { const host = { tool: { register() {} } }; host.tool.register() }
-        for (const host of [1]) calculate(host, 2)
-        try { calculate(1, 2) } catch (host) { String(host) }
+        const calculate = (left, right) => left + right
+        { const other = { tool: { register() {} } }; other.tool.register() }
+        for (const item of [1]) calculate(item, 2)
+        try { calculate(1, 2) } catch (error) { String(error) }
         const captured = () => host.arithmetic.add({ value: 2 })
         await captured()
         return resume(input)
@@ -1005,7 +1004,6 @@ test('rejects registration handle escape that would hide catch-handler capabilit
 })
 
 test.each([
-  `on('engine.create', async (host, e, next) => { const engine = await next.to(e, 'core'); return engine.tool.unknown(e) })`,
   `on('engine.create', async (host, e, next) => (await next(e)).tool.call(e))`,
   `on('engine.create', async (host, e, next) => { const reveal = () => below; const below = await next(e); return reveal().tool.call(e) })`,
   `on('engine.create', async (host, e, next) => { const below = await next(e); function reveal() { return below }; return reveal().tool.call(e) })`,
@@ -1025,7 +1023,7 @@ test.each([
   [`on?.('tool.call', () => {})`, /optional/],
   [`on('turn.step', () => {})`, /async generators/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
-  [`on('session.start', ($, e, next) => $.tool.unknown(e))`, /unsupported core capability/],
+  [`on('session.start', ($, e, next) => $.tool.__proto__(e))`, /unsupported core capability/],
   [`on('session.start', ($, e, next) => $.tool['register'](e))`, /\$\.tool is used as a value/],
   [`on('session.start', ($, e, next) => $['clock'].now(e))`, /computed/],
   [`on('session.start', ($, e, next) => $.clock['now'](e))`, /\$\.clock is used as a value/],
@@ -1054,13 +1052,34 @@ test.each([
   [`import { register } from './helper.ts'; export { register }`, /re-exported register/],
   [`export function register(on) { import('./helper.ts') }`, /dynamic import/],
   [`export function register(on) { if (false) import('./helper.ts') }`, /dynamic import/],
-  [`export function register(on) { require('./helper.ts') }`, /unsupported/],
-  [`export function register(on) { eval('1') }`, /unsupported/],
-  [`export function register(on) { new Function('return 1') }`, /unsupported/],
   [`export function register(on) { return import.meta.url }`, /unsupported/],
 ])('rejects unsupported module syntax: %s', async (source, diagnostic) => {
   const input = await plugin({ 'main.ts': source, 'helper.ts': 'export function register(on) {}' })
   await expect(loadModDeclaration(input)).rejects.toThrow(diagnostic)
+})
+
+test.each([
+  `export function register(on) { require('./helper.ts') }`,
+  `export function register(on) { eval('1') }`,
+  `export function register(on) { new Function('return 1') }`,
+  `export function register(on) { on('session.start', async ($, e, next) => { await (await $).clock.now(); return next(e) }) }`,
+])('admits what official scans past and leaves to run time: %s', async source => {
+  await expect(loadModDeclaration(await plugin({ 'main.ts': source }))).resolves.toBeDefined()
+})
+
+test.each([
+  `on('session.start', async ($, e, next) => { [1].map(($) => $); return next(e) })`,
+  `on('session.start', async ($, e, next) => { try {} catch ($) {} return next(e) })`,
+  `on('session.start', async (host, e, next) => { function inner(host) {} inner(1); return next(e) })`,
+])('refuses a second declaration of the name holding $ like official: %s', async body => {
+  await expect(loadModDeclaration(await plugin({ 'main.ts': `export function register(on) { ${body} }` })))
+    .rejects.toThrow('(which holds $) is declared again (shadowed)')
+})
+
+test('refuses a second declaration of the continuation like official', async () => {
+  await expect(loadModDeclaration(await plugin({ 'main.ts': `export function register(on) {
+    on('session.start', async ($, e, next) => { [1].map((next) => next); return next(e) })
+  }` }))).rejects.toThrow('"next" (the continuation) is declared again (shadowed); rename the inner binding')
 })
 
 test.each([
@@ -1253,14 +1272,14 @@ test('normalizes actual VM registrations and keeps scan consistency for every pa
   }])).toThrow('absent from scan')
 })
 
-test('rejects an unsupported capability hidden in an imported helper', async () => {
+test('follows an unknown capability into an imported helper', async () => {
   const input = await plugin({
     'main.ts': `import { helper } from './helper.js'; export function register(on) {
       on('session.start', (host, e, next) => helper(host))
     }`,
     'helper.js': `export function helper(value) { return value.tool.unknown({}) }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow('unsupported core capability tool.unknown')
+  expect((await loadModDeclaration(input)).calls).toEqual(['tool.unknown'])
 })
 
 test('collects a renamed Next parameter from the selected module despite a same-name decoy', async () => {
