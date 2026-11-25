@@ -2603,6 +2603,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
       .object({
         text: z.string().describe("The subagent's whole report, never truncated, with a backslash inserted into text that imitates harness markup"),
         warning: z.string().optional().describe("Auto mode's warning to show above `text`: a SECURITY WARNING, or a note that the review could not run"),
+        toolUseId: z.string().optional().describe("Id of the subagent's own SubagentHandback tool_use block that sent the report, not of the call that started the agent. Copies of one report repeat it. Show the report even when no such block is loaded"),
       })
       .optional()
       .describe("@internal The report a 'send' or 'flagged' hand-back delivered: when present, render it instead of `summary`, with its `warning`, if it has one, above its `text`. Absent for 'withheld'; if it is absent for another value too, show `summary`."),

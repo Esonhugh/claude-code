@@ -76,8 +76,8 @@ type TaskProgressEvent = {
 // go through the print.ts XML task_notification parser and does NOT trigger
 // the LLM loop. Consumers (e.g. VS Code session.ts) use this to remove the
 // task from the subagent panel.
-/** A hand-back's delivered report as SDK hosts render it, its warning above its text. */
-export type SdkHandbackReport = { text: string; warning?: string }
+/** A hand-back's delivered report as SDK hosts render it, its warning above its text; toolUseId is the SubagentHandback call that sent it. */
+export type SdkHandbackReport = { text: string; warning?: string; toolUseId?: string }
 
 type TaskNotificationSdkEvent = {
   type: 'system'

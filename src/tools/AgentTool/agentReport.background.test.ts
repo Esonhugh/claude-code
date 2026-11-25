@@ -216,7 +216,7 @@ hook = (input, next) => next(input)
 beginSubagentHandback('agent-report-handback', true)
 hook = async () => ({ text: 'REPORT-BETA' })
 await run('agent-report-handback', async function* () {
-  deliverSubagentHandback('agent-report-handback', 'REPORT-ALPHA', undefined)
+  deliverSubagentHandback('agent-report-handback', 'REPORT-ALPHA', undefined, 'toolu_handback_call')
   yield assistant('sent')
 })
 assert.equal(lastReport()?.agentId, 'agent-report-handback')
@@ -224,10 +224,10 @@ assert.equal(lastReport()?.text, 'REPORT-ALPHA')
 const handbackNotice = String(queued('agent-report-handback')[0]?.value)
 assert.match(handbackNotice, /REPORT-BETA/)
 assert.doesNotMatch(handbackNotice, /REPORT-ALPHA/)
-// SDK hosts render the report the hand-back delivered, not the summary.
+// SDK hosts render the report the hand-back delivered, not the summary, tied to the SubagentHandback call that sent it.
 const handbackSdk = sdkNotice('agent-report-handback')
 assert.equal(handbackSdk?.handback, 'send')
-assert.deepEqual(handbackSdk?.handback_report, { text: 'REPORT-BETA' })
+assert.deepEqual(handbackSdk?.handback_report, { text: 'REPORT-BETA', toolUseId: 'toolu_handback_call' })
 assert.equal(handbackSdk?.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
