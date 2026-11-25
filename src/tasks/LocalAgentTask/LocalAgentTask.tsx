@@ -248,6 +248,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   /** The Agent tool spawn this task counts toward in result.subagent_stats. */
   spawnedSubagent?: SubagentOutcome
   model?: string
+  /** Its own directory: a worktree or an explicit cwd; absent when it works in the session's. */
+  cwd?: string
   abortController?: AbortController
   unregisterCleanup?: () => void
   error?: string
@@ -499,22 +501,23 @@ export function enqueueAgentNotification({
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${userSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
-  // Like official 2.1.311, SDK consumers get task_notification as the agent
-  // stops, before it leaves background_tasks_changed; a finished agent's
-  // summary is its result text.
+  // Like official 2.1.329, SDK consumers get task_notification as the agent
+  // stops, before it leaves background_tasks_changed. A finished agent's
+  // summary is its result text and carries its usage; a failed one's is the
+  // error it failed on, a stopped one's its description.
   emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
     toolUseId,
     summary:
-      status === 'completed' && !waiting && finalMessage
-        ? finalMessage
-        : summaryText,
+      status === 'completed'
+        ? !waiting && finalMessage ? finalMessage : summaryText
+        : status === 'failed' ? error || 'Unknown error' : description,
     outputFile: outputPath,
     waiting,
-    usage: usage && {
+    usage: status === 'completed' && usage ? {
       total_tokens: usage.totalTokens,
       tool_uses: usage.toolUses,
       duration_ms: usage.durationMs,
-    },
+    } : undefined,
   })
   const markNotified = () =>
     updateTaskState<LocalAgentTaskState>(taskId, setAppState, task =>
@@ -636,6 +639,24 @@ export function killAllRunningAgentTasks(
     killAsyncAgent(task.id, setAppState, 'user')
   }
   return killed
+}
+
+/**
+ * Stop the live background agents, as official does on a print-mode
+ * interrupt: each reports stopped and SDK consumers see it end, but the model
+ * gets no notification. The turn's abort stops foreground agents itself.
+ */
+export function stopBackgroundAgentTasks(
+  tasks: Record<string, TaskState>,
+  setAppState: SetAppState,
+): LocalAgentTaskState[] {
+  const stopped = Object.values(tasks).filter(isLiveLocalAgentTask).filter(task => task.isBackgrounded)
+  for (const task of stopped) {
+    killAsyncAgent(task.id, setAppState, 'user')
+    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description, outputFile: getTaskOutputPath(task.id) })
+    markAgentsNotified(task.id, setAppState)
+  }
+  return stopped
 }
 
 /**

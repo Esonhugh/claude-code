@@ -5,6 +5,7 @@ import {
   addToTotalCostState,
   addToTotalLinesChanged,
   getCostCounter,
+  getAgentSpend,
   getModelUsage,
   getSdkBetas,
   getSessionId,
@@ -27,8 +28,10 @@ import {
   hasUnknownModelCost,
   resetCostState,
   resetStateForTests,
+  setAgentSpend,
   setCostStateForRestore,
   setHasUnknownModelCost,
+  type AgentTurnUsage,
 } from './bootstrap/state.js'
 import type { ModelUsage } from './entrypoints/agentSdkTypes.js'
 import {
@@ -349,13 +352,65 @@ function addToTotalModelUsage(
   return addToModelUsage(getUsageForModel(model), cost, usage, model)
 }
 
+function addToAgentTurnUsage(
+  prior: AgentTurnUsage | undefined,
+  usage: Usage,
+  model: string,
+): AgentTurnUsage {
+  const write = usage.cache_creation
+  const lifetimes =
+    (write?.ephemeral_5m_input_tokens ?? 0) + (write?.ephemeral_1h_input_tokens ?? 0) > 0
+  const next: AgentTurnUsage = {
+    model,
+    input_tokens: (prior?.input_tokens ?? 0) + usage.input_tokens,
+    output_tokens: (prior?.output_tokens ?? 0) + usage.output_tokens,
+    cache_read_input_tokens: (prior?.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0),
+    cache_creation_input_tokens: (prior?.cache_creation_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+  }
+  if (lifetimes || prior?.ephemeral_5m_input_tokens !== undefined) {
+    next.ephemeral_5m_input_tokens = (prior?.ephemeral_5m_input_tokens ?? 0) + (write?.ephemeral_5m_input_tokens ?? 0)
+    next.ephemeral_1h_input_tokens = (prior?.ephemeral_1h_input_tokens ?? 0) + (write?.ephemeral_1h_input_tokens ?? 0)
+  }
+  return next
+}
+
+/**
+ * Credits a request to the agent whose loop or side work made it: one usage
+ * entry per answering model, and the cost `/cost` was credited.
+ */
+function addToAgentSpend(
+  agentId: string,
+  cost: number,
+  usage: Usage,
+  answeredModel: string,
+  pricedModel: string,
+): void {
+  const prior = getAgentSpend(agentId)
+  const byModel = new Map(prior?.usage.map(entry => [entry.model, entry]))
+  byModel.set(answeredModel, addToAgentTurnUsage(byModel.get(answeredModel), usage, answeredModel))
+  const unknownPrice = MODEL_COSTS[getCanonicalName(normalizeModelStringForAPI(pricedModel))] === undefined
+  setAgentSpend(agentId, {
+    usage: [...byModel.values()],
+    costUSD: (prior?.costUSD ?? 0) + cost,
+    hasUnknownModelCost: prior?.hasUnknownModelCost === true || unknownPrice,
+  })
+}
+
+export type AgentCostCredit = {
+  agentId: string
+  /** The model the API answered on, when it named one. */
+  answeredModel?: string
+}
+
 export function addToTotalSessionCost(
   cost: number,
   usage: Usage,
   model: string,
+  agent?: AgentCostCredit,
 ): number {
   const modelUsage = addToTotalModelUsage(cost, usage, model)
   addToTotalCostState(cost, modelUsage, model)
+  if (agent) addToAgentSpend(agent.agentId, cost, usage, agent.answeredModel || model, model)
 
   const attrs =
     isFastModeEnabled() && usage.speed === 'fast'
@@ -391,6 +446,7 @@ export function addToTotalSessionCost(
       advisorCost,
       advisorUsage,
       advisorUsage.model,
+      agent && { agentId: agent.agentId },
     )
   }
   return totalCost

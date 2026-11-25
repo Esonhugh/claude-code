@@ -10,11 +10,43 @@ import { providerForAgent } from './agentOffer.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { AppState } from '../../state/AppState.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
+import type { TaskStatus } from '../../Task.js'
+import { getAgentSpend, getSdkBetas, type AgentTurnUsage } from '../../bootstrap/state.js'
+import { getContextWindowForModel } from '../../utils/context.js'
+import { getLastAgentRequest, type AgentRequest } from '../../utils/agentLastRequest.js'
+import { getTokenSamples } from '../../utils/task/tokenReadings.js'
 
 export type ModAgentStatus = 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
-export type ModAgentInfo = { id: string; teammateId?: string; description: string; type: string; status: ModAgentStatus; parentId?: string; spawnedBy?: string; name?: string }
+export type ModAgentInfo = {
+  id: string; teammateId?: string; description: string; type: string; status: ModAgentStatus; parentId?: string; spawnedBy?: string; name?: string; kind: 'local_agent' | 'in_process_teammate'
+  taskStatus: TaskStatus; label: string; startTime: number; cwd: string; model?: string; contextWindowSize?: number
+  tokenCount: number; tokenSamples: number[]; lastRequest?: AgentRequest; usage?: AgentTurnUsage[]; cost?: { usd: number; hasUnknownPrice?: true }; hasRow: boolean
+}
+export type ModAgentListView = { cwd: string; viewingAgentTaskId?: string; now?: number }
 
-export async function listModAgents(tasks: AppState['tasks'], names: AppState['agentNameRegistry'] = new Map()): Promise<ModAgentInfo[]> {
+// The viewed agent and the agents above it: their rows show whatever else holds them.
+function viewedPath(tasks: AppState['tasks'], viewingAgentTaskId: string | undefined): Set<string> {
+  const path = new Set<string>()
+  for (let task = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined; task && !path.has(task.id);) {
+    path.add(task.id)
+    const parent = task.type === 'local_agent' && task.parentAgentId !== undefined ? tasks[task.parentAgentId] : undefined
+    task = parent?.type === 'local_agent' && parent.evictAfter !== 0 ? parent : undefined
+  }
+  return path
+}
+
+// Official 2.1.329: whether the agent list holds a row for the task, drawn or not.
+function hasAgentRow(task: AppState['tasks'][string], viewed: Set<string>): boolean {
+  if (task.type === 'in_process_teammate') return task.evictAfter !== 0 || viewed.has(task.id)
+  if (task.type !== 'local_agent' || task.evictAfter === 0) return false
+  return !isTerminalTaskStatus(task.status) || task.evictAfter !== undefined || task.retain || viewed.has(task.id)
+    // A finished background run with nothing holding it keeps no row.
+    || !(task.status === 'completed' && task.isBackgrounded && ![...task.keepaliveReasons ?? []].some(reason => reason !== 'flag:idle-window'))
+}
+
+export async function listModAgents(tasks: AppState['tasks'], names: AppState['agentNameRegistry'] = new Map(), view: ModAgentListView = { cwd: '' }): Promise<ModAgentInfo[]> {
+  const now = view.now ?? Date.now()
+  const viewed = viewedPath(tasks, view.viewingAgentTaskId)
   const namesById = new Map([...names].map(([name, id]) => [id as string, name]))
   const all = Object.values(tasks)
   const nativeMates = all.flatMap(task => task.type === 'in_process_teammate' && task.status === 'running' && task.identity.resumableAgentId === undefined ? [task.identity] : [])
@@ -50,13 +82,32 @@ export async function listModAgents(tasks: AppState['tasks'], names: AppState['a
     if (status === 'idle' && all.some(work => work.status === 'running' &&
       ((work.type === 'local_bash' && work.isBackgrounded) || work.type === 'monitor_mcp') &&
       'agentId' in work && work.agentId === id)) status = 'waiting'
+    const description = teammate ? task.spawnedWith?.description ?? task.description : task.description
+    const teammateId = teammate ? task.identity.agentId : undefined
+    const row = hasAgentRow(task, viewed)
+    const tokenCount = task.progress?.tokenCount ?? 0
+    // A teammate in a pane of its own keeps no ledger here.
+    const spend = id === teammateId ? undefined : getAgentSpend(id)
+    const lastRequest = id === teammateId ? undefined : getLastAgentRequest(id)
     result.set(id, {
-      id, ...(teammate ? {teammateId:task.identity.agentId} : {}),
-      description: teammate ? task.spawnedWith?.description ?? task.description : task.description,
+      id, ...(teammateId === undefined ? {} : {teammateId}),
+      description,
       type: teammate ? task.spawnedWith?.agentType || 'teammate' : task.agentType,
       status, ...(parentId === undefined ? {} : {parentId}),
       ...(task.spawnedBy === undefined ? {} : {spawnedBy:task.spawnedBy}),
       ...(name === undefined ? {} : {name}),
+      kind: task.type,
+      taskStatus: task.status,
+      label: task.progress?.summary || description,
+      startTime: task.startTime,
+      cwd: (teammate ? undefined : task.cwd) ?? view.cwd,
+      ...(task.model ? {model:task.model, contextWindowSize:getContextWindowForModel(task.model, getSdkBetas())} : {}),
+      tokenCount,
+      tokenSamples: row ? getTokenSamples(task, now) : [tokenCount],
+      ...(lastRequest === undefined ? {} : {lastRequest}),
+      ...(spend === undefined ? {} : {usage:spend.usage}),
+      ...(id === teammateId ? {} : {cost:{usd:spend?.costUSD ?? 0, ...(spend?.hasUnknownModelCost ? {hasUnknownPrice:true as const} : {})}}),
+      hasRow: row,
     })
   }
   return [...result.values()]

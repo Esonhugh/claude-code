@@ -101,19 +101,63 @@ test('a result the tool gave before the cut is kept', async () => {
   } finally { release() }
 })
 
-test('options.signal must be an AbortSignal; an absent one is no option', async () => {
+test('options.signal must be an AbortSignal, null included; an absent one is no option', async () => {
   const { calls, run } = await setup(async () => ({ result: 'ok', text: 'ok' }),
     `const plain = await $.agent.call(args, {})
       const unset = await $.agent.call(args, { signal: undefined })
       const one = await $.agent.call(args)
       let refused
       try { await $.agent.call(args, { signal: 'x' }) } catch (error) { refused = { name: error.name, message: error.message } }
-      return { result: { plain, unset, one, refused } }`)
+      let nulled
+      try { await $.agent.call(args, { signal: null }) } catch (error) { nulled = { name: error.name, message: error.message } }
+      return { result: { plain, unset, one, refused, nulled } }`)
   expect(await run()).toEqual({ result: {
     plain: { result: 'ok', text: 'ok' },
     unset: { result: 'ok', text: 'ok' },
     one: { result: 'ok', text: 'ok' },
     refused: { name: 'HooksError', message: 'cutter: $.agent.call options.signal must be an AbortSignal' },
+    nulled: { name: 'HooksError', message: 'cutter: $.agent.call options.signal must be an AbortSignal' },
   } })
   expect(calls).toHaveLength(3)
+})
+
+test('malformed arguments are refused with the official host-check text', async () => {
+  const { calls, run } = await setup(async () => ({ result: 'ok', text: 'ok' }),
+    `const refused = []
+      for (const bad of [undefined, { tool: 1, input: {} }, { tool: 'Bash' }, { tool: 'Bash', input: 'x' }, { tool: 'Bash', input: {}, agentId: 2 }, { tool: 'Bash', input: {}, agentId: '' }])
+        try { await (bad === undefined ? $.agent.call() : $.agent.call(bad)) } catch (error) { refused.push({ name: error.name, message: error.message }) }
+      return { result: refused }`)
+  const text = "cutter: agent.call: takes { tool, input, agentId? } (the tool's name, its arguments, an object, and the id of the agent whose call it is) (host check)"
+  expect(await run()).toEqual({ result: Array(6).fill({ name: 'HooksError', message: text }) })
+  expect(calls).toHaveLength(0)
+})
+
+test('a call made after its hook returned outlives the turn that hook ran in', async () => {
+  const runtime = createModsRuntime({ services: { toolHost: () => ({
+    tools: () => [],
+    call: async (input, _snapshot, signal, _plugin, _entry, _person, ownLifetime) => {
+      seen.push({ ownLifetime })
+      await new Promise(resolve => setTimeout(resolve, 150))
+      return { result: signal.aborted ? 'cut' : 'late', text: 'late' }
+    },
+    check: async () => ({ decision: 'allow' as const }),
+  }) } })
+  const seen: { ownLifetime?: boolean }[] = []
+  runtimes.push(runtime)
+  const entry = join(root, 'register.ts')
+  await writeFile(entry, `let later
+    export function register(on) {
+      on('tool.call', async $ => {
+        later = new Promise(resolve => setTimeout(() => resolve($.agent.call({ tool: 'Bash', input: { command: 'sleep 6' } })), 20))
+        return { result: 'started' }
+      })
+      on('ui.message', async () => ({ result: await later }))
+    }`)
+  await runtime.reconcile([{ name: 'later', storageId: 'later@test', pluginRoot: root, entrypoints: [entry] }])
+  const turn = new AbortController()
+  expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'core' }), { signal: turn.signal })).toEqual({ result: 'started' })
+  await new Promise(resolve => setTimeout(resolve, 60))
+  turn.abort('interrupted')
+  expect(await runtime.dispatch('ui.message', {}, async () => ({ result: 'core' }))).toEqual({ result: { result: 'late', text: 'late' } })
+  expect(seen).toEqual([{ ownLifetime: true }])
 })

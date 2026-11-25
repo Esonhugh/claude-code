@@ -1923,6 +1923,15 @@ describe('Mods CLI session host', () => {
     expect(writes.join('')).not.toContain('register refused')
   })
 
+  // Wording of official 2.1.329.
+  test('names a hooks module refused at load with its file, line and the spelling hint', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', ($) => ({ result: $ })) }`)
+    const shown: string[] = []
+    const host = session({loadPlugins:async () => [declaration]})
+    await host.bind(binding, undefined, {uiDiagnostic:(plugin, text) => { shown.push(`${plugin}: ${text}`) }})
+    expect(shown).toEqual([`fixture: hooks module did not load: ${join(declaration.path, 'register.ts')}, compiled line 2 \`on("tool.call", ($) => ({ result: $ }));\`: $ itself is put in an object (bound, passed, spread, returned or read); $ is always spelled $.noun.event(...) at the call site, on is always on("<event>", hook), and next.to always next.to(e, "<tier>")`])
+  })
+
   test('one Worker crash does not flood the transcript with cascading diagnostics', async () => {
     const declaration = await plugin(`export function register(on) {}`)
     let report: ((event: ModDiagnostic) => void) | undefined

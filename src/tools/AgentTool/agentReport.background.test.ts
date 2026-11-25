@@ -6,9 +6,11 @@ import type { AppState } from '../../state/AppState.js'
 import {
   isLocalAgentTask,
   registerAsyncAgent,
+  stopBackgroundAgentTasks,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { AbortError } from '../../utils/errors.js'
 import { getCommandQueue } from '../../utils/messageQueueManager.js'
+import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import {
   beginSubagentHandback,
   deliverSubagentHandback,
@@ -151,6 +153,14 @@ assert.match(String(queued('agent-report-completed')[0]?.value), /done \(rewritt
 assert.equal(captured, released)
 hook = (input, next) => next(input)
 
+// A failed or stopped run had no review: `off` where the mode runs none (official 2.1.329, outside auto mode).
+const reviews: unknown[] = []
+hook = async (input, next) => {
+  const answer = await next(input)
+  reviews.push((answer as { review?: unknown }).review)
+  return answer
+}
+
 // A failed run is reported failed, with no output of its own.
 await run('agent-report-failed', async function* () {
   yield assistant('partial')
@@ -170,6 +180,8 @@ await run('agent-report-killed', async function* (abort) {
 assert.equal(lastReport()?.agentId, 'agent-report-killed')
 assert.equal(lastReport()?.status, 'stopped')
 assert.equal(lastReport()?.text, 'halfway')
+assert.deepEqual(reviews, ['off', 'off'])
+hook = (input, next) => next(input)
 
 // A consumed report is not told to the parent, which no longer waits for it.
 hook = async () => ({ consumed: 'kept by the mod' })
@@ -201,5 +213,22 @@ await run('agent-report-workflow', async function* () {
 }, { unreported: true })
 assert.equal(reports.length, before)
 assert.match(String(queued('agent-report-workflow')[0]?.value), /workflow done/)
+
+// A print-mode interrupt's sweep: the run still reports stopped, SDK consumers see it end once, and the model is not told.
+drainSdkEvents()
+const sweptTask = await run('agent-report-swept', async function* (abort) {
+  yield assistant('halfway')
+  assert.deepEqual(stopBackgroundAgentTasks(state.tasks, setAppState).map(task => task.id), ['agent-report-swept'])
+  abort.abort()
+  throw new AbortError('stopped')
+})
+assert.equal(sweptTask.status, 'killed')
+assert.equal(lastReport()?.agentId, 'agent-report-swept')
+assert.equal(lastReport()?.status, 'stopped')
+assert.equal(queued('agent-report-swept').length, 0)
+assert.deepEqual(
+  drainSdkEvents().filter(event => event.subtype === 'task_notification').map(event => [event.task_id, event.status]),
+  [['agent-report-swept', 'stopped']],
+)
 
 console.log('agentReport.background.test.ts passed')

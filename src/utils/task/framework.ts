@@ -20,6 +20,7 @@ import {
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
 import { canEvictTerminalTask } from './retention.js'
 import { createSignal } from '../signal.js'
+import { forgetTokenReadings, isAgentTask, noteAgentTaskUpdate, startTokenReadings } from './tokenReadings.js'
 
 const taskChanged = createSignal<[string]>()
 export const subscribeToTaskChanges = taskChanged.subscribe
@@ -71,6 +72,7 @@ export function updateTaskState<T extends TaskState>(
     }
     changed = true
     patch = taskPatch(task, updated)
+    if (isAgentTask(task) && isAgentTask(updated)) noteAgentTaskUpdate(task, updated, Date.now())
     return {
       ...prev,
       tasks: {
@@ -120,6 +122,10 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     if (!existing || isTerminalTaskStatus(existing.status)) startTaskRun(task.id)
     if (existing?.type === 'local_agent' && task.type === 'local_agent') existing.unregisterCleanup?.()
     isReplacement = existing !== undefined
+    if (isAgentTask(task)) {
+      if (existing && isAgentTask(existing)) noteAgentTaskUpdate(existing, task, Date.now())
+      else startTokenReadings(task.id, Date.now())
+    }
     // Carry forward UI-held state on re-register (resumeAgentBackground
     // replaces the task; user's retain shouldn't reset). startTime keeps
     // the panel sort stable; messages + diskLoaded preserve the viewed
@@ -199,6 +205,7 @@ export function evictTerminalTask(
       return prev
     }
     const { [taskId]: _, ...remainingTasks } = prev.tasks
+    forgetTokenReadings(taskId)
     return { ...prev, tasks: remainingTasks }
   })
 }
@@ -291,6 +298,7 @@ export function applyTaskOffsetsAndEvictions(
       // during the generateTaskAttachments await)
       if (!fresh || !canEvictTerminalTask(fresh)) continue
       delete newTasks[id]
+      forgetTokenReadings(id)
       changed = true
     }
     return changed ? { ...prev, tasks: newTasks } : prev

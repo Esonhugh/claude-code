@@ -161,6 +161,7 @@ import {
 import type { QuerySource } from 'src/constants/querySource.js'
 import type { Notification } from 'src/context/notifications.js'
 import { addToTotalSessionCost } from 'src/cost-tracker.js'
+import { recordAgentRequest } from 'src/utils/agentLastRequest.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import type { AgentId } from 'src/types/ids.js'
 import {
@@ -2104,6 +2105,7 @@ async function* queryModelRequest(
 
   const startIncludingRetries = options.streamCut?.startedAt ?? Date.now()
   let start = Date.now()
+  let sentEffort: EffortValue | undefined
   let attemptNumber = 0
   const attemptStartTimes: number[] = []
   let stream: Stream<BetaRawMessageStreamEvent> | undefined = undefined
@@ -2404,6 +2406,14 @@ async function* queryModelRequest(
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
   let usageBilled = false
+  // A subagent's requests, and side work run inside its context, are its own spend.
+  const creditedAgentId = options.agentId ?? getAgentContext()?.agentId
+  const agentCredit = (answeredModel: string | undefined) =>
+    creditedAgentId === undefined ? undefined : { agentId: creditedAgentId, answeredModel }
+  const isAgentLoopRequest =
+    options.querySource.startsWith('repl_main_thread') ||
+    options.querySource.startsWith('agent:') ||
+    options.querySource === 'sdk'
   // Like official: a request cut before message_delta (abort, dropped stream)
   // already read its prompt and wrote what streamed, so it is billed once
   // with the output estimated from the blocks received.
@@ -2433,6 +2443,7 @@ async function* queryModelRequest(
       calculateUSDCost(resolvedModel, cutUsage),
       cutUsage,
       options.model,
+      agentCredit(partialMessage.model),
     )
   }
   let stopReason: BetaStopReason | null = null
@@ -2468,6 +2479,7 @@ async function* queryModelRequest(
         queryCheckpoint('query_client_creation_end')
 
         const params = await paramsForAttempt(context)
+        sentEffort = params.output_config?.effort as EffortValue | undefined
         captureAPIRequest(params, options.querySource) // Capture for bug reports
         thinkingDisplay = thinkingDisplayOf(params.thinking)
 
@@ -2658,6 +2670,13 @@ async function* queryModelRequest(
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
+            if (options.agentId && isAgentLoopRequest)
+              recordAgentRequest(options.agentId, {
+                at: start,
+                model: part.message?.model || options.model,
+                effort: sentEffort,
+                usage: part.message?.usage,
+              })
             // Capture research from message_start if available (internal only).
             // Always overwrite with the latest value.
             if (
@@ -2968,6 +2987,7 @@ async function* queryModelRequest(
               // @ts-ignore - recovered code
               usage,
               options.model,
+              agentCredit(partialMessage?.model),
             )
 
             const refusalMessage = getErrorMessageIfRefusal(
@@ -3743,7 +3763,7 @@ async function* queryModelRequest(
       // @ts-ignore - recovered code
       const fallbackCost = calculateUSDCost(resolvedModel, usage)
       // @ts-ignore - recovered code
-      costUSD += addToTotalSessionCost(fallbackCost, usage, options.model)
+      costUSD += addToTotalSessionCost(fallbackCost, usage, options.model, agentCredit(fallbackMessage.message.model))
     }
   }
 

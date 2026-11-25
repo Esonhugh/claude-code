@@ -937,15 +937,16 @@ test('saved engine closures resolve the current invocation provider after a same
   expect(diagnostics).toEqual([])
 })
 
-test('Worker keeps one frozen engine across hooks, catch and provider shape changes', async () => {
-  const consumer = await plugin('stable-engine', `let first, captured;
+test('Worker keeps a captured engine reading across hooks, catch and provider shape changes', async () => {
+  // Official 2.1.329 refuses a module that binds, compares or passes $ itself, so only a closure over it is kept.
+  const consumer = await plugin('stable-engine', `let captured;
     export function register(on) {
-      on('session.start', ($,e,next) => {first=$;captured=()=>$.source.read();return next(e)});
+      on('session.start', ($,e,next) => {captured=()=>$.source.read();return next(e)});
       on('tool.call', async ($,e,next) => {
         if(e.fail) throw Error('recover identity');
         if(e.hold) await next(e);
-        return {result:{same:first===$,frozen:Object.isFrozen($),value:e.beta?await $.beta.read():await captured()}};
-      }).catch(async ($,e,next) => ({result:{same:first===$,value:await captured()}}));
+        return {result:{value:e.beta?await $.beta.read():await captured()}};
+      }).catch(async ($,e,next) => ({result:{value:await captured()}}));
     }`)
   const provider = await plugin('stable-source', `export function register(on) {
     on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'old'}}});
@@ -953,8 +954,8 @@ test('Worker keeps one frozen engine across hooks, catch and provider shape chan
   const {value,diagnostics}=runtime()
   await value.bind(binding(root));await value.reconcile([consumer,provider])
   expect(diagnostics).toEqual([])
-  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'old'}})
-  expect(await value.dispatch('tool.call',{fail:true},async()=>({result:'core'}))).toEqual({result:{same:true,value:'old'}})
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{value:'old'}})
+  expect(await value.dispatch('tool.call',{fail:true},async()=>({result:'core'}))).toEqual({result:{value:'old'}})
   const entered=Promise.withResolvers<void>(), release=Promise.withResolvers<void>()
   const pending=value.dispatch('tool.call',{hold:true},async()=>{entered.resolve();await release.promise;return {result:'core'}})
   await entered.promise
@@ -963,9 +964,9 @@ test('Worker keeps one frozen engine across hooks, catch and provider shape chan
       on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'new'},beta:{read:()=> 'beta'}}});
     }`)
     await value.reconcile([consumer,provider])
-    expect(await value.dispatch('tool.call',{beta:true},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'beta'}})
+    expect(await value.dispatch('tool.call',{beta:true},async()=>({result:'core'}))).toEqual({result:{value:'beta'}})
   } finally {release.resolve()}
-  expect(await pending).toEqual({result:{same:true,frozen:true,value:'old'}})
+  expect(await pending).toEqual({result:{value:'old'}})
   expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.call',message:'recover identity'})])
 })
 
@@ -1594,14 +1595,14 @@ test('Worker session repo reads the live working copy and resolves its canonical
   expect(diagnostics).toEqual([])
 })
 
-test('plugin metadata is frozen host identity in each Worker and its engine.create continuation', async () => {
+test('plugin metadata is host identity in each Worker and its engine.create continuation', async () => {
   const first = await plugin('identity-first', `let builtIdentity; export function register(on) {
     on('engine.create', async ($, e, next) => {
       const built=await next(e);
       builtIdentity={name:built.plugin.name,root:built.plugin.root};
       return built;
     });
-    on('tool.call', {tool:'First'}, ($) => ({result:{identity:$.plugin,builtIdentity,frozen:Object.isFrozen($.plugin)}}));
+    on('tool.call', {tool:'First'}, ($) => ({result:{identity:{name:$.plugin.name,root:$.plugin.root},builtIdentity}}));
   }`)
   const second = await plugin('identity-second', `export function register(on) {
     on('tool.call', {tool:'Second'}, ($) => ({result:{name:$.plugin.name,root:$.plugin.root}}));
@@ -1611,7 +1612,7 @@ test('plugin metadata is frozen host identity in each Worker and its engine.crea
   expect(diagnostics).toEqual([])
   const identity = {name:first.name,root:first.pluginRoot}
   expect(await value.dispatch('tool.call', {tool:'First'}, async () => ({result:'unexpected'}))).toEqual({
-    result:{identity,builtIdentity:identity,frozen:true},
+    result:{identity,builtIdentity:identity},
   })
   expect(await value.dispatch('tool.call', {tool:'Second'}, async () => ({result:'unexpected'}))).toEqual({
     result:{name:second.name,root:second.pluginRoot},
@@ -2841,7 +2842,7 @@ test('session messages reject an unavailable main getter instead of falling back
 test('withholding a core noun prevents host side effects without removing other capabilities', async () => {
   // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
   const policy = await plugin('policy', `export function register(on) {
-    on('engine.create', async ($, e, next) => { const below=await next(e); return {clock:below.clock, process:below.process, store:below.store, session:below.session, command:below.command}; });
+    on('engine.create', async ($, e, next) => { const {fs, ...below}=await next(e); return {...below}; });
   }`)
   const consumer = await plugin('write', `export function register(on) {
     on('tool.call', async ($) => { await $.fs.write('forbidden.txt', 'not written'); return {result:'bad'}; });
@@ -3013,7 +3014,7 @@ test('settings.read captured capability is revoked by withholding and recovers w
     });
   }`)
   const policy = await plugin('settings-withholder', `export function register(on) {
-    on('engine.create', async ($, e, next) => { const below=await next(e); return {clock:below.clock,fs:below.fs,process:below.process,store:below.store,session:below.session,command:below.command,ui:below.ui}; });
+    on('engine.create', async ($, e, next) => { const {settings, ...below}=await next(e); return {...below}; });
   }`)
   const { value, diagnostics } = runtime()
   await value.reconcile([consumer])

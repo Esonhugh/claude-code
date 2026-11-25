@@ -51,6 +51,7 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost, MOD_AGENT_CALL_CUT } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { removeInputDiscardedByStop } from '../../utils/messageQueueManager.js'
 import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, createModSignalOptionBridge, createModWasmBridge, type ModEnvironment } from './environment.js'
 import { modWasmBase64Problem, readModWasmFile } from './wasm.js'
 import type { ModWorkerFault } from './protocol.js'
@@ -145,7 +146,7 @@ export type ModRequestServices = {
     /** False when `$.agent.call` naming `agentId` belongs to another agent's host. */
     serves?(agentId: string | undefined): boolean
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
-    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean): Promise<unknown>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask' | 'agent.call', person?: boolean, ownLifetime?: boolean): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
@@ -170,6 +171,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   agentMessages?(agentId:string,sessionId:string): Promise<readonly Message[] | undefined>
   tasks?(): AppState['tasks']
   agentNames?(): AppState['agentNameRegistry']
+  viewingAgentTaskId?(): string | undefined
   configRows?(): readonly ModConfigRowProvider[] | Promise<readonly ModConfigRowProvider[]>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   cwd?(): string
@@ -464,11 +466,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let stopped = false
   // Set by the person's Stop and cleared when they next send input; plugin input is refused meanwhile.
   let stoppedSinceInput = false
-  const refuseAfterStop = (plugin: string, op: string): void => {
-    if (!stoppedSinceInput) return
+  // command.run rejects with the reason; prompt.submit settles { drop } with it (2.1.329).
+  const refusalAfterStop = (plugin: string, op: string): string | undefined => {
+    if (!stoppedSinceInput) return undefined
     const reason = 'the session was stopped and nobody has sent input since'
-    logForDebugging(`[Mods] ${op} (${plugin}): refused: ${reason}`)
-    throw Object.assign(new Error(`${plugin}: $.${op}: refused: ${reason}`), { name: 'HooksError' })
+    logForDebugging(`[Mods] $.${op} (${plugin}): refused: ${reason}`)
+    return reason
   }
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
@@ -724,6 +727,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const unloadedSteps = new Map<string, FailedBuildStep>()
   let unattributedCrashes = 0
   const controller = new AbortController()
+  // A load error names its plugin in front, as in official 2.1.329; the diagnostic names the plugin already.
+  const loadWords = (plugin: string, error: unknown) => {
+    const words = error instanceof Error ? error.message : String(error)
+    return words.startsWith(`${plugin}: `) ? words.slice(plugin.length + 2) : words
+  }
   const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
     plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
   })
@@ -1152,7 +1160,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const signal = (args[1] as { signal?: unknown } | null | undefined)?.signal
         if (signal !== undefined && !(signal instanceof AbortSignal))
           throw Object.assign(new Error(`${plugin}: $.agent.call options.signal must be an AbortSignal`), {name:'HooksError'})
-        if (args.length > 2 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && typeof value.agentId !== 'string') throw new TypeError('agent.call takes {tool, input, agentId?}')
+        if (args.length > 2 || !value || typeof value.tool !== 'string' || !value.tool || !value.input || typeof value.input !== 'object' || Array.isArray(value.input) || value.agentId !== undefined && (typeof value.agentId !== 'string' || !value.agentId))
+          throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}agent.call: takes { tool, input, agentId? } (the tool's name, its arguments, an object, and the id of the agent whose call it is) (host check)`), {name:'HooksError'})
         return {tool:value.tool, input:value.input, ...(value.agentId !== undefined && {agentId:value.agentId})}
       }
       case 'tool.call': {
@@ -1630,7 +1639,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'agent.limits': return { concurrent: getMaxConcurrentSubagents(), depth: getMaxSubagentDepth(), isBackgroundEnabled: !isEnvTruthy(globalThis.process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) }
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
-        return listModAgents(services.tasks(), services.agentNames?.())
+        return listModAgents(services.tasks(), services.agentNames?.(), {
+          cwd: services.cwd?.() ?? binding?.cwd ?? globalThis.process.cwd(),
+          viewingAgentTaskId: services.viewingAgentTaskId?.(),
+        })
       }
       case 'agent.register': {
         if (!binding) throw new Error('agent.register requires a bound session')
@@ -2052,7 +2064,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
           }
           if (fn === hostIdentity && op === 'command.run') {
-            refuseAfterStop(owner.declaration.name, op)
+            const refusal = refusalAfterStop(owner.declaration.name, op)
+            if (refusal !== undefined) throw Object.assign(new Error(`${owner.declaration.name}: $.command.run: ${refusal}`), { name: 'HooksError' })
             const event = context?.active ? context.next?.event : undefined
             // session.start and plugin.register run inside the load the host awaits before it runs queued input.
             const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
@@ -2087,7 +2100,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'prompt.submit') {
             const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
             if (!submit) throw new Error('Prompt submission host is unavailable on this host')
-            refuseAfterStop(owner.declaration.name, op)
+            const refusal = refusalAfterStop(owner.declaration.name, op)
+            if (refusal !== undefined) return { drop: refusal }
             const held = context?.active ? context.next?.event : undefined
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
@@ -2307,7 +2321,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                 try {
                   result = await callSnapshot.dispatch(op, toolInput, async (question, nextSignal) => {
                     if (typeof question.tool !== 'string' || !question.input || typeof question.input !== 'object' || Array.isArray(question.input)) throw new TypeError('agent.call needs a tool and its input')
-                    const value = await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call')
+                    // Official 2.1.329: a call made outside a hook is not cut by the turn that loop runs.
+                    const value = await host.call({...question.input, tool:question.tool, agentId:question.agentId}, callSnapshot, nextSignal ?? combined.signal, owner.declaration.name, 'agent.call', undefined, caller === undefined)
                     if (!isCut) kept = {value}
                     return {value}
                   }, {signal:combined.signal, validateInput:value => { if (value.agentId !== toolInput.agentId) throw new Error('agent.call cannot rewrite agentId') }}) as {value?:unknown;deny?:string}
@@ -3783,7 +3798,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         const old = active.find(owner => owner.declaration.storageId === input.storageId)
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
       }
     }
     // Official 2.1.329 session.start: a reload runs changed modules only, all of them if a changed one hooks
@@ -3936,7 +3951,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         // A retained previous version still guards the user tier.
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
       }
     }
     for (const input of loading) await load(input)
@@ -4300,6 +4315,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     endSession,
     async notifySessionStop(isTurnRunning: boolean): Promise<void> {
       stoppedSinceInput = true
+      // Before the turn's abort lets the queue drain them (2.1.329).
+      removeInputDiscardedByStop()
       if (!runtime.hasHooks('session.stop')) return
       const input = { isTurnRunning }
       try {

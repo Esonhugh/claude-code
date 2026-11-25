@@ -116,7 +116,7 @@ describe('hooks module author validation', () => {
         const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
         expect(hooks?.success).toBe(false)
         expect(hooks?.errors).toHaveLength(1)
-        expect(hooks?.errors[0]?.path).toBe('modules[0]')
+        expect(hooks?.errors[0]?.path).toBe(`modules.${modulePath}`)
         expect(hooks?.errors[0]?.message).toContain(message)
       }
     } finally {
@@ -140,6 +140,53 @@ describe('hooks module author validation', () => {
       './register.ts state writes: owner.shared',
       './register.ts state reads: owner.shared',
     ])
+  })
+
+  test('reads, hashes and compiles each listed .wasm file as the official build does', async () => {
+    const head = [0, 97, 115, 109, 1, 0, 0, 0]
+    // (func (export "answer") (result i32) i32.const 42)
+    const answer = Uint8Array.from([...head, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2, 1, 0,
+      7, 10, 1, 6, 97, 110, 115, 119, 101, 114, 0, 0, 10, 6, 1, 4, 0, 0x41, 42, 0x0b])
+    // (import "env" "f" (func)) (import "env" "mem" (memory 1))
+    const imports = Uint8Array.from([...head, 1, 4, 1, 0x60, 0, 0,
+      2, 20, 2, 3, 101, 110, 118, 1, 102, 0, 0, 3, 101, 110, 118, 3, 109, 101, 109, 2, 0, 1])
+    const root = await pluginRoot()
+    try {
+      await mkdir(join(root, 'hooks', 'sub'), { recursive: true })
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'owner' }))
+      await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./m.mjs'] }))
+      await writeFile(join(root, 'hooks', 'answer.wasm'), answer)
+      await writeFile(join(root, 'hooks', 'sub', 'imports.wasm'), imports)
+      await writeFile(join(root, 'hooks', 'garbage.wasm'), Uint8Array.from([1, 2, 3]))
+      await writeFile(join(root, 'hooks', 'shared.wasm'), Uint8Array.from([...head, 5, 4, 1, 3, 1, 1]))
+      const validate = async (body: string) => {
+        await writeFile(join(root, 'hooks', 'm.mjs'), `export function register(on) { on('session.start', async ($) => { ${body} }) }`)
+        return (await validatePluginContents(root)).find(result => result.fileType === 'hooks')!
+      }
+      const hash = (bytes: Uint8Array) => new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
+      const clean = await validate(`await $.wasm.compile('./answer.wasm'); await $.wasm.compile('./sub/imports.wasm'); await $.wasm.compile(new Uint8Array(8))`)
+      expect(clean.errors).toEqual([])
+      expect(clean.notes).toEqual([
+        './m.mjs hooks: session.start',
+        './m.mjs calls: $.wasm.compile',
+        `./m.mjs wasm hooks/answer.wasm: 39 bytes, sha256 ${hash(answer)}`,
+        './m.mjs wasm hooks/answer.wasm imports: nothing',
+        './m.mjs wasm hooks/answer.wasm exports: answer (function)',
+        `./m.mjs wasm hooks/sub/imports.wasm: ${imports.length} bytes, sha256 ${hash(imports)}`,
+        './m.mjs wasm hooks/sub/imports.wasm imports: env.f (function), env.mem (memory)',
+        './m.mjs wasm hooks/sub/imports.wasm exports: nothing',
+        './m.mjs wasm: bytes made at run time',
+      ])
+      const refused = await validate(`await $.wasm.compile('./garbage.wasm'); await $.wasm.compile('./shared.wasm'); await $.wasm.compile('./missing.wasm')`)
+      expect(refused.errors).toEqual([
+        { path: 'modules../m.mjs', message: "hooks/garbage.wasm: WebAssembly.Module doesn't parse at byte 0: expected a module of at least 8 bytes" },
+        { path: 'modules../m.mjs', message: `owner: ${join(root, 'hooks', 'missing.wasm')}: no such file` },
+        { path: 'modules../m.mjs', message: 'hooks/shared.wasm: owner: $.wasm.compile: the module declares a shared memory, which no hooks module may hold' },
+      ])
+      expect(refused.notes).toEqual(['./m.mjs hooks: session.start', './m.mjs calls: $.wasm.compile'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test('reports empty registrations and calls honestly', async () => {

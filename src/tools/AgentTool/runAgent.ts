@@ -43,6 +43,8 @@ import type {
 } from '../../services/mcp/types.js'
 import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
+import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { updateTaskState } from '../../utils/task/framework.js'
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
 import type { PermissionMode } from '../../types/permissions.js'
@@ -1249,6 +1251,12 @@ export async function* runAgent({
       model: resolvedAgentModel,
     },
   ).catch((_err) => logForDebugging(`Failed to write agent metadata: ${_err}`))
+  // Its agent row reads the model and own directory off its task.
+  const ownCwd = worktreePath ?? cwd
+  updateTaskState<LocalAgentTaskState>(agentId, rootSetAppState, task =>
+    task.type !== 'local_agent' || (task.model === resolvedAgentModel && task.cwd === ownCwd)
+      ? task
+      : { ...task, model: resolvedAgentModel, ...(ownCwd !== undefined && { cwd: ownCwd }) })
 
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = newInitialMessages.findLast(isLoggableMessage)?.uuid ?? recordedParent

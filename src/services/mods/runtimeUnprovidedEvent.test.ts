@@ -225,7 +225,7 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     const plugins = [
       await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {...built, greeting: {read: async () => 'original'}}; }); }`, 'provider'),
       await fixture(`export function register(on) {
-        on('engine.create', async ($, e, next) => { const built = await next(e); return {telemetry: built.telemetry}; });
+        on('engine.create', async ($, e, next) => { const {greeting, ...built} = await next(e); return {...built}; });
         on('tool.call', {tool:'Read'}, async ($, e, next) => ({deny:'hide: denied'}));
       }`, 'hide'),
     ]

@@ -618,7 +618,7 @@ test('engine.create withholding revokes even a captured synchronous UI resolve b
   const consumer = await plugin('ui-owner', `let saved; export function register(on) {
     on('tool.call', ($,e) => { saved ??= () => $.ui.resolve({surface:'terminal',component:'Pane'}).Text({children:'ok'}); return {result:saved()}; });
   }`)
-  const policy = await plugin('policy', `export function register(on) { on('engine.create', async ($,e,next) => {const below=await next(e); return {clock:below.clock,fs:below.fs,process:below.process,store:below.store,session:below.session,command:below.command};}); }`)
+  const policy = await plugin('policy', `export function register(on) { on('engine.create', async ($,e,next) => {const {ui, ...below}=await next(e); return {...below};}); }`)
   const { value, diagnostics } = fixture()
   await value.bind(binding(root)); await value.reconcile([consumer])
   const input = {tool:'Read',tool_use_id:'test'}

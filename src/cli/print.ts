@@ -324,7 +324,8 @@ import {
   stopShellTaskAtDeadline,
 } from '../tasks/LocalShellTask/LocalShellTask.js'
 import { isLocalShellTask } from '../tasks/LocalShellTask/guards.js'
-import { isLocalAgentTask } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { isLocalAgentTask, stopBackgroundAgentTasks } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import { stopRunningWorkflowTasks } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { createSendNow, isSendNowPrompt } from '../utils/sendNow.js'
 import {
   setupSdkMcpClients,
@@ -3735,6 +3736,9 @@ function runHeadlessStreaming(
           if (abortController) {
             abortController.abort()
           }
+          // Like official, an interrupt also stops running background agents and workflows, idle session or not.
+          stopBackgroundAgentTasks(getAppState().tasks, setAppState)
+          stopRunningWorkflowTasks(getAppState().tasks, setAppState)
           shellAbortController?.abort('user-cancel')
           suggestionState.abortController?.abort()
           suggestionState.abortController = null
@@ -3750,6 +3754,8 @@ function runHeadlessStreaming(
           logForDebugging(
             `[print.ts] interrupt handled, stillQueued=${response.still_queued.length}`,
           )
+          // Like official 2.1.329, the background agents it stopped end ahead of its response.
+          for (const event of drainSdkOutput()) output.enqueue(event)
           sendControlResponseSuccess(message, response)
         } else if (message.request.subtype === 'end_session') {
           logForDebugging(

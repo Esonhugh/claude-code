@@ -44,6 +44,13 @@ const supportedEvents = new Set([
 ])
 const telemetryStreams = ['anthropic', 'collector']
 const telemetryStreamHint = '"to" is a string literal, or a list of them, from "anthropic", "collector", written in the call, so the streams a module\'s hooks stand on can be listed'
+// Official 2.1.329 ends every scan refusal with this.
+const spellingHint = '$ is always spelled $.noun.event(...) at the call site, on is always on("<event>", hook), and next.to always next.to(e, "<tier>")'
+const itselfUses: Record<string, string> = {
+  VariableDeclarator: 'bound to a name', AssignmentExpression: 'assigned', SpreadElement: 'spread', ReturnStatement: 'returned',
+  ArrowFunctionExpression: 'returned', Property: 'put in an object', ArrayExpression: 'put in an array',
+  ChainExpression: 'optionally chained', TemplateLiteral: 'put in a template',
+}
 
 const scanOnlyEvents = new Set([
   'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text',
@@ -63,9 +70,23 @@ const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
 export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
 
+// loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
+class ModLoadError extends Error {}
+
 function fail(path: string, message: string): never {
-  throw new Error(`Mod ${path}: ${message}`)
+  throw new ModLoadError(`${path}: ${message}`)
 }
+
+// Official 2.1.329 scans a .js, .mjs or .cjs file as written and names its line; it names a compiled
+// line of any other file with the line itself, cut at 80 characters.
+function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+  const excerpt = line === undefined || compiled === undefined ? undefined : compiled[line - 1]?.trim() ?? ''
+  const at = line === undefined ? '' : excerpt === undefined ? `:${line}` :
+    `, compiled line ${line} \`${excerpt.length > 80 ? `${excerpt.slice(0, 80)}...` : excerpt}\``
+  return new ModLoadError(`${path}${at}: ${construct}; ${spellingHint}`)
+}
+
+const scannedAsWritten = (path: string) => ['.js', '.mjs', '.cjs'].includes(extname(path))
 
 function children(node: Node): Node[] {
   const result: Node[] = []
@@ -81,7 +102,12 @@ function isFunction(node: Node): boolean {
   return ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type)
 }
 
-function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[]) {
+function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>) {
+  // A refusal names the line of the node the scan is at, unless it names a node itself.
+  let at: Node | undefined
+  function fail(file: string, message: string, node: Node | undefined = at): never {
+    throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
+  }
   const events = new Set<string>()
   const calls = new Set<string>()
   const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
@@ -93,7 +119,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const env = { reads: new Set<string>(), writes: new Set<string>() }
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
-  const wasm = { literals: [] as { path: string; spelling: string }[], isMadeAtRunTime: false }
+  const wasm = { literals: [] as { path: string; spelling: string; line?: number }[], isMadeAtRunTime: false }
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
@@ -110,6 +136,17 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   let returningEngine = false
   let returningRegister = false
   let path = entrypoints[0]!
+  const parents = new WeakMap<Node, Node>()
+  for (const program of programs.values()) {
+    const stack = [program]
+    while (stack.length) {
+      const node = stack.pop()!
+      for (const child of children(node)) {
+        parents.set(child, node)
+        stack.push(child)
+      }
+    }
+  }
 
   function cachedScope(key: object, outer: Scope, signature: string, create: () => Scope): Scope {
     let parents = scopes.get(key)
@@ -239,17 +276,60 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
   }
 
+  // Official 2.1.329 follows a name by its spelling across the whole file, not by scope: every
+  // declaration of it must initialise it (to no other name) and nothing may assign it.
+  const fileNames = new Map<Node, { declared: Map<string, (Node | null)[]>; assigned: Set<string> }>()
+  function namesOf(program: Node) {
+    let names = fileNames.get(program)
+    if (names) return names
+    const found = names = { declared: new Map<string, (Node | null)[]>(), assigned: new Set<string>() }
+    const declare = (name: string, init: Node | null) => found.declared.set(name, [...found.declared.get(name) ?? [], init])
+    const pattern = (node: Node | null | undefined, each: (name: string) => void): void => {
+      switch (node?.type) {
+        case 'Identifier': each(node.name); break
+        case 'ObjectPattern': for (const property of node.properties) pattern(property.type === 'RestElement' ? property.argument : property.value, each); break
+        case 'ArrayPattern': for (const element of node.elements) pattern(element, each); break
+        case 'AssignmentPattern': pattern(node.left, each); break
+        case 'RestElement': pattern(node.argument, each); break
+      }
+    }
+    const walk = (node: Node) => {
+      switch (node.type) {
+        case 'VariableDeclarator':
+          if (node.id.type === 'Identifier') declare(node.id.name, node.init ?? null)
+          else pattern(node.id, name => declare(name, null))
+          break
+        case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+          if (node.id) declare(node.id.name, null)
+          for (const param of node.params) pattern(param, name => declare(name, null))
+          break
+        case 'ClassDeclaration': case 'ClassExpression': if (node.id) declare(node.id.name, null); break
+        case 'ImportSpecifier': case 'ImportDefaultSpecifier': case 'ImportNamespaceSpecifier': declare(node.local.name, null); break
+        case 'CatchClause': pattern(node.param, name => declare(name, null)); break
+        case 'AssignmentExpression': pattern(node.left, name => found.assigned.add(name)); break
+        case 'UpdateExpression': pattern(node.argument, name => found.assigned.add(name)); break
+        case 'ForInStatement': case 'ForOfStatement': if (node.left.type !== 'VariableDeclaration') pattern(node.left, name => found.assigned.add(name)); break
+      }
+      for (const child of children(node)) walk(child)
+    }
+    walk(program)
+    fileNames.set(program, found)
+    return found
+  }
+
   // Official 2.1.329: a string-shaped argument that is no literal would name files the scan cannot list.
-  function stringShaped(node: Node, scope: Scope, seen = new Set<Binding>()): boolean {
+  function stringShaped(node: Node): boolean {
     switch (node.type) {
       case 'SpreadElement': case 'Literal': case 'TemplateLiteral': case 'BinaryExpression': return true
-      case 'ConditionalExpression': return stringShaped(node.consequent, scope, seen) || stringShaped(node.alternate, scope, seen)
-      case 'LogicalExpression': return stringShaped(node.right, scope, seen)
+      case 'ConditionalExpression': return stringShaped(node.consequent) || stringShaped(node.alternate)
+      case 'LogicalExpression': return stringShaped(node.right)
       case 'Identifier': {
-        const binding = lookup(node.name, scope)
-        if (!binding?.alias || binding.alias.node.type === 'Identifier' || seen.has(binding)) return false
-        seen.add(binding)
-        return stringShaped(binding.alias.node, binding.alias.scope, seen)
+        const program = programs.get(path)
+        if (!program) return false
+        const { declared, assigned } = namesOf(program)
+        const inits = declared.get(node.name) ?? []
+        return inits.length > 0 && !assigned.has(node.name) &&
+          inits.every(init => init !== null && init.type !== 'Identifier' && stringShaped(init))
       }
       default: return false
     }
@@ -269,15 +349,15 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     }
   }
 
-  function scanWasm(call: string, node: Node, scope: Scope) {
+  function scanWasm(call: string, node: Node) {
     if (call !== 'wasm.compile') return
     const source = node.arguments[0] as Node | undefined
     const spelling = source && literalString(source)
     if (spelling !== undefined) {
-      wasm.literals.push({ path, spelling })
+      wasm.literals.push({ path, spelling, line: node.loc?.start.line })
       return
     }
-    if (!source || stringShaped(source, scope))
+    if (!source || stringShaped(source))
       fail(path, `$.wasm.compile takes a string literal naming a .wasm file of the plugin's own, so the files a module compiles can be listed, or bytes (got ${wasmArgument(source)})`)
     wasm.isMadeAtRunTime = true
   }
@@ -419,11 +499,21 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         const expression = item.init?.type === 'AwaitExpression' ? item.init.argument : item.init
         const callee = expression?.type === 'CallExpression' ? capabilityValue(expression.callee, inner) : undefined
         if (callee?.role === 'next' && (!callee.members.length || callee.members.join('.') === 'to')) {
-          if (node.kind !== 'const' || item.id.type !== 'Identifier' || item.init.type !== 'AwaitExpression') {
-            fail(path, 'engine.create next result requires const identifier = await next(input); aliases are unsupported')
+          if (node.kind !== 'const') fail(path, 'the value of next(e) at engine.create is bound with let or var (const only)', node)
+          // Official 2.1.329 withholds a noun as const { fs, ...beneath } = await next(e), leaving fs unread.
+          const properties = item.id.type === 'ObjectPattern' ? item.id.properties : []
+          const rest = properties.at(-1)
+          const withheld = properties.slice(0, -1)
+          const destructured = rest?.type === 'RestElement' && rest.argument.type === 'Identifier' &&
+            withheld.every((property: Node) => property.type === 'Property' && property.shorthand && property.value.type === 'Identifier')
+          if ((item.id.type !== 'Identifier' && !destructured) || item.init.type !== 'AwaitExpression') {
+            fail(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
           }
-          bindings.set(item.id.name, { role: 'beneath' })
+          const beneath = destructured ? rest.argument.name : item.id.name
+          bindings.set(beneath, { role: 'beneath' })
           engineNextBindings.add(expression)
+          refuseMemberValues(body, beneath, true)
+          for (const property of withheld) refuseReads(body, property.value.name, item.id)
         }
       }
     }
@@ -576,6 +666,91 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return event
   }
 
+  function patternNames(pattern: Node | null | undefined, names: string[] = []): string[] {
+    if (pattern?.type === 'Identifier') names.push(pattern.name)
+    else if (pattern?.type === 'AssignmentPattern') patternNames(pattern.left, names)
+    else if (pattern?.type === 'RestElement') patternNames(pattern.argument, names)
+    else if (pattern?.type === 'ArrayPattern') for (const item of pattern.elements) patternNames(item, names)
+    else if (pattern?.type === 'ObjectPattern') {
+      for (const property of pattern.properties) patternNames(property.type === 'RestElement' ? property.argument : property.value, names)
+    }
+    return names
+  }
+
+  // Whether node opens a scope of its own that declares name again.
+  function redeclares(node: Node, name: string): boolean {
+    const declared = (item: Node, kinds: string[]) => item.type === 'VariableDeclaration' && kinds.includes(item.kind) &&
+      item.declarations.some((declarator: Node) => patternNames(declarator.id).includes(name))
+    const lexical = (statements: Node[]) => statements.some(statement => declared(statement, ['let', 'const']) ||
+      (['FunctionDeclaration', 'ClassDeclaration'].includes(statement.type) && statement.id?.name === name))
+    const hoisted = (item: Node): boolean => !isFunction(item) && (declared(item, ['var']) || children(item).some(hoisted))
+    if (isFunction(node)) {
+      return (node.type !== 'FunctionDeclaration' && node.id?.name === name) ||
+        node.params.some((param: Node) => patternNames(param).includes(name)) || children(node.body).some(hoisted)
+    }
+    if (node.type === 'BlockStatement' || node.type === 'StaticBlock') return lexical(node.body)
+    if (node.type === 'SwitchStatement') return lexical(node.cases.flatMap((item: Node) => item.consequent))
+    if (node.type === 'CatchClause') return patternNames(node.param).includes(name)
+    if (['ForStatement', 'ForInStatement', 'ForOfStatement'].includes(node.type)) return declared(node.init ?? node.left ?? { type: '' }, ['let', 'const'])
+    return false
+  }
+
+  // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
+  // the value of next(e) at engine.create is held to the same.
+  const membersChecked = new Map<Node, Set<string>>()
+  function refuseMemberValues(nodes: Node[], name: string, beneath = false) {
+    const walk = (node: Node) => {
+      if (redeclares(node, name)) return
+      if (node.type === 'Identifier' && node.name === name) {
+        let use = node
+        let parent = parents.get(use)
+        while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+        if (beneath && parent?.type === 'VariableDeclarator' && parent.init === use && parent.id.type === 'ObjectPattern') {
+          for (const property of parent.id.properties) if (property.value?.type === 'Identifier') refuseReads(nodes, property.value.name, parent.id)
+        }
+        if (parent?.type !== 'MemberExpression' || parent.object !== use) return
+        if (parent.computed || parent.optional) fail(path, 'a computed or optional member access on $', parent)
+        if (parent.property.type !== 'Identifier') fail(path, 'a member access on $ that is not a name', parent)
+        const noun = parent.property.name
+        const member = parents.get(parent)
+        const named = member?.type === 'MemberExpression' && member.object === parent && !member.computed && !member.optional &&
+          member.property.type === 'Identifier'
+        if (noun === 'plugin') {
+          if (named) return
+          fail(path, '$.plugin is used other than as $.plugin.name or $.plugin.root', parent)
+        }
+        if (!named) fail(path, `$.${noun} is used as a value (a noun of $ bound, passed or read)`, parent)
+        const call = parents.get(member)
+        if (call?.type !== 'CallExpression' || call.callee !== member || call.optional) {
+          fail(path, `$.${noun}.${member.property.name} is used as a value (an event of $ bound, passed or read) instead of called`, member)
+        }
+        return
+      }
+      for (const child of children(node)) walk(child)
+    }
+    for (const node of nodes) {
+      const names = membersChecked.get(node) ?? new Set<string>()
+      if (names.has(name)) continue
+      membersChecked.set(node, names.add(name))
+      walk(node)
+    }
+  }
+
+  // A noun destructured from next(e) at engine.create is withheld, and official 2.1.329 refuses any read of it.
+  function refuseReads(nodes: Node[], name: string, declaration: Node) {
+    const walk = (node: Node) => {
+      if (node === declaration || redeclares(node, name)) return
+      const parent = parents.get(node)
+      const named = (parent?.type === 'MemberExpression' && parent.property === node && !parent.computed) ||
+        (['Property', 'MethodDefinition', 'PropertyDefinition'].includes(parent?.type) && parent.key === node && !parent.computed && !parent.shorthand)
+      if (node.type === 'Identifier' && node.name === name && !named) {
+        fail(path, `"${name}", destructured from $ at engine.create, is read (a noun bound to a name); leave it unread or call it as $.noun.event(...)`, node)
+      }
+      for (const child of children(node)) walk(child)
+    }
+    nodes.forEach(walk)
+  }
+
   function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler = false) {
     if (handler && (event === 'turn.step' || event === 'process.spawn')) {
       if (!node.async || !node.generator) fail(path, `${event} handlers must be async generators`)
@@ -591,6 +766,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         else if (roles.length && param.type === 'Identifier') bindings.set(param.name, { role: null })
       }
       return [...scope, bindings]
+    })
+    node.params.forEach((param: Node, index: number) => {
+      if (roles[index]?.role === 'engine' && !roles[index]!.members.length && param.type === 'Identifier') refuseMemberValues([node.body], param.name)
     })
     if (collecting) {
       if (collectedFunctions.has(inner)) return
@@ -695,7 +873,29 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     return !!value && ['engine', 'beneath'].includes(value.role) && !value.members.length
   }
 
+  function isItself(node: Node | undefined, scope: Scope): boolean {
+    const value = node && capabilityValue(node, scope)
+    return !!value && value.role === 'engine' && !value.members.length
+  }
+
+  // Official 2.1.329 takes $ only as $.noun.event(...), $.plugin or the argument of a plain helper call.
+  function refuseItself(node: Node): never {
+    let use = node
+    let parent = parents.get(use)
+    while (parent?.type === 'AwaitExpression') parent = parents.get(use = parent)
+    const how = parent?.type === 'CallExpression' || parent?.type === 'NewExpression'
+      ? parent.callee === use ? 'called' : 'passed as an argument'
+      : parent === undefined ? 'used' : itselfUses[parent.type] ?? `used in a ${parent.type}`
+    fail(path, `$ itself is ${how} (bound, passed, spread, returned or read)`, node)
+  }
+
   function visit(node: Node | null | undefined, scope: Scope, event?: string, standalone = false) {
+    const outer = at
+    if (node?.loc) at = node
+    try { visitNode(node, scope, event, standalone) } finally { at = outer }
+  }
+
+  function visitNode(node: Node | null | undefined, scope: Scope, event?: string, standalone = false) {
     if (!node) return
     if (registers.has(node)) {
       if (!node.params.length) fail(path, 'register requires an on parameter')
@@ -720,7 +920,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           visitPattern(item.id, scope, event)
           if ((node.kind === 'let' || node.kind === 'var') && item.init) captureWrite(item.id, item.init, item, scope)
           const alias = ['const', 'let', 'var'].includes(node.kind) && item.id.type === 'Identifier' && item.init && capabilityValue(item.init, scope)
-          if (alias && ['engine', 'beneath', 'next'].includes(alias.role)) {
+          if (alias && ['engine', 'beneath', 'next'].includes(alias.role) && !isItself(item.init, scope)) {
             if ((alias.role === 'next' && !['', 'to', 'is'].includes(alias.members.join('.'))) ||
               (alias.role !== 'next' && alias.members.length > 2)) visit(item.init, scope, event)
           } else visit(item.init, scope, event)
@@ -787,7 +987,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (!directCapture) visit(assigned, scope, event)
         if (directCapture && standalone) {
           const value = capabilityValue(node.right, scope)
-          if (value && ['engine', 'beneath', 'next'].includes(value.role) &&
+          if (value && ['engine', 'beneath', 'next'].includes(value.role) && !isItself(node.right, scope) &&
             (value.role === 'next' ? ['', 'to', 'is'].includes(value.members.join('.')) : value.members.length <= 2)) return
         }
         visit(node.right, scope, event)
@@ -796,7 +996,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       case 'BinaryExpression':
         if (!collecting && ['===', '!=='].includes(node.operator)) {
           for (const operand of [node.left, node.right]) {
-            if (!identityValue(operand, scope)) visit(operand, scope, event)
+            if (!identityValue(operand, scope) || isItself(operand, scope)) visit(operand, scope, event)
           }
           return
         }
@@ -811,7 +1011,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (['Object', 'globalThis', 'self', 'window'].includes(node.name) && !lookup(node.name, scope)) builtinObjectChanged = true
           return
         }
-        if (capabilityValue(node, scope)) fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+        if (capabilityValue(node, scope)) {
+          const parent = parents.get(node)
+          if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
+          fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+        }
         if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
       case 'ImportExpression': fail(path, 'dynamic import is unsupported; use static relative imports')
@@ -877,7 +1081,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (!builtinObjectChanged && !lookup('Object', scope) && !node.optional &&
           callee.type === 'MemberExpression' && !callee.computed && !callee.optional &&
           callee.object.type === 'Identifier' && callee.object.name === 'Object' && callee.property.name === 'isFrozen' &&
-          node.arguments.length === 1 && identityValue(node.arguments[0], scope)) return
+          node.arguments.length === 1 && identityValue(node.arguments[0], scope) && !isItself(node.arguments[0], scope)) return
+        if (isItself(callee, scope)) refuseItself(callee)
         const calleeCapability = capabilityValue(callee, scope)
         if (event === 'engine.create' && calleeCapability?.role === 'next' &&
           ['', 'to'].includes(calleeCapability.members.join('.')) &&
@@ -886,6 +1091,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         }
         const argumentsRoles = node.arguments.map((argument: Node) => capabilityValue(argument, scope))
         if (argumentsRoles.some(Boolean)) {
+          const passed = node.arguments.find((argument: Node) => isItself(argument, scope))
+          if (passed && (callee.type !== 'Identifier' || node.optional)) refuseItself(passed)
           const value = resolveValue(callee, scope)
           const helper = value && !value.members.length && value.binding.fn
           if (!helper || value.binding.role || node.optional || node.arguments.some((argument: Node) => argument.type === 'SpreadElement') ||
@@ -916,7 +1123,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           recordCall(call)
           scanEnvironment(call, node)
           scanState(call, node, scope)
-          scanWasm(call, node, scope)
+          scanWasm(call, node)
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {
@@ -1083,7 +1290,7 @@ export function validateModRegistrations(
   })
 }
 
-export async function loadModDeclaration(input: {
+type ModLoadInput = {
   name: string
   storageId: string
   version?: string
@@ -1093,7 +1300,18 @@ export async function loadModDeclaration(input: {
   options?: ModInput
   fingerprintOptions?: ModInput
   tier?: ModTier
-}): Promise<ModDeclaration> {
+}
+
+export async function loadModDeclaration(input: ModLoadInput): Promise<ModDeclaration> {
+  try {
+    return await readModDeclaration(input)
+  } catch (error) {
+    if (error instanceof ModLoadError) throw new ModLoadError(`${input.name}: ${error.message}`)
+    throw error
+  }
+}
+
+async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> {
   const root = resolve(input.pluginRoot)
   const rootReal = await realpath(root)
   const entrypoints = input.entrypoints.map(path => {
@@ -1204,13 +1422,17 @@ export async function loadModDeclaration(input: {
     try {
       const extension = extname(path)
       const syntax = extension === '.tsx' || extension === '.jsx' ? 'tsx' : 'ts'
-      compiled = transpilers[syntax].transformSync(source, syntax)
+      compiled = scannedAsWritten(path) ? source : transpilers[syntax].transformSync(source, syntax)
       program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module', locations: true }) as unknown as Node
     } catch (error) {
-      // Wording of official 2.1.329.
-      const position = (error as { position?: { line?: number; column?: number } } | null)?.position
-      throw new Error(`${path} does not parse: ${error instanceof Error ? error.message : String(error)}` +
-        (position?.line === undefined ? '' : ` (line ${position.line}, column ${position.column})`))
+      // Wording of official 2.1.329: each error the transpiler lists, with its position.
+      const errors = (error as { errors?: unknown } | null)?.errors
+      const words = (Array.isArray(errors) ? errors : [error]).map(item => {
+        const { message, position } = (item ?? {}) as { message?: unknown; position?: { line?: unknown; column?: unknown } | null }
+        const text = message === undefined ? '' : String(message)
+        return typeof position?.line === 'number' && position.column !== undefined ? `${text} (line ${position.line}, column ${position.column})` : text
+      }).filter(Boolean).join('; ') || String(error)
+      throw new ModLoadError(`${path} does not parse: ${words}`)
     }
     function clientSpecifier(node: Node): Node | undefined {
       if (node.type !== 'CallExpression') return
@@ -1296,7 +1518,9 @@ export async function loadModDeclaration(input: {
   for (const link of links) {
     if (awaits.has(link.to)) fail(link.to, 'top-level await in imported files is unsupported')
   }
-  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints)
+  const compiledLines = new Map(modules.filter(module => hookPaths.has(module.path) && !scannedAsWritten(module.path))
+    .map(module => [module.path, module.source.split('\n')]))
+  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines)
   for (const value of scanned.events) events.add(value)
   for (const value of scanned.calls) calls.add(value)
   for (const value of scanned.env.reads) env.reads.add(value)
@@ -1308,8 +1532,8 @@ export async function loadModDeclaration(input: {
     fail(root, 'hooks module not loaded; its hooks stand on the telemetry stream "anthropic" (a matcher names it, or a telemetry hook names no "to" and so stands on every stream), which is for the plugins built into the CLI; name the collector on each telemetry hook: on("telemetry.log", { to: "collector" }, hook) (policy/scan)')
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
   const wasmFiles = new Map<string, Set<string>>()
-  for (const { path, spelling } of scanned.wasm.literals) {
-    const refuse = (reason: string) => fail(path, `$.wasm.compile's path "${spelling}" ${reason}`)
+  for (const { path, spelling, line } of scanned.wasm.literals) {
+    const refuse = (reason: string) => { throw refusal(path, line, compiledLines.get(path), `$.wasm.compile's path "${spelling}" ${reason}`) }
     if (!spelling.startsWith('./') && !spelling.startsWith('../')) refuse('is not relative: spell it from this file ("./engine.wasm")')
     if (!spelling.endsWith('.wasm')) refuse('does not end in .wasm')
     const target = resolve(dirname(path), spelling)
@@ -1318,24 +1542,24 @@ export async function loadModDeclaration(input: {
     spellings.add(spelling)
     wasmFiles.set(relativePath(target), spellings)
   }
-  const wasm = wasmFiles.size || scanned.wasm.isMadeAtRunTime ? {
-    files: [...wasmFiles].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, spellings]) => ({ path, spellings: [...spellings].sort() })),
-    ...(scanned.wasm.isMadeAtRunTime ? { isMadeAtRunTime: true as const } : {}),
-  } : undefined
   // A saved binary changes the declaration, so the mod reloads with it; a missing one hashes as null.
-  const wasmStamps = await Promise.all((wasm?.files ?? []).map(async file => {
+  const wasmFile = async (path: string) => {
     const hash = createHash('sha256')
     try {
-      for await (const chunk of createReadStream(resolve(root, ...file.path.split('/')))) hash.update(chunk as Buffer)
-    } catch { return { path: file.path, sha256: null } }
-    return { path: file.path, sha256: hash.digest('hex') }
-  }))
+      for await (const chunk of createReadStream(resolve(root, ...path.split('/')))) hash.update(chunk as Buffer)
+    } catch { return { path, spellings: [...wasmFiles.get(path)!].sort(), sha256: null } }
+    return { path, spellings: [...wasmFiles.get(path)!].sort(), sha256: hash.digest('hex') }
+  }
+  const wasm = wasmFiles.size || scanned.wasm.isMadeAtRunTime ? {
+    files: await Promise.all([...wasmFiles.keys()].sort((a, b) => a < b ? -1 : a > b ? 1 : 0).map(wasmFile)),
+    ...(scanned.wasm.isMadeAtRunTime ? { isMadeAtRunTime: true as const } : {}),
+  } : undefined
   // Absolute installation locations are plumbing, not declaration identity.
   const fingerprint = createHash('sha256').update(JSON.stringify({
     entrypoints: entrypoints.map(relativePath),
     modules: modules.map(module => ({ path: relativePath(module.path), source: module.source })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
     clients: clients.map(client => ({ path: relativePath(client.path), module: client.module })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-    options: fingerprintOptions, tier, ...(wasm ? { wasm, wasmStamps } : {}),
+    options: fingerprintOptions, tier, ...(wasm ? { wasm } : {}),
   })).digest('hex')
   return {
     name: input.name, storageId: input.storageId, pluginRoot: root,

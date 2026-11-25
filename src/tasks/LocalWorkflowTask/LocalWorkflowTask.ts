@@ -1,6 +1,6 @@
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
-import { PANEL_GRACE_MS } from '../../utils/task/framework.js'
-import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
+import { PANEL_GRACE_MS, updateTaskState } from '../../utils/task/framework.js'
+import { emitTaskTerminatedSdk, enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPhase,
@@ -1119,27 +1119,34 @@ function endWorkflowTask(
       return prev
     }
 
-    abortWorkflowControllers(task, `workflow-${status}`)
-    const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
-    const endTime = Date.now()
     return {
       ...prev,
       tasks: {
         ...prev.tasks,
-        [taskId]: {
-          ...solidifiedTask,
-          status,
-          summary: `Workflow ${status}`,
-          endTime,
-          evictAfter: endTime + PANEL_GRACE_MS,
-          rateLimitWait: undefined,
-          abortController: undefined,
-          currentAgentId: undefined,
-          agentControllers: undefined,
-          liveAgents: undefined,
-        },
+        [taskId]: endedWorkflowTask(task, status),
       },
     }
+  }
+}
+
+function endedWorkflowTask(
+  task: LocalWorkflowTaskState,
+  status: LocalWorkflowTaskState['status'],
+): LocalWorkflowTaskState {
+  abortWorkflowControllers(task, `workflow-${status}`)
+  const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
+  const endTime = Date.now()
+  return {
+    ...solidifiedTask,
+    status,
+    summary: `Workflow ${status}`,
+    endTime,
+    evictAfter: endTime + PANEL_GRACE_MS,
+    rateLimitWait: undefined,
+    abortController: undefined,
+    currentAgentId: undefined,
+    agentControllers: undefined,
+    liveAgents: undefined,
   }
 }
 
@@ -1198,6 +1205,30 @@ export function killWorkflowTask(
   setAppState: SetAppState,
 ): void {
   setAppState(endWorkflowTask(taskId, 'killed'))
+}
+
+/**
+ * Stop the running workflows, as official 2.1.329 does on a print-mode
+ * interrupt: each ends stopped for SDK consumers, and the run's own stop
+ * notification is not queued for the model.
+ */
+export function stopRunningWorkflowTasks(
+  tasks: AppState['tasks'],
+  setAppState: SetAppState,
+): LocalWorkflowTaskState[] {
+  const stopped = Object.values(tasks).filter(
+    (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.status === 'running',
+  )
+  for (const task of stopped) {
+    // Through updateTaskState, so SDK hosts get the task_updated that says so.
+    updateTaskState<LocalWorkflowTaskState>(task.id, setAppState, current =>
+      isTerminalTaskStatus(current.status) ? current : endedWorkflowTask(current, 'killed'),
+    )
+    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description, outputFile: getTaskOutputPath(task.id) })
+    // Notified before the run sees its abort, so its own stop notification is not queued for the model.
+    withWorkflowTask(task.id, setAppState, current => current.notified ? current : { ...current, notified: true })
+  }
+  return stopped
 }
 
 export function skipWorkflowAgent(

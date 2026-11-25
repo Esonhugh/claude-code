@@ -29,7 +29,7 @@ test('C17 actual constructor mints a logical identity and publishes it to native
   expect(task.identity.agentId).toBe('reviewer@identity-producer-team')
   expect<string | undefined>(context.getAppState().agentNameRegistry.get('reviewer')).toBe(task.identity.resumableAgentId)
   expect(await listModAgents(context.getAppState().tasks, context.getAppState().agentNameRegistry)).toEqual([
-    {id:task.identity.resumableAgentId,teammateId:task.identity.agentId,description:'Review',type:'teammate',status:'running',name:'reviewer'},
+    expect.objectContaining({id:task.identity.resumableAgentId,teammateId:task.identity.agentId,description:'Review',type:'teammate',status:'running',name:'reviewer',kind:'in_process_teammate',taskStatus:'running',label:'Review',hasRow:true}),
   ])
   expect(result.identity).toEqual(task.identity)
 })

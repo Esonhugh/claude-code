@@ -145,6 +145,12 @@ describe('author tool host through the real executor', () => {
     await again.promise
     f.context.abortController.abort()
     expect(await loop).toEqual({deny: MOD_AGENT_CALL_CUT})
+    // A call made outside a hook keeps running after its agent's loop stopped.
+    Object.assign(f.tool, {call: async (_input: unknown, context: ToolUseContext) => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      return { data: { value: context.abortController.signal.aborted ? 'cut' : 'late' } }
+    }})
+    expect(await f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call', undefined, true)).toMatchObject({text: expect.stringContaining('late')})
     // tool.call keeps throwing on abort.
     await expect(f.host.call({tool:'AuthorFixture', value:'x'}, f.snapshot, AbortSignal.abort('mine'), 'probe')).rejects.toBe('mine')
   })
@@ -193,7 +199,7 @@ describe('author tool host through the real executor', () => {
       expect(await fromA({tool:'AuthorFixture', input:{value:'main resting'}})).toMatchObject({result:{result:{value:'main resting'}}})
     } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
   })
-  test('target-bound Agent call keeps spawn permissions, nesting limit and Workflow refusal', async () => {
+  test('target-bound Agent call keeps spawn permissions, nesting limit and Workflow refusal, and runs AskUserQuestion', async () => {
     const f = fixture()
     const target = 'target' as ToolUseContext['agentId']
     f.context.agentId = target
@@ -210,8 +216,12 @@ describe('author tool host through the real executor', () => {
     expect(await call(denied)).toMatchObject({deny:expect.stringContaining('spawn refused')})
     expect(await call()).toMatchObject({isError:true, text:expect.stringContaining('nesting limit')})
     expect(f.permissions).toHaveLength(1)
-    await expect(call(f.host,{...args,tool:'Workflow'})).rejects.toThrow('runs the Workflow tool')
+    expect(await call(f.host,{...args,tool:'Workflow'})).toEqual({deny:'$.agent.call: runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'})
     expect(f.permissions).toHaveLength(1)
+    f.context.options.tools = [...f.context.options.tools, {...f.tool, name:'AskUserQuestion'}]
+    f.context.modRequestTools = {agentId:target, names:new Set(['Agent','Workflow','AskUserQuestion'])}
+    expect(await f.host.call({agentId:target, tool:'AskUserQuestion', value:'asked'}, f.snapshot, new AbortController().signal, 'probe', 'agent.call')).toMatchObject({result:{value:'asked'}})
+    expect(f.calls.map(call => call.input)).toEqual([{value:'asked'}])
   })
   for (const borrowed of [false, true]) {
     test(`Worker skill.prompt uses invocation tools and permissions with ${borrowed ? 'borrowed' : 'owned'} snapshot`, async () => {

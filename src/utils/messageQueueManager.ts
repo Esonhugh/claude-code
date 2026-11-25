@@ -91,7 +91,7 @@ const commandQueue: QueuedCommand[] = []
 function settleRemovedCommands(commands: readonly QueuedCommand[]): void {
   for (const command of commands) {
     command.promptSubmitReceipt?.admit({drop:'the prompt was removed from the queue before it ran'})
-    command.commandRunReceipt?.cancel(new Error('Queued command removed before execution'))
+    command.commandRunReceipt?.cancel(Object.assign(new Error('the command was removed from the queue before it ran'), { name: 'HooksError' }))
   }
 }
 
@@ -553,6 +553,19 @@ export function removeByFilter(
   }
 
   return removed
+}
+
+const STOP_DISCARDED_ORIGINS = new Set(['plugin', 'coordinator'])
+
+/**
+ * 2.1.329 Stop: main-thread input a plugin or the coordinator queued leaves
+ * the queue, so its prompt.submit or command.run settles at the Stop.
+ */
+export function removeInputDiscardedByStop(): QueuedCommand[] {
+  return removeByFilter(cmd => {
+    const kind = (cmd.origin ?? cmd.promptSubmitMetadata?.origin)?.kind
+    return cmd.agentId === undefined && kind !== undefined && STOP_DISCARDED_ORIGINS.has(kind)
+  })
 }
 
 /**

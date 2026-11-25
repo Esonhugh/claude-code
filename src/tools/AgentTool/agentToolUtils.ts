@@ -554,16 +554,37 @@ export class AgentApiError extends Error {
   }
 }
 
-export function getAgentTerminalError(messages: MessageType[]): Error | undefined {
+// Like official 2.1.329, a run that ended on an API error fails with the termination text,
+// which the task's error, its SDK task_notification summary and the parent's notice all show.
+export function getAgentTerminalError(messages: MessageType[], runModel: string): Error | undefined {
   const lastAssistantMessage = getLastAssistantMessage(messages)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
-  const message = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const message = agentApiTerminationText(messages, runModel) ?? extractTextContent(lastAssistantMessage.message.content, '\n').trim()
   return new AgentApiError(
     message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
     lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
   )
+}
+
+/**
+ * Official 2.1.329 AgentApiErrorTerminationError's text for a run whose last
+ * response is an API error, with what places it: the error type, HTTP status,
+ * request id and the model a request reached (the run's model unless the response names another).
+ */
+export function agentApiTerminationText(messages: MessageType[], runModel: string): string | undefined {
+  const last = getLastAssistantMessage(messages)
+  if (!last?.isApiErrorMessage) return undefined
+  const text = extractTextContent(last.message.content, '\n')
+  const sent = last.apiErrorStatus !== undefined || !!last.requestId
+  const details = [
+    last.error && `error type ${String(last.error)}`,
+    last.apiErrorStatus !== undefined && `HTTP ${last.apiErrorStatus}`,
+    last.requestId && `request id ${last.requestId}`,
+    sent && `model sent to the API: ${last.requestedModel ?? runModel}`,
+  ].filter((detail): detail is string => typeof detail === 'string')
+  return `Agent terminated early due to an API error: ${details.length > 0 ? `${text} (${details.join(', ')})` : text}`
 }
 
 export function countToolUses(messages: MessageType[]): number {
@@ -650,7 +671,7 @@ export function finalizeAgentTool(
   if (lastAssistantMessage === undefined) {
     throw new Error('No assistant messages found')
   }
-  const terminalError = getAgentTerminalError(agentMessages)
+  const terminalError = getAgentTerminalError(agentMessages, resolvedAgentModel)
   if (terminalError) throw terminalError
   const unresolvedToolUses = findUnresolvedToolUses(agentMessages)
   if (unresolvedToolUses.length > 0) {
@@ -892,14 +913,21 @@ type AgentReport = { text: string; review: () => Promise<AgentReportReview> }
 /** Who a run reports as to agent.report; read at launch, as a task drops its agent when the run ends. */
 export type AgentReportTarget = { agent: AgentDefinition; parentAgentId?: string }
 
-/** A failed or stopped run's report: nothing reviewed it. */
-export const unreviewedAgentReport = (text: string): AgentReport => ({ text, review: async () => ({ review: 'none' }) })
+/** Whether the mode runs auto mode's hand-off review; agent.report reports `off` where it does not. */
+const handoffReviewRuns = (toolPermissionContext: ToolPermissionContext): boolean =>
+  feature('TRANSCRIPT_CLASSIFIER') ? toolPermissionContext.mode === 'auto' : false
+
+/** A failed or stopped run's report: nothing reviewed it, `none` in auto mode and `off` in a mode with no review. */
+export const unreviewedAgentReport = (text: string, toolUseContext: Pick<ToolUseContext, 'getAppState'>): AgentReport => ({
+  text,
+  review: async () => ({ review: handoffReviewRuns(toolUseContext.getAppState().toolPermissionContext) ? 'none' : 'off' }),
+})
 
 /** auto mode's handoff review of a finished run, as agent.report's review. */
 export async function reviewAgentHandoff(
   args: Omit<Parameters<typeof classifyHandoffIfNeeded>[0], 'onReview'>,
 ): Promise<AgentReportReview> {
-  if (!feature('TRANSCRIPT_CLASSIFIER') || args.toolPermissionContext.mode !== 'auto') return { review: 'off' }
+  if (!handoffReviewRuns(args.toolPermissionContext)) return { review: 'off' }
   let review: AgentReportReview['review'] = 'none'
   const warning = await classifyHandoffIfNeeded({ ...args, onReview: value => { review = value } })
   return { review, ...(warning && { warning }) }
@@ -988,7 +1016,8 @@ type AgentNotice = Parameters<typeof enqueueAgentNotification>[0]
  * The one end of a background run: agent.report, then the parent's
  * notification, its result built by `message` from the answer. A consumed
  * report notifies no one, but the run counts as notified so nothing waits on
- * it. Returns the answer, or undefined when the run was already notified.
+ * it. Returns the answer, or undefined when the run was already notified. A
+ * run stopped in a sweep counts as notified from the kill, yet still reports.
  */
 export async function notifyAgentEnd(
   toolUseContext: ToolUseContext,
@@ -999,7 +1028,7 @@ export async function notifyAgentEnd(
   { deliver = true }: { deliver?: boolean } = {},
 ): Promise<AgentReportAnswer | undefined> {
   const task = (toolUseContext.getAppStateForTasks ?? toolUseContext.getAppState)().tasks[notice.taskId]
-  if (isLocalAgentTask(task) && task.notified && !task.waitingNotice) return undefined
+  if (isLocalAgentTask(task) && task.notified && !task.waitingNotice && task.status !== 'killed') return undefined
   const status = notice.status === 'killed' ? 'stopped' : notice.status
   const answer = await withAgentReportSnapshot(toolUseContext, snapshot =>
     reportAgentEnd(snapshot, target, notice.taskId, status, report))
@@ -1068,8 +1097,8 @@ export function parkedAgentEnd(
   review: () => Promise<AgentReportReview>,
 ): NonNullable<Parameters<typeof parkAgentForChildren>[0]['notifyEnd']> {
   return (notice, result) => {
-    const own = result ? agentReportOf(result, review) : unreviewedAgentReport('')
-    return notifyAgentEnd(toolUseContext, target, notice, notice.status === 'completed' ? own : unreviewedAgentReport(own.text),
+    const own = result ? agentReportOf(result, review) : unreviewedAgentReport('', toolUseContext)
+    return notifyAgentEnd(toolUseContext, target, notice, notice.status === 'completed' ? own : unreviewedAgentReport(own.text, toolUseContext),
       answer => result ? reportedAgentMessage(result, answer) : answer.text || undefined)
   }
 }
@@ -1381,7 +1410,7 @@ export async function runAsyncAgentLifecycle({
           durationMs: Date.now() - metadata.startTime,
         },
         ...worktreeResult,
-      }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? ''), answer => answer.text || undefined)
+      }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
       return
     }
     const msg = errorMessage(error)
@@ -1416,7 +1445,7 @@ export async function runAsyncAgentLifecycle({
         durationMs: Date.now() - metadata.startTime,
       },
       ...worktreeResult,
-    }, unreviewedAgentReport(''), answer => answer.text || undefined)
+    }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
   } finally {
     onRunSettled?.()
     clearInvokedSkillsForAgent(agentIdForCleanup)

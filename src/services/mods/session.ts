@@ -372,7 +372,10 @@ export function createModsSession(options: ModsSessionOptions) {
     const cascade = event.message === 'Module environment unloaded' ||
       (event.message === workerDeath && (!event.workerFault || event.workerFault.culprit !== undefined))
     // Raw stderr is overdrawn by the interactive TUI, which shows the diagnostic itself.
-    const line = event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') : `${event.stage}: ${event.message}`
+    // Official 2.1.329 words a load failure as "<plugin>: hooks module did not load: <error>".
+    const line = event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') :
+      event.stage !== 'load' ? `${event.stage}: ${event.message}` :
+      event.message.startsWith('hooks module did not load') ? event.message : `hooks module did not load: ${event.message}`
     if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
     else process.stderr.write(text + '\n')
     const fault = event.workerFault

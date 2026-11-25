@@ -125,6 +125,7 @@ import {
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
+  agentApiTerminationText,
   getAgentTerminalError,
   getLastToolUseName,
   notifyAgentEnd,
@@ -1717,7 +1718,7 @@ export const AgentTool = buildTool({
           const reportStopped = () => {
             if (wasBackgrounded) return
             void withAgentReportSnapshot(toolUseContext, snapshot =>
-              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '')))
+              reportAgentEnd(snapshot, reportTarget, syncAgentId, 'stopped', unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext)))
           }
           let worktreeResult: {
             worktreePath?: string
@@ -2034,7 +2035,7 @@ export const AgentTool = buildTool({
                             durationMs: Date.now() - metadata.startTime,
                           },
                           ...worktreeResult,
-                        }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? ''), answer => answer.text || undefined)
+                        }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
                         return
                       }
                       const errMsg = errorMessage(error)
@@ -2071,7 +2072,7 @@ export const AgentTool = buildTool({
                           durationMs: Date.now() - metadata.startTime,
                         },
                         ...worktreeResult,
-                      }, unreviewedAgentReport(''), answer => answer.text || undefined)
+                      }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
                     } finally {
                       releaseSlot()
                       if (stopForegroundSummarization) {
@@ -2296,7 +2297,7 @@ export const AgentTool = buildTool({
               )
             }
 
-            const terminalAgentError = getAgentTerminalError(agentMessages)
+            const terminalAgentError = getAgentTerminalError(agentMessages, metadata.resolvedAgentModel)
             syncAgentError ??= terminalAgentError
 
             // Unregister foreground task if agent completed without being backgrounded
@@ -2312,8 +2313,9 @@ export const AgentTool = buildTool({
                   : wasAborted
                     ? 'stopped'
                     : 'completed'
-                // Like official 2.1.318, a foreground agent's end also arrives
-                // as task_updated, and a finished agent's summary is its result.
+                // Like official 2.1.329, a foreground agent's end also arrives
+                // as task_updated; the summary is its description, or the error
+                // it failed on, and output_file names its transcript.
                 enqueueSdkEvent({
                   type: 'system',
                   subtype: 'task_updated',
@@ -2330,16 +2332,15 @@ export const AgentTool = buildTool({
                   task_id: foregroundTaskId,
                   tool_use_id: toolUseContext.toolUseId,
                   status,
-                  output_file: '',
-                  summary:
-                    (status === 'completed' &&
-                      extractPartialResult(agentMessages)) ||
-                    description,
-                  usage: {
-                    total_tokens: progress.tokenCount,
-                    tool_uses: progress.toolUseCount,
-                    duration_ms: Date.now() - agentStartTime,
-                  },
+                  output_file: getTaskOutputPath(foregroundTaskId),
+                  summary: syncAgentError?.message ?? description,
+                  ...(status === 'completed' && {
+                    usage: {
+                      total_tokens: progress.tokenCount,
+                      tool_uses: progress.toolUseCount,
+                      duration_ms: Date.now() - agentStartTime,
+                    },
+                  }),
                 })
               }
             }
@@ -2393,11 +2394,15 @@ export const AgentTool = buildTool({
               msg => msg.type === 'assistant',
             )
 
-            if (!hasAssistantMessages) {
+            // A run that ended on an API error has nothing to report: official 2.1.329 reports it
+            // failed and the parent reads the API error, as with no messages at all.
+            const terminated = agentApiTerminationText(agentMessages, metadata.resolvedAgentModel)
+            if (!hasAssistantMessages || terminated !== undefined) {
               // No messages collected, re-throw the error
               spawnedSubagent?.failed()
-              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport(''))
-              throw 'consumed' in answer ? new Error(answer.consumed) : syncAgentError
+              const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport('', toolUseContext))
+              if ('consumed' in answer) throw new Error(answer.consumed)
+              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), { name: 'AgentApiErrorTerminationError' })
             }
 
             // We have some messages, try to finalize and return them
