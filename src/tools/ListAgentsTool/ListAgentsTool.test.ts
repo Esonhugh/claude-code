@@ -1,5 +1,4 @@
 import { expect, mock, test } from 'bun:test'
-import { isValidElement, type ReactNode } from 'react'
 
 const childFlag = 'CLAUDE_CODE_LIST_AGENTS_TEST_CHILD'
 
@@ -54,7 +53,7 @@ if (process.env[childFlag] !== '1') {
   mock.module('../../utils/udsMessaging.js', () => ({
     getUdsMessagingSocketPath: () => endpoint,
   }))
-  const { ListAgentsTool, formatAgentListing, listSubagents, listTeammates } = await import('./ListAgentsTool.js')
+  const { ListAgentsTool, formatAgentCommandListing, formatAgentListing, listSubagents, listTeammates } = await import('./ListAgentsTool.js')
   const appState = { tasks: {}, agentNameRegistry: new Map(), teamContext: undefined }
   const context = { getAppState: () => appState } as never
 
@@ -75,52 +74,18 @@ if (process.env[childFlag] !== '1') {
     endpoint = '/tmp/cc-socks/self.sock'
   })
 
-  test('/list-agents uses the same discovery and safe Text presentation as the tool', async () => {
+  test('/list-agents prints the official plain-text listing', async () => {
     const { default: command } = await import('../../commands/peers/index.js')
     expect(command.name).toBe('list-agents')
-    expect(command.type).toBe('local-jsx')
-    const onDone = mock(() => {})
-    const page = await (await command.load()).call(onDone)
-    const toolResult = await ListAgentsTool.call({}, context)
+    expect(command.type).toBe('local')
+    expect(command.supportsNonInteractive).toBe(true)
+    expect(command.description).toBe('List subagents, teammates, and other Claude sessions you can message')
+    const result = await (await command.load()).call('', context)
+    expect(result).toMatchObject({ type: 'text' })
+    expect((result as { value: string }).value).toMatch(/^Other Claude sessions \(1\):\n {2}\[idle\] {2}· {2}researcher {2}· {2}\/tmp\/other-project {2}· {2}started \d+s ago$/)
     expect(ListAgentsTool.renderToolUseMessage()).toBeNull()
     expect(ListAgentsTool.renderToolResultMessage()).toBeNull()
-    const texts = (node: ReactNode): string => {
-      if (node === null || node === undefined || typeof node === 'boolean')
-        return ''
-      if (Array.isArray(node)) return node.map(texts).join('')
-      if (typeof node === 'string' || typeof node === 'number')
-        return String(node)
-      if (isValidElement<{ children?: ReactNode }>(node))
-        return texts(node.props.children)
-      throw new Error('Unexpected presentation node')
-    }
-    expect(isValidElement<{ agents: unknown[] }>(page)).toBe(true)
-    expect((page as { props: { agents: unknown[] } }).props.agents).toEqual(
-      toolResult.data.agents,
-    )
-    const { AgentList } = await import('./UI.js')
-    const rendered = AgentList({ agents: peers })
-    expect(texts(rendered)).toContain('researcher [222222]')
-    expect(texts(rendered)).toContain('/tmp/other-project')
-    expect(texts(rendered)).toContain('[idle]')
-    const dirty = AgentList({
-      agents: [
-        {
-          ...peers[0]!,
-          name: '\u001b[31mpeer\u001b[0m\r\nforged',
-          cwd: '/tmp/\u0007project',
-        },
-      ],
-    })
-    expect(texts(dirty)).not.toMatch(/\p{Cc}/u)
-    expect(texts(dirty)).toContain('peer  forged')
-    expect(onDone).not.toHaveBeenCalled()
-    const dialogPage = page as { props: { onDone: () => void } }
-    dialogPage.props.onDone()
-    expect(onDone).toHaveBeenCalledTimes(1)
-    expect(texts(AgentList({ agents: [] }))).toContain(
-      'No other live local Claude sessions found.',
-    )
+    const toolResult = await ListAgentsTool.call({}, context)
     const block = ListAgentsTool.mapToolResultToToolResultBlockParam(
       toolResult.data,
       'tool-use-id',
@@ -129,6 +94,15 @@ if (process.env[childFlag] !== '1') {
     const prompt = await ListAgentsTool.prompt()
     expect(prompt).toContain('SendMessage')
     expect(prompt).not.toMatch(/bridge|Remote Control|shutdown|approval/)
+  })
+
+  test('/list-agents text strips peer-written escapes and control characters', () => {
+    const dirty = formatAgentCommandListing(undefined, [], [], [
+      { ...peers[0]!, name: '\u001b[31mpeer\u001b[0m\r\nforged', cwd: '/tmp/\u0007project', status: undefined, startedAt: 0 },
+    ], 0)
+    expect(dirty.split('\n')[1]).not.toMatch(/\p{Cc}/u)
+    expect(dirty).toContain('[unknown]  ·  peer  forged  ·  /tmp/ project')
+    expect(formatAgentCommandListing(undefined, [], [], [], 0)).toBe('No subagents, teammates or other Claude sessions.')
   })
 
   test('listing names this session and groups subagents, teammates and peers like official', () => {
@@ -164,6 +138,22 @@ if (process.env[childFlag] !== '1') {
       '',
       'Peer sessions (1):\n  researcher [222222]  ·  interactive  ·  idle  ·  started 35s ago',
     ].join('\n'))
+    expect(formatAgentCommandListing(
+      { name: 'alpha', ref: '2dd6d5' },
+      listSubagents(state),
+      listTeammates(state),
+      [{ ...peers[0]!, startedAt: now - 35000 }],
+      now,
+    )).toBe([
+      'This session: alpha [2dd6d5] (the name other sessions use to message it)',
+      '',
+      'Subagents (1):\n  [running]  ·  reviewer  ·  general-purpose  ·  started 5s ago',
+      '',
+      'Teammates (1):\n  [idle]  ·  tester  ·  qa  ·  started 1m ago',
+      '',
+      'Other Claude sessions (1):\n  [idle]  ·  researcher  ·  /tmp/other-project  ·  started 35s ago',
+    ].join('\n'))
+    expect(formatAgentCommandListing({ name: 'alpha', ref: '2dd6d5' }, [], [], [], now)).toBe('This session: alpha [2dd6d5] (the name other sessions use to message it)\n\nNo subagents, teammates or other Claude sessions — no other session is running on this machine right now; peer messaging itself is available.')
     expect(formatAgentListing({ name: 'alpha', ref: '2dd6d5' }, [], [], [], now)).toContain('No reachable agents — no other Claude session is running on this machine right now')
   })
 }

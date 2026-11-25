@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import stripAnsi from 'strip-ansi'
 import { z } from 'zod/v4'
 import type { AppState } from '../../state/AppState.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -17,7 +18,7 @@ type InputSchema = ReturnType<typeof inputSchema>
 type Output = { listing: string; agents: LiveSessionInfo[] }
 
 type Subagent = { id: string; name?: string; agentType: string; status: string; startTime: number }
-type Teammate = { name: string; agentType?: string; status?: string; since: number }
+type Teammate = { name: string; agentType?: string; status?: string; backend: 'in-process' | 'pane'; since: number }
 
 const ROW_LIMIT = 100
 const ago = (ms: number) => `${formatDuration(Math.max(0, ms), { mostSignificantOnly: true })} ago`
@@ -48,6 +49,7 @@ export function listTeammates(state: Pick<AppState, 'tasks' | 'teamContext'>): T
     name: teammate.name,
     agentType: teammate.agentType,
     status: status.get(id),
+    backend: teammate.tmuxPaneId === 'in-process' || teammate.tmuxPaneId === 'leader' ? 'in-process' : 'pane',
     since: teammate.spawnedAt,
   }])
 }
@@ -81,6 +83,45 @@ export function formatAgentListing(
   return [intro, ...sections].filter(Boolean).join('\n\n')
 }
 
+// Peer-written fields reach the user's terminal; drop escapes and control characters.
+function clean(value: string | undefined): string | undefined {
+  return stripAnsi(value ?? '').replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim() || undefined
+}
+
+/** `/list-agents` text, as official prints it for the user. */
+export function formatAgentCommandListing(
+  self: { name: string; ref: string } | undefined,
+  subagents: Subagent[],
+  teammates: Teammate[],
+  peers: LiveSessionInfo[],
+  now = Date.now(),
+): string {
+  const sections: string[] = []
+  if (subagents.length) {
+    sections.push(section('Subagents', subagents.map(agent => row([`[${agent.status}]`, agent.name, agent.agentType, `started ${ago(now - agent.startTime)}`]))))
+  }
+  if (teammates.length) {
+    sections.push(section('Teammates', teammates.map(teammate => row([`[${teammate.status ?? teammate.backend}]`, clean(teammate.name) ?? '(unnamed)', clean(teammate.agentType), `started ${ago(now - teammate.since)}`]))))
+  }
+  if (peers.length) {
+    sections.push(section('Other Claude sessions', peers.map(peer => row([`[${clean(peer.status) ?? 'unknown'}]`, clean(peer.name), clean(peer.cwd) ?? '(unknown directory)', `started ${ago(now - peer.startedAt)}`]))))
+  }
+  const intro = self ? `This session: ${clean(self.name)} [${self.ref}] (the name other sessions use to message it)` : undefined
+  if (!sections.length) {
+    return intro
+      ? `${intro}\n\nNo subagents, teammates or other Claude sessions — no other session is running on this machine right now; peer messaging itself is available.`
+      : 'No subagents, teammates or other Claude sessions.'
+  }
+  return [intro, ...sections].filter(Boolean).join('\n\n')
+}
+
+/** This session's own address, once it is registered and has an inbox. */
+export function selfAddress(): { name: string; ref: string } | undefined {
+  const socket = getUdsMessagingSocketPath()
+  const name = getRegisteredSessionName()
+  return socket && name ? { name, ref: peerRef(socket).slice(0, 6) } : undefined
+}
+
 export const ListAgentsTool = buildTool({
   name: 'ListAgents',
   searchHint: 'discover local Claude sessions for SendMessage',
@@ -106,11 +147,9 @@ export const ListAgentsTool = buildTool({
   async call(_input, context) {
     const agents = await listAllLiveSessions()
     const state = context.getAppState()
-    const socket = getUdsMessagingSocketPath()
-    const name = getRegisteredSessionName()
     return {
       data: {
-        listing: formatAgentListing(socket && name ? { name, ref: peerRef(socket).slice(0, 6) } : undefined, listSubagents(state), listTeammates(state), agents),
+        listing: formatAgentListing(selfAddress(), listSubagents(state), listTeammates(state), agents),
         agents,
       },
     }
