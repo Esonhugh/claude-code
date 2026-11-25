@@ -1924,6 +1924,21 @@ describe('Mods CLI session host', () => {
   })
 
   // Wording of official 2.1.329.
+  test('tells of a skipped hook once, by how it failed', async () => {
+    const declaration = await plugin(`export function register(on) { on('tool.call', async () => { throw new TypeError('nope\\nmore') }) }`)
+    const shown: string[] = []
+    const logs: string[] = []
+    const logging = spyOn(debug, 'logForDebugging').mockImplementation(value => { logs.push(value) })
+    cleanups.push(() => { logging.mockRestore() })
+    const host = session({loadPlugins:async () => [declaration]})
+    await host.bind(binding, undefined, {uiDiagnostic:(plugin, text) => { shown.push(`${plugin}: ${text}`) }})
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:'core'})
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:'core'})
+    expect(shown).toEqual(['fixture: tool.call hook skipped: threw TypeError: nope'])
+    expect(logs.filter(line => line.includes('hook skipped'))).toEqual(['[fixture] $.ui.log: tool.call hook skipped: threw TypeError: nope'])
+  })
+
+  // Wording of official 2.1.329.
   test('names a hooks module refused at load with its file, line and the spelling hint', async () => {
     const declaration = await plugin(`export function register(on) { on('tool.call', ($) => ({ result: $ })) }`)
     const shown: string[] = []

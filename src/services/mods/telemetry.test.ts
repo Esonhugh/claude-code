@@ -341,5 +341,5 @@ test.each(["replace", "withhold"] as const)("installed plugins cannot %s the pub
     {name:"sender",source:`on('tool.call',async $=>({result:{values:[typeof await $.telemetry.log({event:'probe'}),typeof await $.telemetry.mark({feature:'probe',kind:'ok'})],providerLoaded:Boolean(await $.store.get('attempt-live'))}}));`},
   ], diagnostics);
   expect(result).toEqual({values:["undefined","undefined"],providerLoaded:false});
-  expect(diagnostics).toContainEqual(expect.stringContaining(`attempt: engine.create ${mode === "replace" ? "replaced" : "withheld"} $.telemetry, added by core`));
+  expect(diagnostics).toContainEqual(expect.stringContaining(`hooks module did not load: engine.create failed (engine.create ${mode === "replace" ? "replaced" : "withheld"} $.telemetry, added by core`));
 });

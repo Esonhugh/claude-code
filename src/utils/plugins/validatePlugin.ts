@@ -20,6 +20,7 @@ import {
 import { stripBOM } from '../jsonRead.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
+import { networkHost } from './pluginProvides.js'
 import {
   PluginHooksSchema,
   PluginManifestSchema,
@@ -49,6 +50,8 @@ export type ValidationResult = {
   errors: ValidationError[]
   warnings: ValidationWarning[]
   notes?: string[]
+  /** Each hooks module scanned, by its path from the plugin root, for the provides listing. */
+  modules?: { path: string; calls: readonly string[]; events: readonly string[]; hosts?: { named: readonly string[]; unread: readonly string[] } }[]
   filePath: string
   fileType: 'plugin' | 'marketplace' | 'skill' | 'agent' | 'command' | 'hooks'
 }
@@ -177,6 +180,80 @@ function checkPathTraversal(
         : `Path contains ".." which could be a path traversal attempt: ${p}`,
     })
   }
+}
+
+const NETWORK_HOSTS_READ = 256
+const REMOTE_MCP_TYPES = new Set(['http', 'streamable-http', 'sse', 'ws'])
+
+// Official 2.1.329 reads `network` from the raw JSON and warns on what the
+// loader would drop (its qe), so a bad entry is reported rather than silently
+// ignored. `type` is the MCP server type when the field sits on a server.
+function checkNetwork(
+  value: unknown,
+  field: string,
+  warnings: ValidationWarning[],
+  type?: unknown,
+): void {
+  if (value === undefined) return
+  if (typeof type === 'string' && REMOTE_MCP_TYPES.has(type)) {
+    warnings.push({
+      path: field,
+      message:
+        "'network' is read on stdio servers only; a remote server's host is read from its url. It will be ignored at load time.",
+    })
+    return
+  }
+  const hosts = (value as { hosts?: unknown } | null)?.hosts
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || !Array.isArray(hosts)) {
+    warnings.push({
+      path: field,
+      message:
+        `'network' must be an object with a list of hosts, such as { "hosts": ["api.example.com"] }. It will be ignored at load time.`,
+    })
+    return
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'hosts') {
+      warnings.push({
+        path: `${field}.${key}`,
+        message: `Unknown field '${key}'. Claude Code ignores it at load time.`,
+      })
+    }
+  }
+  hosts.slice(0, NETWORK_HOSTS_READ).forEach((host, i) => {
+    if (networkHost(host) === undefined) {
+      warnings.push({
+        path: `${field}.hosts[${i}]`,
+        message:
+          'Must be a host as sandbox.network.allowedDomains takes it, in plain ASCII and its usual spelling, with no scheme or path: "api.example.com", "*.example.com", "10.0.0.1", "[::1]" or "localhost", each with an optional ":port". It will be ignored at load time.',
+      })
+    }
+  })
+  if (hosts.length > NETWORK_HOSTS_READ) {
+    warnings.push({
+      path: `${field}.hosts`,
+      message: `Only the first ${NETWORK_HOSTS_READ} entries are read. The rest will be ignored at load time.`,
+    })
+  }
+}
+
+// The `network` of each inline server in a manifest's or entry's mcpServers.
+function checkServerNetworks(
+  mcpServers: unknown,
+  prefix: string,
+  warnings: ValidationWarning[],
+): void {
+  const list = Array.isArray(mcpServers) ? mcpServers : [mcpServers]
+  list.forEach((servers, i) => {
+    if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return
+    const field = Array.isArray(mcpServers) ? `mcpServers[${i}]` : 'mcpServers'
+    for (const [name, server] of Object.entries(servers)) {
+      if (typeof server === 'object' && server !== null && !Array.isArray(server)) {
+        const config = server as { network?: unknown; type?: unknown }
+        checkNetwork(config.network, `${prefix}${field}.${name.slice(0, 64)}.network`, warnings, config.type)
+      }
+    }
+  })
 }
 
 // Shown when a marketplace plugin source contains '..'. Most users hit this because
@@ -323,6 +400,12 @@ export async function validatePluginManifest(
 
   if (!result.success) {
     errors.push(...formatZodErrors(result.error))
+  }
+
+  if (typeof parsed === 'object' && parsed !== null) {
+    const raw = parsed as Record<string, unknown>
+    checkServerNetworks(raw.mcpServers, '', warnings)
+    checkNetwork(raw.network, 'network', warnings)
   }
 
   // Check for common issues and add warnings
@@ -500,6 +583,11 @@ export async function validateMarketplaceManifest(
               errors,
             )
           }
+        }
+        if (plugin && typeof plugin === 'object' && !Array.isArray(plugin)) {
+          const entry = plugin as Record<string, unknown>
+          checkNetwork(entry.network, `plugins[${i}].network`, warnings)
+          checkServerNetworks(entry.mcpServers, `plugins[${i}].`, warnings)
         }
       })
     }
@@ -782,6 +870,7 @@ async function validateHooksJson(
   filePath: string,
   pluginRoot: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
+  foreignComplete = true,
 ): Promise<ValidationResult> {
   let content: string
   try {
@@ -843,6 +932,7 @@ async function validateHooksJson(
   const errors: ValidationError[] = []
   const warnings: ValidationWarning[] = []
   const notes: string[] = []
+  const scanned: NonNullable<ValidationResult['modules']> = []
   // Official 2.1.329 names the plugin by its directory in a module's refusals and owns state by the manifest name.
   const directory = path.basename(pluginRoot)
   let owner = directory
@@ -866,6 +956,7 @@ async function validateHooksJson(
         pluginRoot,
         entrypoints: [resolved],
       })
+      scanned.push({ path: path.relative(pluginRoot, resolved).split(path.sep).join('/'), calls: declaration.calls, events: declaration.events, ...(declaration.hosts && { hosts: declaration.hosts }) })
       const form = declaration.validation?.engineForm
       notes.push(
         `${modulePath} hooks: ${(declaration.validation?.registrations ?? declaration.events).join(', ') || 'nothing'}`,
@@ -905,6 +996,7 @@ async function validateHooksJson(
         references: declaration.state,
         declared,
         others: foreignDeclarations ? [...foreignDeclarations] : undefined,
+        othersComplete: foreignComplete,
       })
       errors.push(...state.problems.map(message => ({
         path: `modules.${modulePath}`,
@@ -912,7 +1004,7 @@ async function validateHooksJson(
       })))
       if (state.unchecked.length) {
         notes.push(
-          `${modulePath} state of other plugins, not checked (validate with their contracts available): ${state.unchecked.join(', ')}`,
+          `${modulePath} state of other plugins, not checked (run validate in a session with them enabled): ${state.unchecked.join(', ')}`,
         )
       }
       }
@@ -958,6 +1050,7 @@ async function validateHooksJson(
     errors,
     warnings,
     ...(notes.length ? { notes } : {}),
+    ...(scanned.length ? { modules: scanned } : {}),
     filePath,
     fileType: 'hooks',
   }
@@ -1016,6 +1109,7 @@ async function collectMarkdown(
 export async function validatePluginContents(
   pluginDir: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
+  foreignComplete = true,
 ): Promise<ValidationResult[]> {
   const results: ValidationResult[] = []
 
@@ -1056,6 +1150,7 @@ export async function validatePluginContents(
     path.join(pluginDir, 'hooks', 'hooks.json'),
     pluginDir,
     foreignDeclarations,
+    foreignComplete,
   )
   if (
     hooksResult.errors.length > 0 ||

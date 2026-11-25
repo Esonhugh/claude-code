@@ -362,7 +362,8 @@ export function createModsSession(options: ModsSessionOptions) {
     }
     event = { ...event, message: redact(event.message) }
     if (event.stage === 'reload') reloadFailures.add(event.plugin)
-    const key = `${event.plugin}:${event.stage}:${event.message}`
+    // Official 2.1.329 tells of a skipped hook once per plugin, event and way it failed.
+    const key = event.hook ? `${event.plugin}:${event.stage}:hook:${event.hook.kind}` : `${event.plugin}:${event.stage}:${event.message}`
     if (reported.has(key) && !event.workerFault) return
     reported.add(key)
     // Do not serialize settings, options, event input or stack traces here.
@@ -376,7 +377,8 @@ export function createModsSession(options: ModsSessionOptions) {
       (event.message === workerDeath && (!event.workerFault || event.workerFault.culprit !== undefined))
     // Raw stderr is overdrawn by the interactive TUI, which shows the diagnostic itself.
     // Official 2.1.329 words a load failure as "<plugin>: hooks module did not load: <error>".
-    const line = event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') :
+    const line = event.hook ? `${event.stage} hook skipped: ${redact(event.hook.why)}` :
+      event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') :
       event.stage !== 'load' ? `${event.stage}: ${event.message}` :
       event.message.startsWith('hooks module did not load') ? event.message : `hooks module did not load: ${event.message}`
     // Official 2.1.329 sends a load failure to $.ui.log only for a watched plugin directory (interactive
@@ -399,10 +401,23 @@ export function createModsSession(options: ModsSessionOptions) {
       }
       if (headless && inline && getPrintOutputFormat() === 'text' && process.env.CLAUDE_CODE_SESSION_KIND !== 'bg')
         process.stderr.write(`${event.plugin}: ${line.replace(/\n/g, '\n  ')}\n`)
+    } else if (event.hook) {
+      // Official 2.1.329 (its $X and e_t) logs a skipped hook at error level, or to $.ui.log while its plugin
+      // directory is watched; stderr carries it only for an inline plugin in headless text output.
+      const inline = event.storageId?.endsWith('@inline') === true
+      const watch = process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+      const watched = inline && (watch === undefined ? !headless : watch !== '0' && watch !== 'false')
+      const shown = line.replace(/[\r\n]/g, ' ')
+      if (!watched) logForDebugging(`${event.plugin}: ${shown}`, { level: 'error' })
+      else if (!headless) logForDebugging(`[${event.plugin}] $.ui.log: ${shown}`)
+      if (!headless) { if (services.uiDiagnostic && !cascade) services.uiDiagnostic(event.plugin, shown) }
+      else if (watched) services.uiLog?.(event.plugin, shown, 'transcript')
+      if (headless && inline && getPrintOutputFormat() === 'text' && process.env.CLAUDE_CODE_SESSION_KIND !== 'bg')
+        process.stderr.write(`${event.plugin}: ${shown}\n`)
     } else if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
     else process.stderr.write(text + '\n')
     const fault = event.workerFault
-    if (!loadFailure) logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
+    if (!loadFailure && !event.hook) logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
       cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
       ...(fault.pingAgeMs === undefined ? {} : {pingAgeMs:fault.pingAgeMs}),
       ...(fault.culprit && {culprit: {

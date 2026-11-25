@@ -14,6 +14,7 @@ import { Ansi } from "../ink/Ansi.js";
 import { Box, Text } from "../ink.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import { useAppState, useSetAppState } from "../state/AppState.js";
+import { isTerminalTaskStatus } from "../taskStatus.js";
 import {
   enterTeammateView,
   exitTeammateView,
@@ -23,6 +24,8 @@ import { logForDebugging } from "../utils/debug.js";
 import { evictTerminalTask } from "../utils/task/framework.js";
 import { hideIdleTeammates } from "../state/teammateViewHelpers.js";
 import { truncateToWidth } from "../utils/truncate.js";
+import { useShortcutDisplay } from "../keybindings/useShortcutDisplay.js";
+import { Byline } from "./design-system/Byline.js";
 import { KeyboardShortcutHint } from "./design-system/KeyboardShortcutHint.js";
 import {
   type CoordinatorSessionRow,
@@ -31,6 +34,7 @@ import {
   getCoordinatorTaskCount,
   getCoordinatorTaskIndex,
   getVisibleAgentTasks,
+  IDLE_TEAMMATES_SHOWN,
   resolveCoordinatorSelection,
 } from "./CoordinatorAgentStatusRows.js";
 
@@ -176,11 +180,7 @@ export function CoordinatorTaskPanel({
       : []),
     ...taskRows.slice(windowStart, windowEnd),
   ];
-  const selectedRow = rows.find((row) => row.selected);
-  const selectedTask = selectedRow?.taskId
-    ? tasks[selectedRow.taskId]
-    : undefined;
-  const contentWidth = Math.max(0, columns - 4);
+  const contentWidth = Math.max(0, columns - 2);
   const showMetrics = contentWidth >= 60;
   const showDetails = verbose && contentWidth >= 100;
   const showTools = showDetails || hasWorkflowTasks;
@@ -219,7 +219,7 @@ export function CoordinatorTaskPanel({
   );
 
   return (
-    <Box flexDirection="column" marginTop={0} paddingX={2}>
+    <Box flexDirection="column" marginTop={1} paddingRight={2}>
       {!mainRow && moreAbove > 0 && (
         <Text dimColor>
           {`  ↑ ${moreAbove} more`}
@@ -285,38 +285,118 @@ export function CoordinatorTaskPanel({
           {moreBelow > 0 ? `  ↓ ${moreBelow} more` : " "}
         </Text>
       )}
-      {selectedRow && (
-        <Text dimColor wrap="truncate">
-          <KeyboardShortcutHint
-            shortcut="Enter"
-            action={selectedRow.kind === "idle_summary" ? "expand" : "view"}
-          />
-          {(selectedRow.kind === "agent" || selectedRow.kind === "teammate") &&
-            !selectedRow.viewed &&
-            selectedTask && (
-              <>
-                {" · "}
-                <KeyboardShortcutHint
-                  shortcut="x"
-                  action={selectedTask.status === "running" ? "stop" : "clear"}
-                />
-              </>
-            )}
-          {" · "}
-          <KeyboardShortcutHint
-            shortcut="Esc"
-            action={
-              idleTeammatesExpanded &&
-              getVisibleAgentTasks(tasks, viewingAgentTaskId).some(
-                (task) => task.type === "idle_summary",
-              )
-                ? "collapse"
-                : "cancel"
-            }
-          />
-        </Text>
-      )}
     </Box>
+  );
+}
+
+/**
+ * The footer line while a panel row is selected, in place of the mode line,
+ * as official 2.1.329 draws it (oV, ~326512000): main offers only selection
+ * (and view while an agent is viewed), the viewed agent only selection, any
+ * other agent or workflow view and stop or clear, an idle summary expand.
+ */
+export function CoordinatorSelectionHint(): React.ReactNode {
+  const tasks = useAppState((s) => s.tasks);
+  const viewingAgentTaskId = useAppState((s) => s.viewingAgentTaskId);
+  const viewSelectionMode = useAppState((s) => s.viewSelectionMode);
+  const coordinatorTaskIndex = useAppState((s) => s.coordinatorTaskIndex);
+  const ultracodeActive = useAppState((s) => s.effortValue === "ultracode");
+  const idleTeammatesExpanded = useAppState(
+    (s) => s.idleTeammatesExpanded ?? false,
+  );
+  const { columns } = useTerminalSize();
+  const keys = {
+    open: useShortcutDisplay("footer:openSelected", "Footer", "enter"),
+    close: useShortcutDisplay("footer:close", "Footer", "x"),
+    collapse: useShortcutDisplay("footer:clearSelection", "Footer", "esc"),
+    stopAll: useShortcutDisplay("chat:killAgents", "Chat", "ctrl+x ctrl+k"),
+  };
+  const rows = getCoordinatorSessionRows({
+    tasks,
+    selectedIndex: coordinatorTaskIndex,
+    viewingAgentTaskId,
+    ultracodeActive,
+    idleTeammatesExpanded,
+  });
+  const row = rows.find((candidate) => candidate.selected);
+  const select = { shortcut: "↑/↓", action: "select" };
+  const open = (action: string) => ({
+    shortcut: keys.open.toLowerCase(),
+    action,
+  });
+  let hints: { shortcut: string; action: string }[];
+  if (!row || row.kind === "main") {
+    hints =
+      viewSelectionMode === "viewing-agent" ? [select, open("view")] : [select];
+  } else if (row.kind === "idle_summary") {
+    hints = [open("expand")];
+  } else if (row.kind === "workflow") {
+    // Official's workflows branch: view and stop or clear, nothing else.
+    const task = row.taskId ? tasks[row.taskId] : undefined;
+    hints = [
+      open("view"),
+      {
+        shortcut: keys.close.toLowerCase(),
+        action: task && isTerminalTaskStatus(task.status) ? "clear" : "stop",
+      },
+    ];
+  } else {
+    const task = row.taskId ? tasks[row.taskId] : undefined;
+    hints =
+      row.viewed && viewSelectionMode === "viewing-agent"
+        ? [select]
+        : [
+            open("view"),
+            {
+              shortcut: keys.close.toLowerCase(),
+              action: task?.status === "running" ? "stop" : "clear",
+            },
+          ];
+    // Collapse is offered once expanding uncovered more idle teammates than
+    // the panel shows folded.
+    const idleTeammates = getVisibleAgentTasks(
+      tasks,
+      viewingAgentTaskId,
+      true,
+    ).filter(
+      (visible) =>
+        visible.type === "in_process_teammate" &&
+        visible.isIdle &&
+        visible.status === "running" &&
+        visible.id !== viewingAgentTaskId,
+    ).length;
+    if (idleTeammatesExpanded && idleTeammates > IDLE_TEAMMATES_SHOWN) {
+      hints.push({ shortcut: keys.collapse.toLowerCase(), action: "collapse" });
+    }
+    const running = Object.values(tasks).filter(
+      (candidate) =>
+        isPanelAgentTask(candidate) &&
+        candidate.evictAfter !== 0 &&
+        candidate.status === "running",
+    ).length;
+    // Narrow terminals drop the stop-all hint first; rebinding a key to a
+    // longer chord raises the width it needs.
+    const extraWidth =
+      stringWidth(keys.open) +
+      stringWidth(keys.close) +
+      stringWidth(keys.collapse) +
+      stringWidth(keys.stopAll) -
+      stringWidth("enterxescctrl+x ctrl+k");
+    if (running > 1 && columns >= 90 + Math.max(0, extraWidth)) {
+      hints.push({
+        shortcut: keys.stopAll.toLowerCase(),
+        action: "stop all agents",
+      });
+    }
+  }
+  return (
+    <Text dimColor wrap="truncate">
+      <Byline>
+        {hints.map((hint) => (
+          <KeyboardShortcutHint key={hint.action} {...hint} />
+        ))}
+      </Byline>
+    </Text>
   );
 }
 
@@ -384,7 +464,14 @@ function SessionRow({
     >
       <Box width={4} flexShrink={0}>
         <Text bold={active || row.viewed} dimColor={!active && !row.viewed}>
-          {active ? figures.pointer : " "} {row.icon}{" "}
+          {active ? figures.pointer : " "}{" "}
+        </Text>
+        <Text
+          color={row.iconColor ?? (active ? "suggestion" : undefined)}
+          bold={row.viewed}
+          dimColor={!row.iconColor && !active && !row.viewed}
+        >
+          {row.icon}{" "}
         </Text>
       </Box>
       <Box
@@ -488,7 +575,7 @@ function SessionRowDetails({
                 <Text dimColor>{row.elapsed}</Text>
               </Box>
               <Box width={5} flexShrink={0}>
-                <Text dimColor> · ↓ </Text>
+                <Text dimColor> · {row.tokenArrow ?? "↓"} </Text>
               </Box>
               <Box
                 width={metricWidths.tokens}

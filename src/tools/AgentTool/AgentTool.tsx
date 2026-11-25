@@ -87,7 +87,7 @@ import {
 } from '../../utils/planModeV2.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
-import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
+import { enqueueSdkEvent, reportTaskOnlyThroughWorkflow } from '../../utils/sdkEventQueue.js'
 import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
 import { ensureSessionTeam } from '../../utils/swarm/sessionTeam.js'
@@ -125,6 +125,7 @@ import {
   emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
+  AgentApiError,
   agentApiTerminationText,
   getAgentTerminalError,
   getLastToolUseName,
@@ -1444,6 +1445,7 @@ export const AgentTool = buildTool({
     const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
     let ownsSlot = true
     try {
+    if (toolUseContext.workflowAgentSystemPrompt !== undefined) reportTaskOnlyThroughWorkflow(earlyAgentId)
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId
       const agentBackgroundTask = registerAsyncAgent({
@@ -2022,18 +2024,13 @@ export const AgentTool = buildTool({
                             { level: 'warn' },
                           )
                         }
-                        const progress = getProgressUpdate(tracker)
                         await notifyAgentEnd(toolUseContext, reportTarget, {
                           taskId: backgroundedTaskId,
                           description,
                           status: 'killed',
                           setAppState: rootSetAppState,
                           toolUseId: toolUseContext.toolUseId,
-                          usage: {
-                            totalTokens: progress.tokenCount,
-                            toolUses: progress.toolUseCount,
-                            durationMs: Date.now() - metadata.startTime,
-                          },
+                          // Official 2.1.329 sends a stopped run's notice without <usage>.
                           ...worktreeResult,
                         }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
                         return
@@ -2058,7 +2055,6 @@ export const AgentTool = buildTool({
                           { level: 'warn' },
                         )
                       }
-                      const progress = getProgressUpdate(tracker)
                       await notifyAgentEnd(toolUseContext, reportTarget, {
                         taskId: backgroundedTaskId,
                         description,
@@ -2066,11 +2062,7 @@ export const AgentTool = buildTool({
                         error: errMsg,
                         setAppState: rootSetAppState,
                         toolUseId: toolUseContext.toolUseId,
-                        usage: {
-                          totalTokens: progress.tokenCount,
-                          toolUses: progress.toolUseCount,
-                          durationMs: Date.now() - metadata.startTime,
-                        },
+                        // Official 2.1.329 sends a failed run's notice without <usage>.
                         ...worktreeResult,
                       }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
                     } finally {
@@ -2402,7 +2394,10 @@ export const AgentTool = buildTool({
               spawnedSubagent?.failed()
               const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, 'failed', unreviewedAgentReport('', toolUseContext))
               if ('consumed' in answer) throw new Error(answer.consumed)
-              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), { name: 'AgentApiErrorTerminationError' })
+              throw terminated === undefined ? syncAgentError : Object.assign(new Error(terminated), {
+                name: 'AgentApiErrorTerminationError',
+                responseText: syncAgentError instanceof AgentApiError ? syncAgentError.responseText : undefined,
+              })
             }
 
             // We have some messages, try to finalize and return them

@@ -4,6 +4,7 @@ import type { WorkflowDryRunPlan } from '../../tools/WorkflowTool/workflowSpec.j
 import { PANEL_GRACE_MS } from '../../utils/task/framework.js'
 import {
   completeWorkflowTask,
+  dismissWorkflowTask,
   failWorkflowTask,
   killWorkflowTask,
   type LocalWorkflowTaskState,
@@ -49,4 +50,25 @@ test('pausing a workflow does not set evictAfter', () => {
   pauseWorkflowTask(id, setAppState)
   expect(task(id).status).toBe('pending')
   expect(task(id).evictAfter).toBeUndefined()
+})
+
+test('dismissing a finished workflow drops it and its finished agents at once', () => {
+  const running = registerWorkflowTask({ plan, setAppState, toolUseId: 'toolu_wf' }).id
+  const agent = (id: string, status: string, toolUseId: string) =>
+    ({ id, type: 'local_agent', status, toolUseId }) as unknown as AppState['tasks'][string]
+  state = {
+    ...state,
+    tasks: {
+      ...state.tasks,
+      child: agent('child', 'killed', 'toolu_wf'),
+      live: agent('live', 'running', 'toolu_wf'),
+      other: agent('other', 'completed', 'toolu_other'),
+    },
+  }
+  dismissWorkflowTask(running, setAppState)
+  expect(task(running)).toBeDefined()
+
+  killWorkflowTask(running, setAppState)
+  dismissWorkflowTask(running, setAppState)
+  expect(Object.keys(state.tasks).sort()).toEqual(['live', 'other'])
 })

@@ -171,6 +171,11 @@ export interface UserMessage {
   /** True for terminal transcript rows, false for submitted text; absent on legacy rows. */
   isTerminalCommand?: boolean
   origin?: MessageOrigin
+  /**
+   * A notice that never started a turn (a stop notice): official 2.1.329
+   * sends it as its own role:"system" turn when the request takes them.
+   */
+  systemTurn?: true
   planContent?: string
 }
 

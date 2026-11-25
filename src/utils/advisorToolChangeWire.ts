@@ -40,13 +40,46 @@ export function isAdvisorToolChangeMarker(
   )
 }
 
+/**
+ * Placeholder normalizeMessagesForAPI leaves for a notice official 2.1.329
+ * sends as its own role:"system" turn after the user turn (a stop notice).
+ * splitSystemTurns turns it into that turn. Never sent as is.
+ */
+export type SystemNoticeMarker = {
+  type: 'system_notice'
+  text: string
+  cache_control?: unknown
+}
+
+export function createSystemNoticeMarker(text: string): SystemNoticeMarker {
+  return { type: 'system_notice', text }
+}
+
+/** Either placeholder that becomes a role:"system" turn. */
+export function isSystemTurnMarker(
+  block: unknown,
+): block is AdvisorToolChangeMarker | SystemNoticeMarker {
+  if (typeof block !== 'object' || block === null) return false
+  const type = (block as { type?: unknown }).type
+  return type === 'advisor_tool_change' || type === 'system_notice'
+}
+
 /** A role:"system" turn (beta `mid-conversation-system-2026-04-07`). */
 export type SystemTurnParam = {
   role: 'system'
   content: Record<string, unknown>[]
 }
 
-function toSystemTurn(marker: AdvisorToolChangeMarker): SystemTurnParam {
+function toSystemTurn(
+  marker: AdvisorToolChangeMarker | SystemNoticeMarker,
+): SystemTurnParam {
+  if (marker.type === 'system_notice') {
+    const text: Record<string, unknown> = { type: 'text', text: marker.text }
+    if (marker.cache_control !== undefined) {
+      text.cache_control = marker.cache_control
+    }
+    return { role: 'system', content: [text] }
+  }
   const block: Record<string, unknown> = {
     type: marker.op === 'add' ? 'tool_addition' : 'tool_removal',
     tool: { type: 'tool_reference', name: 'advisor' },
@@ -64,7 +97,7 @@ function toSystemTurn(marker: AdvisorToolChangeMarker): SystemTurnParam {
  * goes after that message's content instead, so a system turn always follows
  * a user turn. A message holding only markers becomes its system turns.
  */
-export function splitAdvisorToolChanges(
+export function splitSystemTurns(
   messages: BetaMessageParam[],
 ): (BetaMessageParam | SystemTurnParam)[] {
   if (!messages.some(hasMarker)) return messages
@@ -84,7 +117,7 @@ export function splitAdvisorToolChanges(
       pending = []
     }
     for (const block of message.content as unknown[]) {
-      if (!isAdvisorToolChangeMarker(block)) {
+      if (!isSystemTurnMarker(block)) {
         blocks.push(block)
         continue
       }
@@ -94,8 +127,9 @@ export function splitAdvisorToolChanges(
     flush()
     if (pending.length > 0 && out.length === 0) {
       // Never open the conversation with a system turn.
-      out.push({ ...message, content: [{ type: 'text', text: pending[0]!.content[0]!.text as string }] })
-      pending[0]!.content.shift()
+      const first = pending[0]!
+      out.push({ ...message, content: [first.content.shift() as unknown as BetaContentBlockParam] })
+      if (first.content.length === 0) pending.shift()
     }
     out.push(...pending)
   }
@@ -106,7 +140,7 @@ function hasMarker(message: BetaMessageParam): boolean {
   return (
     message.role === 'user' &&
     Array.isArray(message.content) &&
-    message.content.some(isAdvisorToolChangeMarker)
+    message.content.some(isSystemTurnMarker)
   )
 }
 

@@ -236,12 +236,16 @@ function RemoteTaskDetail({
           {task.summary && <Text wrap="wrap">{task.summary}</Text>}
           {progress.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
-              {progress.map((item, index) => (
-                <Text key={index} dimColor={item.status === 'pending'}>
-                  {item.type === 'agent' ? '    ' : '  '}
-                  {item.label ?? item.type} · {item.status ?? 'pending'}
-                </Text>
-              ))}
+              {progress.map(item =>
+                item.type === 'workflow_phase' ? (
+                  <Text key={`phase:${item.index}`}>  {item.title}</Text>
+                ) : (
+                  <Text key={`agent:${item.index}`} dimColor={item.startedAt === undefined && item.state === 'start'}>
+                    {'    '}
+                    {item.label} · {item.startedAt === undefined && item.state === 'start' ? 'queued' : item.state}
+                  </Text>
+                ),
+              )}
             </Box>
           )}
           {hasOutput && (

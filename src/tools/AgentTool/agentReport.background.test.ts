@@ -135,8 +135,12 @@ async function run(
 const queued = (taskId: string) =>
   getCommandQueue().filter(command => String(command.value).includes(taskId))
 const lastReport = () => reports.at(-1)
+const sdkNotice = (taskId: string) =>
+  drainSdkEvents().find(event => event.subtype === 'task_notification' && event.task_id === taskId) as Record<string, unknown> | undefined
 
 // A finished background run is reported, and the parent reads the report's answer.
+// SDK hosts are told the summary is that report, as no review of it is to come (official 2.1.329 outside auto mode).
+drainSdkEvents()
 hook = async (input, next) => ({ text: `${(await next(input) as { text: string }).text} (rewritten)` })
 await run('agent-report-completed', async function* () {
   yield assistant('done')
@@ -151,6 +155,19 @@ assert.deepEqual(lastReport(), {
 assert.equal(queued('agent-report-completed').length, 1)
 assert.match(String(queued('agent-report-completed')[0]?.value), /done \(rewritten\)/)
 assert.equal(captured, released)
+const completedNotice = sdkNotice('agent-report-completed')
+assert.equal(completedNotice?.summary, 'done (rewritten)')
+assert.equal(completedNotice?.summary_is_report, true)
+assert.equal(completedNotice?.handback, undefined)
+
+// A report carrying a mod's warning is not shown as the bare summary.
+snapshot.agentReportWarnings.set('agent-report-warned', 'WARNED')
+await run('agent-report-warned', async function* () {
+  yield assistant('done')
+})
+const warnedNotice = sdkNotice('agent-report-warned')
+assert.equal(warnedNotice?.status, 'completed')
+assert.equal(warnedNotice.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
 // A failed or stopped run had no review: `off` where the mode runs none (official 2.1.329, outside auto mode).
@@ -181,6 +198,9 @@ assert.equal(lastReport()?.agentId, 'agent-report-killed')
 assert.equal(lastReport()?.status, 'stopped')
 assert.equal(lastReport()?.text, 'halfway')
 assert.deepEqual(reviews, ['off', 'off'])
+const failedNotice = sdkNotice('agent-report-failed')
+assert.equal(failedNotice?.status, 'failed')
+assert.equal(failedNotice.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
 // A consumed report is not told to the parent, which no longer waits for it.
@@ -190,13 +210,39 @@ const consumedTask = await run('agent-report-consumed', async function* () {
 })
 assert.equal(queued('agent-report-consumed').length, 0)
 assert.equal(consumedTask.notified, true)
+// SDK hosts see the description, not the mod's reason, and no report (official 2.1.329).
+const consumedNotice = sdkNotice('agent-report-consumed')
+assert.equal(consumedNotice?.status, 'completed')
+assert.equal(consumedNotice.summary, 'agent-report-consumed')
+assert.equal(consumedNotice.summary_is_report, undefined)
+assert.equal(consumedNotice.handback, undefined)
+
+// A consumed hand-back that delivered nothing stays withheld; one that delivered names no hand-back.
+beginSubagentHandback('agent-report-consumed-withheld', true)
+await run('agent-report-consumed-withheld', async function* () {
+  yield assistant('unsent')
+})
+const withheldNotice = sdkNotice('agent-report-consumed-withheld')
+assert.equal(withheldNotice?.summary, 'agent-report-consumed-withheld')
+assert.equal(withheldNotice.handback, 'withheld')
+assert.equal(withheldNotice.handback_report, undefined)
+beginSubagentHandback('agent-report-consumed-sent', true)
+await run('agent-report-consumed-sent', async function* () {
+  deliverSubagentHandback('agent-report-consumed-sent', 'REPORT-GAMMA', undefined, 'toolu_gamma')
+  yield assistant('sent')
+})
+const sentNotice = sdkNotice('agent-report-consumed-sent')
+assert.equal(sentNotice?.summary, 'agent-report-consumed-sent')
+assert.equal(sentNotice.handback, undefined)
+assert.equal(sentNotice.handback_report, undefined)
+assert.equal(sentNotice.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
 // A hand-back run reports its delivered report; the answer replaces it under the frame.
 beginSubagentHandback('agent-report-handback', true)
 hook = async () => ({ text: 'REPORT-BETA' })
 await run('agent-report-handback', async function* () {
-  deliverSubagentHandback('agent-report-handback', 'REPORT-ALPHA', undefined)
+  deliverSubagentHandback('agent-report-handback', 'REPORT-ALPHA', undefined, 'toolu_handback_call')
   yield assistant('sent')
 })
 assert.equal(lastReport()?.agentId, 'agent-report-handback')
@@ -204,6 +250,11 @@ assert.equal(lastReport()?.text, 'REPORT-ALPHA')
 const handbackNotice = String(queued('agent-report-handback')[0]?.value)
 assert.match(handbackNotice, /REPORT-BETA/)
 assert.doesNotMatch(handbackNotice, /REPORT-ALPHA/)
+// SDK hosts render the report the hand-back delivered, not the summary, tied to the SubagentHandback call that sent it.
+const handbackSdk = sdkNotice('agent-report-handback')
+assert.equal(handbackSdk?.handback, 'send')
+assert.deepEqual(handbackSdk?.handback_report, { text: 'REPORT-BETA', toolUseId: 'toolu_handback_call' })
+assert.equal(handbackSdk?.summary_is_report, undefined)
 hook = (input, next) => next(input)
 
 // A workflow's agent() raises no agent.report.

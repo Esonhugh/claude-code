@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'crypto'
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
 import type { SDKAssistantMessage, SDKConversationResetMessage, SDKUserMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SdkWorkflowProgress } from '../types/tools.js'
+import type { SubagentHandbackOutcome } from './subagentHandback.js'
 
 type TaskStartedEvent = {
   type: 'system'
@@ -65,9 +66,8 @@ type TaskProgressEvent = {
   }
   last_tool_name?: string
   summary?: string
-  // Delta batch of workflow state changes. Clients upsert by
-  // `${type}:${index}` then group by phaseIndex to rebuild the phase tree,
-  // same fold as collectFromEvents + groupByPhase in PhaseProgress.tsx.
+  // Every agent and phase row of the workflow so far, as official 2.1.329
+  // sends it; left out when only agent activity changed since the last one.
   workflow_progress?: SdkWorkflowProgress[]
 }
 
@@ -76,6 +76,9 @@ type TaskProgressEvent = {
 // go through the print.ts XML task_notification parser and does NOT trigger
 // the LLM loop. Consumers (e.g. VS Code session.ts) use this to remove the
 // task from the subagent panel.
+/** A hand-back's delivered report as SDK hosts render it, its warning above its text; toolUseId is the SubagentHandback call that sent it. */
+export type SdkHandbackReport = { text: string; warning?: string; toolUseId?: string }
+
 type TaskNotificationSdkEvent = {
   type: 'system'
   subtype: 'task_notification'
@@ -85,11 +88,14 @@ type TaskNotificationSdkEvent = {
   status: 'completed' | 'failed' | 'stopped'
   output_file: string
   summary: string
+  summary_is_report?: boolean
   usage?: {
     total_tokens: number
     tool_uses: number
     duration_ms: number
   }
+  handback?: SubagentHandbackOutcome
+  handback_report?: SdkHandbackReport
 }
 
 // Mirrors notifySessionStateChanged. The CCR bridge already receives this
@@ -167,6 +173,14 @@ export function getTaskRunId(taskId: string): string | undefined {
   return runIds.get(taskId)
 }
 
+// Official 2.1.329: an agent a workflow runs is reported only through the
+// workflow's workflow_progress, with no task events of its own.
+const workflowAgentTaskIds = new Set<string>()
+
+export function reportTaskOnlyThroughWorkflow(taskId: string): void {
+  workflowAgentTaskIds.add(taskId)
+}
+
 const MAX_QUEUE_SIZE = 1000
 const queue: ((SdkEvent & { session_id: string }) | SubagentSdkMessage)[] = []
 let onEnqueue: (() => void) | undefined
@@ -180,6 +194,9 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   // SDK events are only consumed (drained) in headless/streaming mode.
   // In TUI mode they would accumulate up to the cap and never be read.
   if (!getIsNonInteractiveSession()) {
+    return
+  }
+  if (event.type === 'system' && 'task_id' in event && workflowAgentTaskIds.has(event.task_id)) {
     return
   }
   if (queue.length >= MAX_QUEUE_SIZE) {
@@ -282,6 +299,11 @@ export function emitTaskTerminatedSdk(
     outputFile?: string
     usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
     waiting?: boolean
+    /** `summary` is the report its owner is given, with no review to come. */
+    summaryIsReport?: boolean
+    handback?: SubagentHandbackOutcome
+    /** The report a 'send' or 'flagged' hand-back delivered. */
+    handbackReport?: SdkHandbackReport
   },
 ): void {
   enqueueSdkEvent({
@@ -292,7 +314,10 @@ export function emitTaskTerminatedSdk(
     status,
     output_file: opts?.outputFile ?? '',
     summary: opts?.summary ?? '',
+    ...(opts?.summaryIsReport && { summary_is_report: true }),
     usage: opts?.usage,
     ...(opts?.waiting && { waiting: true }),
+    ...(opts?.handback !== undefined && { handback: opts.handback }),
+    ...(opts?.handbackReport && { handback_report: opts.handbackReport }),
   })
 }

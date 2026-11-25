@@ -220,6 +220,8 @@ export function validateModStateReferences(input: {
   references: { reads: ModStateReference[]; writes: ModStateReference[] }
   declared: ModStateDeclaration[]
   others?: ModStateDeclaration[]
+  /** False when others came from discovery outside a session: a foreign key none of them names stays unchecked. */
+  othersComplete?: boolean
 }): { problems: string[]; unchecked: string[] } {
   const known = new Map<string, Set<string>>()
   for (const declaration of [...input.declared, ...(input.others ?? [])]) {
@@ -229,21 +231,24 @@ export function validateModStateReferences(input: {
   }
   const problems: string[] = []
   const unchecked = new Set<string>()
+  // Wording of official 2.1.329: a name is quoted unless it is plain.
+  const spell = (name: string) => /^[\w$@-]+$/.test(name) ? name : JSON.stringify(name)
   for (const reference of input.references.writes) {
     if (reference.plugin !== input.owner) {
-      problems.push(`$.state.set refers to ${reference.plugin}.${reference.key}, which ${reference.plugin} owns; only a value's owner may write it`)
+      problems.push(`$.state.set refers to ${spell(reference.plugin)}.${spell(reference.key)}, which ${reference.plugin} owns: only a value's owner writes it (to change what is written, hook ${reference.plugin}'s state.set and rewrite e.value)`)
     }
   }
   for (const reference of [...input.references.reads, ...input.references.writes]) {
-    const display = `${reference.plugin}.${reference.key}`
-    if (reference.plugin !== input.owner && input.others === undefined) {
+    const display = `${spell(reference.plugin)}.${spell(reference.key)}`
+    const found = known.get(reference.plugin)?.has(reference.key)
+    if (reference.plugin !== input.owner && (input.others === undefined || (input.othersComplete === false && !found))) {
       unchecked.add(display)
       continue
     }
-    if (!known.get(reference.plugin)?.has(reference.key)) {
+    if (!found) {
       problems.push(reference.plugin === input.owner
-        ? `${display} is not declared in the manifest types contract`
-        : `${display} is not declared in any available plugin types contract`)
+        ? `${display} is not declared: the manifest's types contract must name it in interface PluginState { ${reference.plugin}: { ${reference.key}: ... } }`
+        : `${display} is not declared: no enabled plugin's contract names it in PluginState`)
     }
   }
   return { problems: [...new Set(problems)], unchecked: [...unchecked] }

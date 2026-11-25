@@ -80,6 +80,8 @@ export type ModDeclaration = {
   wasm?: { files: { path: string; spellings: string[]; sha256: string | null }[]; isMadeAtRunTime?: true }
   events: string[]
   calls: string[]
+  /** Hosts the module's literal $.http.fetch / $.audio.play URLs name, and the calls whose host is not read. */
+  hosts?: { named: string[]; unread: string[] }
   /** Static command names carried by an original shipped module scan. */
   runCommands?: string[]
   validation?: {

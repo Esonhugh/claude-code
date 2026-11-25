@@ -90,6 +90,7 @@ import {
   takeSubagentHandbackResult,
   withSubagentHandbackReport,
 } from '../../utils/subagentHandback.js'
+import type { SubagentHandbackOutcome } from '../../utils/subagentHandback.js'
 import {
   AGENT_TOOL_NAME,
   LEGACY_AGENT_TOOL_NAME,
@@ -516,6 +517,8 @@ export const agentToolResultSchema = lazySchema(() =>
     // 'flagged' hold the delivered report (a flagged one under its review
     // warning, the first harness note); 'withheld' delivered nothing.
     handback: z.enum(['send', 'flagged', 'withheld']).optional(),
+    // The SubagentHandback call that delivered a 'send' or 'flagged' report.
+    handbackToolUseId: z.string().optional(),
     harnessNoteCount: z.number().optional(),
     harnessTailCount: z.number().optional(),
     harnessSectionHash: z.string().optional(),
@@ -549,6 +552,8 @@ export class AgentApiError extends Error {
   constructor(
     message: string,
     readonly quotaLimits: ClaudeAILimits | undefined,
+    /** The API error as the response said it, which a workflow agent's row shows. */
+    readonly responseText?: string,
   ) {
     super(message)
   }
@@ -561,10 +566,12 @@ export function getAgentTerminalError(messages: MessageType[], runModel: string)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
-  const message = agentApiTerminationText(messages, runModel) ?? extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const text = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const message = agentApiTerminationText(messages, runModel) ?? text
   return new AgentApiError(
     message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
     lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
+    text || undefined,
   )
 }
 
@@ -907,8 +914,8 @@ export function extractPartialResult(
 }
 
 type AgentReportReview = { review: 'cleared' | 'flagged' | 'refused' | 'unavailable' | 'none' | 'off'; warning?: string }
-type AgentReportAnswer = { text: string; warning?: string } | { consumed: string }
-type AgentReport = { text: string; review: () => Promise<AgentReportReview> }
+type AgentReportAnswer = { text: string; review: AgentReportReview['review']; warning?: string } | { consumed: string }
+type AgentReport = { text: string; review: () => Promise<AgentReportReview>; handback?: SubagentHandbackOutcome; handbackToolUseId?: string }
 
 /** Who a run reports as to agent.report; read at launch, as a task drops its agent when the run ends. */
 export type AgentReportTarget = { agent: AgentDefinition; parentAgentId?: string }
@@ -937,7 +944,7 @@ export async function reviewAgentHandoff(
 export function agentReportOf(result: AgentToolResult, review: () => Promise<AgentReportReview>): AgentReport {
   if (result.handback === undefined) return { text: subagentResultText(result), review }
   const { text, ...verdict } = subagentHandbackReport({ ...result, handback: result.handback })
-  return { text, review: async () => verdict }
+  return { text, review: async () => verdict, handback: result.handback, ...(result.handbackToolUseId !== undefined && { handbackToolUseId: result.handbackToolUseId }) }
 }
 
 /**
@@ -955,8 +962,8 @@ export async function reportAgentEnd(
   let reviewed: Promise<AgentReportReview> | undefined
   const review = () => (reviewed ??= report.review())
   const unreported = async () => {
-    const { warning } = await review()
-    return { text: report.text, ...(warning && { warning }) }
+    const { review: verdict, warning } = await review()
+    return { text: report.text, review: verdict, ...(warning && { warning }) }
   }
   if (!target || !snapshot || !(snapshot.hasHooks('agent.report') || snapshot.agentReportWarnings?.has(agentId))) return unreported()
   try {
@@ -968,7 +975,7 @@ export async function reportAgentEnd(
       status,
       text: report.text,
     }, review)
-    return 'consumed' in answer ? answer : { text: answer.text, ...(answer.warning && { warning: answer.warning }) }
+    return 'consumed' in answer ? answer : { text: answer.text, review: answer.review, ...(answer.warning && { warning: answer.warning }) }
   } catch (error) {
     // The parent still gets the run's own report, reviewed once.
     logForDebugging(`agent.report failed for agent ${agentId}: ${errorMessage(error)}`, { level: 'warn' })
@@ -977,9 +984,9 @@ export async function reportAgentEnd(
 }
 
 /** The result a parent reads once agent.report answered; a consumed report leaves only its reason. */
-export function applyAgentReport<T extends AgentToolResult>(result: T, report: AgentReport, answer: AgentReportAnswer): T {
+export function applyAgentReport<T extends AgentToolResult>(result: T, report: AgentReport, answer: { text: string; warning?: string } | { consumed: string }): T {
   if ('consumed' in answer) {
-    const { handback, harnessNoteCount: _notes, harnessTailCount: _tail, harnessSectionHash: _hash, ...rest } = result
+    const { handback, handbackToolUseId: _call, harnessNoteCount: _notes, harnessTailCount: _tail, harnessSectionHash: _hash, ...rest } = result
     // The reason is the mod's, not the agent's: a hand-back shows it as a note, with no report under a frame.
     return { ...rest, ...(handback !== undefined && { handback: 'withheld' }), content: [{ type: 'text', text: answer.consumed }] } as T
   }
@@ -1033,9 +1040,24 @@ export async function notifyAgentEnd(
   const answer = await withAgentReportSnapshot(toolUseContext, snapshot =>
     reportAgentEnd(snapshot, target, notice.taskId, status, report))
   if (!deliver) return answer
-  if ('consumed' in answer) enqueueAgentNotification({ ...notice, consumed: answer.consumed })
-  else enqueueAgentNotification({ ...notice, finalMessage: message(answer) })
+  if ('consumed' in answer) enqueueAgentNotification({ ...notice, consumed: answer.consumed, ...(report.handback === 'withheld' && { handback: report.handback }) })
+  else enqueueAgentNotification({ ...notice, finalMessage: message(answer), ...reportForSdk(report, answer) })
   return answer
+}
+
+/**
+ * How SDK hosts show a delivered report, as official 2.1.329: a hand-back as
+ * the report it delivered, anything else as its summary when no review of it
+ * is to come (`off`) and it carries no warning.
+ */
+function reportForSdk(report: AgentReport, answer: { text: string; review: AgentReportReview['review']; warning?: string }): Pick<AgentNotice, 'summaryIsReport' | 'handback' | 'handbackReport'> {
+  if (report.handback === undefined) return { summaryIsReport: answer.review === 'off' && !answer.warning && answer.text.trim() !== '' }
+  if (report.handback === 'withheld') return { handback: 'withheld' }
+  return { handback: answer.warning ? 'flagged' : 'send', handbackReport: {
+    text: answer.text,
+    ...(answer.warning && { warning: answer.warning }),
+    ...(report.handbackToolUseId !== undefined && { toolUseId: report.handbackToolUseId }),
+  } }
 }
 
 /** auto mode's review of a finished background run; a review that fails is a post-processing warning. */
@@ -1295,6 +1317,9 @@ export async function runAsyncAgentLifecycle({
     if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult, notifyEnd })) {
       const parked = toolUseContext.getAppState().tasks[taskId]
       const ownWork = isLocalAgentTask(parked) && [...parked.keepaliveReasons ?? []].some(reason => reason.startsWith('shell:'))
+      const delivered = agentResult.handback === 'send' || agentResult.handback === 'flagged'
+        ? { handback: agentResult.handback, ...subagentHandbackReport({ ...agentResult, handback: agentResult.handback }) }
+        : undefined
       if (ownWork && shouldNotifyOwner?.() !== false) enqueueAgentNotification({
         taskId,
         description,
@@ -1303,6 +1328,12 @@ export async function runAsyncAgentLifecycle({
         setAppState: rootSetAppState,
         finalMessage: subagentResultText(agentResult),
         turnLimit: agentResult.turnLimit,
+        // A report already delivered shows as one while the agent waits; a withheld one is not a report yet.
+        ...(delivered && { handback: delivered.handback, handbackReport: {
+          text: delivered.text,
+          ...(delivered.warning && { warning: delivered.warning }),
+          ...(agentResult.handbackToolUseId !== undefined && { toolUseId: agentResult.handbackToolUseId }),
+        } }),
         usage: {
           totalTokens: finalProgress.tokenCount,
           toolUses: finalProgress.toolUseCount,
@@ -1387,7 +1418,6 @@ export async function runAsyncAgentLifecycle({
         resolveActivity,
         toolUseContext.options.tools,
       )
-      const terminalProgress = getProgressUpdate(tracker)
       let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
       try {
         worktreeResult = await getWorktreeResult()
@@ -1404,11 +1434,7 @@ export async function runAsyncAgentLifecycle({
         status: 'killed',
         setAppState: rootSetAppState,
         toolUseId: toolUseContext.toolUseId,
-        usage: {
-          totalTokens: terminalProgress.tokenCount,
-          toolUses: terminalProgress.toolUseCount,
-          durationMs: Date.now() - metadata.startTime,
-        },
+        // Official 2.1.329 sends a stopped run's notice without <usage>.
         ...worktreeResult,
       }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
       return
@@ -1421,7 +1447,6 @@ export async function runAsyncAgentLifecycle({
       resolveActivity,
       toolUseContext.options.tools,
     )
-    const terminalProgress = getProgressUpdate(tracker)
     let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
     try {
       worktreeResult = await getWorktreeResult()
@@ -1439,11 +1464,7 @@ export async function runAsyncAgentLifecycle({
       error: msg,
       setAppState: rootSetAppState,
       toolUseId: toolUseContext.toolUseId,
-      usage: {
-        totalTokens: terminalProgress.tokenCount,
-        toolUses: terminalProgress.toolUseCount,
-        durationMs: Date.now() - metadata.startTime,
-      },
+      // Official 2.1.329 sends a failed run's notice without <usage>.
       ...worktreeResult,
     }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
   } finally {

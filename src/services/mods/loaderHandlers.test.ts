@@ -39,15 +39,15 @@ test('rejects nested and dynamic named handlers and validates named generator co
     load(
       `export function register(on){function draw($,e,next){return next(e)}on('ui.render',draw)}`,
     ),
-  ).rejects.toThrow('top of its file')
+  ).rejects.toThrow('top of this file')
   await expect(
     load(
       `let draw=($,e,next)=>next(e);export function register(on){on('ui.render',draw)}`,
     ),
-  ).rejects.toThrow('top of its file')
+  ).rejects.toThrow('top of this file')
   await expect(
     load(
       `function step($,e,next){return next(e)}export function register(on){on('turn.step',step)}`,
     ),
-  ).rejects.toThrow('async generators')
+  ).rejects.toThrow('the hook on "turn.step" is not an async generator')
 })
