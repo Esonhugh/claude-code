@@ -549,6 +549,8 @@ export class AgentApiError extends Error {
   constructor(
     message: string,
     readonly quotaLimits: ClaudeAILimits | undefined,
+    /** The API error as the response said it, which a workflow agent's row shows. */
+    readonly responseText?: string,
   ) {
     super(message)
   }
@@ -561,10 +563,12 @@ export function getAgentTerminalError(messages: MessageType[], runModel: string)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
-  const message = agentApiTerminationText(messages, runModel) ?? extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const text = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
+  const message = agentApiTerminationText(messages, runModel) ?? text
   return new AgentApiError(
     message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
     lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
+    text || undefined,
   )
 }
 

@@ -12,12 +12,24 @@ const str = (v: unknown): string | undefined =>
 const num = (v: unknown): number | undefined =>
   typeof v === 'number' ? v : undefined
 
+export type WorkflowPhaseAgent = {
+  label: string
+  /** queued (waiting for a slot), running, completed, failed, or stopped with the run. */
+  status: string
+  /** Transcript id, once the agent started. */
+  agentId?: string
+  tokens?: number
+  toolUses?: number
+  durationMs?: number
+  lastTool?: string
+}
+
 export type WorkflowPhase = {
   index: number
   label: string
   status: string
   message?: string
-  agents: { label: string; status: string }[]
+  agents: WorkflowPhaseAgent[]
 }
 
 export type AgentTask = {
@@ -54,28 +66,45 @@ export function isFinished(task: AgentTask): boolean {
   return TERMINAL.has(task.status)
 }
 
+function agentStatus(row: Json): string {
+  if (row.state === 'done') return 'completed'
+  if (row.state === 'error') return row.endedWithRun === undefined ? 'failed' : 'stopped'
+  return row.startedAt === undefined && row.queuedAt !== undefined ? 'queued' : 'running'
+}
+
+function phaseStatus(agents: WorkflowPhaseAgent[]): string {
+  const has = (status: string) => agents.some(a => a.status === status)
+  if (!agents.length) return 'pending'
+  if (has('running') || has('queued')) return 'running'
+  if (has('failed')) return 'failed'
+  return has('stopped') ? 'stopped' : 'completed'
+}
+
+/** Phases from the `workflow_phase` and `workflow_agent` rows of a task_progress. */
 function phasesFrom(entries: unknown[]): WorkflowPhase[] {
   const phases = new Map<number, WorkflowPhase>()
   for (const e of entries.filter(isObj)) {
-    if (e.type === 'phase') {
-      const index = num(e.index) ?? phases.size
-      phases.set(index, {
-        index,
-        label: str(e.label) ?? `#${index + 1}`,
-        status: str(e.status) ?? 'pending',
-        message: str(e.message),
-        agents: phases.get(index)?.agents ?? [],
-      })
-    }
+    if (e.type !== 'workflow_phase') continue
+    const index = num(e.index) ?? phases.size + 1
+    phases.set(index, { index, label: str(e.title) ?? `#${index}`, status: 'pending', agents: [] })
   }
   for (const e of entries.filter(isObj)) {
-    if (e.type !== 'agent') continue
-    const phase = phases.get(num(e.phaseIndex) ?? -1)
-    if (phase) {
-      phase.agents.push({ label: str(e.label) ?? '', status: str(e.status) ?? 'pending' })
-    }
+    if (e.type !== 'workflow_agent') continue
+    phases.get(num(e.phaseIndex) ?? -1)?.agents.push(
+      withoutUndefined({
+        label: str(e.label) ?? '',
+        status: agentStatus(e),
+        agentId: str(e.agentId),
+        tokens: num(e.tokens),
+        toolUses: num(e.toolCalls),
+        durationMs: num(e.durationMs),
+        lastTool: str(e.lastToolName),
+      }) as WorkflowPhaseAgent,
+    )
   }
-  return [...phases.values()].sort((a, b) => a.index - b.index)
+  return [...phases.values()]
+    .map(p => ({ ...p, status: phaseStatus(p.agents) }))
+    .sort((a, b) => a.index - b.index)
 }
 
 function usage(raw: Json): Partial<AgentTask> {
@@ -93,10 +122,10 @@ function withoutUndefined<T extends object>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
 }
 
-/** An ended workflow sends no last snapshot, so what was still running ends with it. */
+/** An agent that never started (or a paused run's) has no last row, so it ends with the workflow. */
 function settleWorkflow(task: AgentTask): AgentTask {
   if (task.type !== 'local_workflow' || !isFinished(task) || !task.phases) return task
-  const end = (status: string) => (status === 'running' ? task.status : status)
+  const end = (status: string) => (status === 'running' || status === 'queued' ? task.status : status)
   return {
     ...task,
     phases: task.phases.map(p => ({ ...p, status: end(p.status), agents: p.agents.map(a => ({ ...a, status: end(a.status) })) })),
@@ -277,27 +306,23 @@ export function groupTasks(tasks: Tasks, issuers: Record<string, string> = {}): 
   }
 }
 
-/** The agent a workflow phase card stands for (its description is `<workflow>: <label>`). */
-export function workflowAgent(tasks: Tasks, workflow: AgentTask, label: string): AgentTask | undefined {
-  return Object.values(tasks).find(
-    t =>
-      t.id !== workflow.id &&
-      t.toolUseId === workflow.toolUseId &&
-      (t.title ?? t.description).endsWith(`: ${label}`),
-  )
-}
-
-/**
- * A workflow's phases as shown: the runtime lists an agent as running while it
- * still waits for a concurrency slot, before its task starts; that one is queued.
- */
-export function workflowPhases(tasks: Tasks, workflow: AgentTask): WorkflowPhase[] {
-  return (workflow.phases ?? []).map(p => ({
-    ...p,
-    agents: p.agents.map(a =>
-      a.status === 'running' && !workflowAgent(tasks, workflow, a.label) ? { ...a, status: 'queued' } : a,
-    ),
-  }))
+/** The agent a workflow phase card stands for, once it started, as a task the agent view can follow. */
+export function workflowAgent(workflow: AgentTask, label: string): AgentTask | undefined {
+  const agent = (workflow.phases ?? []).flatMap(p => p.agents).find(a => a.label === label)
+  if (!agent?.agentId) return undefined
+  return {
+    id: agent.agentId,
+    type: 'local_agent',
+    description: label,
+    status: agent.status,
+    toolUseId: workflow.toolUseId,
+    depth: workflow.depth + 1,
+    tokens: agent.tokens,
+    toolUses: agent.toolUses,
+    durationMs: agent.durationMs,
+    lastTool: agent.lastTool,
+    seq: workflow.seq,
+  }
 }
 
 /**

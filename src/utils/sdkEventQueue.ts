@@ -65,9 +65,8 @@ type TaskProgressEvent = {
   }
   last_tool_name?: string
   summary?: string
-  // Delta batch of workflow state changes. Clients upsert by
-  // `${type}:${index}` then group by phaseIndex to rebuild the phase tree,
-  // same fold as collectFromEvents + groupByPhase in PhaseProgress.tsx.
+  // Every agent and phase row of the workflow so far, as official 2.1.329
+  // sends it; left out when only agent activity changed since the last one.
   workflow_progress?: SdkWorkflowProgress[]
 }
 
@@ -167,6 +166,14 @@ export function getTaskRunId(taskId: string): string | undefined {
   return runIds.get(taskId)
 }
 
+// Official 2.1.329: an agent a workflow runs is reported only through the
+// workflow's workflow_progress, with no task events of its own.
+const workflowAgentTaskIds = new Set<string>()
+
+export function reportTaskOnlyThroughWorkflow(taskId: string): void {
+  workflowAgentTaskIds.add(taskId)
+}
+
 const MAX_QUEUE_SIZE = 1000
 const queue: ((SdkEvent & { session_id: string }) | SubagentSdkMessage)[] = []
 let onEnqueue: (() => void) | undefined
@@ -180,6 +187,9 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   // SDK events are only consumed (drained) in headless/streaming mode.
   // In TUI mode they would accumulate up to the cap and never be read.
   if (!getIsNonInteractiveSession()) {
+    return
+  }
+  if (event.type === 'system' && 'task_id' in event && workflowAgentTaskIds.has(event.task_id)) {
     return
   }
   if (queue.length >= MAX_QUEUE_SIZE) {
