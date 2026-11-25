@@ -854,7 +854,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
     const helper = resolved && !resolved.members.length && resolved.binding.fn
     if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
-      fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
+      fail(path, handler.type === 'Identifier'
+        ? `the hook "${handler.name}" is not a function declared at the top of this file (a function declaration, or a const bound to a function), nor imported from one of the module's own files`
+        : 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
     if (!collecting) {
       const parent = parents.get(node)
@@ -1058,7 +1060,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         }
         if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
-      case 'ImportExpression': fail(path, 'dynamic import is unsupported; use static relative imports')
+      case 'ImportExpression': fail(path, 'a dynamic import(); a hooks module imports its own files with an import declaration, as in import { name } from "./file.js"')
       case 'MetaProperty': fail(path, 'import.meta is unsupported')
       case 'CallExpression': {
         if (roleOf(node.callee, scope) === 'on') {
@@ -1243,7 +1245,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       }
     }
     const value = exported(module, 'register', new Set())
-    if (!value?.binding.fn) fail(path, 'entrypoint must export a named register function')
+    if (!value?.binding.fn) fail(path, 'no export named register (export function register(on, options) {...})')
     if (value.binding.fn.path !== module) fail(path, 're-exported register is unsupported; define register in the entrypoint')
     registers.add(value.binding.fn.node)
     value.binding.role = 'register'
@@ -1434,7 +1436,10 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
       fail(from, `${description} must be relative: ${specifier}`)
     }
     const requested = resolve(from, '..', specifier)
-    if (!within(root, requested)) fail(from, `${description} is outside plugin root: ${specifier}`)
+    if (!within(root, requested)) {
+      if (description === 'relative import') importFail(from, specifier, `it is outside the plugin's folder (${root})`)
+      fail(from, `${description} is outside plugin root: ${specifier}`)
+    }
     const extension = extname(requested)
     const emittedExtension = extension === '.js' ? ['.ts', '.tsx'] : extension === '.jsx' ? ['.tsx'] : []
     const direct = extension ? [requested, ...emittedExtension.map(value => requested.slice(0, -extension.length) + value)] :
@@ -1450,7 +1455,12 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && (error as NodeJS.ErrnoException).code !== 'ENOTDIR') throw error
       }
     }
+    if (description === 'relative import') importFail(from, specifier, `no such file under ${root}`)
     fail(from, `cannot resolve ${description} ${specifier}`)
+  }
+  // Wording of official 2.1.329: an import a hooks module cannot follow names the importer by its path under the root.
+  function importFail(from: string, specifier: string, reason: string): never {
+    throw new ModLoadError(`cannot import "${specifier}" (from ${relative(root, from).split(sep).join('/') || from}): ${reason}`)
   }
   async function load(path: string) {
     if (seen.has(path)) return
@@ -1544,7 +1554,7 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
         links.push({ from: path, specifier, to: 'claude-code' })
         continue
       }
-      if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) fail(path, `bare/absolute imports are unsupported: ${specifier}`)
+      if (specifier !== '.' && specifier !== '..' && !specifier.startsWith('./') && !specifier.startsWith('../')) importFail(path, specifier, 'a hooks module imports its own files by relative path and "claude-code", nothing else')
       const to = await resolveModule(path, specifier, 'relative import')
       links.push({ from: path, specifier, to })
       await load(to)

@@ -1021,7 +1021,7 @@ test.each([
   [`on(['tool.call'], () => {})`, /literal/],
   [`const event = 'tool.call'; on(event, () => {})`, /literal/],
   [`on('tool.call', (e) => true, () => {})`, /matcher/],
-  [`on('tool.call', handler)`, /inline/],
+  [`on('tool.call', handler)`, /the hook "handler" is not a function declared at the top of this file/],
   [`on?.('tool.call', () => {})`, /optional/],
   [`on('turn.step', () => {})`, /async generators/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
@@ -1045,11 +1045,11 @@ test.each([
 })
 
 test.each([
-  [`import fs from 'node:fs'; export function register(on) {}`, /bare/],
-  [`import 'some-package'; export function register(on) {}`, /bare/],
-  [`import '/absolute.js'; export function register(on) {}`, /bare/],
+  [`import fs from 'node:fs'; export function register(on) {}`, /by relative path and "claude-code", nothing else/],
+  [`import 'some-package'; export function register(on) {}`, /by relative path and "claude-code", nothing else/],
+  [`import '/absolute.js'; export function register(on) {}`, /by relative path and "claude-code", nothing else/],
   [`import { on } from 'claude-code'; export function register(listen) {}`, /claude-code runtime exports only atom, derive, memberOf, read and update/],
-  [`export default function register(on) {}`, /named register/],
+  [`export default function register(on) {}`, /no export named register/],
   [`export { register } from './helper.ts'`, /re-exported register/],
   [`import { register } from './helper.ts'; export { register }`, /re-exported register/],
   [`export function register(on) { import('./helper.ts') }`, /dynamic import/],
@@ -1323,7 +1323,7 @@ test('enforces lexical and realpath containment for entrypoints and relative imp
   await expect(loadModDeclaration({ ...input, entrypoints: ['inside.ts'] })).rejects.toThrow('absolute')
   expect((await loadModDeclaration({ ...input, entrypoints: [join(input.pluginRoot, 'safe.ts')] })).modules).toHaveLength(1)
   await writeFile(input.entrypoints[0]!, `import '../${outside.pluginRoot.split('/').at(-1)}/main.ts'; export function register(on) {}`)
-  await expect(loadModDeclaration(input)).rejects.toThrow('outside plugin root')
+  await expect(loadModDeclaration(input)).rejects.toThrow("it is outside the plugin's folder")
   await mkdir(join(input.pluginRoot, 'directory.ts'))
   await expect(loadModDeclaration({ ...input, entrypoints: [join(input.pluginRoot, 'directory.ts')] })).rejects.toThrow('regular file')
 })
@@ -1462,7 +1462,7 @@ test('rejects escaping directory symlinks and unsupported relative module format
   await writeFile(join(input.pluginRoot, 'data.json'), '{}')
   await expect(loadModDeclaration(input)).rejects.toThrow('TS/JS ESM')
   await writeFile(input.entrypoints[0]!, `import './missing.ts'; export function register(on) {}`)
-  await expect(loadModDeclaration(input)).rejects.toThrow('cannot resolve relative import')
+  await expect(loadModDeclaration(input)).rejects.toThrow('cannot import "./missing.ts" (from main.ts): no such file under')
 })
 
 test('snapshots a TS entrypoint and collects literal registrations and capabilities', async () => {
