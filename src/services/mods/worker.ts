@@ -65,6 +65,8 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   let uiAllowed = true;
   let uiTables = new Map();
   let uiTablesText = '[]';
+  // Official 2.1.329 gives each method it hands a module a null prototype: $.clock.after(...).cancel.call is undefined.
+  const method = (fn, frozen = true) => { Object.setPrototypeOf(fn, null); return frozen ? Object.freeze(fn) : fn; };
   const functions = new Map();
   const wires = new WeakMap();
   const hostFunctions = new Map();
@@ -222,39 +224,39 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const status = methods.status;
       const toast = methods.toast;
       const copy = methods.copy;
-      if (notice) methods.notice = Object.freeze((tool_use_id, text) => {
+      if (notice) methods.notice = method((tool_use_id, text) => {
         notice(tool_use_id, text).catch(error => report(error, 'ui.notice'));
       });
-      if (log) methods.log = Object.freeze((text, options = {}) => {
+      if (log) methods.log = method((text, options = {}) => {
         log(String(text), {to: options?.to ?? 'transcript'}).catch(error => report(error, 'ui.log'));
       });
-      if (status) methods.status = Object.freeze(text => {
+      if (status) methods.status = method(text => {
         status(text === undefined || text === null ? undefined : String(text)).catch(error => report(error, 'ui.status'));
       });
-      if (toast) methods.toast = Object.freeze((text, options = {}) => {
+      if (toast) methods.toast = method((text, options = {}) => {
         toast(String(text), {...typeof options.timeoutMs === 'number' && {timeoutMs: options.timeoutMs}}).catch(error => report(error, 'ui.toast'));
       });
-      if (copy) methods.copy = Object.freeze(input => copy({text:input?.text,...input?.surface !== undefined && {surface:input.surface}}));
-      if (panes) methods.panes = Object.freeze(async () =>
+      if (copy) methods.copy = method(input => copy({text:input?.text,...input?.surface !== undefined && {surface:input.surface}}));
+      if (panes) methods.panes = method(async () =>
         decode(encode(await panes()), invocation, true));
-      if (invalidate) methods.invalidate = Object.freeze(event => {
+      if (invalidate) methods.invalidate = method(event => {
         invalidate(event).catch(error => report(error, 'ui.invalidate'));
       });
-      if (scroll) methods.scroll = input => scroll({
+      if (scroll) methods.scroll = method(input => scroll({
         to: input?.to,
         ...(input?.in !== undefined && {in:input.in}),
         ...(input?.block !== undefined && {block:input.block}),
-      });
-      if (focus) methods.focus = input => focus({requestId:input?.requestId, key:input?.key});
-      if (blit) methods.blit = input => blit({
+      }), false);
+      if (focus) methods.focus = method(input => focus({requestId:input?.requestId, key:input?.key}), false);
+      if (blit) methods.blit = method(input => blit({
         requestId:input?.requestId,
         key:input?.key,
         ...(input?.cells !== undefined && {cells:input.cells}),
         ...(input?.source !== undefined && {source:input.source}),
         ...(input?.columns !== undefined && {columns:input.columns}),
         ...(input?.rows !== undefined && {rows:input.rows}),
-      });
-      const ui = Object.freeze(Object.assign(Object.create(null), {...methods, resolve: Object.freeze(input => {
+      }), false);
+      const ui = Object.freeze(Object.assign(Object.create(null), {...methods, resolve: method(input => {
         if (disposed) throw Error('Module environment unloaded');
         if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
         const key = input && typeof input === 'object' ? input.surface + ':' + input.component : '';
@@ -317,9 +319,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           });
         };
         timers.set(id, stop); run();
-        return Object.freeze({ cancel: stop });
+        return Object.freeze(Object.assign(Object.create(null), { cancel: method(stop, false) }));
       };
-      const clock = Object.freeze(Object.assign(Object.create(null), { now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) }));
+      const clock = Object.freeze(Object.assign(Object.create(null), { now, sleep: method(sleep), after: method((ms, callback) => schedule('after', ms, callback)), every: method((ms, callback) => schedule('every', ms, callback)) }));
       wires.set(clock, wire);
       return clock;
     }
@@ -419,7 +421,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         return module;
       } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
-      return Object.freeze(proxy);
+      return method(proxy);
     }
     throw Error('Invalid module wire value');
   };
@@ -481,14 +483,14 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     const id = encode(handler).id;
     const registration = { id, event, matcher: checkedMatcher, hasCatch: false };
     registrations.push(registration);
-    return Object.freeze({ catch(handler) {
+    return Object.freeze(Object.assign(Object.create(null), { catch: method(function (handler) {
       if (!registering || registration.hasCatch || event === 'engine.create' || typeof handler !== 'function') {
         throw Error('Invalid hook catch registration');
       }
       checkHandler(event, handler);
       registration.hasCatch = true;
       registration.catchId = encode(handler).id;
-    } });
+    }, false) }));
   }
   // A realm-local cooperative signal subset, not the browser EventTarget API.
   function makeSignal(invocation) {
@@ -509,7 +511,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       for (const [listener, once] of listeners) {
         if (once) listeners.delete(listener);
         try {
-          if (typeof listener === 'function') listener.call(signal, event);
+          if (typeof listener === 'function') Reflect.apply(listener, signal, [event]);
           else if (typeof listener.handleEvent === 'function') listener.handleEvent(event);
         } catch (error) { report(error); }
       }
@@ -564,7 +566,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         const to = decode({type:'host-function', id: meta.to, stream:meta.event === 'turn.step' || meta.event === 'process.spawn'}, request.id);
         const next = (...args) => frame.active ? call(...args) : Promise.reject(Error('Module invocation already settled'));
         Object.defineProperties(next, {
-          to: { value: Object.freeze((...args) => frame.active ? to(...args) : Promise.reject(Error('Module invocation already settled'))) },
+          to: { value: method((...args) => frame.active ? to(...args) : Promise.reject(Error('Module invocation already settled'))) },
           signal: { value: makeSignal(request.id) },
           event: { value: meta.event }, origin: { value: decode(meta.origin, request.id) },
           trace: { get: () => frame.trace },
@@ -572,10 +574,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
             ms: frame.budgetMs,
             get remainingMs() { return frame.remainingMs ?? readBudget(request.id, true); },
           }) },
-          is: { value: Object.freeze((event) => matchesModEventPattern(event, meta.event)) },
+          is: { value: method((event) => matchesModEventPattern(event, meta.event)) },
           ...(meta.error ? { error: { value: decode(meta.error, request.id) }, called: { value: meta.called } } : {}),
         });
-        args.push(Object.freeze(next));
+        args.push(method(next));
       }
       try {
         let drawingHandles;
