@@ -479,13 +479,17 @@ function teammateThemeColor(color: string | undefined): keyof Theme | undefined 
 // queued messages are appended to it.
 function teammateElapsed(task: InProcessTeammateTaskState, now: number): string {
   const queued = task.pendingUserMessages.length
+  const endLabel = AGENT_END_LABELS[task.status]
+  // Official 2.1.329 checks idle before the terminal clock, so an idle
+  // stopped or failed teammate shows only its end label.
   const state =
     task.status === 'running' && task.awaitingPlanApproval
       ? 'awaiting approval'
-      : task.status === 'running' && task.isIdle
-        ? 'idle'
+      : task.isIdle
+        ? endLabel ? '' : 'idle'
         : taskElapsed(task, now)
-  return queued > 0 ? `${state} · ${queued} queued` : state
+  const status = [endLabel, state].filter(Boolean).join(' · ')
+  return queued > 0 ? `${status} · ${queued} queued` : status
 }
 
 function workflowPrimaryText(task: LocalWorkflowTaskState): string {
@@ -542,16 +546,14 @@ export function getCoordinatorSessionRows({
         kind: 'teammate',
         selected,
         viewed: viewingAgentTaskId === task.id,
-        icon:
-          selected || (selectedIndex === undefined && viewingAgentTaskId === task.id)
-            ? '⏺'
-            : '◯',
+        // Official 2.1.329 draws teammates with the agent row code.
+        icon: viewingAgentTaskId === task.id ? '⏺' : '◯',
         primaryText: task.identity.agentName,
         secondaryText: task.description,
         tokens: showTokens ? `${formatNumber(task.progress!.tokenCount)} tokens` : '',
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: teammateElapsed(task, now),
-        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        statusText: AGENT_END_LABELS[task.status] ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: teammateThemeColor(task.identity.color),
         depth: 0,
