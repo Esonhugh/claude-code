@@ -48,11 +48,3 @@ export function AgentListDialog({
     </Dialog>
   )
 }
-
-export function renderToolResultMessage({
-  agents,
-}: {
-  agents: LiveSessionInfo[]
-}): React.ReactNode {
-  return <AgentList agents={agents} />
-}

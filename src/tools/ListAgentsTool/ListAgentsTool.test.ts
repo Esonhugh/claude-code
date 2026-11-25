@@ -82,7 +82,8 @@ if (process.env[childFlag] !== '1') {
     const onDone = mock(() => {})
     const page = await (await command.load()).call(onDone)
     const toolResult = await ListAgentsTool.call({}, context)
-    const toolNode = ListAgentsTool.renderToolResultMessage(toolResult.data)
+    expect(ListAgentsTool.renderToolUseMessage()).toBeNull()
+    expect(ListAgentsTool.renderToolResultMessage()).toBeNull()
     const texts = (node: ReactNode): string => {
       if (node === null || node === undefined || typeof node === 'boolean')
         return ''
@@ -98,7 +99,6 @@ if (process.env[childFlag] !== '1') {
       toolResult.data.agents,
     )
     const { AgentList } = await import('./UI.js')
-    expect(isValidElement(toolNode) && toolNode.type).toBe(AgentList)
     const rendered = AgentList({ agents: peers })
     expect(texts(rendered)).toContain('researcher [222222]')
     expect(texts(rendered)).toContain('/tmp/other-project')

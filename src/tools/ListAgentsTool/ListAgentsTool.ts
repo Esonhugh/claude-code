@@ -11,7 +11,6 @@ import {
   type LiveSessionInfo,
 } from '../../utils/udsClient.js'
 import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
-import { renderToolResultMessage } from './UI.js'
 
 const inputSchema = lazySchema(() => z.strictObject({}))
 type InputSchema = ReturnType<typeof inputSchema>
@@ -119,7 +118,10 @@ export const ListAgentsTool = buildTool({
   renderToolUseMessage() {
     return null
   },
-  renderToolResultMessage,
+  // Official renders neither the call nor its result; the model gets the listing.
+  renderToolResultMessage() {
+    return null
+  },
   mapToolResultToToolResultBlockParam(data, toolUseID) {
     return {
       type: 'tool_result',
