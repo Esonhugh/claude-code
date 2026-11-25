@@ -417,7 +417,7 @@ test.each([false, true])('turn.abort from a Worker cancels the current model wit
       const refused = await runtime.dispatch('tool.call', {}, async () => ({result:'refused'}))
       expect(refused).toEqual({result:'refused'})
       expect(h.context.abortController.signal.aborted).toBe(false)
-      expect(diagnostics).toEqual([{plugin:'abort',stage:'tool.call',message:'abort blocked once'}])
+      expect(diagnostics).toEqual([{plugin:'abort',stage:'tool.call',message:'abort blocked once',hook:{kind:'threw',why:'threw Error: abort blocked once'},storageId:'abort@inline'}])
       diagnostics.length = 0
     }
     const aborted = await runtime.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
