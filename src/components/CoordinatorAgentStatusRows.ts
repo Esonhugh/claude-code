@@ -50,6 +50,8 @@ export type CoordinatorSessionRow = {
   primaryText: string
   secondaryText: string
   tokens: string
+  /** Arrow before the token count; official agent rows show ↑ until there is a last activity. */
+  tokenArrow?: string
   tools: string
   elapsed: string
   statusText: string
@@ -469,6 +471,10 @@ function agentPrimaryText(
   return `${task.agentType}${descendants}`
 }
 
+function tokenArrow(lastActivity: unknown): string {
+  return lastActivity ? '↓' : '↑'
+}
+
 function teammateThemeColor(color: string | undefined): keyof Theme | undefined {
   return color && AGENT_COLORS.includes(color as AgentColorName)
     ? AGENT_COLOR_TO_THEME_COLOR[color as AgentColorName]
@@ -551,6 +557,7 @@ export function getCoordinatorSessionRows({
         primaryText: task.identity.agentName,
         secondaryText: task.description,
         tokens: showTokens ? `${formatNumber(task.progress!.tokenCount)} tokens` : '',
+        tokenArrow: tokenArrow(task.progress?.lastActivity),
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: teammateElapsed(task, now),
         statusText: AGENT_END_LABELS[task.status] ? '' : task.status,
@@ -579,6 +586,7 @@ export function getCoordinatorSessionRows({
         ),
         secondaryText: task.progress?.summary || task.description || task.id,
         tokens: tokenCount > 0 ? `${formatNumber(tokenCount)} tokens` : '',
+        tokenArrow: tokenArrow(task.progress?.lastActivity),
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: endLabel ? `${endLabel} · ${taskElapsed(task, now)}` : taskElapsed(task, now),
         statusText: endLabel ? '' : task.status,

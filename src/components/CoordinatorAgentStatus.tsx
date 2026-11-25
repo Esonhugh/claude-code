@@ -488,7 +488,7 @@ function SessionRowDetails({
                 <Text dimColor>{row.elapsed}</Text>
               </Box>
               <Box width={5} flexShrink={0}>
-                <Text dimColor> · ↓ </Text>
+                <Text dimColor> · {row.tokenArrow ?? "↓"} </Text>
               </Box>
               <Box
                 width={metricWidths.tokens}

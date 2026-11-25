@@ -675,6 +675,20 @@ assert.equal(
   getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.activity,
   'Read(src/index.ts)',
 )
+// Official shows ↓ beside the tokens only once the agent has a last activity.
+assert.equal(
+  getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.tokenArrow,
+  '↓',
+)
+assert.equal(
+  getCoordinatorSessionRows({
+    tasks: {
+      'agent-1': { ...agentTask, progress: { tokenCount: 1500, toolUseCount: 0 } },
+    } as unknown as AppState['tasks'],
+    now: 5_000,
+  })[1]?.tokenArrow,
+  '↑',
+)
 
 const cycleA = {
   ...nestedChildAgentTask,

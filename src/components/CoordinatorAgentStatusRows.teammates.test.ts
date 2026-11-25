@@ -102,4 +102,7 @@ test('teammate rows use the agent row status and icon', () => {
   expect(row({ status: 'failed' })).toMatchObject({ elapsed: 'failed · 5s', statusText: '' })
   expect(row({}, { selectedIndex: 1 })).toMatchObject({ selected: true, icon: '◯' })
   expect(row({}, { viewingAgentTaskId: 'mate@team' })).toMatchObject({ viewed: true, icon: '⏺' })
+  expect(row({})).toMatchObject({ tokens: '1.2k tokens', tokenArrow: '↑' })
+  expect(row({ progress: { tokenCount: 1200, toolUseCount: 1, lastActivity: { toolName: 'Read' } } } as never))
+    .toMatchObject({ tokenArrow: '↓' })
 })
