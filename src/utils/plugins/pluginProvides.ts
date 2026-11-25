@@ -7,6 +7,7 @@ import { errorMessage } from '../errors.js'
 import { parseFrontmatter } from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import type { HooksSettings } from '../settings/types.js'
+import { urlHost } from '../../services/mods/loader.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { isMcpbSource } from './mcpbHandler.js'
 import { loadMcpServersFromFile } from './mcpPluginIntegration.js'
@@ -216,16 +217,6 @@ async function outputStyles(plugin: Components): Promise<Entry[]> {
 
 const modulePath = (plugin: Components, module: string) => relative(plugin.path, module).split(sep).join('/')
 
-// Official 2.1.329 names the host of a literal http(s) or ws(s) URL; a URL built from a ${slot} before its host names none.
-const HOST = /^(?:[\w-]+(?:\.[\w-]+)*|\[[\da-f:.]+\])$/
-function hostOf(url: string): string | undefined {
-  const slot = url.indexOf('${')
-  const parsed = URL.parse(slot === -1 ? url : `${url.slice(0, slot)}@slot.invalid`)
-  const host = parsed?.hostname.replace(/\.$/, '') ?? ''
-  if (parsed === null || !/^(?:http|ws)s?:$/.test(parsed.protocol) || host === 'slot.invalid' || !HOST.test(host)) return undefined
-  return parsed.port === '' ? host : `${host}:${parsed.port}`
-}
-
 function declaredHosts(network: unknown): string[] | undefined {
   const hosts = (network as { hosts?: unknown } | undefined)?.hosts
   if (!Array.isArray(hosts)) return undefined
@@ -234,12 +225,12 @@ function declaredHosts(network: unknown): string[] | undefined {
     const lower = entry.toLowerCase()
     const port = /:(\d{1,5})$/.exec(lower)
     const host = (port ? lower.slice(0, port.index) : lower).replace(/^\*\./, '')
-    return hostOf(`http://${host}`) === host ? [lower] : []
+    return urlHost(`http://${host}`) === host ? [lower] : []
   })
   return valid.length === 0 && hosts.length !== 0 ? undefined : valid
 }
 
-type Uses = { calls: readonly string[]; events: readonly string[] }
+type Uses = { calls: readonly string[]; events: readonly string[]; hosts?: { named: readonly string[]; unread: readonly string[] } }
 type Part = { kind: string; name: string; reason: 'process' | 'url' | 'unlisted' }
 const PROCESS = ['process.run', 'process.spawn']
 const REACHING = [...PROCESS, 'agent.call', 'agent.register', 'command.run', 'tool.call']
@@ -257,13 +248,14 @@ function hostLines(provides: PluginProvides, uses: Uses | null, declared: string
   const hookList = provides.hooks as { event: string; type: string; url?: string; matcher?: string }[]
   const servers = provides.mcpServers as { name: string; type: string; target: string }[]
   const reaches = (uses?.calls ?? []).some(call => REACHING.includes(call)) || (uses?.events ?? []).some(event => PROCESS.some(name => matches(event, name)))
-  // The scan does not read the URLs a module fetches, so each such call is a part whose host is not read.
-  const urlUses = [...(uses?.calls ?? []).filter(call => URL_CALLS.includes(call)), ...(uses?.events ?? []).filter(event => URL_CALLS.some(name => matches(event, name)))]
+  // A module names the hosts its literal URLs reach; each other URL call, and each hook on one, is a part whose host is not read.
+  const urlHosts = uses?.hosts ?? { named: [], unread: (uses?.calls ?? []).filter(call => URL_CALLS.includes(call)) }
+  const urlUses = [...urlHosts.named, ...[...urlHosts.unread, ...(uses?.events ?? []).filter(event => URL_CALLS.some(name => matches(event, name)))].map(() => undefined)]
   const reached: { host?: string; declared: boolean; part?: Part }[] = [
-    ...modules.flatMap(({ path }) => urlUses.map(() => ({ declared: false, part: { kind: 'modules', name: path, reason: 'url' as const } }))),
-    ...hookList.flatMap(hook => hook.type === 'http' ? [{ host: hostOf(hook.url ?? ''), declared: false, part: { kind: 'hooks', name: hook.event, reason: 'url' as const } }] : []),
+    ...modules.flatMap(({ path }) => urlUses.map(host => ({ host, declared: false, part: { kind: 'modules', name: path, reason: 'url' as const } }))),
+    ...hookList.flatMap(hook => hook.type === 'http' ? [{ host: urlHost(hook.url ?? ''), declared: false, part: { kind: 'hooks', name: hook.event, reason: 'url' as const } }] : []),
     ...servers.filter(({ type, target }) => type === 'mcpb' ? !target.startsWith('./') : type !== 'stdio')
-      .map(({ name, target }) => ({ host: hostOf(target), declared: false, part: { kind: 'mcpServers', name, reason: 'url' as const } })),
+      .map(({ name, target }) => ({ host: urlHost(target), declared: false, part: { kind: 'mcpServers', name, reason: 'url' as const } })),
     ...(declared ?? []).map(host => ({ host, declared: true })),
   ]
   const process: [string, string[]][] = [

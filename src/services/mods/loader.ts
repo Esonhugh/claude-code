@@ -66,6 +66,19 @@ export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts'
 // loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
 class ModLoadError extends Error {}
 
+const urlCallSpellings = ['audio.play', 'http.fetch']
+const urlTextLimit = 2048
+const urlHostPattern = /^(?:[\w-]+(?:\.[\w-]+)*|\[[\da-f:.]+\])$/
+
+/** The host (and port) of a literal http(s) or ws(s) URL, or undefined when a ${slot} before its host leaves it unnamed. */
+export function urlHost(url: string): string | undefined {
+  const slot = url.indexOf('${')
+  const parsed = URL.parse(slot === -1 ? url : `${url.slice(0, slot)}@slot.invalid`)
+  const host = parsed?.hostname.replace(/\.$/, '') ?? ''
+  if (parsed === null || !/^(?:http|ws)s?:$/.test(parsed.protocol) || host === 'slot.invalid' || !urlHostPattern.test(host)) return undefined
+  return parsed.port === '' ? host : `${host}:${parsed.port}`
+}
+
 // A string written as a literal or a template with no substitution.
 function literalString(node: Node | undefined): string | undefined {
   if (node?.type === 'Literal') return typeof node.value === 'string' ? node.value : undefined
@@ -145,6 +158,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
   const wasm = { literals: [] as { path: string; spelling: string; line?: number }[], isMadeAtRunTime: false }
+  const urlCalls: { call: string; node: Node; scope: Scope }[] = []
   // Roles flow from register/handler parameters through lexical bindings and actual imports, never parameter names.
   const moduleScopes = new Map<string, Scope>()
   const registers = new Set<Node>()
@@ -394,6 +408,57 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function literalString(node: Node): string | undefined {
     if (node.type === 'Literal' && typeof node.value === 'string') return node.value
     if (node.type === 'TemplateLiteral' && !node.expressions.length) return node.quasis[0]?.value.cooked ?? undefined
+  }
+
+  // The text a URL argument spells, as official 2.1.329 reads it (its Ge): a literal, a const naming one, or a
+  // template up to its first substitution that is neither.
+  function urlText(node: Node, scope: Scope, seen = new Set<Binding>()): string | undefined {
+    if (node.type === 'Identifier') {
+      const binding = lookup(node.name, scope)
+      if (!binding?.alias || seen.has(binding)) return
+      return urlText(binding.alias.node, binding.alias.scope, new Set(seen).add(binding))
+    }
+    if (node.type !== 'TemplateLiteral') {
+      const text = literalString(node)
+      return (text?.length ?? 0) > urlTextLimit ? undefined : text
+    }
+    let text = ''
+    for (const [index, quasi] of (node.quasis as Node[]).entries()) {
+      text += quasi.value.cooked
+      const expression = node.expressions[index] as Node | undefined
+      if (expression !== undefined) text += urlText(expression, scope, seen) ?? '${'
+      if (text.length > urlTextLimit) return
+      if (text.includes('${')) break
+    }
+    return text
+  }
+
+  // The hosts $.http.fetch and $.audio.play calls name, and the calls whose host is not read (official 2.1.329's Yt).
+  function urlHosts(): { named: string[]; unread: string[] } | undefined {
+    if (!urlCalls.length) return
+    const named = new Set<string>()
+    const unread = new Set<string>()
+    const isPlain = (item: Node) => !(item.type === 'SpreadElement' || item.computed || item.kind !== 'init')
+    const isNamed = (item: Node, name: string) => item.type === 'Property' &&
+      (item.key.type === 'Identifier' && item.key.name === name || item.key.type === 'Literal' && item.key.value === name)
+    for (const { call, node, scope } of urlCalls) {
+      const [first, second] = node.arguments as (Node | undefined)[]
+      const isFetch = call === 'http.fetch'
+      const options = isFetch ? second : first
+      const isRead = first?.type !== 'SpreadElement' && options?.type === 'ObjectExpression' &&
+        !options.properties.some((item: Node) => !isPlain(item) || isNamed(item, '__proto__'))
+      const field = isRead ? (options!.properties as Node[]).findLast(item => isNamed(item, isFetch ? 'socketPath' : 'url')) : undefined
+      const fieldText = field?.type === 'Property' ? urlText(field.value, scope) : undefined
+      const hasNoField = isRead && field === undefined
+      if (!isFetch && hasNoField) continue
+      const viaSocket = isFetch && fieldText !== undefined
+      const hasUnreadOptions = isFetch && second !== undefined && !hasNoField
+      const url = isFetch ? first && urlText(first, scope) : fieldText
+      const host = url === undefined || viaSocket ? undefined : urlHost(url)
+      if (host !== undefined) named.add(host)
+      if (host === undefined || hasUnreadOptions) unread.add(call)
+    }
+    return { named: [...named].sort(), unread: [...unread].sort() }
   }
 
   function stateReference(node: Node, scope: Scope, resolving = new Set<Binding>()): ModStateReference | undefined {
@@ -1224,6 +1289,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           scanEnvironment(call, node)
           scanState(call, node, scope)
           scanWasm(call, node)
+          if (urlCallSpellings.includes(call)) urlCalls.push({ call, node, scope })
         } else if (roleOf(callee, scope) === 'next') {
           if (node.optional || node.arguments.length !== 1) fail(path, 'next requires one input and a non-optional call')
         } else if (capabilityValue(callee, scope)?.role === 'next') {
@@ -1356,7 +1422,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry, wasm, engineSpelling, validation: {
+  const hosts = urlHosts()
+  return { events, calls, env, state, nextTiers, telemetry, wasm, hosts, engineSpelling, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
     gates: [...registrationDescriptions.values()].filter(({ event }) => isGate(event)).map(({ event, matcher, scope, hasCatch }) => ({
       registration: matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`,
@@ -1699,6 +1766,7 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
     entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(),
+    ...(scanned.hosts ? { hosts: scanned.hosts } : {}),
     validation: { ...scanned.validation, ...(engineForm && { engineForm }), ...(scanned.engineSpelling && { engineSpelling: scanned.engineSpelling }) },
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {

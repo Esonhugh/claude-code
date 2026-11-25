@@ -69,6 +69,27 @@ test('lists parts and the hosts they reach like official, without the plugin loa
   }
 })
 
+// Official 2.1.329 reads the host of a literal URL, a const naming one, or a template up to its first unread substitution.
+test('a module names the hosts its literal URLs reach like official', async () => {
+  const root = await plugin({
+    'hooks/hooks.json': JSON.stringify({ modules: ['./m.mjs'] }),
+    'hooks/m.mjs': [
+      'const U = "https://c.example.com:8443/p"',
+      'const T = `wss://t.example.com/${U}`',
+      'export function register(on) { on("session.start", async ($, e) => {',
+      '  await $.http.fetch(U); await $.http.fetch(`https://s.example.com/${e.x}`); await $.http.fetch(`https://${e.h}/x`); await $.http.fetch(T, { method: "GET" })',
+      '  await $.http.fetch("https://a.example.com", { socketPath: "/tmp/s" }); await $.http.fetch("https://b.example.com", { ...e.o })',
+      '  await $.audio.play({ url: "https://snd.example.com/x.mp3" }); await $.audio.play({ file: "./a.mp3" })',
+      '}) }',
+    ].join('\n'),
+  })
+  const listing = await listPluginProvides(root, await validatePluginContents(root))
+  expect(listing!.hosts).toEqual([
+    'Hosts: b.example.com, c.example.com:8443, s.example.com, snd.example.com, t.example.com',
+    'Hosts not read for: modules (1)',
+  ])
+})
+
 test('a plugin of markdown parts alone reaches no host it names', async () => {
   const root = await plugin({ 'skills/sk1/SKILL.md': markdown('sk1'), 'commands/cmd1.md': markdown() })
   const listing = await listPluginProvides(root, [])
