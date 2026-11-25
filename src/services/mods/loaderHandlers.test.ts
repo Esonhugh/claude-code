@@ -49,5 +49,5 @@ test('rejects nested and dynamic named handlers and validates named generator co
     load(
       `function step($,e,next){return next(e)}export function register(on){on('turn.step',step)}`,
     ),
-  ).rejects.toThrow('async generators')
+  ).rejects.toThrow('the hook on "turn.step" is not an async generator')
 })

@@ -431,13 +431,12 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     return value;
   };
   const asyncGeneratorPrototype = Object.getPrototypeOf(async function* () {});
-  const generatorPrototype = Object.getPrototypeOf(function* () {});
   const checkHandler = (event, handler) => {
     if (typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook handler');
     const prototype = Object.getPrototypeOf(handler);
     if (event === 'turn.step' || event === 'process.spawn') {
       if (prototype !== asyncGeneratorPrototype) throw Error(event + ' handlers must be async generators');
-    } else if (prototype === asyncGeneratorPrototype || prototype === generatorPrototype) throw Error('Generator hooks require exact turn.step or process.spawn');
+    } else if (prototype === asyncGeneratorPrototype) throw Error('Generator hooks require exact turn.step or process.spawn');
   };
   function on(event, matcher, handler) {
     if (!registering) throw Error('on() is only available during register()');

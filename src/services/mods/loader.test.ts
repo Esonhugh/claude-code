@@ -196,6 +196,23 @@ test.each([
   await expect(loadModDeclaration(input)).rejects.toThrow(/generator/)
 })
 
+test.each([
+  [`on('turn.step', async ($, e, next) => next(e))`, 'the hook on "turn.step" is not an async generator: turn.step streams, so it takes async function* ($, e, next) { ... }, which yields the chunks and returns the result'],
+  [`on('session.start', async function* ($, e, next) { return next(e) })`, 'the hook on "session.start" is an async generator: only a streaming event named as itself (turn.step, process.spawn) takes one; this pattern takes ($, e, next) => result'],
+  [`on('tool.call', ($, e, next) => next(e)).catch(async function* ($, e, next) { return next(e) })`, 'the .catch handler on "tool.call" is an async generator: only a streaming event named as itself (turn.step, process.spawn) takes one; this pattern takes ($, e, next) => result'],
+])('words a hook of the wrong generator form like 2.1.329: %s', async (source, message) => {
+  const input = await plugin({'main.ts': `export function register(on) { ${source}; }`})
+  await expect(loadModDeclaration(input)).rejects.toThrow(message)
+})
+
+test.each([
+  `export function* register(on) { on('session.start', async ($, e, next) => next(e)) }`,
+  `export function register(on) { on('session.start', function* ($, e, next) { return next(e) }) }`,
+])('admits a plain generator register or non-streaming hook like 2.1.329: %s', async source => {
+  const input = await plugin({'main.ts': source})
+  await expect(loadModDeclaration(input)).resolves.toBeDefined()
+})
+
 test('records literal environment reads and writes across entrypoints and imported helpers', async () => {
   const input = await plugin({
     'main.ts': `import { read } from './read'; export function register(on) {
@@ -1041,7 +1058,7 @@ test.each([
   [`on('tool.call', (e) => true, () => {})`, /matcher/],
   [`on('tool.call', handler)`, /the hook "handler" is not a function declared at the top of this file/],
   [`on?.('tool.call', () => {})`, /optional/],
-  [`on('turn.step', () => {})`, /async generators/],
+  [`on('turn.step', () => {})`, /the hook on "turn\.step" is not an async generator: turn\.step streams/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
   [`on('session.start', ($, e, next) => $.tool['register'](e))`, /\$\.tool is used as a value/],
   [`on('session.start', ($, e, next) => $['clock'].now(e))`, /computed/],

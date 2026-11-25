@@ -901,11 +901,15 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     nodes.forEach(walk)
   }
 
-  function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler = false) {
-    if (handler && (event === 'turn.step' || event === 'process.spawn')) {
-      if (!node.async || !node.generator) fail(path, `${event} handlers must be async generators`)
-    } else if (roles.length && node.generator) fail(path, 'generator register/handlers are unsupported')
-    const inner = cachedScope(node, scope, JSON.stringify([event, handler, roles]), () => {
+  // Official 2.1.329 checks only the async generator form, and only on a hook or .catch handler; a plain generator passes.
+  function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler: false | 'the hook' | 'the .catch handler' = false) {
+    if (handler) {
+      const streaming = event === 'turn.step' || event === 'process.spawn'
+      const asyncGenerator = node.async === true && node.generator === true
+      if (streaming && !asyncGenerator) fail(path, `${handler} on "${event}" is not an async generator: ${event} streams, so it takes async function* ($, e, next) { ... }, which yields the chunks and returns the result`)
+      if (!streaming && asyncGenerator) fail(path, `${handler} on "${event}" is an async generator: only a streaming event named as itself (turn.step, process.spawn) takes one; this pattern takes ($, e, next) => result`)
+    }
+    const inner = cachedScope(node, scope, JSON.stringify([event, !!handler, roles]), () => {
       const bindings = new Map<string, Binding>()
       if (node.id) bindings.set(node.id.name, { role: registers.has(node) ? 'register' : null, fn: { node, scope, path } })
       for (let i = 0; i < node.params.length; i++) {
@@ -934,7 +938,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const outerReturningRegister = returningRegister
     const outerEngineReturns = engineReturns
     engineReturns = new Set()
-    returningEngine = handler && event === 'engine.create'
+    returningEngine = !!handler && event === 'engine.create'
     returningRegister = registers.has(node)
     for (const param of node.params) visitPattern(param, inner, event)
     if ((returningEngine || returningRegister) && node.body.type !== 'BlockStatement') {
@@ -990,7 +994,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     try {
       if (helper) path = helper.path
       visitFunction(helper?.node ?? handler, helper?.scope ?? scope,
-        [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, true)
+        [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, 'the hook')
     } finally { path = callerPath }
     return event
   }
@@ -1200,7 +1204,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           const hookEvent = registration(callee.object, scope)!
           if (hookEvent === 'engine.create') fail(path, 'engine.create catch is unsupported')
           if (node.arguments.length !== 1 || !isFunction(node.arguments[0])) fail(path, 'catch requires one inline handler')
-          visitFunction(node.arguments[0], scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], hookEvent, true)
+          visitFunction(node.arguments[0], scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], hookEvent, 'the .catch handler')
           return
         }
         const stateOperation = stateHelper(node, scope)
