@@ -532,7 +532,7 @@ describe('Mods lifecycle', () => {
     }`, 'consumer')
     const { value, events } = runtime()
     await value.reconcile([{ ...revive, tier: 'prepend' }, { ...hide, tier: 'prepend' }, consumer, provider])
-    expect(events.filter(event => event.stage === 'engine.create').map(event => event.plugin)).toEqual(['revive'])
+    expect(events.filter(event => event.stage === 'load' && event.message.startsWith('hooks module did not load: engine.create failed (')).map(event => event.plugin)).toEqual(['revive'])
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
     expect(events.some(event => event.plugin === 'consumer' && event.message.includes('withheld'))).toBe(true)
   })
@@ -772,7 +772,7 @@ describe('Mods lifecycle', () => {
     const inner = await fixture(`export function register(on) { on('engine.create', () => { throw Error('inner failed'); }); }`, 'inner')
     const { value, events } = runtime()
     await value.reconcile([outer, inner])
-    expect(events).toEqual([{ plugin: 'inner', stage: 'engine.create', message: 'inner failed' }])
+    expect(events).toEqual([{ plugin: 'inner', stage: 'load', message: 'hooks module did not load: engine.create failed (inner failed)', storageId: 'inner@inline' } as (typeof events)[number]])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 2 })
   })
 
@@ -1075,7 +1075,7 @@ describe('Mods lifecycle', () => {
       on('tool.call', () => ({ result: 'new' }));
     }`)
     await value.reconcile([plugin])
-    expect(events.some(event => event.stage === 'engine.create')).toBe(true)
+    expect(events.some(event => event.stage === 'load' && event.message.startsWith('hooks module did not load: engine.create failed ('))).toBe(true)
     expect(value.hasHooks('tool.call')).toBe(false)
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
@@ -1101,7 +1101,7 @@ describe('Mods lifecycle', () => {
     }`)
     const { value, events } = runtime()
     await value.reconcile([policy])
-    expect(events.some(event => event.stage === 'engine.create' && event.message.includes('replace noun clock'))).toBe(true)
+    expect(events.some(event => event.stage === 'load' && event.message.includes('engine.create failed') && event.message.includes('replace noun clock'))).toBe(true)
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
 

@@ -100,7 +100,7 @@ test.each(['throw','shape'])('unchanged %s engine.create failures skip real gues
     await host.value.reconcile([monitor,bad]);expect(await count(host)).toBe(1)
     await host.value.reconcile([monitor,bad]);await host.value.reconcile([monitor,bad])
     expect(await count(host)).toBe(1)
-    expect(host.events.filter(event=>event.stage==='engine.create'&&event.plugin==='failed')).toHaveLength(1)
+    expect(host.events.filter(event=>event.stage==='load'&&event.message.startsWith('hooks module did not load: engine.create failed (')&&event.plugin==='failed')).toHaveLength(1)
   }finally{await host.close()}
 })
 
@@ -233,6 +233,6 @@ test('a successful real build clears the old failure gate before the original fa
     // The loaded `failed` hooks engine.create, so this reload loads monitor again too (official 2.1.329
     // session.start); its fresh count sees the one clock.now of the failing fold.
     await host.value.reconcile([monitor,bad]);expect(await count(host)).toBe(1)
-    expect(host.events.filter(event=>event.plugin==='failed'&&event.stage==='engine.create')).toHaveLength(2)
+    expect(host.events.filter(event=>event.plugin==='failed'&&event.stage==='load'&&event.message.startsWith('hooks module did not load: engine.create failed ('))).toHaveLength(2)
   }finally{await host.close()}
 })

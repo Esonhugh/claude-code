@@ -301,6 +301,10 @@ type AttachedClient = {
 }
 const tierOrder: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 // Identity-only entries; all calls, including beneath, use engineFor's bridge.
+// Official 2.1.329 keeps $ in this noun order; a noun it doesn't list follows, in the order it was added.
+const officialNounOrder = ['plugin', 'ui', 'theme', 'model', 'audio', 'mcp', 'session', 'prompt', 'turn', 'tool', 'command', 'config', 'telemetry', 'agent', 'fs', 'store', 'state', 'clock', 'http', 'process', 'settings', 'env', 'wasm']
+const nounRank = (noun: string) => { const index = officialNounOrder.indexOf(noun); return index === -1 ? officialNounOrder.length : index }
+const inOfficialNounOrder = <T>(entries: [string, T][]) => entries.sort(([left], [right]) => nounRank(left) - nounRank(right))
 const clockIdentity = () => { throw new Error('Clock calls must use the environment bridge') }
 const coreClock = Object.freeze({
   now: clockIdentity, sleep: clockIdentity, after: clockIdentity, every: clockIdentity,
@@ -2611,7 +2615,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ? createModUiBridge(wrapped)
         : Object.freeze(wrapped)
     }
-    return Object.freeze(result)
+    return Object.freeze(Object.fromEntries(inOfficialNounOrder(Object.entries(result))))
   }
 
   // The host reads only a file the scan listed under the spelling the call used, then
@@ -3481,11 +3485,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             to: { value: (input: ModInput, tier: ModTier) => descend(input, tier) },
           }) as ModNext
           const result = await hook.invoke(input, continuation, catching) as Nouns
-          if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('engine.create must return an interface')
+          if (!result || typeof result !== 'object')
+            throw Object.assign(new Error(`${owner.declaration.name}: engine.create must return $ ({ ...await next(e), <noun>: { <event>() {} } }), not ${typeof result}`), {name:'HooksError'})
+          if (Array.isArray(result)) throw new Error('engine.create must return an interface')
           if (!called) state.endedBy = owner.declaration.name
           const table: Nouns = Object.create(null)
           for (const [noun, methods] of Object.entries(result)) {
-            if (!methods || typeof methods !== 'object' || Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
+            if (!methods || typeof methods !== 'object')
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${noun} must be an object of methods, not ${typeof methods}`), {name:'HooksError'})
+            if (Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
             // Ordinary noun objects are cloned across the Worker; their host
             // callable identities survive, while the clock has its own wire tag.
             const inherited = views.find(item => item.noun === noun && (item.view === methods ||
@@ -3494,7 +3502,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             if (inherited) { table[noun] = inherited; continue }
             if (noun === 'plugin') throw new Error('engine.create may not replace plugin identity')
             const entries = Object.entries(methods)
-            if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
+            const [method] = entries.find(([, fn]) => typeof fn !== 'function') ?? []
+            if (method !== undefined)
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${noun}.${method} is not a function; an interface is an object of methods (a value another plugin can call)`), {name:'HooksError'})
             const provider = state.owners.get(noun)
             const legacyTelemetry = noun === 'telemetry' && provider === 'engine' &&
               (owner.declaration.tier === 'builtin' || owner.declaration.tier === 'core')
@@ -3517,8 +3527,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               return [method, wrapped]
             }))
           }
-          for (const [noun, methods] of Object.entries(before)) {
+          for (const [noun, methods] of inOfficialNounOrder(Object.entries(before))) {
             if (Object.hasOwn(result, noun)) continue
+            // Official 2.1.329 gives each plugin its own $.plugin outside the fold's table, so none withholds it.
+            if (noun === 'plugin') { table[noun] = methods; continue }
             if (owner.declaration.tier === 'user')
               throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.${noun}, added by ${state.owners.get(noun) === 'engine' ? 'core' : state.owners.get(noun)}; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
             const withholders = state.withheld.get(noun) ?? new Set<string>()
@@ -3541,7 +3553,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             // Worker death instead abandons this fold and must never become a gate.
             if (failed && !hostDead && !controller.signal.aborted)
               unloadedSteps.set(failed.declaration.storageId, { declaration: failed.declaration, order: [...order] })
-            diagnostic(plugin, 'engine.create', error)
+            // Official 2.1.329 unloads the module and says so as a load failure, its message without the plugin prefix.
+            const message = error instanceof Error ? error.message : String(error)
+            const words = message.startsWith(`${plugin}: `) ? message.slice(plugin.length + 2) : message
+            if (failed && !hostDead) diagnostic(plugin, 'load', `hooks module did not load: engine.create failed (${words})`, undefined, failed.declaration.storageId)
+            else diagnostic(plugin, 'engine.create', error)
           },
         }) as Nouns
         // Official 2.1.329 unloads a module that registers an event the built $ does not have.

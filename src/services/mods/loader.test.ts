@@ -1008,6 +1008,13 @@ test.each([
   `on('engine.create', async (host, e, next) => { const reveal = () => below; const below = await next(e); return reveal().tool.call(e) })`,
   `on('engine.create', async (host, e, next) => { const below = await next(e); function reveal() { return below }; return reveal().tool.call(e) })`,
   `on('engine.create', async (host, e, next) => { const below = await next(e); const reveal = () => ({ ...below }); return reveal().tool.call(e) })`,
+])('loads an engine.create escape official fails only at engine.create: %s', async body => {
+  const input = await plugin({ 'main.ts': `export function register(on) { ${body} }` })
+  expect((await loadModDeclaration(input)).validation.engineSpelling).toBeUndefined()
+  expect((await loadModDeclaration({ ...input, readsEngineForm: true })).validation.engineSpelling).toMatch(/escape/)
+})
+
+test.each([
   `on('tool.call', function(host, e, next) { return arguments[0].tool.register(e) })`,
   `const extra = register; extra((name, callback) => callback({}, {}, () => ({})))`,
 ])('rejects untracked capability escape: %s', async body => {

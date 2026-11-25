@@ -1630,7 +1630,7 @@ test('plugin identity cannot be forged through engine.create', async () => {
   }`)
   const {value, diagnostics} = runtime()
   await value.reconcile([forged])
-  expect(diagnostics).toEqual([expect.objectContaining({plugin:'forged-identity',stage:'engine.create'})])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'forged-identity',stage:'load',message:expect.stringContaining('hooks module did not load: engine.create failed (')})])
   expect(await value.dispatch('tool.call', {}, async () => ({result:'core'}))).toEqual({result:'core'})
 })
 
@@ -3059,7 +3059,7 @@ test('settings.read cannot be replaced by a plugin-provided settings noun', asyn
   const { value, diagnostics } = runtime()
   await value.reconcile([impostor,consumer])
   expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{model:'accepted-policy'}})
-  expect(diagnostics).toEqual([expect.objectContaining({plugin:'settings-impostor',stage:'engine.create',message:expect.stringContaining('may not replace noun settings')})])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'settings-impostor',stage:'load',message:expect.stringContaining('hooks module did not load: engine.create failed (engine.create may not replace noun settings')})])
 })
 
 test('settings.read is refused during unadmitted engine construction', async () => {

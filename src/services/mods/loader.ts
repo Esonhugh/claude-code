@@ -128,12 +128,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
   }
   // Official 2.1.329 loads these spellings of an engine.create hook and judges them as it runs; its validate
-  // names the hook outside its form instead, so validate reads on past them.
+  // names the hook outside its form instead, so both read on past them.
   let engineSpelling: string | undefined
   function failEngineSpelling(file: string, message: string, node: Node | undefined = at) {
-    const error = refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
-    if (!defersEngineSpelling) throw error
-    engineSpelling ??= error.message
+    if (defersEngineSpelling) engineSpelling ??= refusal(file, node?.loc?.start.line, compiledLines.get(file), message).message
   }
   const events = new Set<string>()
   const calls = new Set<string>()
