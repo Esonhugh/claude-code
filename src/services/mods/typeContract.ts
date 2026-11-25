@@ -220,6 +220,8 @@ export function validateModStateReferences(input: {
   references: { reads: ModStateReference[]; writes: ModStateReference[] }
   declared: ModStateDeclaration[]
   others?: ModStateDeclaration[]
+  /** False when others came from discovery outside a session: a foreign key none of them names stays unchecked. */
+  othersComplete?: boolean
 }): { problems: string[]; unchecked: string[] } {
   const known = new Map<string, Set<string>>()
   for (const declaration of [...input.declared, ...(input.others ?? [])]) {
@@ -238,11 +240,12 @@ export function validateModStateReferences(input: {
   }
   for (const reference of [...input.references.reads, ...input.references.writes]) {
     const display = `${spell(reference.plugin)}.${spell(reference.key)}`
-    if (reference.plugin !== input.owner && input.others === undefined) {
+    const found = known.get(reference.plugin)?.has(reference.key)
+    if (reference.plugin !== input.owner && (input.others === undefined || (input.othersComplete === false && !found))) {
       unchecked.add(display)
       continue
     }
-    if (!known.get(reference.plugin)?.has(reference.key)) {
+    if (!found) {
       problems.push(reference.plugin === input.owner
         ? `${display} is not declared: the manifest's types contract must name it in interface PluginState { ${reference.plugin}: { ${reference.key}: ... } }`
         : `${display} is not declared: no enabled plugin's contract names it in PluginState`)

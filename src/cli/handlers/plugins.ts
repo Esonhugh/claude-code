@@ -526,9 +526,12 @@ export async function pluginValidateHandler(
         } catch (error) {
           foreignWarning = `Could not use ${cachedPlugins ? 'cached plugin' : 'plugin contract'} context: ${errorMessage(error)}. Foreign state references were left unchecked.`
         }
+        // Official 2.1.329 checks foreign state only against a session's plugins; contracts discovered
+        // outside a session confirm a key they name, and one they do not name stays unchecked.
         contentResults = await validatePluginContents(
           dirname(manifestDir),
           foreignDeclarations,
+          !!cachedPlugins,
         )
         if (foreignWarning) {
           const hooksResult = contentResults.find(r => r.fileType === 'hooks')

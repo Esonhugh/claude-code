@@ -226,8 +226,9 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
       expect(output).toContain(mode === 'incomplete' ? 'builtin unavailable' : mode === 'incomplete-empty' ? 'is incomplete' : mode === 'throw' ? 'unreadable context' : 'missing.d.ts')
       expect(exits).toEqual([0])
     } else if (mode === 'empty' || mode === 'complete-missing') {
-      expect(output).toMatch(/other\.value.*not declared: no enabled plugin's contract names it/)
-      expect(exits).toEqual([1])
+      expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
+      expect(output).not.toContain("not declared: no enabled plugin's contract names it")
+      expect(exits).toEqual([0])
     } else if (mode === 'foreign-write') {
       expect(output).toContain("only a value's owner writes it")
       expect(exits).toEqual([1])
@@ -267,8 +268,8 @@ test('cold real handler discovers builtin contracts without invoking runtime loa
     expect(full).not.toHaveBeenCalled()
     expect(cached).not.toHaveBeenCalled()
     expect(output).not.toMatch(/incomplete/i)
-    expect(output).not.toContain('not checked')
-    expect(output).toMatch(/other\.value.*not declared: no enabled plugin's contract names it/)
+    expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
+    expect(output).not.toContain("not declared: no enabled plugin's contract names it")
   } finally {
     full.mockRestore()
     cached.mockRestore()

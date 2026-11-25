@@ -870,6 +870,7 @@ async function validateHooksJson(
   filePath: string,
   pluginRoot: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
+  foreignComplete = true,
 ): Promise<ValidationResult> {
   let content: string
   try {
@@ -995,6 +996,7 @@ async function validateHooksJson(
         references: declaration.state,
         declared,
         others: foreignDeclarations ? [...foreignDeclarations] : undefined,
+        othersComplete: foreignComplete,
       })
       errors.push(...state.problems.map(message => ({
         path: `modules.${modulePath}`,
@@ -1002,7 +1004,7 @@ async function validateHooksJson(
       })))
       if (state.unchecked.length) {
         notes.push(
-          `${modulePath} state of other plugins, not checked (validate with their contracts available): ${state.unchecked.join(', ')}`,
+          `${modulePath} state of other plugins, not checked (run validate in a session with them enabled): ${state.unchecked.join(', ')}`,
         )
       }
       }
@@ -1107,6 +1109,7 @@ async function collectMarkdown(
 export async function validatePluginContents(
   pluginDir: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
+  foreignComplete = true,
 ): Promise<ValidationResult[]> {
   const results: ValidationResult[] = []
 
@@ -1147,6 +1150,7 @@ export async function validatePluginContents(
     path.join(pluginDir, 'hooks', 'hooks.json'),
     pluginDir,
     foreignDeclarations,
+    foreignComplete,
   )
   if (
     hooksResult.errors.length > 0 ||
