@@ -432,6 +432,11 @@ export function resolveCoordinatorSelection(
   return { index: 0 }
 }
 
+const AGENT_END_LABELS: Partial<Record<string, string>> = {
+  failed: 'failed',
+  killed: 'stopped',
+}
+
 function taskElapsed(
   task: Exclude<CoordinatorPanelTask, CoordinatorIdleSummary>,
   now: number,
@@ -554,25 +559,27 @@ export function getCoordinatorSessionRows({
       }
     }
     if (task.type === 'local_agent') {
+      // Official 2.1.329 folds a failed or stopped status into the elapsed
+      // text, shows tokens only once the agent has used some, and fills the
+      // icon only for the agent being viewed.
+      const endLabel = AGENT_END_LABELS[task.status]
+      const tokenCount = task.progress?.tokenCount ?? 0
       return {
         id: task.id,
         taskId: task.id,
         kind: 'agent',
         selected,
         viewed: viewingAgentTaskId === task.id,
-        icon:
-          selected || (selectedIndex === undefined && viewingAgentTaskId === task.id)
-            ? '⏺'
-            : '◯',
+        icon: viewingAgentTaskId === task.id ? '⏺' : '◯',
         primaryText: agentPrimaryText(
           task,
           entry.collapsedDescendantCount,
         ),
         secondaryText: task.progress?.summary || task.description || task.id,
-        tokens: `${formatNumber(task.progress?.tokenCount ?? 0)} tokens`,
+        tokens: tokenCount > 0 ? `${formatNumber(tokenCount)} tokens` : '',
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
-        elapsed: taskElapsed(task, now),
-        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        elapsed: endLabel ? `${endLabel} · ${taskElapsed(task, now)}` : taskElapsed(task, now),
+        statusText: endLabel ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: getAgentColor(task.agentType),
         depth: entry.depth,

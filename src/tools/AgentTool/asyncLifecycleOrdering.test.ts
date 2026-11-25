@@ -421,6 +421,9 @@ assert.match(
   String(killedCleanupNotification.value),
   /<status>killed<\/status>/,
 )
+// Official 2.1.329 sends a stopped run's notice without <usage>, so the
+// transcript line reads `Agent "…" was stopped by user` with no duration.
+assert.doesNotMatch(String(killedCleanupNotification.value), /<usage>/)
 
 const unresolvedToolUseMessage = makeAssistantMessage()
 unresolvedToolUseMessage.uuid = crypto.randomUUID()

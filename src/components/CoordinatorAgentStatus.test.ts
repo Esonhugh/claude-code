@@ -460,10 +460,11 @@ const selectedChildRows = getCoordinatorSessionRows({
   viewingAgentTaskId: 'agent-1',
   now: 5_000,
 })
+// Official 2.1.329 fills the icon for the viewed agent, not the selected one.
 assert.equal(selectedChildRows[1]?.viewed, true)
-assert.equal(selectedChildRows[1]?.icon, '◯')
+assert.equal(selectedChildRows[1]?.icon, '⏺')
 assert.equal(selectedChildRows[2]?.selected, true)
-assert.equal(selectedChildRows[2]?.icon, '⏺')
+assert.equal(selectedChildRows[2]?.icon, '◯')
 
 const viewedWithoutSelectionRows = getCoordinatorSessionRows({
   tasks,
@@ -628,15 +629,48 @@ const terminalTopTasks = {
   },
 } as unknown as AppState['tasks']
 assert.equal(getVisibleAgentTasks(terminalTopTasks)[0]?.id, 'agent-1')
-for (const status of ['completed', 'failed', 'killed'] as const) {
+// Official 2.1.329 folds failed and stopped into the elapsed text.
+for (const [status, elapsed, statusText] of [
+  ['completed', '3s', 'completed'],
+  ['failed', 'failed · 3s', ''],
+  ['killed', 'stopped · 3s', ''],
+] as const) {
   const row = getCoordinatorSessionRows({
     tasks: { 'agent-1': { ...agentTask, status, endTime: 4_000 } },
     now: 20_000,
   })[1]!
-  assert.equal(row.statusText, status === 'killed' ? 'stopped' : status)
-  assert.equal(row.elapsed, '3s')
+  assert.equal(row.statusText, statusText)
+  assert.equal(row.elapsed, elapsed)
   assert.equal(row.activity, '')
 }
+// A run stopped before it used any tokens shows no token count, and the
+// selected row keeps the hollow icon until it is viewed.
+const stoppedEmptyTasks = {
+  'agent-1': {
+    ...agentTask,
+    status: 'killed',
+    endTime: 161_000,
+    progress: { ...agentTask.progress!, tokenCount: 0 },
+  },
+} as unknown as AppState['tasks']
+const stoppedEmptyRow = getCoordinatorSessionRows({
+  tasks: stoppedEmptyTasks,
+  selectedIndex: 1,
+  now: 200_000,
+})[1]!
+assert.equal(stoppedEmptyRow.selected, true)
+assert.equal(stoppedEmptyRow.icon, '◯')
+assert.equal(stoppedEmptyRow.tokens, '')
+assert.equal(stoppedEmptyRow.elapsed, 'stopped · 2m 40s')
+assert.equal(
+  getCoordinatorSessionRows({
+    tasks: stoppedEmptyTasks,
+    selectedIndex: 1,
+    viewingAgentTaskId: 'agent-1',
+    now: 200_000,
+  })[1]?.icon,
+  '⏺',
+)
 assert.equal(
   getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.activity,
   'Read(src/index.ts)',

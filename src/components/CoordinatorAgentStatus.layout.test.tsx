@@ -197,7 +197,8 @@ test('capped Agent rows scroll with the selection and count hidden rows on both 
   expect(lines.slice(1, 6).map(line => line.match(/worker-\d+/)?.[0])).toEqual(
     ['worker-04', 'worker-05', 'worker-06', 'worker-07', 'worker-08'],
   )
-  expect(lines[5]).toContain('⏺')
+  // The selection moves the pointer; only a viewed agent gets the filled icon.
+  expect(lines[5]).toContain('❯ ◯ worker-08')
   expect(lines[6]).toContain('↓ 2 more')
   expect(lines[7]).toContain('Enter to view')
 })

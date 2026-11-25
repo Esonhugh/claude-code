@@ -2022,18 +2022,13 @@ export const AgentTool = buildTool({
                             { level: 'warn' },
                           )
                         }
-                        const progress = getProgressUpdate(tracker)
                         await notifyAgentEnd(toolUseContext, reportTarget, {
                           taskId: backgroundedTaskId,
                           description,
                           status: 'killed',
                           setAppState: rootSetAppState,
                           toolUseId: toolUseContext.toolUseId,
-                          usage: {
-                            totalTokens: progress.tokenCount,
-                            toolUses: progress.toolUseCount,
-                            durationMs: Date.now() - metadata.startTime,
-                          },
+                          // Official 2.1.329 sends a stopped run's notice without <usage>.
                           ...worktreeResult,
                         }, unreviewedAgentReport(extractPartialResult(agentMessages) ?? '', toolUseContext), answer => answer.text || undefined)
                         return
