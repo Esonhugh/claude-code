@@ -174,7 +174,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     if (wire.type === 'array') { const value = wire.values.map(v => decode(v, invocation, mutable)); return mutable ? value : Object.freeze(value); }
     if (wire.type === 'object') { const value = Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation, mutable)])); return mutable ? value : Object.freeze(value); }
     if (wire.type === 'engine') {
-      if (!engines.has(wire.id)) engines.set(wire.id, decode(wire.value, invocation));
+      // Official 2.1.329 gives $ and each noun a null prototype: $.clock.constructor is undefined, not Object.
+      const table = entries => Object.freeze(Object.assign(Object.create(null), Object.fromEntries(entries)));
+      const noun = value => value.type === 'object' ? table(value.entries.map(([k,v]) => [k, decode(v, invocation)])) : decode(value, invocation);
+      if (!engines.has(wire.id)) engines.set(wire.id, wire.value.type === 'object' ? table(wire.value.entries.map(([k,v]) => [k, noun(v)])) : decode(wire.value, invocation));
       return engines.get(wire.id);
     }
     if (wire.type === 'function') {
@@ -251,12 +254,12 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         ...(input?.columns !== undefined && {columns:input.columns}),
         ...(input?.rows !== undefined && {rows:input.rows}),
       });
-      const ui = Object.freeze({...methods, resolve: Object.freeze(input => {
+      const ui = Object.freeze(Object.assign(Object.create(null), {...methods, resolve: Object.freeze(input => {
         if (disposed) throw Error('Module environment unloaded');
         if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
         const key = input && typeof input === 'object' ? input.surface + ':' + input.component : '';
         return uiTables.get(key) ?? uiRealm.resolve(input);
-      })});
+      })}));
       wires.set(ui, wire);
       return ui;
     }
@@ -316,7 +319,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         timers.set(id, stop); run();
         return Object.freeze({ cancel: stop });
       };
-      const clock = Object.freeze({ now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) });
+      const clock = Object.freeze(Object.assign(Object.create(null), { now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) }));
       wires.set(clock, wire);
       return clock;
     }

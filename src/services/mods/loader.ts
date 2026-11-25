@@ -936,8 +936,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const parts = value.members
     if (parts.length !== 2) fail(path, 'capabilities require static $.noun.method calls; computed/optional access is unsupported')
     const [noun, method] = parts as [string, string]
-    // Official 2.1.329 scans any $.noun.method; one the table lacks fails when the hook calls it.
-    if (reserved.has(noun) || reserved.has(method)) fail(path, `unsupported core capability ${noun}.${method}`)
+    // Official 2.1.329 scans any $.noun.method; one the table lacks, $.clock.constructor included, fails when the hook calls it.
     return `${noun}.${method}`
   }
 

@@ -1043,7 +1043,6 @@ test.each([
   [`on?.('tool.call', () => {})`, /optional/],
   [`on('turn.step', () => {})`, /async generators/],
   [`const alias = on; alias('tool.call', () => {})`, /alias/],
-  [`on('session.start', ($, e, next) => $.tool.__proto__(e))`, /unsupported core capability/],
   [`on('session.start', ($, e, next) => $.tool['register'](e))`, /\$\.tool is used as a value/],
   [`on('session.start', ($, e, next) => $['clock'].now(e))`, /computed/],
   [`on('session.start', ($, e, next) => $.clock['now'](e))`, /\$\.clock is used as a value/],
@@ -1083,6 +1082,8 @@ test.each([
   `export function register(on) { eval('1') }`,
   `export function register(on) { new Function('return 1') }`,
   `export function register(on) { on('session.start', async ($, e, next) => { await (await $).clock.now(); return next(e) }) }`,
+  `export function register(on) { on('session.start', async ($, e, next) => { await $.clock.constructor(); return next(e) }) }`,
+  `export function register(on) { on('session.start', ($, e, next) => $.tool.__proto__(e)) }`,
 ])('admits what official scans past and leaves to run time: %s', async source => {
   await expect(loadModDeclaration(await plugin({ 'main.ts': source }))).resolves.toBeDefined()
 })
