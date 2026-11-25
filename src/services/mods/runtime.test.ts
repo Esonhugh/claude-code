@@ -776,6 +776,13 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 2 })
   })
 
+  test('$.tool.call refuses an input without a tool before the scan gate, as official does', async () => {
+    const escape = await fixture(`export function register(on) { on('engine.create', async (host, e, next) => (await next(e)).tool.call(e)); }`, 'escape')
+    const { value, events } = runtime()
+    await value.reconcile([escape])
+    expect(events.map(event => event.message)).toEqual([`hooks module did not load: engine.create failed ($.tool.call takes the event's input: { tool, ...args })`])
+  })
+
   test('Worker recovery carries withholding into the recovered bootstrap', async () => {
     // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')

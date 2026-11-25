@@ -1926,6 +1926,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       for (const [method, bound] of Object.entries(methods)) wrapped[method] = async (...args) => {
         const {snapshot,table,lease}=scope()
         const op = `${noun}.${method}`
+        // Official 2.1.329's $.tool.call checks its input before it reaches the host.
+        if (op === 'tool.call') {
+          const call = args[0] as ModInput | undefined
+          if (call === null || typeof call !== 'object' || Array.isArray(call))
+            throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: input must be an object`), {name:'HooksError'})
+          if (typeof call.tool !== 'string' || call.tool.length === 0)
+            throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call takes the event's input: { tool, ...args }`), {name:'HooksError'})
+        }
         checkCall(owner, op, table, lease)
         const fn=noun === 'telemetry' ? hostIdentity : (dynamic ? table[noun]?.[method] : bound)!
         const ask = fn === hostIdentity && op === 'ui.ask' ? createModUiAskRequest(args, owner.declaration.name) : undefined
