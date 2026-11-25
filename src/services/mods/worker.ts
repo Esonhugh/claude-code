@@ -1128,8 +1128,9 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
     const clientFaultPhase = request.type === 'load-client' ? 'load' : request.type === 'client' ? 'run' : undefined
+    // The thrown name rides along for a client fault and for a hook's own throw ("threw TypeError: …").
     let errorName: string | undefined
-    if (clientFaultPhase) {
+    if (clientFaultPhase || request.type === 'invoke' || request.type === 'stream-pull') {
       let prototype = error
       for (let depth = 0; depth < 32 && prototype && (typeof prototype === 'object' || typeof prototype === 'function') && !isProxy(prototype); depth++) {
         const name = Object.getOwnPropertyDescriptor(prototype, 'name')?.value
@@ -1150,6 +1151,6 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       : undefined
     const errorRef = request.type === 'invoke' || request.type === 'stream-pull' ? environments.get(request.environment)?.api.errorReference(error) : undefined
     const aborted = request.type === 'stream-pull' && environments.get(request.environment)?.api.isAbortError(error)
-    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}), ...(clientFaultPhase ? {clientFaultPhase,errorName} : {}) })
+    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}), ...(clientFaultPhase ? {clientFaultPhase,errorName} : errorName === undefined ? {} : {errorName}) })
   }
 }

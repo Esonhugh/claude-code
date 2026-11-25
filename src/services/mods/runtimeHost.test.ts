@@ -2162,6 +2162,8 @@ test('Worker rejects empty store keys before middleware but checks oversized key
   })
   expect(diagnostics).toEqual(['store.get', 'store.set', 'store.delete'].map(stage => ({
     plugin: 'store-observer', stage, message: `store-keys@test: $.${stage}: the key is 257 characters, over the 256 limit`,
+    hook: { kind: 'threw', why: `threw store-keys@test: $.${stage}: the key is 257 characters, over the 256 limit` },
+    storageId: 'store-observer@test',
   })))
 })
 

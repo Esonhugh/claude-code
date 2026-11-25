@@ -200,7 +200,11 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
 }
-export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault; storageId?: string }
+export type ModDiagnostic = {
+  plugin: string; stage: string; message: string; workerFault?: ModWorkerFault; storageId?: string
+  /** Set for a failed hook: how it failed, as official 2.1.329 words it after "<event> hook skipped: ". */
+  hook?: { kind: string; why: string }
+}
 export type ModDispatchOptions = {
   /** Host-pinned caller identity, never read from the event's input. */
   origin?: ModOrigin
@@ -739,6 +743,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault, storageId?: string) => onDiagnostic?.({
     plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}), ...(storageId && {storageId}),
   })
+  // Official 2.1.329 words a failed hook by how it failed (its Wa and JSr): "threw <name>: <message>"
+  // (no name for a HooksError or a non-Error) or "returned the wrong shape (<shape>)", one line of 120 chars.
+  const hookFailed = (plugin: string, event: string, error: unknown) => {
+    const line = (text: string) => {
+      const first = (text.split(/\r?\n/u)[0] ?? '').trim()
+      return first.length <= 120 ? first : `${first.slice(0, 117)}...`
+    }
+    const failure = error && typeof error === 'object' ? error as { shape?: unknown; thrownName?: unknown } : {}
+    const name = 'thrownName' in failure ? failure.thrownName : error instanceof Error ? error.name : undefined
+    const hook = typeof failure.shape === 'string'
+      ? { kind: 'shape', why: `returned the wrong shape (${line(failure.shape)})` }
+      : { kind: 'threw', why: `threw ${line(`${typeof name === 'string' && name !== 'HooksError' ? `${name}: ` : ''}${error instanceof Error ? error.message : String(error)}`)}` }
+    const storageId = declarations.find(input => input.name === plugin)?.storageId
+    onDiagnostic?.({ plugin, stage: event, message: error instanceof Error ? error.message : String(error), hook, ...(storageId && {storageId}) })
+  }
   const loadFailed = (input: { name: string; storageId: string }, error: unknown, old: boolean) => {
     diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error), undefined, input.storageId)
   }
@@ -2893,7 +2912,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const envelope = result as { value?: { base64?: unknown } | null; deny?: unknown } | null
       if (typeof envelope?.deny === 'string' && envelope.value === undefined) return
       const problem = envelope?.value && typeof envelope.value === 'object' ? modWasmBase64Problem(envelope.value.base64) : 'no value'
-      if (problem) throw new TypeError(`wasm.compile must return { value: { base64 } } or { deny } (got ${problem})`)
+      if (problem) throw Object.assign(new TypeError(`wasm.compile must return { value: { base64 } } or { deny } (got ${problem})`), { shape: problem })
       return
     }
     if (event === 'agent.report') {
@@ -3237,7 +3256,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             options.validateResult?.(result, previous)
           },
-          onFailure: (plugin, error) => diagnostic(plugin, event, error),
+          onFailure: (plugin, error) => hookFailed(plugin, event, error),
         })
         let thrown: { error: unknown } | undefined
         for (;;) {
@@ -3402,7 +3421,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                       return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook', 'setting', 'decider'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
                     }
                   : options.restoreResult,
-        onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
+        onFailure: (plugin, error) => { hookFailed(plugin, event, error); options.onFailure?.(error) },
       }))
       if (event === 'ui.render') {
         const instance = `${String(input.surface)}\0${String(input.component)}\0${String(input.requestId)}`
