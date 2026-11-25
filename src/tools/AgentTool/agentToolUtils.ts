@@ -1416,7 +1416,6 @@ export async function runAsyncAgentLifecycle({
       resolveActivity,
       toolUseContext.options.tools,
     )
-    const terminalProgress = getProgressUpdate(tracker)
     let worktreeResult: Awaited<ReturnType<typeof getWorktreeResult>> = {}
     try {
       worktreeResult = await getWorktreeResult()
@@ -1434,11 +1433,7 @@ export async function runAsyncAgentLifecycle({
       error: msg,
       setAppState: rootSetAppState,
       toolUseId: toolUseContext.toolUseId,
-      usage: {
-        totalTokens: terminalProgress.tokenCount,
-        toolUses: terminalProgress.toolUseCount,
-        durationMs: Date.now() - metadata.startTime,
-      },
+      // Official 2.1.329 sends a failed run's notice without <usage>.
       ...worktreeResult,
     }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
   } finally {

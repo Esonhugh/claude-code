@@ -231,7 +231,8 @@ const failedNotification = getCommandQueue().find(command =>
 )
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
-assert.match(String(failedNotification.value), /<subagent_tokens>12<\/subagent_tokens>/)
+// Official 2.1.329 sends a failed run's notice without <usage>.
+assert.doesNotMatch(String(failedNotification.value), /<usage>/)
 
 registerAsyncAgent({
   agentId: 'agent-api-error-test',

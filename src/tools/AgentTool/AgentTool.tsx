@@ -2053,7 +2053,6 @@ export const AgentTool = buildTool({
                           { level: 'warn' },
                         )
                       }
-                      const progress = getProgressUpdate(tracker)
                       await notifyAgentEnd(toolUseContext, reportTarget, {
                         taskId: backgroundedTaskId,
                         description,
@@ -2061,11 +2060,7 @@ export const AgentTool = buildTool({
                         error: errMsg,
                         setAppState: rootSetAppState,
                         toolUseId: toolUseContext.toolUseId,
-                        usage: {
-                          totalTokens: progress.tokenCount,
-                          toolUses: progress.toolUseCount,
-                          durationMs: Date.now() - metadata.startTime,
-                        },
+                        // Official 2.1.329 sends a failed run's notice without <usage>.
                         ...worktreeResult,
                       }, unreviewedAgentReport('', toolUseContext), answer => answer.text || undefined)
                     } finally {
