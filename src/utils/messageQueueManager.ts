@@ -148,7 +148,8 @@ export function getCommandQueueLength(): number {
  */
 export function countCommandsAwaitingTurn(): number {
   return commandQueue.filter(
-    cmd => cmd.mode !== 'poll-event' || (cmd.pollEvent !== undefined && pollEventWakes(cmd.pollEvent)),
+    cmd => cmd.passive !== true &&
+      (cmd.mode !== 'poll-event' || (cmd.pollEvent !== undefined && pollEventWakes(cmd.pollEvent))),
   ).length
 }
 
@@ -198,6 +199,16 @@ export function enqueue(command: QueuedCommand): void {
 /** Enqueue and return the stored object for identity-based cancellation. */
 export function enqueueTracked(command: QueuedCommand): QueuedCommand {
   return enqueueCommand(command)
+}
+
+/** Official `od`: a main-thread command that can start or join a turn by itself. */
+export function isDrainableMainThreadCommand(cmd: QueuedCommand): boolean {
+  return cmd.agentId === undefined && cmd.passive !== true
+}
+
+/** Official `xX`: a main-thread command the next turn's first request takes. */
+export function isPassiveMainThreadCommand(cmd: QueuedCommand): boolean {
+  return cmd.agentId === undefined && cmd.passive === true
 }
 
 /**

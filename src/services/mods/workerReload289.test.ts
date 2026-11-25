@@ -201,8 +201,8 @@ test('a real register failure remains in knownArgs and retries after an unknown 
     expect(host.events.filter(event=>event.plugin==='load-failure')).toHaveLength(1)
     await crash(host)
     expect(host.events.filter(event=>event.plugin==='load-failure')).toEqual([
-      {plugin:'load-failure',stage:'load',message:'registration failed'},
-      {plugin:'load-failure',stage:'load',message:'registration failed'},
+      {plugin:'load-failure',stage:'load',message:'registration failed',storageId:'load-failure@inline'},
+      {plugin:'load-failure',stage:'load',message:'registration failed',storageId:'load-failure@inline'},
     ])
   }finally{await host.close()}
 })

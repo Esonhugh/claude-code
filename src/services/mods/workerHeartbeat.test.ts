@@ -71,8 +71,8 @@ test('real runtime retires CPU culprit, closes old catch/handles, and retries kn
     expect(events.find(event=>event.stage==='worker')).toMatchObject({plugin:'culprit',message:expect.stringContaining('heartbeat')})
     expect(events.find(event=>event.stage==='worker')!.workerFault).toMatchObject({cause:'heartbeat',culprit:{storageId:'culprit@inline',evidence:'resumed',stage:'invoke',requestId:expect.any(Number),handle:expect.any(Number)}})
     expect(events.filter(event=>event.plugin==='not-admitted')).toEqual([
-      {plugin:'not-admitted',stage:'load',message:'not admitted'},
-      {plugin:'not-admitted',stage:'load',message:'not admitted'},
+      {plugin:'not-admitted',stage:'load',message:'not admitted',storageId:'not-admitted@inline'},
+      {plugin:'not-admitted',stage:'load',message:'not admitted',storageId:'not-admitted@inline'},
     ])
     // A still declared culprit requires explicit reload before it can execute again.
     const again=performance.now()

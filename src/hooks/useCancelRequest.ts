@@ -43,8 +43,7 @@ type CancelRequestHandlerProps = {
     f: (toolUseConfirmQueue: ToolUseConfirm[]) => ToolUseConfirm[],
   ) => void
   onCancel: () => void
-  /** `passiveNotice` reaches the model with the next prompt instead of starting a turn. */
-  onAgentsKilled: (passiveNotice?: string) => void
+  onAgentsKilled: () => void
   isMessageSelectorVisible: boolean
   screen: Screen
   abortSignal?: AbortSignal
@@ -192,11 +191,14 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       descriptions.length === 1
         ? `Background agent "${descriptions[0]}" was stopped by the user.`
         : `${descriptions.length} background agents were stopped by the user: ${descriptions.map(d => `"${d}"`).join(', ')}.`
-    if (passive) {
-      onAgentsKilled(summary)
-      return true
-    }
-    enqueuePendingNotification({ value: summary, mode: 'task-notification' })
+    // Official 2.1.329: a passive notice waits for the user's next prompt and
+    // goes after it, instead of starting a turn.
+    void enqueuePendingNotification({
+      value: summary,
+      mode: 'task-notification',
+      skipAttachments: true,
+      ...(passive && { passive: true, priority: 'next' as const }),
+    })
     onAgentsKilled()
     return true
   }, [store, setAppState, onAgentsKilled])

@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { open, realpath, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
+import { engineFormOf } from './engineForm.js'
+import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
@@ -24,7 +25,7 @@ type Binding = {
 type Capability = { role: Exclude<Role, null>; members: string[] }
 type Resolved = { binding: Binding; members: string[] }
 const tiers: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
-const coreNouns = new Set([
+export const coreNouns: ReadonlySet<string> = new Set([
   ...OFFICIAL_CORE_CALLS.map(call => call.split('.')[0]!),
   'engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp',
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env', 'wasm',
@@ -73,17 +74,43 @@ export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts'
 // loadModDeclaration names the plugin in front, as official 2.1.329 does: `<plugin>: <file>: <message>`.
 class ModLoadError extends Error {}
 
+// A string written as a literal or a template with no substitution.
+function literalString(node: Node | undefined): string | undefined {
+  if (node?.type === 'Literal') return typeof node.value === 'string' ? node.value : undefined
+  if (node?.type !== 'TemplateLiteral' || node.expressions.length) return
+  return node.quasis[0]?.value.cooked ?? undefined
+}
+
+// How official 2.1.329 names an argument that had to be written as a literal.
+function spelled(node: Node | undefined): string {
+  switch (node?.type) {
+    case undefined: return 'no argument'
+    case 'Identifier': return `the variable ${node.name}`
+    case 'TemplateLiteral': return 'a template with a substitution'
+    case 'SpreadElement': return 'a spread'
+    case 'Literal': return `the literal ${node.raw ?? String(node.value)}`
+    case 'MemberExpression': return 'a member read'
+    case 'CallExpression': return 'a call'
+    case 'BinaryExpression': return 'a concatenation'
+    case 'ObjectExpression': return 'an object whose plugin or key is not a string literal'
+    default: return `a ${node.type}`
+  }
+}
+
 function fail(path: string, message: string): never {
   throw new ModLoadError(`${path}: ${message}`)
 }
 
 // Official 2.1.329 scans a .js, .mjs or .cjs file as written and names its line; it names a compiled
 // line of any other file with the line itself, cut at 80 characters.
-function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+function lineAt(line: number | undefined, compiled: string[] | undefined): string {
   const excerpt = line === undefined || compiled === undefined ? undefined : compiled[line - 1]?.trim() ?? ''
-  const at = line === undefined ? '' : excerpt === undefined ? `:${line}` :
+  return line === undefined ? '' : excerpt === undefined ? `:${line}` :
     `, compiled line ${line} \`${excerpt.length > 80 ? `${excerpt.slice(0, 80)}...` : excerpt}\``
-  return new ModLoadError(`${path}${at}: ${construct}; ${spellingHint}`)
+}
+
+function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+  return new ModLoadError(`${path}${lineAt(line, compiled)}: ${construct}; ${spellingHint}`)
 }
 
 const scannedAsWritten = (path: string) => ['.js', '.mjs', '.cjs'].includes(extname(path))
@@ -102,15 +129,23 @@ function isFunction(node: Node): boolean {
   return ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type)
 }
 
-function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>) {
+function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>, defersEngineSpelling = false) {
   // A refusal names the line of the node the scan is at, unless it names a node itself.
   let at: Node | undefined
   function fail(file: string, message: string, node: Node | undefined = at): never {
     throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
   }
+  // Official 2.1.329 loads these spellings of an engine.create hook and judges them as it runs; its validate
+  // names the hook outside its form instead, so validate reads on past them.
+  let engineSpelling: string | undefined
+  function failEngineSpelling(file: string, message: string, node: Node | undefined = at) {
+    const error = refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
+    if (!defersEngineSpelling) throw error
+    engineSpelling ??= error.message
+  }
   const events = new Set<string>()
   const calls = new Set<string>()
-  const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
+  const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope; hasCatch: boolean }>()
   const firstRegistrations = new Map<string, { path: string; line?: number }>()
   const directCalls = new Set<string>()
   const callsVia = new Map<string, Set<string>>()
@@ -268,12 +303,13 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
 
   function scanEnvironment(call: string, node: Node) {
     if (call !== 'env.get' && call !== 'env.set') return
-    const name = node.arguments[0]
-    if (name?.type !== 'Literal' || typeof name.value !== 'string')
-      fail(path, 'environment access requires a string literal name')
-    if (!name.value || /[=\0]/.test(name.value))
+    const argument = node.arguments[0]
+    const name = argument?.type === 'SpreadElement' ? undefined : literalString(argument)
+    if (name === undefined)
+      fail(path, `$.${call} takes a literal name as its first argument, so the variables a module reads and writes can be listed (got ${spelled(argument)})`, argument ?? node)
+    if (!name || /[=\0]/.test(name))
       fail(path, 'environment name must be nonempty without NUL or =')
-    env[call === 'env.get' ? 'reads' : 'writes'].add(name.value)
+    env[call === 'env.get' ? 'reads' : 'writes'].add(name)
   }
 
   // Official 2.1.329 follows a name by its spelling across the whole file, not by scope: every
@@ -437,10 +473,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function scanState(call: string, node: Node, scope: Scope) {
     if (call !== 'state.get' && call !== 'state.set') return
     const reference = node.arguments[0]
-    if (!reference || reference.type === 'SpreadElement')
-      fail(path, 'state access requires a reference with literal plugin and key')
-    const resolved = stateReference(reference, scope)
-    if (!resolved) fail(path, 'state access requires a reference with literal plugin and key; only id may be computed')
+    const resolved = reference && reference.type !== 'SpreadElement' ? stateReference(reference, scope) : undefined
+    if (!resolved) fail(path, `$.${call} takes a reference whose plugin and key are string literals ({ plugin: "p", key: "k" }, written there or in a const of this file; only id may be computed), so the values a module reads and writes can be listed (got ${spelled(reference)})`, reference ?? node)
     state[call === 'state.get' ? 'reads' : 'writes'].set(`${resolved.plugin}\0${resolved.key}`, resolved)
   }
 
@@ -507,7 +541,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           const destructured = rest?.type === 'RestElement' && rest.argument.type === 'Identifier' &&
             withheld.every((property: Node) => property.type === 'Property' && property.shorthand && property.value.type === 'Identifier')
           if ((item.id.type !== 'Identifier' && !destructured) || item.init.type !== 'AwaitExpression') {
-            fail(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
+            failEngineSpelling(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
           }
           const beneath = destructured ? rest.argument.name : item.id.name
           bindings.set(beneath, { role: 'beneath' })
@@ -822,7 +856,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
       fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
-    if (!collecting) registrationDescriptions.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), scope })
+    if (!collecting) {
+      const parent = parents.get(node)
+      const hasCatch = parent?.type === 'MemberExpression' && parent.object === node && !parent.computed && parent.property.type === 'Identifier' && parent.property.name === 'catch'
+      registrationDescriptions.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), scope, hasCatch })
+    }
     const callerPath = path
     try {
       if (helper) path = helper.path
@@ -1014,7 +1052,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (capabilityValue(node, scope)) {
           const parent = parents.get(node)
           if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
-          fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+          const message = `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`
+          if (capabilityValue(node, scope)?.role !== 'beneath') fail(path, message)
+          failEngineSpelling(path, message)
         }
         if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
@@ -1087,7 +1127,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (event === 'engine.create' && calleeCapability?.role === 'next' &&
           ['', 'to'].includes(calleeCapability.members.join('.')) &&
           !engineNextBindings.has(node) && !engineReturns.has(node)) {
-          fail(path, 'engine.create next result escape is unsupported; bind const identifier = await next(input)')
+          failEngineSpelling(path, 'engine.create next result escape is unsupported; bind const identifier = await next(input)')
         }
         const argumentsRoles = node.arguments.map((argument: Node) => capabilityValue(argument, scope))
         if (argumentsRoles.some(Boolean)) {
@@ -1256,10 +1296,30 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry, wasm, validation: {
+  return { events, calls, env, state, nextTiers, telemetry, wasm, engineSpelling, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
+    gates: [...registrationDescriptions.values()].filter(({ event }) => isGate(event)).map(({ event, matcher, scope, hasCatch }) => ({
+      registration: matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`,
+      hasCatch,
+    })),
     helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
   } }
+}
+
+// Official 2.1.329's events and whether a hook on each can refuse it (a gate); a pattern no known event matches counts as one.
+const eventGates: Record<string, boolean> = Object.fromEntries([
+  ...['tool.call', 'tool.check', 'tool.judge', 'tool.run', 'tool.offer', 'agent.offer', 'agent.spawn', 'agent.report', 'prompt.submit', 'prompt.mention',
+    'command.run', 'config.set', 'telemetry.log', 'telemetry.mark', 'plugin.register', 'session.receive', 'session.append', 'session.send',
+    'session.compact', 'ui.scroll', 'ui.focus'].map(event => [event, true]),
+  ...['tool.describe', 'prompt.fill', 'prompt.suggest', 'prompt.edit', 'prompt.change', 'prompt.autocomplete', 'prompt.section', 'prompt.context',
+    'prompt.attachment', 'prompt.compose', 'command.describe', 'config.describe', 'skill.prompt', 'attribution.text', 'session.start', 'session.attach',
+    'session.detach', 'session.measure', 'session.stop', 'session.end', 'turn.start', 'turn.step', 'turn.complete', 'ui.render', 'ui.resolve', 'ui.press',
+    'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'ui.pointer', 'engine.create'].map(event => [event, false]),
+])
+
+function isGate(pattern: string): boolean {
+  const events = isModBroadEventPattern(pattern) ? Object.keys(eventGates).filter(event => matchesModEventPattern(pattern, event)) : [pattern]
+  return events.length === 0 || events.some(event => eventGates[event] !== false)
 }
 
 function within(root: string, path: string): boolean {
@@ -1291,6 +1351,8 @@ export function validateModRegistrations(
 }
 
 type ModLoadInput = {
+  /** Validate's reading: the engine.create hook in its one form, past the spellings official loads. */
+  readsEngineForm?: boolean
   name: string
   storageId: string
   version?: string
@@ -1520,7 +1582,10 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
   }
   const compiledLines = new Map(modules.filter(module => hookPaths.has(module.path) && !scannedAsWritten(module.path))
     .map(module => [module.path, module.source.split('\n')]))
-  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines)
+  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines, input.readsEngineForm)
+  const entry = programs.get(entrypoints[0]!)
+  const form = input.readsEngineForm && entry ? engineFormOf(entry, entrypoints[0]!) : undefined
+  const engineForm = form?.isInForm === false ? { ...form, at: lineAt(form.line, compiledLines.get(form.file)) } : form
   for (const value of scanned.events) events.add(value)
   for (const value of scanned.calls) calls.add(value)
   for (const value of scanned.env.reads) env.reads.add(value)
@@ -1565,7 +1630,8 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
     name: input.name, storageId: input.storageId, pluginRoot: root,
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
-    entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(), validation: scanned.validation,
+    entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(),
+    validation: { ...scanned.validation, ...(engineForm && { engineForm }), ...(scanned.engineSpelling && { engineSpelling: scanned.engineSpelling }) },
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {
       reads: [...state.reads.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),

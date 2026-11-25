@@ -68,3 +68,11 @@ test('a waking poll event starts a turn as an empty prompt; one that does not wa
   expect(processQueueIfReady({ executeInput }).processed).toBe(true)
   expect(executed[1]!.map(c => c.value)).toEqual(['A'])
 })
+
+test('a passive notice never starts a turn and leaves the prompt after it alone', () => {
+  enqueue({ value: 'stopped', mode: 'task-notification', priority: 'next', passive: true })
+  expect(drain()).toEqual([])
+  enqueue({ value: 'A', mode: 'prompt' })
+  expect(drain()).toEqual([['A']])
+  expect(getCommandQueueSnapshot().map(c => c.value)).toEqual(['stopped'])
+})

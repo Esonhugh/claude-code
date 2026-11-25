@@ -57,7 +57,7 @@ async function fixture(source: string, name = 'fixture') {
   return { name, storageId: name + '@inline', pluginRoot: root, entrypoints: [entry] }
 }
 function runtime() {
-  const events: { plugin: string; stage: string; message: string }[] = []
+  const events: { plugin: string; stage: string; message: string; storageId?: string }[] = []
   const value = createModsRuntime({ onDiagnostic: event => events.push(event) })
   cleanups.push(() => value.dispose())
   return { value, events }
@@ -77,7 +77,7 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     const plugin = await fixture(`export function register(on) { ${registration} ${deny} }`, 'ue')
     const { value, events } = runtime()
     await value.reconcile([plugin])
-    expect(events).toEqual([{ plugin: 'ue', stage: 'load', message: `hooks module did not load: the $ build failed (${reason})` }])
+    expect(events).toEqual([{ plugin: 'ue', stage: 'load', message: `hooks module did not load: the $ build failed (${reason})`, storageId: 'ue@inline' }])
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
   })
 
@@ -130,7 +130,7 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     for (const name of order) plugins.push(await fixture(sources[name], name))
     const { value, events } = runtime()
     await value.reconcile(plugins)
-    expect(events).toEqual([{ plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)' }])
+    expect(events).toEqual([{ plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)', storageId: 'judge@inline' }])
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({deny:'x: denied'})
   })
 
@@ -164,7 +164,7 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     await value.reconcile(plugins)
     expect(events).toEqual([
       { plugin: 'provider', stage: 'admission', message: 'judge says no' },
-      { plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.hello, but no loaded plugin provides $.nope)' },
+      { plugin: 'judge', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.hello, but no loaded plugin provides $.nope)', storageId: 'judge@inline' },
     ])
     expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
   })
@@ -173,7 +173,7 @@ describe('events no loaded plugin provides (official 2.1.329)', () => {
     on('plugin.register', ($, e, next) => e.name === '${refused}' ? {refuse:'jbad says no'} : next(e));
     on('nope.event', async ($, e, next) => next(e));
   }`
-  const jbadDidNotLoad = { plugin: 'jbad', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)' }
+  const jbadDidNotLoad = { plugin: 'jbad', stage: 'load', message: 'hooks module did not load: the $ build failed (registered nope.event, but no loaded plugin provides $.nope)', storageId: 'jbad@inline' }
 
   test('a judge that a module that does not load would have refused still judges the plugins after it', async () => {
     const plugins = [

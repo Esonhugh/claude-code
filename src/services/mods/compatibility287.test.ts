@@ -346,7 +346,7 @@ test.each(['plugin', 'key'])('scanner rejects computed state %s', async field =>
   try {
     await runtime.reconcile([input])
     expect(runtime.hasHooks('command.run')).toBe(false)
-    expect(diagnostics.some(event => /literal plugin and key/.test(event.message))).toBe(true)
+    expect(diagnostics.some(event => /plugin and key are string literals/.test(event.message))).toBe(true)
   } finally {
     await runtime.dispose()
   }

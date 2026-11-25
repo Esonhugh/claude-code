@@ -4,6 +4,7 @@ import {
   dequeue,
   dequeueAllMatching,
   hasCommandsInQueue,
+  isDrainableMainThreadCommand,
   peek,
   pollEventWakes,
 } from './messageQueueManager.js'
@@ -61,9 +62,10 @@ export function processQueueIfReady({
   // false with the queue unchanged → the React effect never re-fires and any
   // queued user prompt stalls permanently.
   // Poll events are not input: a turn's first request or a Poll call takes
-  // them, and a waking one starts a turn below.
+  // them, and a waking one starts a turn below. A passive notice waits for
+  // the next turn the same way.
   const isMainThread = (cmd: QueuedCommand) =>
-    cmd.agentId === undefined && cmd.mode !== 'poll-event'
+    isDrainableMainThreadCommand(cmd) && cmd.mode !== 'poll-event'
 
   const next = peek(isMainThread)
   if (!next) {

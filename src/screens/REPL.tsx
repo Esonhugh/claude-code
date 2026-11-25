@@ -3854,14 +3854,7 @@ export function REPL({
       }
       onCancel()
     },
-    onAgentsKilled: (passiveNotice?: string) =>
-      setMessages(prev => [
-        ...prev,
-        createAgentsKilledMessage(),
-        ...(passiveNotice
-          ? [createUserMessage({ content: passiveNotice, isMeta: true, origin: { kind: 'task-notification' } })]
-          : []),
-      ]),
+    onAgentsKilled: () => setMessages(prev => [...prev, createAgentsKilledMessage()]),
     isMessageSelectorVisible: isMessageSelectorVisible || !!showBashesDialog,
     screen,
     abortSignal:

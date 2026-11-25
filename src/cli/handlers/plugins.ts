@@ -110,14 +110,6 @@ export function handleMarketplaceError(error: unknown, action: string): never {
 }
 
 function printValidationResult(result: ValidationResult): void {
-  for (const note of result.notes ?? []) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  ${figures.pointer} ${note}`)
-  }
-  if (result.notes?.length) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log('')
-  }
   if (result.errors.length > 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
@@ -139,6 +131,15 @@ function printValidationResult(result: ValidationResult): void {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${warning.path}: ${warning.message}`)
     })
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log('')
+  }
+  // Official 2.1.329 lists a file's notes after its errors and warnings.
+  for (const note of result.notes ?? []) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`  ${figures.pointer} ${note}`)
+  }
+  if (result.notes?.length) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('')
   }

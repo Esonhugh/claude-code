@@ -109,7 +109,7 @@ export function SystemTextMessage({
         <Box minWidth={2}>
           <Text color="error">{BLACK_CIRCLE}</Text>
         </Box>
-        <Text dimColor>All background agents stopped</Text>
+        <Text dimColor>Background agents stopped</Text>
       </Box>
     )
   }

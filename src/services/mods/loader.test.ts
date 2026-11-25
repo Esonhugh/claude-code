@@ -245,7 +245,7 @@ test.each([
   const input = await plugin({
     'main.ts': `export function register(on) { on('tool.call', async ($, e) => ({result:await ${expression}})); }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/state access requires.*plugin.*key/i)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/takes a reference whose plugin and key are string literals/)
 })
 
 test.each([
@@ -258,7 +258,7 @@ test.each([
   const input = await plugin({
     'main.ts': `export function register(on) { on('tool.call', async ($, e) => ({result:await ${expression}})); }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/environment.*literal|environment.*name/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/takes a literal name as its first argument|environment name must be/)
 })
 
 test('refuses dynamic environment names in imported helpers', async () => {
@@ -266,7 +266,7 @@ test('refuses dynamic environment names in imported helpers', async () => {
     'main.ts': `import { read } from './read'; export function register(on) { on('tool.call', ($, e) => read($, e.name)); }`,
     'read.ts': `export function read($, name) { return $.env.get(name); }`,
   })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/environment.*literal/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/\$\.env\.get takes a literal name as its first argument.*\(got the variable name\)/)
 })
 
 test('rejects top-level await in imported files, including files also used as entrypoints', async () => {

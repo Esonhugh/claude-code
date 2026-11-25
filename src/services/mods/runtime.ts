@@ -200,7 +200,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
 }
-export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault }
+export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault; storageId?: string }
 export type ModDispatchOptions = {
   /** Host-pinned caller identity, never read from the event's input. */
   origin?: ModOrigin
@@ -732,9 +732,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const words = error instanceof Error ? error.message : String(error)
     return words.startsWith(`${plugin}: `) ? words.slice(plugin.length + 2) : words
   }
-  const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
-    plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
+  const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault, storageId?: string) => onDiagnostic?.({
+    plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}), ...(storageId && {storageId}),
   })
+  const loadFailed = (input: { name: string; storageId: string }, error: unknown, old: boolean) => {
+    diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error), undefined, input.storageId)
+  }
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   let activeHostCallbacks = 0
   const toolNotices = createModToolNotices()
@@ -3549,7 +3552,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           failed = owner
           if (!hostDead && !controller.signal.aborted)
             unloadedSteps.set(owner.declaration.storageId, { declaration: owner.declaration, order: [...order] })
-          diagnostic(owner.declaration.name, 'load', `hooks module did not load: the $ build failed (${reason})`)
+          diagnostic(owner.declaration.name, 'load', `hooks module did not load: the $ build failed (${reason})`, undefined, owner.declaration.storageId)
           break
         }
         if (!failed) {
@@ -3798,7 +3801,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         const old = active.find(owner => owner.declaration.storageId === input.storageId)
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
+        loadFailed(input, error, Boolean(old))
       }
     }
     // Official 2.1.329 session.start: a reload runs changed modules only, all of them if a changed one hooks
@@ -3951,7 +3954,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         ensureLive()
         // A retained previous version still guards the user tier.
         if (!old) failGuard(input)
-        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${loadWords(input.name, error)}` : loadWords(input.name, error))
+        loadFailed(input, error, Boolean(old))
       }
     }
     for (const input of loading) await load(input)
