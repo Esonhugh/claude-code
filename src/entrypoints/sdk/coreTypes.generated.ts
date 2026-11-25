@@ -704,14 +704,45 @@ export type SDKTaskProgressMessage = {
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
   last_tool_name?: string
   summary?: string
-  workflow_progress?: Array<{
-    type: string
-    index?: number
-    phaseIndex?: number
-    label?: string
-    status?: string
-    message?: string
-  }>
+  workflow_progress?: Array<
+    | {
+        type: 'workflow_agent'
+        index: number
+        label: string
+        phaseIndex?: number
+        phaseTitle?: string
+        agentId?: string
+        agentType?: string
+        isolation?: string
+        model?: string
+        fallbackModel?: string
+        state: 'start' | 'progress' | 'done' | 'error'
+        startedAt?: number
+        queuedAt?: number
+        attempt?: number
+        lastAttemptReason?: string
+        lastToolName?: string
+        lastToolSummary?: string
+        promptPreview?: string
+        promptFramed?: boolean
+        lastProgressAt?: number
+        tokens?: number
+        toolCalls?: number
+        durationMs?: number
+        resultPreview?: string
+        error?: string
+        endedWithRun?: string
+        skipped?: boolean
+        blocked?: boolean
+        cached?: boolean
+      }
+    | {
+        type: 'workflow_phase'
+        index: number
+        title: string
+        kind?: string
+      }
+  >
   uuid: string
   session_id: string
 }

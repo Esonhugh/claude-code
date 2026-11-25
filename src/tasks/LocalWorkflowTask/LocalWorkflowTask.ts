@@ -13,6 +13,7 @@ import type { WorkflowUsageLimitWaitStatus } from '../../tools/WorkflowTool/work
 import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
+import { endWorkflowProgressRows } from './workflowProgressRows.js'
 
 const MAX_RECENT_ACTIVITIES = 5
 // Progress events are UI/SDK deltas; keep the tail so long runs stay bounded.
@@ -1063,6 +1064,7 @@ export function completeWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (isTerminalTaskStatus(task.status)) return task
+    endWorkflowProgressRows(taskId, 'completed')
     const endTime = Date.now()
     return {
       ...task,
@@ -1086,6 +1088,7 @@ export function failWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    endWorkflowProgressRows(taskId, 'failed')
     abortWorkflowControllers(task, 'workflow-failed')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
     const endTime = Date.now()
@@ -1133,6 +1136,9 @@ function endedWorkflowTask(
   task: LocalWorkflowTaskState,
   status: LocalWorkflowTaskState['status'],
 ): LocalWorkflowTaskState {
+  if (status === 'killed' || status === 'completed' || status === 'failed') {
+    endWorkflowProgressRows(task.id, status)
+  }
   abortWorkflowControllers(task, `workflow-${status}`)
   const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
   const endTime = Date.now()
@@ -1183,6 +1189,7 @@ export function pauseWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    endWorkflowProgressRows(taskId, 'paused')
     abortWorkflowControllers(task, 'workflow-paused')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
     const pausedTask = {

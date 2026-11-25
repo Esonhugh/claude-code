@@ -65,9 +65,8 @@ type TaskProgressEvent = {
   }
   last_tool_name?: string
   summary?: string
-  // Delta batch of workflow state changes. Clients upsert by
-  // `${type}:${index}` then group by phaseIndex to rebuild the phase tree,
-  // same fold as collectFromEvents + groupByPhase in PhaseProgress.tsx.
+  // Every agent and phase row of the workflow so far, as official 2.1.329
+  // sends it; left out when only agent activity changed since the last one.
   workflow_progress?: SdkWorkflowProgress[]
 }
 

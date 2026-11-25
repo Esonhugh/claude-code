@@ -311,7 +311,7 @@ assert.equal(progress?.last_tool_name, 'alpha')
 assert.equal(
   progressEvents.some(event =>
     event.workflow_progress?.some(item =>
-      item.type === 'agent' && item.label === 'alpha' && item.status === 'completed'
+      item.type === 'workflow_agent' && item.label === 'alpha' && item.state === 'done'
     )
   ),
   true,

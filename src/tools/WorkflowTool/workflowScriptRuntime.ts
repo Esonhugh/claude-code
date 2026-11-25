@@ -66,7 +66,12 @@ import {
   USAGE_LIMIT_AGENT_LABEL_SUFFIX,
   WorkflowUsageLimitWait,
 } from './workflowUsageLimitWait.js'
-import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
+import {
+  reportWorkflowProgressRow,
+  startWorkflowProgressRows,
+  workflowRowPreview,
+} from '../../tasks/LocalWorkflowTask/workflowProgressRows.js'
+import type { SdkWorkflowAgentProgress } from '../../types/tools.js'
 import {
   createProgressTracker,
   getProgressUpdate,
@@ -387,55 +392,16 @@ function buildSchemaPrompt(schema: object): string {
   )
 }
 
-function workflowProgressSnapshot(
-  plan: WorkflowDryRunPlan,
-  task?: LocalWorkflowTaskState,
-): Array<{
-  type: string
-  index: number
-  phaseIndex?: number
-  label?: string
-  status?: string
-  message?: string
-}> {
-  return plan.phases.flatMap((phase, phaseIndex) => {
-    const phaseState = task?.phases.find(item => item.id === phase.id)
-    const labels = phaseState?.agentIds.length
-      ? phaseState.agentIds
-      : Array.from(
-          { length: phase.fanout },
-          (_, index) => phase.agentLabels?.[index] ?? `${phase.id}-${index + 1}`,
-        )
-    return [
-      {
-        type: 'phase',
-        index: phaseIndex,
-        label: phase.id,
-        status: phaseState?.status ?? 'pending',
-        message: phase.description,
-      },
-      ...labels.map((label, index) => ({
-        type: 'agent',
-        index,
-        phaseIndex,
-        label,
-        status: phaseState?.completedAgentIds.includes(label)
-          ? 'completed'
-          : phaseState?.failedAgentIds.includes(label)
-            ? 'failed'
-            : phaseState?.skippedAgentIds.includes(label)
-              ? 'skipped'
-              : phaseState?.agentIds.includes(label)
-                ? 'running'
-                : 'pending',
-      })),
-    ]
-  })
-}
+type AgentRowBase = Pick<SdkWorkflowAgentProgress, 'type' | 'index' | 'label' | 'phaseIndex' | 'phaseTitle'>
 
-function workflowAgentProgressDescription(phase: string, label: string, plan: WorkflowDryRunPlan): string {
-  const isChildWorkflowAgent = !plan.phases.some(item => item.id === phase)
-  return isChildWorkflowAgent ? `▸ ${phase}: ${label}` : `${phase}: ${label}`
+/** One attempt of an agent() call, as its progress row shows it. */
+type AgentAttemptRow = {
+  agentId?: string
+  model?: string
+  startedAt?: number
+  lastToolName?: string
+  lastToolSummary?: string
+  report: (state: SdkWorkflowAgentProgress['state'], extra?: Partial<SdkWorkflowAgentProgress>) => void
 }
 
 function workflowLaunchEnvelope({
@@ -661,7 +627,6 @@ export async function runWorkflowScript({
   let tokenSpent = 0
   let toolUseSpent = 0
   let currentPhaseId = plan.phases[0]?.id ?? plan.name
-  let childWorkflowProgressName: string | undefined
   const abortController = workflowTask.abortController!
   const maxConcurrency = workflowMaxConcurrency()
   const semaphore = new Semaphore(maxConcurrency)
@@ -693,12 +658,24 @@ export async function runWorkflowScript({
   const phaseAgentCounts = new Map<string, number>()
   // Like official, every agent() call chains its key on the previous call's, in call order.
   let workflowAgentIdentitySeed = ''
-  const currentWorkflowProgress = () => {
-    const task = context.getAppState().tasks[workflowTask.id]
-    return workflowProgressSnapshot(
-      plan,
-      task?.type === 'local_workflow' ? task : undefined,
-    )
+  // Like official, SDK hosts see the run as rows: one per agent() call, numbered from 1,
+  // and one per phase, numbered in the order phases are first named.
+  startWorkflowProgressRows(workflowTask.id, {
+    toolUseId: context.toolUseId,
+    description: workflowTask.description,
+    summary: plan.description,
+    startTime: workflowTask.startTime,
+  })
+  let rowPhaseTitle: string | undefined
+  const rowPhaseIndexes = new Map<string, number>()
+  const announceRowPhase = (title: string): number => {
+    let index = rowPhaseIndexes.get(title)
+    if (index === undefined) {
+      index = rowPhaseIndexes.size + 1
+      rowPhaseIndexes.set(title, index)
+      reportWorkflowProgressRow(workflowTask.id, { type: 'workflow_phase', index, title })
+    }
+    return index
   }
   const logWorkflowPhaseTerminals = (fallbackStatus: string) => {
     const task = context.getAppState().tasks[workflowTask.id]
@@ -829,6 +806,16 @@ export async function runWorkflowScript({
     })
     workflowAgentIdentitySeed = identityKey
     agentCount++
+    const rowPhase = opts?.phase !== undefined ? String(opts.phase) : rowPhaseTitle
+    const agentRow: AgentRowBase = {
+      type: 'workflow_agent',
+      index: agentCount,
+      label: (opts?.label ? String(opts.label) : prompt.slice(0, 60)).replace(/\s+/g, ' ').trim(),
+      phaseIndex: rowPhase !== undefined ? announceRowPhase(rowPhase) : undefined,
+      phaseTitle: rowPhase,
+    }
+    const rowPromptPreview = workflowRowPreview(prompt)
+    const rowModel = () => opts?.model ?? getWorkflowSubagentModel() ?? context.options.mainLoopModel
     // Look up before any await so the journal sees calls in launch order.
     const cached = journal.lookup(identityKey)
 
@@ -873,6 +860,16 @@ export async function runWorkflowScript({
         durationMs: 0,
       }
       scriptAgentResults.push(cachedAgentResult)
+      reportWorkflowProgressRow(workflowTask.id, {
+        ...agentRow,
+        model: rowModel(),
+        state: 'done',
+        startedAt: Date.now(),
+        lastProgressAt: Date.now(),
+        cached: true,
+        resultPreview: workflowRowPreview(cached.result),
+        promptPreview: rowPromptPreview,
+      })
       completeWorkflowAgent({
         taskId: workflowTask.id,
         result: cachedAgentResult,
@@ -911,6 +908,19 @@ export async function runWorkflowScript({
     if (spawned.model !== opts?.model) opts = { ...opts, model: spawned.model }
 
     const stallMs = opts?.stallMs ?? defaultWorkflowAgentStallMs()
+
+    // Listed as soon as it is called; its start replaces this once it has a slot.
+    const queuedAt = Date.now()
+    reportWorkflowProgressRow(workflowTask.id, {
+      ...agentRow,
+      agentType: opts?.agentType,
+      isolation: opts?.isolation === 'worktree' ? 'worktree' : undefined,
+      model: rowModel(),
+      state: 'start',
+      queuedAt,
+      promptPreview: rowPromptPreview,
+      lastProgressAt: queuedAt,
+    })
 
     // Stall/user retry loop
     let attempt = 0
@@ -966,6 +976,27 @@ export async function runWorkflowScript({
 
       const acquired = await semaphore.acquire(abortController.signal)
       if (!acquired) return null
+      const rowAttempt = attempt + 1
+      const attemptRow: AgentAttemptRow = {
+        model: rowModel(),
+        report: (state, extra) => reportWorkflowProgressRow(workflowTask.id, {
+          ...agentRow,
+          agentId: attemptRow.agentId,
+          agentType: opts?.agentType,
+          isolation: opts?.isolation === 'worktree' ? 'worktree' : undefined,
+          model: attemptRow.model,
+          state,
+          startedAt: attemptRow.startedAt,
+          queuedAt,
+          attempt: rowAttempt,
+          lastToolName: attemptRow.lastToolName,
+          lastToolSummary: attemptRow.lastToolSummary,
+          promptPreview: rowPromptPreview,
+          promptFramed: isWorkflowPromptProvenanceEnabled(),
+          lastProgressAt: Date.now(),
+          ...extra,
+        }),
+      }
       try {
         const result = await runSingleAgent(
           prompt,
@@ -978,6 +1009,7 @@ export async function runWorkflowScript({
           phase,
           stallMs,
           phaseAgentIndex,
+          attemptRow,
         )
         const completedAt = Date.now()
         const currentTask = context.getAppState().tasks[workflowTask.id]
@@ -1021,6 +1053,23 @@ export async function runWorkflowScript({
       } catch (error) {
         if (abortController.signal.aborted) return null
         let msg = workflowErrorMessage(error, `Workflow agent failed without error details: ${attemptAgentId}`)
+        attemptRow.report('error', {
+          error: msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON
+            ? 'skipped by user'
+            : msg === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
+              ? 'retry requested by user'
+              : msg === 'stalled'
+                ? `stalled \u2014 no progress for ${stallMs}ms`
+                : msg,
+          ...(msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON ? { skipped: true } : {}),
+          ...(error instanceof WorkflowAgentAttemptError
+            ? {
+                tokens: error.usage.tokenCount,
+                toolCalls: error.usage.toolUseCount,
+                durationMs: error.usage.durationMs,
+              }
+            : {}),
+        })
         if (msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
           const skippedTask = context.getAppState().tasks[workflowTask.id]
           const skippedPhase = skippedTask?.type === 'local_workflow'
@@ -1284,6 +1333,7 @@ export async function runWorkflowScript({
     agentContext: ToolUseContext,
     agentId: string, logicalAgentId: string, attempt: number,
     phase: string, stallMs: number | undefined, phaseAgentIndex: number,
+    row: AgentAttemptRow,
   ): Promise<unknown> {
     const agentAbortController = createChildAbortController(abortController)
     const attemptId = `${phase}:${logicalAgentId}:attempt:${attempt}`
@@ -1390,20 +1440,9 @@ export async function runWorkflowScript({
     const attemptStartedAt = Date.now()
     let progressTokens = 0
     let progressToolUses = 0
+    row.startedAt = attemptStartedAt
     try {
-      const progressPhase = childWorkflowProgressName ?? phase
       const progressTracker = createProgressTracker()
-      emitTaskProgress({
-        taskId: workflowTask.id,
-        toolUseId: context.toolUseId,
-        description: workflowAgentProgressDescription(progressPhase, agentId, plan),
-        startTime: workflowTask.startTime,
-        totalTokens: tokenSpent,
-        toolUses: 0,
-        lastToolName: agentId,
-        summary: `Workflow agent started: ${agentId}`,
-        workflowProgress: currentWorkflowProgress(),
-      })
 
       const agentCall = callWorkflowAgent(agentTool,
         input as never,
@@ -1438,8 +1477,14 @@ export async function runWorkflowScript({
           }
           lastProgress = Date.now()
           const data = progress?.data as
-            | { type?: string; message?: unknown; summary?: string }
+            | { type?: string; message?: unknown; summary?: string; agentId?: string; resolvedModel?: string }
             | undefined
+          // The agent's first progress names it: like official, its row starts then.
+          if (data?.type === 'agent_progress' && row.agentId === undefined && data.agentId) {
+            row.agentId = data.agentId
+            row.model = data.resolvedModel ?? row.model
+            row.report('start')
+          }
           let tokenDelta = 0
           let toolUseDelta = 0
           if (
@@ -1460,6 +1505,8 @@ export async function runWorkflowScript({
             const update = getProgressUpdate(progressTracker)
             progressTokens = update.tokenCount
             progressToolUses = update.toolUseCount
+            row.lastToolName = update.lastActivity?.toolName
+            row.lastToolSummary = update.lastActivity?.activityDescription
             tokenDelta = progressTokens - previousTokens
             toolUseDelta = progressToolUses - previousToolUses
           }
@@ -1470,17 +1517,9 @@ export async function runWorkflowScript({
               activity: data?.summary, prompt: prompt.slice(0, 200),
               setAppState,
             })
-            emitTaskProgress({
-              taskId: workflowTask.id,
-              toolUseId: context.toolUseId,
-              description: workflowAgentProgressDescription(progressPhase, agentId, plan),
-              startTime: workflowTask.startTime,
-              totalTokens: tokenSpent + progressTokens,
-              toolUses: toolUseSpent + progressToolUses,
-              lastToolName: agentId,
-              summary: data?.summary ?? `Workflow agent running: ${agentId}`,
-              workflowProgress: currentWorkflowProgress(),
-            })
+            if (tokenDelta !== 0 || toolUseDelta !== 0) {
+              row.report('progress', { tokens: progressTokens, toolCalls: progressToolUses })
+            }
           }
         },
       )
@@ -1554,16 +1593,11 @@ export async function runWorkflowScript({
         }),
       )
 
-      emitTaskProgress({
-        taskId: workflowTask.id,
-        toolUseId: context.toolUseId,
-        description: workflowAgentProgressDescription(progressPhase, agentId, plan),
-        startTime: workflowTask.startTime,
-        totalTokens: tokenSpent,
-        toolUses: toolUseSpent,
-        lastToolName: agentId,
-        summary: `Workflow agent completed: ${agentId}`,
-        workflowProgress: currentWorkflowProgress(),
+      row.report('done', {
+        tokens: finalTokens,
+        toolCalls: finalToolUses,
+        durationMs: Date.now() - attemptStartedAt,
+        resultPreview: workflowRowPreview(agentResult),
       })
 
       return agentResult
@@ -1756,6 +1790,8 @@ export async function runWorkflowScript({
     )
     defineSandboxGlobal(childSandbox, 'phase', (title: string) => {
       currentPhaseId = title
+      rowPhaseTitle = String(title)
+      announceRowPhase(rowPhaseTitle)
       emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
     })
     defineSandboxGlobal(childSandbox, 'log', (message: string) => {
@@ -1784,17 +1820,12 @@ export async function runWorkflowScript({
   // --- workflow() sub-call ---
   async function runChildWorkflow(nameOrRef: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<unknown> {
     const parentPhaseId = currentPhaseId
+    const parentRowPhaseTitle = rowPhaseTitle
     try {
       const childArgs = subArgs ?? args
       const child = await loadChildWorkflow(nameOrRef, childArgs)
       if (child.script && hasWorkflowScriptMeta(child.script)) {
-        const parsedChild = parseWorkflowScript(child.script)
-        childWorkflowProgressName = parsedChild.meta.name
-        try {
-          return await runChildOfficialScript(child.script, childArgs)
-        } finally {
-          childWorkflowProgressName = undefined
-        }
+        return await runChildOfficialScript(child.script, childArgs)
       }
       const results = await runChildPlan(child.plan)
       return {
@@ -1803,6 +1834,7 @@ export async function runWorkflowScript({
       }
     } finally {
       currentPhaseId = parentPhaseId
+      rowPhaseTitle = parentRowPhaseTitle
     }
   }
 
@@ -1828,6 +1860,7 @@ export async function runWorkflowScript({
     await emit(createWorkflowLogEvent({ workflowRunId, message: `Workflow script started: ${plan.name}` }))
 
     const parsed = parseWorkflowScript(script)
+    for (const phase of parsed.meta.phases ?? []) announceRowPhase(phase.title)
     const sandbox = vm.createContext(
       Object.create(null),
       { codeGeneration: { strings: false, wasm: false } },
@@ -1839,6 +1872,8 @@ export async function runWorkflowScript({
     defineSandboxGlobal(sandbox, 'workflow', realWorkflow)
     defineSandboxGlobal(sandbox, 'phase', (title: string) => {
       currentPhaseId = title
+      rowPhaseTitle = String(title)
+      announceRowPhase(rowPhaseTitle)
       emit(createWorkflowPhaseEvent({ workflowRunId, phaseId: title, status: 'running' }))
     })
     defineSandboxGlobal(sandbox, 'log', (message: string) => {
