@@ -47,6 +47,8 @@ import {
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
+import type { SdkHandbackReport } from '../../utils/sdkEventQueue.js'
+import type { SubagentHandbackOutcome } from '../../utils/subagentHandback.js'
 import type { TaskState } from '../types.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../../tools/SendMessageTool/constants.js'
 
@@ -394,6 +396,9 @@ export function enqueueAgentNotification({
   waiting,
   turnLimit,
   consumed,
+  summaryIsReport,
+  handback,
+  handbackReport,
 }: {
   taskId: string
   description: string
@@ -404,6 +409,11 @@ export function enqueueAgentNotification({
   waiting?: boolean
   /** The agent stopped at its maxTurns limit; its result is partial. */
   turnLimit?: number
+  /** SDK hosts: the result is the report its owner is given, with no review to come. */
+  summaryIsReport?: boolean
+  /** SDK hosts: how a hand-back's report reached the owner, and the report a 'send' or 'flagged' one delivered. */
+  handback?: SubagentHandbackOutcome
+  handbackReport?: SdkHandbackReport
   error?: string
   setAppState: SetAppState
   finalMessage?: string
@@ -513,6 +523,8 @@ export function enqueueAgentNotification({
         : status === 'failed' ? error || 'Unknown error' : description,
     outputFile: outputPath,
     waiting,
+    summaryIsReport: status === 'completed' && !waiting && summaryIsReport && !!finalMessage,
+    ...(status === 'completed' && handback !== undefined && { handback, handbackReport }),
     usage: status === 'completed' && usage ? {
       total_tokens: usage.totalTokens,
       tool_uses: usage.toolUses,
