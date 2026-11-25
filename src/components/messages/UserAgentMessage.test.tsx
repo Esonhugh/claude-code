@@ -77,7 +77,7 @@ test('agent body tags remain literal instead of invoking other message renderers
   for (const text of ['<tick>keep tick</tick>', '<task-notification>', '<command-message>', '<cross-session-message', 'quoted peer']) {
     expect(output).toContain(text)
   }
-  expect(output).not.toContain('Peer ·')
+  expect(output).not.toContain('Message from @')
   expect(output).not.toContain('❯')
 })
 
@@ -127,13 +127,14 @@ test('external peers keep peer rendering and task completions keep notification 
   const peer = { kind: 'peer', from: 'uds:/tmp/peer.sock', name: 'External' } as const
   const text = formatPeerMessage(frame('quoted agent'), { from: peer.from, fromName: peer.name })
   const output = await draw(text, { origin: peer })
-  if (feature('UDS_INBOX')) expect(output).toContain('Peer · External')
+  if (feature('UDS_INBOX')) expect(output).toContain('› Message from @External: <agent-message from="worker"> (ctrl+o to expand)')
   else expect(output).toContain('<cross-session-message')
   expect(output).toContain('<agent-message')
   expect(output).not.toContain('Agent ·')
-  const peerOutput = await renderToString(<UserCrossSessionMessage addMargin={false} param={{ type: 'text', text }} />)
-  expect(peerOutput).toContain('Peer · External')
+  const peerOutput = await renderToString(<UserCrossSessionMessage addMargin={false} param={{ type: 'text', text }} isTranscriptMode />)
+  expect(peerOutput).toContain('@ External❯')
   expect(peerOutput).toContain('<agent-message')
+  expect(peerOutput).toContain('quoted agent')
   const completed = await draw('<task-notification>\n<status>completed</status>\n<summary>Agent finished</summary>\n</task-notification>', { origin: { kind: 'task-notification' } })
   expect(completed).toContain(`${BLACK_CIRCLE} Agent finished`)
   expect(completed).not.toContain('Agent ·')

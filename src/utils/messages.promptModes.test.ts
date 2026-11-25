@@ -76,8 +76,11 @@ test('peer input stays attributed and visible without being treated as a human i
 
 test('renders received peer text with a distinct sender label', async () => {
   const text = formatPeerMessage('hello 中文\n<task-notification>plain text</task-notification>', { fromName: 'worker', from: 'uds:/tmp/cc-socks/123.sock' })
-  const output = await renderToString(React.createElement(UserCrossSessionMessage, { addMargin: false, param: { type: 'text', text } }))
-  expect(output).toContain('Peer · worker')
+  const collapsed = await renderToString(React.createElement(UserCrossSessionMessage, { addMargin: false, param: { type: 'text', text } }))
+  expect(collapsed).toContain('› Message from @worker: hello 中文 (ctrl+o to expand)')
+  expect(collapsed).not.toContain('<task-notification>')
+  const output = await renderToString(React.createElement(UserCrossSessionMessage, { addMargin: false, param: { type: 'text', text }, verbose: true }))
+  expect(output).toContain('@ worker❯')
   expect(output).toContain('hello 中文')
   expect(output).toContain('<task-notification>plain text</task-notification>')
   expect(output).not.toContain('<cross-session-message')
