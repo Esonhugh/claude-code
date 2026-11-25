@@ -1,7 +1,7 @@
 import { z } from 'zod/v4'
 import { posix, win32 } from 'path'
 import { HooksSchema } from '../../schemas/hooks.js'
-import { McpServerConfigSchema } from '../../services/mcp/types.js'
+import { PluginMcpServerConfigSchema, PluginNetworkSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
 
 /**
@@ -353,6 +353,9 @@ const PluginManifestMetadataSchema = lazySchema(() =>
       .describe(
         "Path to the plugin's types-only TypeScript contract, relative to the plugin root",
       ),
+    network: PluginNetworkSchema().describe(
+      "The network hosts any part of the plugin reaches, as its author states them, for `claude plugin validate` to list. Shown only: it is not checked, allows no host and limits nothing. In a marketplace entry it is read where the entry is the plugin's only manifest.",
+    ),
   }),
 )
 
@@ -591,7 +594,7 @@ const PluginManifestMcpServerSchema = lazySchema(() =>
         'Path or URL to MCPB file containing MCP server configuration',
       ),
       z
-        .record(z.string(), McpServerConfigSchema())
+        .record(z.string(), PluginMcpServerConfigSchema())
         .describe('MCP server configurations keyed by server name'),
       z
         .array(
@@ -601,7 +604,7 @@ const PluginManifestMcpServerSchema = lazySchema(() =>
             ),
             McpbPath().describe('Path or URL to MCPB file'),
             z
-              .record(z.string(), McpServerConfigSchema())
+              .record(z.string(), PluginMcpServerConfigSchema())
               .describe('Inline MCP server configurations'),
           ]),
         )

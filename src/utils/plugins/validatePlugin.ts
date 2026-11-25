@@ -20,6 +20,7 @@ import {
 import { stripBOM } from '../jsonRead.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
+import { networkHost } from './pluginProvides.js'
 import {
   PluginHooksSchema,
   PluginManifestSchema,
@@ -181,6 +182,80 @@ function checkPathTraversal(
   }
 }
 
+const NETWORK_HOSTS_READ = 256
+const REMOTE_MCP_TYPES = new Set(['http', 'streamable-http', 'sse', 'ws'])
+
+// Official 2.1.329 reads `network` from the raw JSON and warns on what the
+// loader would drop (its qe), so a bad entry is reported rather than silently
+// ignored. `type` is the MCP server type when the field sits on a server.
+function checkNetwork(
+  value: unknown,
+  field: string,
+  warnings: ValidationWarning[],
+  type?: unknown,
+): void {
+  if (value === undefined) return
+  if (typeof type === 'string' && REMOTE_MCP_TYPES.has(type)) {
+    warnings.push({
+      path: field,
+      message:
+        "'network' is read on stdio servers only; a remote server's host is read from its url. It will be ignored at load time.",
+    })
+    return
+  }
+  const hosts = (value as { hosts?: unknown } | null)?.hosts
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || !Array.isArray(hosts)) {
+    warnings.push({
+      path: field,
+      message:
+        `'network' must be an object with a list of hosts, such as { "hosts": ["api.example.com"] }. It will be ignored at load time.`,
+    })
+    return
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'hosts') {
+      warnings.push({
+        path: `${field}.${key}`,
+        message: `Unknown field '${key}'. Claude Code ignores it at load time.`,
+      })
+    }
+  }
+  hosts.slice(0, NETWORK_HOSTS_READ).forEach((host, i) => {
+    if (networkHost(host) === undefined) {
+      warnings.push({
+        path: `${field}.hosts[${i}]`,
+        message:
+          'Must be a host as sandbox.network.allowedDomains takes it, in plain ASCII and its usual spelling, with no scheme or path: "api.example.com", "*.example.com", "10.0.0.1", "[::1]" or "localhost", each with an optional ":port". It will be ignored at load time.',
+      })
+    }
+  })
+  if (hosts.length > NETWORK_HOSTS_READ) {
+    warnings.push({
+      path: `${field}.hosts`,
+      message: `Only the first ${NETWORK_HOSTS_READ} entries are read. The rest will be ignored at load time.`,
+    })
+  }
+}
+
+// The `network` of each inline server in a manifest's or entry's mcpServers.
+function checkServerNetworks(
+  mcpServers: unknown,
+  prefix: string,
+  warnings: ValidationWarning[],
+): void {
+  const list = Array.isArray(mcpServers) ? mcpServers : [mcpServers]
+  list.forEach((servers, i) => {
+    if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return
+    const field = Array.isArray(mcpServers) ? `mcpServers[${i}]` : 'mcpServers'
+    for (const [name, server] of Object.entries(servers)) {
+      if (typeof server === 'object' && server !== null && !Array.isArray(server)) {
+        const config = server as { network?: unknown; type?: unknown }
+        checkNetwork(config.network, `${prefix}${field}.${name.slice(0, 64)}.network`, warnings, config.type)
+      }
+    }
+  })
+}
+
 // Shown when a marketplace plugin source contains '..'. Most users hit this because
 // they expect paths to resolve relative to marketplace.json (inside .claude-plugin/),
 // but resolution actually starts at the marketplace repo root — see gh-29485.
@@ -325,6 +400,12 @@ export async function validatePluginManifest(
 
   if (!result.success) {
     errors.push(...formatZodErrors(result.error))
+  }
+
+  if (typeof parsed === 'object' && parsed !== null) {
+    const raw = parsed as Record<string, unknown>
+    checkServerNetworks(raw.mcpServers, '', warnings)
+    checkNetwork(raw.network, 'network', warnings)
   }
 
   // Check for common issues and add warnings
@@ -502,6 +583,11 @@ export async function validateMarketplaceManifest(
               errors,
             )
           }
+        }
+        if (plugin && typeof plugin === 'object' && !Array.isArray(plugin)) {
+          const entry = plugin as Record<string, unknown>
+          checkNetwork(entry.network, `plugins[${i}].network`, warnings)
+          checkServerNetworks(entry.mcpServers, `plugins[${i}].`, warnings)
         }
       })
     }

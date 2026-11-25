@@ -80,6 +80,61 @@ describe('plugin types validation', () => {
   })
 })
 
+describe('network hosts validation', () => {
+  test('warns on network entries the loader drops, as 2.1.329 does', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({
+      name: 'net',
+      version: '1.0.0',
+      description: 'd',
+      author: { name: 'a' },
+      network: { hosts: [5, 'ok.example.com', ...Array.from({ length: 255 }, (_, i) => `h${i}.example.com`)], why: 1 },
+      mcpServers: {
+        remote: { type: 'http', url: 'https://r.example.com', network: { hosts: ['r.example.com'] } },
+        local: { command: 'node', network: { hosts: ['https://bad.example.com', '[::1]:80', '*.ok.example.com'] } },
+      },
+    }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.success).toBe(true)
+    expect(result.warnings.map(warning => warning.path)).toEqual([
+      'mcpServers.remote.network',
+      'mcpServers.local.network.hosts[0]',
+      'network.why',
+      'network.hosts[0]',
+      'network.hosts',
+    ])
+  })
+
+  test('warns on a network that is not an object with hosts', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'net', network: 'nope' }))
+    const result = await validatePluginManifest(join(root, '.claude-plugin', 'plugin.json'))
+    expect(result.success).toBe(true)
+    expect(result.warnings[0]).toEqual({
+      path: 'network',
+      message: `'network' must be an object with a list of hosts, such as { "hosts": ["api.example.com"] }. It will be ignored at load time.`,
+    })
+  })
+
+  test('warns on marketplace entry networks', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+      name: 'mk',
+      owner: { name: 'o' },
+      plugins: [
+        { name: 'a', source: './a', network: 'x' },
+        { name: 'b', source: './b', network: { hosts: ['ftp://x'] }, mcpServers: { w: { type: 'sse', url: 'https://w.example.com', network: { hosts: [] } } } },
+      ],
+    }))
+    const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
+    expect(result.warnings.map(warning => warning.path).slice(0, 3)).toEqual([
+      'plugins[0].network',
+      'plugins[1].network.hosts[0]',
+      'plugins[1].mcpServers.w.network',
+    ])
+  })
+})
+
 describe('hooks module author validation', () => {
   test.each(['register.mjs', 'nested/register.mjs', '../register.mjs'])('resolves a module filename from hooks.json: %s', async modulePath => {
     const root = await pluginRoot()

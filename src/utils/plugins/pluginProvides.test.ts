@@ -90,6 +90,24 @@ test('a module names the hosts its literal URLs reach like official', async () =
   ])
 })
 
+test('the hosts plugin.json and its stdio servers declare are listed as declared like official', async () => {
+  const root = await plugin({
+    '.claude-plugin/plugin.json': JSON.stringify({
+      name: 'pv',
+      network: { hosts: [] },
+      mcpServers: { s1: { command: 'node', args: ['s.js'], network: { hosts: ['MCP.example.com', 'https://bad'] } } },
+    }),
+    'hooks/hooks.json': JSON.stringify({ modules: ['./m.mjs'] }),
+    'hooks/m.mjs': 'export function register(on) { on("session.start", async ($, e) => { await $.http.fetch(e.u) }) }',
+  })
+  const listing = await listPluginProvides(root, await validatePluginContents(root))
+  expect(formatPluginProvides(listing!.provides)).toContain('mcpServers: s1 stdio node ["s.js"]')
+  expect(listing!.hosts).toEqual([
+    'Hosts: mcp.example.com (declared)',
+    'Hosts not read for: mcpServers (1), modules (1)',
+  ])
+})
+
 test('a plugin of markdown parts alone reaches no host it names', async () => {
   const root = await plugin({ 'skills/sk1/SKILL.md': markdown('sk1'), 'commands/cmd1.md': markdown() })
   const listing = await listPluginProvides(root, [])

@@ -1,3 +1,4 @@
+import { isValidAllowedDomainEntry, splitDomainPatternPort } from '@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js'
 import type { Dirent } from 'fs'
 import { readdir, readFile, realpath, stat } from 'fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'path'
@@ -25,7 +26,6 @@ type Components = {
   name: string
   path: string
   manifest: PluginManifest
-  network: unknown
   skills: string[]
   commands: string[]
   commandsMetadata: Record<string, { source?: string; content?: string }>
@@ -99,7 +99,7 @@ async function readComponents(root: string): Promise<Components> {
   }
 
   return {
-    name: manifest.name, path: root, manifest, network: raw.network,
+    name: manifest.name, path: root, manifest,
     skills: await componentPaths(root, manifest.skills, 'skills'),
     commands, commandsMetadata,
     agents: await componentPaths(root, manifest.agents, 'agents'),
@@ -196,9 +196,14 @@ async function mcpServers(plugin: Components): Promise<Entry[]> {
     const target = /^https?:\/\//.test(spec) ? listedUrl(spec) : spec.replace(/^(?!\.\/)/, './')
     return { name: target, type: 'mcpb', target }
   })
-  return [...servers.map(([name, config]) => 'command' in config
-    ? { name, type: 'stdio', target: config.command, ...(config.args !== undefined && { args: config.args }) }
-    : { name, type: config.type === 'sse' || config.type === 'ws' ? config.type : 'http', target: typeof config.url === 'string' ? listedUrl(config.url) : '' }), ...bundles]
+  // The last server of a name states the hosts it reaches, as official 2.1.329's Bdo reads them.
+  const last = new Map(servers)
+  return [...servers.map(([name, config]) => ({
+    ...('command' in config
+      ? { name, type: 'stdio', target: config.command, ...(config.args !== undefined && { args: config.args }) }
+      : { name, type: config.type === 'sse' || config.type === 'ws' ? config.type : 'http', target: typeof config.url === 'string' ? listedUrl(config.url) : '' }),
+    hosts: last.get(name) === config && 'network' in config ? declaredHosts(config.network) : undefined,
+  })), ...bundles]
 }
 
 async function lspServers(plugin: Components): Promise<Entry[]> {
@@ -217,16 +222,19 @@ async function outputStyles(plugin: Components): Promise<Entry[]> {
 
 const modulePath = (plugin: Components, module: string) => relative(plugin.path, module).split(sep).join('/')
 
+/** A network.hosts entry as sandbox.network.allowedDomains takes it, lowercased, or undefined when it is not one (official kQs). */
+export function networkHost(entry: unknown): string | undefined {
+  if (typeof entry !== 'string' || entry.length > 261 || !isValidAllowedDomainEntry(entry)) return undefined
+  const lower = entry.toLowerCase()
+  const { port } = splitDomainPatternPort(lower)
+  const host = lower.slice(0, port === undefined ? undefined : lower.lastIndexOf(':')).replace(/^\*\./, '')
+  return urlHost(`http://${host}`) === host ? lower : undefined
+}
+
 function declaredHosts(network: unknown): string[] | undefined {
   const hosts = (network as { hosts?: unknown } | undefined)?.hosts
   if (!Array.isArray(hosts)) return undefined
-  const valid = hosts.flatMap(entry => {
-    if (typeof entry !== 'string' || entry.length > 261) return []
-    const lower = entry.toLowerCase()
-    const port = /:(\d{1,5})$/.exec(lower)
-    const host = (port ? lower.slice(0, port.index) : lower).replace(/^\*\./, '')
-    return urlHost(`http://${host}`) === host ? [lower] : []
-  })
+  const valid = hosts.flatMap(entry => networkHost(entry) ?? [])
   return valid.length === 0 && hosts.length !== 0 ? undefined : valid
 }
 
@@ -242,8 +250,10 @@ const matches = (pattern: string, event: string) => {
   return negated ? !hit : hit
 }
 
+type Declared = { server?: string; hosts: string[] }[]
+
 // The "Hosts" lines official 2.1.329 prints under the listing (its jYr and ze).
-function hostLines(provides: PluginProvides, uses: Uses | null, declared: string[] | undefined): string[] {
+function hostLines(provides: PluginProvides, uses: Uses | null, declared: Declared): string[] {
   const modules = provides.modules as { path: string }[]
   const hookList = provides.hooks as { event: string; type: string; url?: string; matcher?: string }[]
   const servers = provides.mcpServers as { name: string; type: string; target: string }[]
@@ -256,7 +266,7 @@ function hostLines(provides: PluginProvides, uses: Uses | null, declared: string
     ...hookList.flatMap(hook => hook.type === 'http' ? [{ host: urlHost(hook.url ?? ''), declared: false, part: { kind: 'hooks', name: hook.event, reason: 'url' as const } }] : []),
     ...servers.filter(({ type, target }) => type === 'mcpb' ? !target.startsWith('./') : type !== 'stdio')
       .map(({ name, target }) => ({ host: urlHost(target), declared: false, part: { kind: 'mcpServers', name, reason: 'url' as const } })),
-    ...(declared ?? []).map(host => ({ host, declared: true })),
+    ...declared.flatMap(({ hosts }) => hosts.map(host => ({ host, declared: true }))),
   ]
   const process: [string, string[]][] = [
     ['modules', reaches ? modules.map(({ path }) => path) : []],
@@ -277,7 +287,7 @@ function hostLines(provides: PluginProvides, uses: Uses | null, declared: string
   const lines: [string, string[]][] = [
     ['Hosts', hosts.map(host => reached.filter(entry => entry.host === host).every(entry => entry.declared) ? `${host} (declared)` : host)],
     ['Hosts not read for', [...counts].map(([kind, count]) => `${kind} (${count})`)],
-    ['Hosts not declared', declared === undefined && unread.some(({ kind, reason }) => reason === 'process' && kind !== 'skills' && kind !== 'commands')
+    ['Hosts not declared', declared.length === 0 && unread.some(({ kind, reason }) => reason === 'process' && kind !== 'skills' && kind !== 'commands')
       ? ['list what these parts reach under "network.hosts" in plugin.json'] : []],
   ]
   return lines.flatMap(([label, values]) => values.length === 0 ? [] : [`${label}: ${values.join(', ')}`])
@@ -296,18 +306,30 @@ export async function listPluginProvides(pluginRoot: string, results: readonly V
         throw new Error(`Could not list the ${kind} of plugin ${plugin.name}: ${errorMessage(error)}`)
       }
     }
-    const [mcp, lsp, skillList, commandList, agentList, styleList] = await Promise.all([
+    const [servers, lsp, skillList, commandList, agentList, styleList] = await Promise.all([
       listed('mcpServers', () => mcpServers(plugin)), listed('lspServers', () => lspServers(plugin)),
       listed('skills', () => skills(plugin)), listed('commands', () => commands(plugin)),
       listed('agents', () => agents(plugin)), listed('outputStyles', () => outputStyles(plugin)),
     ])
+    const mcp = servers.map(entry => {
+      const { hosts: _hosts, ...server } = entry as Record<string, unknown>
+      return server
+    })
+    const plugins = declaredHosts(plugin.manifest.network)
+    const declared: Declared = [
+      ...(plugins === undefined ? [] : [{ hosts: plugins }]),
+      ...servers.flatMap(entry => {
+        const { name, hosts } = entry as { name: string; hosts?: string[] }
+        return hosts === undefined ? [] : [{ server: name, hosts }]
+      }),
+    ]
     const first = plugin.modules[0]
     const provides: PluginProvides = {
       modules: first === undefined ? [] : [{ path: modulePath(plugin, first) }], hooks: uniqueByJson(hooks(plugin)), mcpServers: uniqueByJson(mcp), lspServers: lsp,
       skills: skillList, commands: commandList, agents: agentList, outputStyles: styleList,
     }
     const scanned = results.flatMap(result => result.modules ?? []).find(module => first !== undefined && module.path === modulePath(plugin, first))
-    return { provides, hosts: hostLines(provides, scanned ?? null, declaredHosts(plugin.network)) }
+    return { provides, hosts: hostLines(provides, scanned ?? null, declared) }
   } catch (error) {
     logForDebugging(`Could not list what the plugin provides: ${errorMessage(error)}`, { level: 'error' })
     return null
