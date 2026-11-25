@@ -284,19 +284,18 @@ const failedNotification = getCommandQueue().find(command =>
 )
 assert.ok(failedNotification)
 assert.match(String(failedNotification.value), /<status>failed<\/status>/)
-assert.match(String(failedNotification.value), /<subagent_tokens>12<\/subagent_tokens>/)
-assert.match(String(failedNotification.value), /<tool_uses>1<\/tool_uses>/)
+assert.doesNotMatch(String(failedNotification.value), /<usage>/)
 assert.equal(summaryStarts, 4)
 assert.equal(summaryStops, 4)
 setSdkAgentProgressSummariesEnabled(false)
 
-// Usage observed on the last assistant message after it was yielded must reach
-// the failed notification, as in the async-from-start lifecycle.
+// Official 2.1.329 sends a failed run's notice without <usage>, even when the
+// last assistant message gained usage after it was yielded.
 const lateUsageRun = await runBackgroundContinuation('late-usage-failed')
 const lateUsageNotifications = notificationFor(lateUsageRun.taskId)
 assert.equal(lateUsageNotifications.length, 1)
 assert.match(String(lateUsageNotifications[0]?.value), /<status>failed<\/status>/)
-assert.match(String(lateUsageNotifications[0]?.value), /<subagent_tokens>50<\/subagent_tokens>/)
+assert.doesNotMatch(String(lateUsageNotifications[0]?.value), /<usage>/)
 
 // A throw after the task is already completed must not report it as failed.
 const parkThrowRun = await runBackgroundContinuation('park-throws')

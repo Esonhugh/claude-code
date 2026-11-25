@@ -54,7 +54,7 @@ export type SubagentHandbackOutcome = 'send' | 'flagged' | 'withheld'
 /** What auto mode's classifier said about a SubagentHandback call it did not plainly allow. */
 export type SubagentHandbackReview = { kind: 'blocked'; reason: string } | { kind: 'unavailable'; model?: string }
 
-type HandbackState = { contract: boolean; bounces: number; delivered?: { report: string; warning?: string } }
+type HandbackState = { contract: boolean; bounces: number; delivered?: { report: string; warning?: string; toolUseId?: string } }
 
 const MAX_HANDBACK_BOUNCES = 3
 const states = new Map<string, HandbackState>()
@@ -141,11 +141,15 @@ export function subagentHandbackWarning(review: SubagentHandbackReview): string 
   return `SECURITY WARNING: auto mode blocked this subagent's report. Reason: ${reason}. The report follows; review the subagent's actions carefully before acting on it.`
 }
 
-/** Records the one report a hand-back run delivers; false when there is no contract or one was already delivered. */
-export function deliverSubagentHandback(agentId: string, report: string, warning: string | undefined): boolean {
+/**
+ * Records the one report a hand-back run delivers, with the id of the
+ * SubagentHandback call that sent it; false when there is no contract or one
+ * was already delivered.
+ */
+export function deliverSubagentHandback(agentId: string, report: string, warning: string | undefined, toolUseId?: string): boolean {
   const state = states.get(agentId)
   if (!state?.contract || state.delivered) return false
-  state.delivered = { report, ...(warning !== undefined && { warning }) }
+  state.delivered = { report, ...(warning !== undefined && { warning }), ...(toolUseId !== undefined && { toolUseId }) }
   return true
 }
 
@@ -154,7 +158,7 @@ export function deliverSubagentHandback(agentId: string, report: string, warning
  * review warning as a harness note above it), or a notice that nothing was
  * delivered. Undefined when the run had no hand-back contract.
  */
-export function takeSubagentHandbackResult(agentId: string, canContinue: boolean): (SubagentHandback & { handback: SubagentHandbackOutcome }) | undefined {
+export function takeSubagentHandbackResult(agentId: string, canContinue: boolean): (SubagentHandback & { handback: SubagentHandbackOutcome; handbackToolUseId?: string }) | undefined {
   const state = states.get(agentId)
   endSubagentHandback(agentId)
   if (!state?.contract) return undefined
@@ -164,10 +168,11 @@ export function takeSubagentHandbackResult(agentId: string, canContinue: boolean
       content: [{ type: 'text', text: WITHHELD + (canContinue ? ` Send the agent a message (${SEND_MESSAGE_TOOL_NAME}) to ask it to deliver its report.` : '') }],
     }
   }
-  const { report, warning } = state.delivered
+  const { report, warning, toolUseId } = state.delivered
   const content: TextBlockParam[] = [...(warning === undefined ? [] : [{ type: 'text' as const, text: warning }]), { type: 'text', text: report }]
   return {
     handback: warning === undefined ? 'send' : 'flagged',
+    ...(toolUseId !== undefined && { handbackToolUseId: toolUseId }),
     content,
     harnessNoteCount: warning === undefined ? 0 : 1,
     harnessTailCount: 0,

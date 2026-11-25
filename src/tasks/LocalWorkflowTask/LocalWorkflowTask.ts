@@ -1,6 +1,6 @@
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { PANEL_GRACE_MS, updateTaskState } from '../../utils/task/framework.js'
-import { emitTaskTerminatedSdk, enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
+import { emitTaskTerminatedSdk, enqueueSdkEvent, startTaskRun } from '../../utils/sdkEventQueue.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPhase,
@@ -13,6 +13,7 @@ import type { WorkflowUsageLimitWaitStatus } from '../../tools/WorkflowTool/work
 import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
+import { endWorkflowProgressRows } from './workflowProgressRows.js'
 
 const MAX_RECENT_ACTIVITIES = 5
 // Progress events are UI/SDK deltas; keep the tail so long runs stay bounded.
@@ -281,6 +282,8 @@ export function registerWorkflowTask({
     events: [],
   }
 
+  // Before the task lands, so its background_tasks_changed entry has the run id.
+  startTaskRun(taskState.id)
   setAppState(prev => ({
     ...prev,
     tasks: {
@@ -1061,8 +1064,10 @@ export function completeWorkflowTask(
   taskId: string,
   setAppState: SetAppState,
 ): void {
-  withWorkflowTask(taskId, setAppState, task => {
-    if (isTerminalTaskStatus(task.status)) return task
+  // Through updateTaskState, so SDK hosts get the task_updated that says so.
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.type !== 'local_workflow' || isTerminalTaskStatus(task.status)) return task
+    endWorkflowProgressRows(taskId, 'completed')
     const endTime = Date.now()
     return {
       ...task,
@@ -1084,8 +1089,9 @@ export function failWorkflowTask(
   error: string,
   setAppState: SetAppState,
 ): void {
-  withWorkflowTask(taskId, setAppState, task => {
-    if (task.status !== 'running') return task
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => {
+    if (task.type !== 'local_workflow' || task.status !== 'running') return task
+    endWorkflowProgressRows(taskId, 'failed')
     abortWorkflowControllers(task, 'workflow-failed')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
     const endTime = Date.now()
@@ -1133,6 +1139,9 @@ function endedWorkflowTask(
   task: LocalWorkflowTaskState,
   status: LocalWorkflowTaskState['status'],
 ): LocalWorkflowTaskState {
+  if (status === 'killed' || status === 'completed' || status === 'failed') {
+    endWorkflowProgressRows(task.id, status)
+  }
   abortWorkflowControllers(task, `workflow-${status}`)
   const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
   const endTime = Date.now()
@@ -1183,6 +1192,7 @@ export function pauseWorkflowTask(
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
     if (task.status !== 'running') return task
+    endWorkflowProgressRows(taskId, 'paused')
     abortWorkflowControllers(task, 'workflow-paused')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
     const pausedTask = {
@@ -1205,6 +1215,36 @@ export function killWorkflowTask(
   setAppState: SetAppState,
 ): void {
   setAppState(endWorkflowTask(taskId, 'killed'))
+}
+
+/**
+ * Drop a finished workflow from the panel at once, as official 2.1.329's
+ * footer `x` does (gge): no grace period, unlike timed eviction. Its finished
+ * agents go with it; the panel hides them only while the workflow is listed.
+ */
+export function dismissWorkflowTask(
+  taskId: string,
+  setAppState: SetAppState,
+): void {
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (task?.type !== 'local_workflow' || !isTerminalTaskStatus(task.status)) {
+      return prev
+    }
+    const tasks = Object.fromEntries(
+      Object.entries(prev.tasks).filter(
+        ([id, t]) =>
+          id !== taskId &&
+          !(
+            task.toolUseId &&
+            t.type === 'local_agent' &&
+            t.toolUseId === task.toolUseId &&
+            isTerminalTaskStatus(t.status)
+          ),
+      ),
+    )
+    return { ...prev, tasks }
+  })
 }
 
 /**

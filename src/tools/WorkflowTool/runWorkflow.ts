@@ -76,6 +76,7 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import {
   applyRequestedAgentPermissionMode,
   capAgentPermissionMode,
@@ -83,6 +84,7 @@ import {
 import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 import { sleep } from '../../utils/sleep.js'
+import { extractTextContent } from '../../utils/messages.js'
 import { AgentApiError, observeAgentProgress } from '../AgentTool/agentToolUtils.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -221,7 +223,12 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
   // A background worker's failure reaches us only as task.error; its last API error message
   // carries the usage-limit quota the workflow needs to wait for the reset.
   let rateLimitQuota: AssistantMessage['quotaLimits']
+  // Its text too, which the agent's row shows as the API said it.
+  let apiErrorText: string | undefined
   const removeProgressObserver = observeAgentProgress(callContext, message => {
+    if (message.type === 'assistant') {
+      apiErrorText = message.isApiErrorMessage ? extractTextContent(message.message.content, '\n').trim() || undefined : undefined
+    }
     if (message.type === 'assistant' && message.isApiErrorMessage) {
       rateLimitQuota = message.error === 'rate_limit' ? message.quotaLimits : undefined
     }
@@ -260,6 +267,7 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
         throw new AgentApiError(
           task.error ?? `Workflow Agent task ${task.status}`,
           task.status === 'failed' ? rateLimitQuota : undefined,
+          task.status === 'failed' ? apiErrorText : undefined,
         )
       }
       await sleep(20, signal)
@@ -449,7 +457,10 @@ async function enqueueWorkflowNotification({
 <result>${truncatedResult}</result>
 <usage><subagent_tokens>${usage.total_tokens}</subagent_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
-  await enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  // Like official 2.1.329, SDK hosts get task_notification as the run ends,
+  // before it leaves background_tasks_changed.
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, { toolUseId, summary, outputFile, usage })
+  await enqueuePendingNotification({ value: message, mode: 'task-notification', sdkTaskNotificationSent: true })
   setAppState(prev => {
     const task = prev.tasks[taskId]
     if (task?.type !== 'local_workflow' || task.notified) return prev

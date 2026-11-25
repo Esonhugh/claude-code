@@ -73,7 +73,7 @@ export const SubagentHandbackTool = buildTool({
     }
     if (isSubagentHandbackDelivered(agentId)) return alreadyDelivered
     const warning = review === undefined ? undefined : subagentHandbackWarning(review)
-    if (!deliverSubagentHandback(agentId, sanitizeSubagentOutput(input.message), warning)) return alreadyDelivered
+    if (!deliverSubagentHandback(agentId, sanitizeSubagentOutput(input.message), warning, context.toolUseId)) return alreadyDelivered
     return { data: { success: true, message: 'Report delivered to your caller.' } }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

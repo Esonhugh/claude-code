@@ -10,6 +10,7 @@ import {
   recordToolChangeRejection,
   resetToolChangeLatchesForTesting,
   shouldOfferToolChangeBetas,
+  systemNoticesRide,
   type ToolChangeSticky,
   toolChangesRide,
 } from './advisorToolChanges.js'
@@ -122,5 +123,25 @@ describe('applyToolChangeBetas', () => {
     applyToolChangeBetas(sticky, betas, MODEL)
     expect(betas).toEqual(['other'])
     expect(toolChangesRide({}, MODEL)).toBe(true)
+  })
+})
+
+describe('stop notices as role:"system" turns', () => {
+  test('ride for a conversation on the first-party API with a model that takes them', () => {
+    expect(systemNoticesRide({}, MODEL)).toBe(true)
+    // Not tied to the advisor or the experimental betas: official sends them without a header.
+    delete process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL
+    process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+    expect(systemNoticesRide({}, MODEL)).toBe(true)
+  })
+
+  test('stay reminders without conversation state, on older models, on other providers and after a rejection', () => {
+    expect(systemNoticesRide(undefined, MODEL)).toBe(false)
+    expect(systemNoticesRide({}, 'claude-sonnet-4-6')).toBe(false)
+    const sticky: ToolChangeSticky = {}
+    recordSystemTurnRejection(sticky)
+    expect(systemNoticesRide(sticky, MODEL)).toBe(false)
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    expect(systemNoticesRide({}, MODEL)).toBe(false)
   })
 })

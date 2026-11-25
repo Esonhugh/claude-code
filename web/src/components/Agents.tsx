@@ -20,7 +20,6 @@ import {
   unresolvedIssuers,
   type WorkflowPhase,
   workflowAgent,
-  workflowPhases,
 } from '../agents'
 import { loadAgentIssuers, loadAgentTranscript } from '../api'
 import { mentionPath, uploadFile } from '../files'
@@ -911,14 +910,14 @@ export function WorkflowTab({
     setToggled(new Map())
   }, [task?.id])
   if (!task) return <p className="note">{t('noWorkflow')}</p>
-  const phases = workflowPhases(tasks, task)
+  const phases = task.phases ?? []
   const allAgents = phases.flatMap(p => p.agents)
   const done = allAgents.filter(a => a.status === 'completed').length
   const currentIndex = currentPhase(phases)
   // Every phase is a drawer; running ones (pipelined phases overlap) start open, else the current one.
   const lines = runningPhases(phases)
   const isOpen = (i: number) => toggled.get(i) ?? lines.includes(i)
-  const agentTask = agentLabel ? workflowAgent(tasks, task, agentLabel) : undefined
+  const agentTask = agentLabel ? workflowAgent(task, agentLabel) : undefined
   const toggle = (i: number) => setToggled(prev => new Map(prev).set(i, !isOpen(i)))
   return (
     <div className={`wftab${agentLabel ? ' split' : ''}`}>

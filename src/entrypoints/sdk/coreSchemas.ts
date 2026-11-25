@@ -2590,6 +2590,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
     status: z.enum(['completed', 'failed', 'stopped']),
     output_file: z.string(),
     summary: z.string(),
+    summary_is_report: z.boolean().optional().describe("@internal `summary` is the report of a subagent that nothing waits for, as its owner is given it, with the harness's notes on it if any, and no review of it is to come: show it as the report. A later notification for the same task_id replaces it. Absent otherwise: the summary can be a description or an interim text, its review can be still to come, or, under `handback`, the report is in `handback_report`. Always absent for a subagent whose owner is in auto mode."),
     usage: z
       .object({
         total_tokens: z.number(),
@@ -2597,6 +2598,15 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
         duration_ms: z.number(),
       })
       .optional(),
+    handback: z.enum(['send', 'flagged', 'withheld']).optional().describe("@internal Present on a 'completed' notification of a subagent that reports through the SubagentHandback tool: how its report reached its caller. Left out when the subagent failed, was stopped, or is waiting on its own background work with nothing delivered yet; for such a subagent, `summary` is then not a report. When present, `summary` holds harness notes written for the model. A later notification for the same task_id replaces what an earlier one showed."),
+    handback_report: z
+      .object({
+        text: z.string().describe("The subagent's whole report, never truncated, with a backslash inserted into text that imitates harness markup"),
+        warning: z.string().optional().describe("Auto mode's warning to show above `text`: a SECURITY WARNING, or a note that the review could not run"),
+        toolUseId: z.string().optional().describe("Id of the subagent's own SubagentHandback tool_use block that sent the report, not of the call that started the agent. Copies of one report repeat it. Show the report even when no such block is loaded"),
+      })
+      .optional()
+      .describe("@internal The report a 'send' or 'flagged' hand-back delivered: when present, render it instead of `summary`, with its `warning`, if it has one, above its `text`. Absent for 'withheld'; if it is absent for another value too, show `summary`."),
     waiting: z.boolean().optional().describe('Fork-only. The agent stopped with its own background work still running and resumes when that work reports; the task is not over.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -2756,16 +2766,48 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
     summary: z.string().optional(),
     workflow_progress: z
       .array(
-        z.object({
-          type: z.string(),
-          index: z.number().optional(),
-          phaseIndex: z.number().optional(),
-          label: z.string().optional(),
-          status: z.string().optional(),
-          message: z.string().optional(),
-        }),
+        z.union([
+          z.object({
+            type: z.literal('workflow_agent'),
+            index: z.number(),
+            label: z.string(),
+            phaseIndex: z.number().optional(),
+            phaseTitle: z.string().optional(),
+            agentId: z.string().optional(),
+            agentType: z.string().optional(),
+            isolation: z.string().optional(),
+            model: z.string().optional(),
+            fallbackModel: z.string().optional(),
+            state: z.enum(['start', 'progress', 'done', 'error']),
+            startedAt: z.number().optional(),
+            queuedAt: z.number().optional(),
+            attempt: z.number().optional(),
+            lastAttemptReason: z.string().optional(),
+            lastToolName: z.string().optional(),
+            lastToolSummary: z.string().optional(),
+            promptPreview: z.string().optional(),
+            promptFramed: z.boolean().optional(),
+            lastProgressAt: z.number().optional(),
+            tokens: z.number().optional(),
+            toolCalls: z.number().optional(),
+            durationMs: z.number().optional(),
+            resultPreview: z.string().optional(),
+            error: z.string().optional(),
+            endedWithRun: z.string().optional(),
+            skipped: z.boolean().optional(),
+            blocked: z.boolean().optional(),
+            cached: z.boolean().optional(),
+          }),
+          z.object({
+            type: z.literal('workflow_phase'),
+            index: z.number(),
+            title: z.string(),
+            kind: z.string().optional(),
+          }),
+        ]),
       )
-      .optional(),
+      .optional()
+      .describe('Every agent and phase row of the workflow so far; left out when only agent activity changed.'),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),

@@ -15,6 +15,7 @@ import type { PromptInputMode, VimMode } from '../../types/textInputTypes.js'
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import {
+  CoordinatorSelectionHint,
   CoordinatorTaskPanel,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
@@ -130,6 +131,10 @@ function PromptInputFooter({
   const coordinatorTaskIndex = useAppState(s => s.coordinatorTaskIndex)
   const pillSelected =
     tasksSelected && (coordinatorTaskCount === 0 || coordinatorTaskIndex < 0)
+  // A selected panel row replaces the whole mode line with its key hints,
+  // as official 2.1.329 does.
+  const panelRowSelected =
+    tasksSelected && coordinatorTaskCount > 0 && coordinatorTaskIndex >= 0
 
   // Hide `? for shortcuts` if the user has a custom status line, or during ctrl-r
   const suppressHint =
@@ -184,24 +189,30 @@ function PromptInputFooter({
                 vimMode={vimMode}
               />
             )}
-          <PromptInputFooterLeftSide
-            exitMessage={exitMessage}
-            vimMode={vimMode}
-            mode={mode}
-            toolPermissionContext={toolPermissionContext}
-            suppressHint={suppressHint}
-            isInputEmpty={isInputEmpty}
-            isLoading={isLoading}
-            tasksSelected={pillSelected}
-            teamsSelected={teamsSelected}
-            tmuxSelected={tmuxSelected}
-            isPasting={isPasting}
-            isSearching={isSearching}
-            historyQuery={historyQuery}
-            setHistoryQuery={setHistoryQuery}
-            historyFailedMatch={historyFailedMatch}
-            onOpenTasksDialog={onOpenTasksDialog}
-          />
+          {panelRowSelected ? (
+            <Box height={1} overflow="hidden">
+              <CoordinatorSelectionHint />
+            </Box>
+          ) : (
+            <PromptInputFooterLeftSide
+              exitMessage={exitMessage}
+              vimMode={vimMode}
+              mode={mode}
+              toolPermissionContext={toolPermissionContext}
+              suppressHint={suppressHint}
+              isInputEmpty={isInputEmpty}
+              isLoading={isLoading}
+              tasksSelected={pillSelected}
+              teamsSelected={teamsSelected}
+              tmuxSelected={tmuxSelected}
+              isPasting={isPasting}
+              isSearching={isSearching}
+              historyQuery={historyQuery}
+              setHistoryQuery={setHistoryQuery}
+              historyFailedMatch={historyFailedMatch}
+              onOpenTasksDialog={onOpenTasksDialog}
+            />
+          )}
         </Box>
         <PromptInputFooterRightSide
           apiKeyStatus={apiKeyStatus}

@@ -93,7 +93,8 @@ export function applyRemoteTaskEvent(tasks: RemoteTasks, sdkMessage: SDKMessage)
       },
       lastToolName: sdkMessage.last_tool_name,
       summary: sdkMessage.summary,
-      workflowProgress: sdkMessage.workflow_progress,
+      // Left out when only agent activity changed: the rows so far still hold.
+      workflowProgress: sdkMessage.workflow_progress ?? current.workflowProgress,
     }
     return isEqual(current, next) ? tasks : { ...tasks, [sdkMessage.task_id]: next }
   }

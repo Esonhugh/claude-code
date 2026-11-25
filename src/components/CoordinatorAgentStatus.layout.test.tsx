@@ -7,7 +7,7 @@ import { stringWidth } from '../ink/stringWidth.js'
 import { AppStoreContext, getDefaultAppState, type AppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
-import { CoordinatorTaskPanel } from './CoordinatorAgentStatus.js'
+import { CoordinatorSelectionHint, CoordinatorTaskPanel } from './CoordinatorAgentStatus.js'
 
 class Output extends Writable {
   rows = 40
@@ -20,7 +20,7 @@ class Output extends Writable {
   }
 }
 
-async function panelLines(columns: number, verbose = false, overrides: Partial<AppState> = {}) {
+async function panelLines(columns: number, verbose = false, overrides: Partial<AppState> = {}, Component: React.FC = CoordinatorTaskPanel) {
   const agent = (id: string, overrides: Partial<LocalAgentTaskState>): LocalAgentTaskState => ({
     id, type: 'local_agent', status: 'running', agentId: id,
     agentType: id, description: 'Read source', prompt: 'Read source',
@@ -43,7 +43,7 @@ async function panelLines(columns: number, verbose = false, overrides: Partial<A
   })
   const stdout = new Output(columns)
   const instance = await render(
-    <AppStoreContext.Provider value={store}><CoordinatorTaskPanel /></AppStoreContext.Provider>,
+    <AppStoreContext.Provider value={store}><Component /></AppStoreContext.Provider>,
     {
       stdout: stdout as unknown as NodeJS.WriteStream,
       stdin: new PassThrough() as unknown as NodeJS.ReadStream,
@@ -58,6 +58,12 @@ async function panelLines(columns: number, verbose = false, overrides: Partial<A
     instance.unmount()
     instance.cleanup()
   }
+}
+
+async function hintLine(columns: number, overrides: Partial<AppState>) {
+  const lines = await panelLines(columns, false, { footerSelection: 'tasks', ...overrides }, CoordinatorSelectionHint)
+  expect(lines).toHaveLength(1)
+  return lines[0]!.trim()
 }
 
 test.each([100, 180])('Agent statistics align across rows at %s columns', async columns => {
@@ -75,12 +81,22 @@ test.each([100, 180])('Agent statistics align across rows at %s columns', async 
   expect(lines.every(line => stringWidth(line) <= columns)).toBe(true)
 })
 
-test('selected running Agent advertises stop, but its steering input does not', async () => {
-  const selected = { footerSelection: 'tasks' as const, coordinatorTaskIndex: 2 }
-  const lines = await panelLines(100, false, selected)
-  expect(lines.some(line => line.includes('Enter to view') && line.includes('x to stop'))).toBe(true)
-  const viewed = await panelLines(100, false, { ...selected, viewingAgentTaskId: 'Explore' })
-  expect(viewed.some(line => line.includes('x to stop'))).toBe(false)
+test('selected main row offers only selection, and view while an agent is viewed', async () => {
+  expect(await hintLine(100, { coordinatorTaskIndex: 0 })).toBe('↑/↓ to select')
+  expect(await hintLine(100, {
+    coordinatorTaskIndex: 0, viewingAgentTaskId: 'Explore', viewSelectionMode: 'viewing-agent',
+  })).toBe('↑/↓ to select · enter to view')
+})
+
+test('selected running Agent advertises stop and stop-all, but its steering input does not', async () => {
+  expect(await hintLine(100, { coordinatorTaskIndex: 2 })).toBe(
+    'enter to view · x to stop · ctrl+x ctrl+k to stop all agents',
+  )
+  // Narrow terminals drop the stop-all hint first.
+  expect(await hintLine(80, { coordinatorTaskIndex: 2 })).toBe('enter to view · x to stop')
+  expect(await hintLine(100, {
+    coordinatorTaskIndex: 2, viewingAgentTaskId: 'Explore', viewSelectionMode: 'viewing-agent',
+  })).toBe('↑/↓ to select · ctrl+x ctrl+k to stop all agents')
 })
 
 test('selected terminal Agent advertises clear', async () => {
@@ -90,9 +106,13 @@ test('selected terminal Agent advertises clear', async () => {
       agentType: 'Explore', description: 'Read source', startTime: 1_000, endTime: 3_000,
     },
   } as unknown as AppState['tasks']
-  const lines = await panelLines(100, false, { tasks, footerSelection: 'tasks', coordinatorTaskIndex: 1 })
-  expect(lines.some(line => line.includes('x to clear'))).toBe(true)
-  expect(lines.some(line => line.includes('x to stop'))).toBe(false)
+  expect(await hintLine(100, { tasks, coordinatorTaskIndex: 1 })).toBe('enter to view · x to clear')
+})
+
+test('the panel itself carries no selection hints', async () => {
+  const lines = await panelLines(100, false, { footerSelection: 'tasks', coordinatorTaskIndex: 2 })
+  expect(lines).toHaveLength(3)
+  expect(lines.some(line => line.includes(' to '))).toBe(false)
 })
 
 test.each([110, 180])('verbose Agent metrics and activity align at %s columns', async columns => {
@@ -197,9 +217,10 @@ test('capped Agent rows scroll with the selection and count hidden rows on both 
   expect(lines.slice(1, 6).map(line => line.match(/worker-\d+/)?.[0])).toEqual(
     ['worker-04', 'worker-05', 'worker-06', 'worker-07', 'worker-08'],
   )
-  expect(lines[5]).toContain('⏺')
+  // The selection moves the pointer; only a viewed agent gets the filled icon.
+  expect(lines[5]).toContain('❯ ◯ worker-08')
   expect(lines[6]).toContain('↓ 2 more')
-  expect(lines[7]).toContain('Enter to view')
+  expect(lines).toHaveLength(7)
 })
 
 test('five or fewer Agents render without a more line', async () => {
@@ -217,8 +238,30 @@ test('idle teammate summary row advertises expand, and expanded rows advertise c
   const tasks = Object.fromEntries(['m1', 'm2', 'm3', 'm4', 'm5'].map((n, i) => [n, mate(n, i)])) as unknown as AppState['tasks']
   const folded = await panelLines(100, false, { tasks, footerSelection: 'tasks', coordinatorTaskIndex: 4 })
   expect(folded.some(line => line.includes('2 idle agents'))).toBe(true)
-  expect(folded.some(line => line.includes('Enter to expand') && line.includes('Esc to cancel'))).toBe(true)
+  expect(await hintLine(100, { tasks, coordinatorTaskIndex: 4 })).toBe('enter to expand')
   const expanded = await panelLines(100, false, { tasks, footerSelection: 'tasks', coordinatorTaskIndex: 4, idleTeammatesExpanded: true })
   expect(expanded.some(line => line.includes('m5'))).toBe(true)
-  expect(expanded.some(line => line.includes('Enter to view') && line.includes('Esc to collapse'))).toBe(true)
+  expect(await hintLine(100, { tasks, coordinatorTaskIndex: 4, idleTeammatesExpanded: true })).toBe(
+    'enter to view · x to stop · esc to collapse',
+  )
+})
+
+test('selected workflow row advertises view and stop or clear only', async () => {
+  const workflow = (status: string) => ({
+    workflow: {
+      id: 'workflow', type: 'local_workflow', status, workflowName: 'review', description: 'Review',
+      startTime: Date.now() - 5_000, ...(status !== 'running' && { endTime: Date.now() }),
+      tokenCount: 10, agentCount: 1, phases: [], results: [],
+    },
+    a: { id: 'a', type: 'local_agent', status: 'running', agentId: 'a', agentType: 'Explore', description: 'A', startTime: 1, progress: { tokenCount: 1, toolUseCount: 0 } },
+    b: { id: 'b', type: 'local_agent', status: 'running', agentId: 'b', agentType: 'Plan', description: 'B', startTime: 2, progress: { tokenCount: 1, toolUseCount: 0 } },
+  }) as unknown as AppState['tasks']
+  const index = async (tasks: AppState['tasks']) => {
+    const lines = await panelLines(100, false, { tasks })
+    return lines.findIndex(line => line.includes('review'))
+  }
+  const running = workflow('running')
+  expect(await hintLine(100, { tasks: running, coordinatorTaskIndex: await index(running) })).toBe('enter to view · x to stop')
+  const done = workflow('completed')
+  expect(await hintLine(100, { tasks: done, coordinatorTaskIndex: await index(done) })).toBe('enter to view · x to clear')
 })

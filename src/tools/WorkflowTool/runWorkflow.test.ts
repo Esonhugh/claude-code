@@ -27,8 +27,7 @@ import {
 import { loadWorkflowRunSession, workflowSessionDir } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
-// Terminal status/usage reach SDK consumers through the XML task notification
-// that print.ts parses into task_notification; the runtime emits no direct event.
+// Terminal status/usage also reach the model through the XML task notification.
 function dequeuedTerminalNotification(taskId: string) {
   const text = String(
     dequeueAllMatching(command =>
@@ -1710,7 +1709,7 @@ const retryProgressUsageSession = await loadWorkflowRunSession({
   workflowRunId: 'wf_retry_progress_usage',
 })
 const retryProgressTerminatedUsage = dequeuedTerminalNotification(retryProgressUsageTask.id)
-assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), true)
 const retryProgressActualExpected = {
   actual: {
     taskTotals: {
@@ -1860,7 +1859,7 @@ const retryProgressFailureUsageSession = await loadWorkflowRunSession({
   workflowRunId: 'wf_retry_progress_failure_usage',
 })
 const retryProgressFailureTerminatedUsage = dequeuedTerminalNotification(retryProgressFailureUsageTask.id)
-assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), true)
 assert.deepEqual(
   {
     taskTotals: {
@@ -2262,7 +2261,7 @@ assert.deepEqual(
   },
 )
 const killedProgressNotification = dequeuedTerminalNotification(killedProgressUsageTask.id)
-assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), true)
 assert.deepEqual(
   {
     // print.ts maps the XML 'killed' status to the SDK 'stopped' status.

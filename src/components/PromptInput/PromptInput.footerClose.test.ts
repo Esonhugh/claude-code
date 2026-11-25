@@ -76,6 +76,8 @@ function harness(overrides: Record<string, unknown> = {}) {
   const killedLocal: string[] = []
   const killedTeammates: string[] = []
   const dismissed: string[] = []
+  const killedWorkflows: string[] = []
+  const dismissedWorkflows: string[] = []
   const inputChanges: string[] = []
   const cursorOffsets: number[] = []
   const selectionIndexes: number[] = []
@@ -100,6 +102,9 @@ function harness(overrides: Record<string, unknown> = {}) {
       },
     },
     dismissTerminalAgent: (taskId: string) => dismissed.push(taskId),
+    isTerminalTaskStatus: (status: string) => ['completed', 'failed', 'killed'].includes(status),
+    killWorkflowTask: (taskId: string) => killedWorkflows.push(taskId),
+    dismissWorkflowTask: (taskId: string) => dismissedWorkflows.push(taskId),
     setCoordinatorTaskIndex: (index: number) => selectionIndexes.push(index),
     resolveCoordinatorTarget: () => undefined,
     ...overrides,
@@ -110,6 +115,8 @@ function harness(overrides: Record<string, unknown> = {}) {
     killedLocal,
     killedTeammates,
     dismissed,
+    killedWorkflows,
+    dismissedWorkflows,
     inputChanges,
     cursorOffsets,
     selectionIndexes,
@@ -200,4 +207,18 @@ test('x on the idle teammate summary row falls through to type-to-exit', () => {
   expect(h.handler()).toBe(false)
   expect(h.killedTeammates).toEqual([])
   expect(h.dismissed).toEqual([])
+})
+
+test('x stops a running workflow row and clears a finished one, like official 2.1.329', () => {
+  const workflow = (status: string) => ({ id: 'wf', type: 'local_workflow', status })
+  for (const status of ['running', 'pending']) {
+    const h = harness({ selectedCoordinatorTask: workflow(status) })
+    h.handler()
+    expect(h.killedWorkflows).toEqual(['wf'])
+    expect(h.dismissedWorkflows).toEqual([])
+  }
+  const done = harness({ selectedCoordinatorTask: workflow('completed') })
+  done.handler()
+  expect(done.killedWorkflows).toEqual([])
+  expect(done.dismissedWorkflows).toEqual(['wf'])
 })

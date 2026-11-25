@@ -1,6 +1,7 @@
 import type { AppState } from '../state/AppState.js'
 import {
   isCompletedBackgroundAgent,
+  isLiveLocalAgentTask,
   isLocalAgentTask,
   isPanelAgentTask,
   type LocalAgentTaskState,
@@ -23,11 +24,12 @@ import {
   getAgentColor,
 } from '../tools/AgentTool/agentColorManager.js'
 import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
-import { PAUSE_ICON } from '../constants/figures.js'
+import { BLACK_CIRCLE, PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
 
 /** Official 2.1.311 folds idle teammates past the first three into one row. */
-const IDLE_TEAMMATES_SHOWN = 3
+export const IDLE_TEAMMATES_SHOWN = 3
 export type CoordinatorIdleSummary = {
   type: 'idle_summary'
   id: 'idle-teammate-summary'
@@ -50,6 +52,8 @@ export type CoordinatorSessionRow = {
   primaryText: string
   secondaryText: string
   tokens: string
+  /** Arrow before the token count; official agent rows show ↑ until there is a last activity. */
+  tokenArrow?: string
   tools: string
   elapsed: string
   statusText: string
@@ -57,6 +61,8 @@ export type CoordinatorSessionRow = {
   /** Official "Large workflow" size warning, shown while the run is over the agent/token cap. */
   warning?: string
   color?: keyof Theme
+  /** Official end-status icon colour: green for completed, red for failed or stopped. */
+  iconColor?: keyof Theme
   depth: number
   branch: CoordinatorPanelBranch
 }
@@ -432,6 +438,11 @@ export function resolveCoordinatorSelection(
   return { index: 0 }
 }
 
+const AGENT_END_LABELS: Partial<Record<string, string>> = {
+  failed: 'failed',
+  killed: 'stopped',
+}
+
 function taskElapsed(
   task: Exclude<CoordinatorPanelTask, CoordinatorIdleSummary>,
   now: number,
@@ -464,6 +475,17 @@ function agentPrimaryText(
   return `${task.agentType}${descendants}`
 }
 
+function tokenArrow(lastActivity: unknown): string {
+  return lastActivity ? '↓' : '↑'
+}
+
+// Official 2.1.329 colours the icon of a finished row by its end status,
+// except for a parked owner that still waits on its background children.
+function endIconColor(task: LocalAgentTaskState | InProcessTeammateTaskState): keyof Theme | undefined {
+  if (!isTerminalTaskStatus(task.status) || isLiveLocalAgentTask(task)) return undefined
+  return task.status === 'completed' ? 'success' : 'error'
+}
+
 function teammateThemeColor(color: string | undefined): keyof Theme | undefined {
   return color && AGENT_COLORS.includes(color as AgentColorName)
     ? AGENT_COLOR_TO_THEME_COLOR[color as AgentColorName]
@@ -474,13 +496,17 @@ function teammateThemeColor(color: string | undefined): keyof Theme | undefined 
 // queued messages are appended to it.
 function teammateElapsed(task: InProcessTeammateTaskState, now: number): string {
   const queued = task.pendingUserMessages.length
+  const endLabel = AGENT_END_LABELS[task.status]
+  // Official 2.1.329 checks idle before the terminal clock, so an idle
+  // stopped or failed teammate shows only its end label.
   const state =
     task.status === 'running' && task.awaitingPlanApproval
       ? 'awaiting approval'
-      : task.status === 'running' && task.isIdle
-        ? 'idle'
+      : task.isIdle
+        ? endLabel ? '' : 'idle'
         : taskElapsed(task, now)
-  return queued > 0 ? `${state} · ${queued} queued` : state
+  const status = [endLabel, state].filter(Boolean).join(' · ')
+  return queued > 0 ? `${status} · ${queued} queued` : status
 }
 
 function workflowPrimaryText(task: LocalWorkflowTaskState): string {
@@ -537,44 +563,48 @@ export function getCoordinatorSessionRows({
         kind: 'teammate',
         selected,
         viewed: viewingAgentTaskId === task.id,
-        icon:
-          selected || (selectedIndex === undefined && viewingAgentTaskId === task.id)
-            ? '⏺'
-            : '◯',
+        // Official 2.1.329 draws teammates with the agent row code.
+        icon: viewingAgentTaskId === task.id ? BLACK_CIRCLE : '◯',
         primaryText: task.identity.agentName,
         secondaryText: task.description,
         tokens: showTokens ? `${formatNumber(task.progress!.tokenCount)} tokens` : '',
+        tokenArrow: tokenArrow(task.progress?.lastActivity),
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
         elapsed: teammateElapsed(task, now),
-        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        statusText: AGENT_END_LABELS[task.status] ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: teammateThemeColor(task.identity.color),
+        iconColor: endIconColor(task),
         depth: 0,
         branch: 'none',
       }
     }
     if (task.type === 'local_agent') {
+      // Official 2.1.329 folds a failed or stopped status into the elapsed
+      // text, shows tokens only once the agent has used some, and fills the
+      // icon only for the agent being viewed.
+      const endLabel = AGENT_END_LABELS[task.status]
+      const tokenCount = task.progress?.tokenCount ?? 0
       return {
         id: task.id,
         taskId: task.id,
         kind: 'agent',
         selected,
         viewed: viewingAgentTaskId === task.id,
-        icon:
-          selected || (selectedIndex === undefined && viewingAgentTaskId === task.id)
-            ? '⏺'
-            : '◯',
+        icon: viewingAgentTaskId === task.id ? BLACK_CIRCLE : '◯',
         primaryText: agentPrimaryText(
           task,
           entry.collapsedDescendantCount,
         ),
         secondaryText: task.progress?.summary || task.description || task.id,
-        tokens: `${formatNumber(task.progress?.tokenCount ?? 0)} tokens`,
+        tokens: tokenCount > 0 ? `${formatNumber(tokenCount)} tokens` : '',
+        tokenArrow: tokenArrow(task.progress?.lastActivity),
         tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
-        elapsed: taskElapsed(task, now),
-        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        elapsed: endLabel ? `${endLabel} · ${taskElapsed(task, now)}` : taskElapsed(task, now),
+        statusText: endLabel ? '' : task.status,
         activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
         color: getAgentColor(task.agentType),
+        iconColor: endIconColor(task),
         depth: entry.depth,
         branch: entry.branch,
       }
@@ -611,7 +641,7 @@ export function getCoordinatorSessionRows({
       kind: 'main',
       selected: selectedIndex === 0,
       viewed: viewingAgentTaskId === undefined,
-      icon: viewingAgentTaskId === undefined ? '●' : '○',
+      icon: viewingAgentTaskId === undefined ? BLACK_CIRCLE : '◯',
       primaryText: 'main',
       secondaryText: '',
       tokens: '',

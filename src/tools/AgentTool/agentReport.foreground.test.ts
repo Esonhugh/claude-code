@@ -211,6 +211,7 @@ const call = (context: TestContext, description: string) =>
   }
   await assert.rejects(call(createContext(), 'api-error'), (error: Error) => {
     assert.match(error.message, /^Agent terminated early due to an API error: API Error: 400 probe failure \(error type unknown, HTTP 400, model sent to the API: [^)]+\)$/)
+    assert.equal((error as Error & { responseText?: string }).responseText, 'API Error: 400 probe failure')
     return true
   })
   assert.equal(reports.length, 1)

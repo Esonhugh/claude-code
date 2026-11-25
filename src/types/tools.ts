@@ -72,14 +72,48 @@ export type WebSearchProgress =
       resultCount: number
     }
 
-export type SdkWorkflowProgress = {
-  type: string
-  index?: number
+// A workflow's progress rows as official 2.1.329 sends them in task_progress
+// `workflow_progress`: one per agent() call and one per phase, keyed by index.
+export type SdkWorkflowAgentProgress = {
+  type: 'workflow_agent'
+  index: number
+  label: string
   phaseIndex?: number
-  label?: string
-  status?: string
-  message?: string
+  phaseTitle?: string
+  agentId?: string
+  agentType?: string
+  isolation?: string
+  model?: string
+  fallbackModel?: string
+  state: 'start' | 'progress' | 'done' | 'error'
+  startedAt?: number
+  queuedAt?: number
+  attempt?: number
+  lastAttemptReason?: string
+  lastToolName?: string
+  lastToolSummary?: string
+  promptPreview?: string
+  promptFramed?: boolean
+  lastProgressAt?: number
+  tokens?: number
+  toolCalls?: number
+  durationMs?: number
+  resultPreview?: string
+  error?: string
+  endedWithRun?: string
+  skipped?: boolean
+  blocked?: boolean
+  cached?: boolean
 }
+
+export type SdkWorkflowPhaseProgress = {
+  type: 'workflow_phase'
+  index: number
+  title: string
+  kind?: string
+}
+
+export type SdkWorkflowProgress = SdkWorkflowAgentProgress | SdkWorkflowPhaseProgress
 
 export type ToolProgressData =
   | AgentToolProgress

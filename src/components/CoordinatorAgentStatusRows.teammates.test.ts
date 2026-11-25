@@ -80,8 +80,33 @@ test('expanded idle teammates and the viewed teammate are never collapsed', () =
 
 test('terminal teammates keep a frozen clock and an explicit status', () => {
   const rows = getCoordinatorSessionRows({
-    tasks: tasksOf(teammate('done', 1_000, { status: 'completed', endTime: 6_000, retain: true, isIdle: true })),
+    tasks: tasksOf(teammate('done', 1_000, { status: 'completed', endTime: 6_000, retain: true })),
     now: 60_000,
   })
   expect(rows[1]).toMatchObject({ elapsed: '5s', statusText: 'completed' })
+})
+
+// Official 2.1.329 draws teammates with the agent row code: idle wins over the
+// terminal clock, failed and stopped fold into the status text, and only the
+// viewed row gets the filled icon.
+test('teammate rows use the agent row status and icon', () => {
+  const row = (overrides: Partial<InProcessTeammateTaskState>, extra = {}) =>
+    getCoordinatorSessionRows({
+      tasks: tasksOf(teammate('mate', 1_000, { endTime: 6_000, retain: true, ...overrides })),
+      now: 60_000,
+      ...extra,
+    })[1]!
+  expect(row({ status: 'completed', isIdle: true })).toMatchObject({ elapsed: 'idle', statusText: 'completed' })
+  expect(row({ status: 'killed' })).toMatchObject({ elapsed: 'stopped · 5s', statusText: '' })
+  expect(row({ status: 'killed', isIdle: true })).toMatchObject({ elapsed: 'stopped', statusText: '' })
+  expect(row({ status: 'failed' })).toMatchObject({ elapsed: 'failed · 5s', statusText: '' })
+  expect(row({}, { selectedIndex: 1 })).toMatchObject({ selected: true, icon: '◯' })
+  expect(row({}, { viewingAgentTaskId: 'mate@team' })).toMatchObject({ viewed: true, icon: '⏺' })
+  expect(row({})).toMatchObject({ tokens: '1.2k tokens', tokenArrow: '↑' })
+  expect(row({}).iconColor).toBeUndefined()
+  expect(row({ status: 'killed' }).iconColor).toBe('error')
+  expect(row({ status: 'failed' }).iconColor).toBe('error')
+  expect(row({ status: 'completed', isIdle: true }).iconColor).toBe('success')
+  expect(row({ progress: { tokenCount: 1200, toolUseCount: 1, lastActivity: { toolName: 'Read' } } } as never))
+    .toMatchObject({ tokenArrow: '↓' })
 })

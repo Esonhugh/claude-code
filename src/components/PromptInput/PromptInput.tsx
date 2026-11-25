@@ -106,7 +106,12 @@ import {
   killAsyncAgent,
   type LocalAgentTaskState,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import {
+  dismissWorkflowTask,
+  killWorkflowTask,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { isBackgroundTask } from '../../tasks/types.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
 import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,
@@ -2695,9 +2700,14 @@ function PromptInput({
           // Not handled — let 'x' fall through to type-to-exit
           return false
         }
+        // Official 2.1.329: x stops a running workflow and clears a finished
+        // one, like an agent row.
         if (task.type === 'local_workflow') {
-          setShowBashesDialog(task.id)
-          selectFooterItem(null)
+          if (isTerminalTaskStatus(task.status)) {
+            dismissWorkflowTask(task.id, setAppState)
+          } else {
+            killWorkflowTask(task.id, setAppState)
+          }
           return
         }
         // When the selected row IS the viewed agent, 'x' types into the
