@@ -19,6 +19,7 @@ import { modSessionIdentity } from './sessionIdentity.js'
 import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getIsNonInteractiveSession, getPrintOutputFormat } from '../../bootstrap/state.js'
 import { errorMessage, isENOENT } from '../../utils/errors.js'
 import { pathExists } from '../../utils/file.js'
 import { stripBOM } from '../../utils/jsonRead.js'
@@ -133,6 +134,8 @@ export function createModsSession(options: ModsSessionOptions) {
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
   let workerDeath: string | undefined
+  /** Load failures for $.ui.log that arrived before a host bound it. */
+  let pendingLoadLogs: { plugin: string; text: string }[] = []
   // Retired activations may still report errors after a token is rotated.
   const diagnosticSecrets = new Set<string>()
   let configPlugins: readonly LoadedPlugin[] = []
@@ -376,10 +379,30 @@ export function createModsSession(options: ModsSessionOptions) {
     const line = event.stage === 'reload' ? event.message.replace(/^The previous/, 'reload failed, the previous') :
       event.stage !== 'load' ? `${event.stage}: ${event.message}` :
       event.message.startsWith('hooks module did not load') ? event.message : `hooks module did not load: ${event.message}`
-    if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
+    // Official 2.1.329 sends a load failure to $.ui.log only for a watched plugin directory (interactive
+    // by default), else to an error-level log line; stderr carries it only for an inline plugin in text output.
+    const loadFailure = event.stage === 'load'
+    const headless = binding ? !binding.isInteractive : getIsNonInteractiveSession()
+    // Official 2.1.329 logs every module that fails to load at error level, under its storage id.
+    if (event.storageId && (loadFailure || event.stage === 'reload'))
+      logForDebugging(`hooks module ${redact(event.storageId)} failed to load: ${event.plugin}: ${loadFailure ? event.message.replace(/^hooks module did not load: /, '') : event.message.replace(/^The previous version stays loaded: /, '')}`, { level: 'error' })
+    if (loadFailure) {
+      const inline = event.storageId?.endsWith('@inline') === true
+      const watch = process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+      const watched = inline && (watch === undefined ? !headless : watch !== '0' && watch !== 'false')
+      if (!watched) logForDebugging(`${event.plugin}: ${line}`, { level: 'error' })
+      else if (!headless) logForDebugging(`[${event.plugin}] $.ui.log: ${line}`)
+      if (!headless) { if (services.uiDiagnostic && !cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
+      else if (watched) {
+        if (services.uiLog) services.uiLog(event.plugin, line, 'transcript')
+        else pendingLoadLogs.push({ plugin: event.plugin, text: line })
+      }
+      if (headless && inline && getPrintOutputFormat() === 'text' && process.env.CLAUDE_CODE_SESSION_KIND !== 'bg')
+        process.stderr.write(`${event.plugin}: ${line.replace(/\n/g, '\n  ')}\n`)
+    } else if (services.uiDiagnostic) { if (!cascade) services.uiDiagnostic(event.plugin, line.replace(/[\r\n]/g, ' ')) }
     else process.stderr.write(text + '\n')
     const fault = event.workerFault
-    logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
+    if (!loadFailure) logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
       cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
       ...(fault.pingAgeMs === undefined ? {} : {pingAgeMs:fault.pingAgeMs}),
       ...(fault.culprit && {culprit: {
@@ -1063,8 +1086,18 @@ export function createModsSession(options: ModsSessionOptions) {
         const firstDiagnosticHost = !services.uiDiagnostic && rest.uiDiagnostic
         Object.assign(services, rest)
         // Diagnostics from before the TUI bound (module load) went to stderr under the startup screen.
+        // A headless load failure already took its own route, which never reaches uiDiagnostic.
         if (firstDiagnosticHost) {
-          for (const shown of diagnostics) if (shown.type === 'generic-error') firstDiagnosticHost(shown.plugin ?? 'host', shown.error)
+          const headless = !next.isInteractive
+          for (const shown of diagnostics) {
+            if (shown.type !== 'generic-error' || (headless && shown.error.startsWith('load: '))) continue
+            firstDiagnosticHost(shown.plugin ?? 'host', shown.error)
+          }
+        }
+        if (services.uiLog && pendingLoadLogs.length > 0) {
+          const pending = pendingLoadLogs
+          pendingLoadLogs = []
+          for (const { plugin, text } of pending) services.uiLog(plugin, text, 'transcript')
         }
       }
       if (updateState) setAppState = updateState
