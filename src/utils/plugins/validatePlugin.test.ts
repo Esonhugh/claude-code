@@ -203,6 +203,43 @@ describe('hooks module author validation', () => {
     ])
   })
 
+  test('lists what an engine.create hook in form adds and withholds, and names one outside its form', async () => {
+    const root = await pluginRoot()
+    await mkdir(join(root, 'hooks'))
+    await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'owner' }))
+    await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./m.mjs'] }))
+    const validate = async (source: string) => {
+      await writeFile(join(root, 'hooks', 'm.mjs'), source)
+      return (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+    }
+    try {
+      const inForm = await validate(`export function register(on){
+  on("engine.create", async ($,e,next)=>{
+    const { fs, process, ...beneath } = await next(e)
+    return { ...beneath, voice: {} }
+  })
+}`)
+      expect(inForm?.success).toBe(true)
+      expect(inForm?.notes).toEqual([
+        './m.mjs hooks: engine.create',
+        './m.mjs calls: nothing on $',
+        './m.mjs adds to $: voice',
+        './m.mjs withholds from $: fs, process (in the user or builtin tier, the fold refuses this and unloads the module)',
+      ])
+      const outside = await validate(`export function register(on){
+  on("engine.create", async ($,e,next)=>{
+    const below = await next(e)
+    const {ui, ...kept} = below
+    return kept
+  })
+}`)
+      expect(outside?.success).toBe(false)
+      expect(outside?.errors[0]?.message).toStartWith('hooks/m.mjs:4: this engine.create hook is outside its form: a use of below other than the return')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('rejects a second hooks module before loading either entrypoint', async () => {
     const root = await pluginRoot()
     await mkdir(join(root, 'hooks'))

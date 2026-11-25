@@ -3,7 +3,8 @@ import type { Dirent, Stats } from 'fs'
 import { readdir, readFile, realpath, stat } from 'fs/promises'
 import * as path from 'path'
 import { z } from 'zod/v4'
-import { loadModDeclaration } from '../../services/mods/loader.js'
+import { engineFormNotes, engineFormSpelling } from '../../services/mods/engineForm.js'
+import { coreNouns, loadModDeclaration } from '../../services/mods/loader.js'
 import { modWasmSharedMemoryReason, readModWasmFile } from '../../services/mods/wasm.js'
 import {
   parseModTypeContract,
@@ -859,11 +860,13 @@ async function validateHooksJson(
     const resolved = path.join(path.dirname(filePath), modulePath)
     try {
       const declaration = await loadModDeclaration({
+        readsEngineForm: true,
         name: directory,
         storageId: owner,
         pluginRoot,
         entrypoints: [resolved],
       })
+      const form = declaration.validation?.engineForm
       notes.push(
         `${modulePath} hooks: ${(declaration.validation?.registrations ?? declaration.events).join(', ') || 'nothing'}`,
         `${modulePath} calls: ${[
@@ -873,7 +876,16 @@ async function validateHooksJson(
           }),
           ...declaration.nextTiers.map(tier => `next.to:${tier}`),
         ].join(', ') || 'nothing on $'}`,
+        ...(declaration.events.includes('engine.create') && form?.isInForm !== false ? engineFormNotes(form, coreNouns).map(line => `${modulePath} ${line}`) : []),
       )
+      if (form?.isInForm === false) {
+        errors.push({
+          path: `modules.${modulePath}`,
+          message: `${path.relative(pluginRoot, form.file) || form.file}${form.at ?? ''}: this engine.create hook is outside its form: ${form.part}. ${engineFormSpelling}`,
+        })
+      } else if (form === undefined && declaration.validation?.engineSpelling) {
+        errors.push({ path: `modules.${modulePath}`, message: `${directory}: ${declaration.validation.engineSpelling}` })
+      }
       // Each listed binary is read and compiled as $.wasm.compile would; one that fails is an error.
       for (const file of declaration.wasm?.files ?? []) {
         const fail = (message: string) => errors.push({ path: `modules.${modulePath}`, message })

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { open, realpath, stat } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { engineFormOf } from './engineForm.js'
 import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
@@ -24,7 +25,7 @@ type Binding = {
 type Capability = { role: Exclude<Role, null>; members: string[] }
 type Resolved = { binding: Binding; members: string[] }
 const tiers: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
-const coreNouns = new Set([
+export const coreNouns: ReadonlySet<string> = new Set([
   ...OFFICIAL_CORE_CALLS.map(call => call.split('.')[0]!),
   'engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp',
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env', 'wasm',
@@ -79,11 +80,14 @@ function fail(path: string, message: string): never {
 
 // Official 2.1.329 scans a .js, .mjs or .cjs file as written and names its line; it names a compiled
 // line of any other file with the line itself, cut at 80 characters.
-function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+function lineAt(line: number | undefined, compiled: string[] | undefined): string {
   const excerpt = line === undefined || compiled === undefined ? undefined : compiled[line - 1]?.trim() ?? ''
-  const at = line === undefined ? '' : excerpt === undefined ? `:${line}` :
+  return line === undefined ? '' : excerpt === undefined ? `:${line}` :
     `, compiled line ${line} \`${excerpt.length > 80 ? `${excerpt.slice(0, 80)}...` : excerpt}\``
-  return new ModLoadError(`${path}${at}: ${construct}; ${spellingHint}`)
+}
+
+function refusal(path: string, line: number | undefined, compiled: string[] | undefined, construct: string): ModLoadError {
+  return new ModLoadError(`${path}${lineAt(line, compiled)}: ${construct}; ${spellingHint}`)
 }
 
 const scannedAsWritten = (path: string) => ['.js', '.mjs', '.cjs'].includes(extname(path))
@@ -102,11 +106,19 @@ function isFunction(node: Node): boolean {
   return ['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type)
 }
 
-function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>) {
+function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[], compiledLines: Map<string, string[]>, defersEngineSpelling = false) {
   // A refusal names the line of the node the scan is at, unless it names a node itself.
   let at: Node | undefined
   function fail(file: string, message: string, node: Node | undefined = at): never {
     throw refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
+  }
+  // Official 2.1.329 loads these spellings of an engine.create hook and judges them as it runs; its validate
+  // names the hook outside its form instead, so validate reads on past them.
+  let engineSpelling: string | undefined
+  function failEngineSpelling(file: string, message: string, node: Node | undefined = at) {
+    const error = refusal(file, node?.loc?.start.line, compiledLines.get(file), message)
+    if (!defersEngineSpelling) throw error
+    engineSpelling ??= error.message
   }
   const events = new Set<string>()
   const calls = new Set<string>()
@@ -507,7 +519,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           const destructured = rest?.type === 'RestElement' && rest.argument.type === 'Identifier' &&
             withheld.every((property: Node) => property.type === 'Property' && property.shorthand && property.value.type === 'Identifier')
           if ((item.id.type !== 'Identifier' && !destructured) || item.init.type !== 'AwaitExpression') {
-            fail(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
+            failEngineSpelling(path, 'engine.create next result requires const identifier = await next(input) or const { noun, ...rest } = await next(input); aliases are unsupported', item)
           }
           const beneath = destructured ? rest.argument.name : item.id.name
           bindings.set(beneath, { role: 'beneath' })
@@ -1014,7 +1026,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (capabilityValue(node, scope)) {
           const parent = parents.get(node)
           if (isItself(node, scope) && !(parent?.type === 'MemberExpression' && parent.object === node)) refuseItself(node)
-          fail(path, `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`)
+          const message = `capability alias/escape of ${node.name} is unsupported; use const aliases or statically bound helpers`
+          if (capabilityValue(node, scope)?.role !== 'beneath') fail(path, message)
+          failEngineSpelling(path, message)
         }
         if (['eval', 'Function', 'require', 'arguments'].includes(node.name)) fail(path, `${node.name} and dynamic code/module loading are unsupported`)
         return
@@ -1087,7 +1101,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if (event === 'engine.create' && calleeCapability?.role === 'next' &&
           ['', 'to'].includes(calleeCapability.members.join('.')) &&
           !engineNextBindings.has(node) && !engineReturns.has(node)) {
-          fail(path, 'engine.create next result escape is unsupported; bind const identifier = await next(input)')
+          failEngineSpelling(path, 'engine.create next result escape is unsupported; bind const identifier = await next(input)')
         }
         const argumentsRoles = node.arguments.map((argument: Node) => capabilityValue(argument, scope))
         if (argumentsRoles.some(Boolean)) {
@@ -1256,7 +1270,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
   const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry, wasm, validation: {
+  return { events, calls, env, state, nextTiers, telemetry, wasm, engineSpelling, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
     helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
   } }
@@ -1291,6 +1305,8 @@ export function validateModRegistrations(
 }
 
 type ModLoadInput = {
+  /** Validate's reading: the engine.create hook in its one form, past the spellings official loads. */
+  readsEngineForm?: boolean
   name: string
   storageId: string
   version?: string
@@ -1520,7 +1536,10 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
   }
   const compiledLines = new Map(modules.filter(module => hookPaths.has(module.path) && !scannedAsWritten(module.path))
     .map(module => [module.path, module.source.split('\n')]))
-  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines)
+  const scanned = scan(new Map([...programs].filter(([path]) => hookPaths.has(path))), links, entrypoints, compiledLines, input.readsEngineForm)
+  const entry = programs.get(entrypoints[0]!)
+  const form = input.readsEngineForm && entry ? engineFormOf(entry, entrypoints[0]!) : undefined
+  const engineForm = form?.isInForm === false ? { ...form, at: lineAt(form.line, compiledLines.get(form.file)) } : form
   for (const value of scanned.events) events.add(value)
   for (const value of scanned.calls) calls.add(value)
   for (const value of scanned.env.reads) env.reads.add(value)
@@ -1565,7 +1584,8 @@ async function readModDeclaration(input: ModLoadInput): Promise<ModDeclaration> 
     name: input.name, storageId: input.storageId, pluginRoot: root,
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
-    entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(), validation: scanned.validation,
+    entrypoints, modules, links, ...(clients.length ? { clients } : {}), ...(wasm ? { wasm } : {}), events: [...events], calls: [...calls].sort(),
+    validation: { ...scanned.validation, ...(engineForm && { engineForm }), ...(scanned.engineSpelling && { engineSpelling: scanned.engineSpelling }) },
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {
       reads: [...state.reads.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),
