@@ -12,6 +12,307 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-26 - Mods 跟进官方新版：生命周期与主题宿主、加载与校验报错、hook 的 next 写法、热重载通知、$.store 新位置
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 注册了 `$` 上没有的事件（如 `on("nope.event")`），或 `on("nope.*")` 选不到任何事件的模块不再加载，报 `hooks module did not load: the $ build failed (...)`。此前静默接受（#1469、#1440）。
+- 把 `$` 的 noun 当值使用（`const c = $.clock`），或把 `$` 本身赋值、传出、返回的模块加载时被拒绝，与官方 2.1.329 相同；`$` 和 `next` 不能被同名变量遮蔽（#1501、#1506）。
+- 除 `engine.create` 外，hook 的第三个参数 `next` 改为和官方 2.1.329 一样按写法检查：把 `next` 传给 helper、放进数组或对象、读 `next.call` 等其他成员都可以；把 `next` 赋给另一个名字、从 `next` 解构出 `to`、用 computed key 或 `next?.to` 访问 `to`、把 `next.to` 当作值使用时，校验报错。`next.to` 最多两个参数，第二个参数必须是 `user`、`append`、`builtin`、`core` 之一的字符串字面量（#1507、#1505）。
+- helper 里调用的 `next.to(e, "<tier>")` 不再计入 `nextTiers`，运行时被拒绝：`<plugin>: next.to("<tier>") refused: its hooks module does not spell next.to:<tier> in a literal the scan reads (host rule)`。要继续到某一层，在 hook 里直接写 `next.to(e, "<tier>")`（#1507、#1505）。
+- user tier 的 plugin 在 `engine.create` 里移除任何 noun 都不加载（以前只拦 `telemetry`），报 `engine.create withheld $.<noun>, added by <provider>; it runs in the user tier ...`。`engine.create` 写法不合时在 `load` 阶段报 `hooks module did not load: engine.create failed (...)`（#1471、#1503、#1506）。
+- `$.store` 改存 `<plugins>/store/<id>.json`，内容是 2 空格缩排的 JSON 对象，文件 `0600`、目录 `0700`。旧位置 `<plugins>/data/<id>/mod-store-<sha>.json` 在新文件不存在时照常读取，下次写入时搬到新位置。`$.store.keys()` 里形如数组下标的 key 排在最前并按数值排序（#1469、#1440）。
+- `hooks.json` 写成 `{"modules":[]}` 判为非法：``hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both``（#1455、#1438）。
+
+#### 新功能
+
+- Mods 运行时接入官方 2.1.329 的工具与 Agent 生命周期（`tool.offer`、`tool.judge`、`tool.run`、`agent.report`、`session.stop`）、`agent.call`、`agent.limits`、session 信息、通知、`prompt.paint`、`ui.place` 和主题 `theme.set` / `theme.clear`；2.1.329 的作者声明存为 `assets/mods-2.1.329.d.ts.txt` 供比对，生成的声明仍是 2.1.303。Shader 未实现，`wasm.compile` 只支持共享的 hooks Worker。对照方法见 `docs/guides/mods-329-probes.md`（#1422、#1408）。
+- `claude plugin validate` 新增 Provides 列表、gating 行（`gating hook with/without .catch: …`）以及 `Hosts:`、`Hosts not read for:`、`Hosts not declared:` 三行；host 来自模块里的字面量 URL、`plugin.json` 的 `network.hosts` 和 stdio MCP server 声明的 network hosts。列出每个 `$.wasm.compile` 用到的 `.wasm` 文件（#1501、#1503、#1506）。
+- 文件变化触发热重载后，向 plugin 发 `system/ui_log` 通知，如 `reloaded (1 hook: tool.call)`、`hooks.json changed — reloaded (modules: hooks/register.ts unchanged; 1 hook: tool.call)`；`/reload-plugins` 等显式重载不发（#1460、#1457）。
+
+#### 修复
+
+- 模块加载失败的报错改为 `<plugin>: hooks module did not load: <file>:<源码行>: <原因>`，行号是源码行号；写进 debug log 的 `[ERROR]`，不再打印到 stderr，四种输出格式一致。语法错误报 `<path> does not parse: <原因> (line L, column C)`（#1460、#1501、#1503）。
+- `plugin validate` 的错误前缀改用 plugin 目录名并带上 hooks 模块路径，notes 排在 errors 和 warnings 之后；env 名或 state 引用不是字面量时用官方文案，没有插值的模板字符串算字面量；不在会话里运行时，其他插件的 state 键显示 `not checked (run validate in a session with them enabled)`（#1501、#1503、#1506）。
+- `hooks.json` 缺失、JSON 非法或校验失败时保留已加载的模块，磁盘上改过的源码也不生效，报 `reload failed, the previous version stays loaded: ...`；一个 plugin 有多份 hooks 设置时逐份保留；`{"hooks":{}}` 卸载模块后继续监看 plugin 目录，改回后自动加载。整个 plugin 目录或入口模块被删除时保留已加载版本，不再报 `ENOENT`，重建后重新加载。Windows 上 plugin 根目录不再被监看过滤掉（#1455、#1456、#1460、#1438）。
+- 冷启动时，判定 `plugin.register` 的模块先触发的那次临时建置不检查事件注册，提供事件的 plugin 排在后面时 consumer 不再被卸载；注册无效而没加载的模块不再拒绝其他 plugin，判定者尚未确认时先载入受判定的 plugin，全部加载后再判定（#1470、#1471、#1440）。
+- `$.store`：旧位置的文件读不到时报 `store file <path> is unreadable (...)` 并且不写入，不再写出只含新数据的文件遮住旧数据；文件整份读取，不再有 16 MiB 上限；文件损坏时报 `<plugin>: store file <path> is malformed (the JSON is not an object)`（#1469、#1470）。
+- `$.wasm.compile` 按写法追踪参数，保存 `.wasm` 文件时重载对应 Mod，使用 shared memory 的模块以 `HooksError` 拒绝（#1501）。
+- Stop 之后、用户再输入之前，`prompt.submit` 返回 `{drop: "the session was stopped and nobody has sent input since"}`，不再抛错；Stop 时已排队的 plugin prompt 和 command 以 `the prompt was removed from the queue before it ran`、`the command was removed from the queue before it ran` 结束（#1501）。
+- `agent.report`：非 auto 模式下失败或停止的 agent，review 为 `off`；前台 agent 因 API 错误结束时报为 failed。`agent.list` 每行带完整 AgentInfo 和任务类型；`agent.call` 运行 `AskUserQuestion`，指向 Workflow 工具、参数格式不对或 `signal` 为 `null` 时按官方文案拒绝；hook 之外发起的调用在 agent 的轮次被中断时继续运行（#1501）。
+- hook 被跳过时用官方文案（`<plugin>: session.start hook skipped: threw ...`），并和官方一样分到 stderr 或 debug log；`$.tool.call` 的输入在扫描检查之前校验，`$.tool.check` 输入和 generator 形式错误用官方文案（#1506）。
+- Mods 面板的 Select 展开时，一次到达的多字符输入留在 Select 里，不再漏到主输入框；软折行的续行行首不再多一个空格，跨行复制时补回（#1469）。
+
+### 测试覆盖
+
+- `src/services/mods/loader.test.ts`、`scanRefusal329.test.ts`、`methodPrototype329.test.ts`：noun 当值、`$` 绑定与遮蔽、`engine.create` 写法、`next` 写法与 tier 收集（#1501、#1503、#1506、#1507）。
+- `src/services/mods/runtimeUnprovidedEvent.test.ts`：未知事件、冷启动临时建置、`plugin.register` 判定顺序、user tier 移除 noun（#1469、#1470、#1471）。
+- `src/services/mods/session.test.ts`、`src/utils/plugins/pluginModules.test.ts`：hooks 设置缺失、非法、多份时保留旧版本，目录删除后重建，热重载通知文字（#1455、#1456、#1460）。
+- `src/services/mods/hostOperations.test.ts`：`$.store` 新位置、格式、旧位置迁移和读不到时报错（#1469、#1470）。
+- `src/services/mods/sessionStopInput329.test.ts`、`agentCallSignal.test.ts`、`agentsParity.test.ts`：Stop 后的 plugin 输入、`agent.call` 参数检查、`agent.report`（#1501）；`wasmCompile329.test.ts`、`wasmScan329.test.ts`：`wasm.compile` 的扫描、沙箱和调用（#1501）；`environment.test.ts`：运行时拒绝 helper 的 `next.to`（#1507）。
+- `src/utils/plugins/validatePlugin.test.ts`、`pluginProvides.test.ts`、`src/cli/print.modsLog.test.ts`：validate 输出、Provides 与 Hosts、加载错误写入 debug log（#1503、#1506）。
+- 对照：#1501 的 `$.wasm.compile` 17 组、`agent.call` 30 组探测与官方 2.1.329 一致；#1507 的 `next` 写法 117 例与官方一致。#1422 合入时 Mods 回归 3355 项通过。
+
+## 2026-11-26 - Agent SDK 与 stream-json 输出跟进官方：refusal 重试一次、headless /clear 发 conversation_reset、前台 Bash 任务事件、init 与 result 新字段、system prompt 文件可与 flag 同用
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 回应中途遇到 `stop_reason: "refusal"` 时（`-p`、SDK、交互界面、子代理），不再直接以错误结束，而是和官方 2.1.329 一样重试一次：未执行的 `tool_use` 补 `Not run` / `Interrupted` 的错误结果，显示 `<模型>'s safeguards stopped the response above · continuing once with that noted`，再请求一次。之前 `result.is_error=true`、退出码 1；现在第二次成功时 `result.subtype=success`、`safety_stops=1`。设置 `CLAUDE_CODE_DISABLE_REFUSAL_RETRY`（任意非空值）关闭重试（#1458）。
+- 最终仍然 refusal 时，错误文案从 `Claude Code is unable to respond to this request...` 改为官方的 `<模型>'s safeguards flagged this message (...)`，`category=cyber` 用 cyber 专用文案，末尾带 `Details`、`Request ID`、`Message ID`；stream-json 在错误前先发 `system/model_refusal_no_fallback`。按旧文案匹配的脚本需要更新（#1461）。
+- stream-json 下 `/clear` 不再输出 `(no content)` 的 assistant 行，改为依次输出 `conversation_reset`、`background_tasks_changed`、新 session 的 `system/init` 和 `result`（`local_command: "clear"`、`total_cost_usd: 0`）。`/clear <name>` 不再发 `session_title_changed`，名称写进离开的那个 session。`/clear` 后费用和时长归零，交互界面的 `/cost` 也从 0 开始（#1463）。
+- `disallowedTools` 现在也过滤 SDK MCP 工具和 `mcp_set_servers` 加入的工具：被禁用的工具不再出现在 `system/init` 的 `tools` 里，调用时得到 `No such tool available: ...`，`permission_denials` 里不再有记录。之前这些工具照常列出，调用时才以 `Permission to use ... has been denied.` 拒绝（#1429、#1424）。
+- Workflow 里的 agent 不再各自发 `task_started` / `task_progress` / `task_notification`，进度改由 workflow 任务 `task_progress` 的 `workflow_progress` 行提供。按 agent 任务事件统计 workflow 进度的 host 需要改读这些行（#1506）。
+
+#### 新功能
+
+- `--system-prompt` 和 `--system-prompt-file` 可以同时使用：文件内容在前、flag 文字在后，中间空一行。之前报 `Error: Cannot use both --system-prompt and --system-prompt-file.` 并以 1 退出。`-p` 和交互模式都适用（#1429、#1424）。
+- `system/init` 新增 `served_by_anthropic`（Anthropic API 且 base URL 未设置或为 `api.anthropic.com` 时为 `true`，`claude ssh` 子进程不带）、`ultrathink_available`、`ultrathink_typed_raises`（本 fork 固定 `false`）（#1486）。
+- `stream_event` 带 `api_message_id`；设置了 thinking display（如 `--thinking-display summarized`）时，`message_start`、thinking 块的 `content_block_start`、`thinking_delta` 以及只有一个 thinking 块的 assistant 消息带 `thinking_display`（#1458、#1486、#1489）。
+- `result` 新增 `safety_stops`、`api_error_type`、`api_error_code`、`ttft_stream_ms`、`time_to_request_ms`、`first_content_frame_ms`、`model_usage_since_last_result`、`usage.fallback_credit: null`，以及会话有 Agent 工具时的 `subagent_stats`（启动数、前后台、按类型、最大深度、完成、失败、被停止和被拒绝次数，`/clear` 和恢复会话后归零）。API 报错结束的 `result` 不再带 `ttft_ms`，并带 `terminal_reason: "api_error"`（#1458、#1461、#1486、#1489）。
+- API 错误的 assistant 行另带 `is_api_error_message`、`api_error_status`、`api_error_type`、`api_error_code`；529 重试的 `api_retry.error` 为 `overloaded`；换到备用模型时发 `system/model_fallback`（`trigger`、`original_model`、`fallback_model`）（#1458、#1461）。
+- 会话有名称时启动即发 `system/session_title_changed`，之后每次改名再发；空闲时的 `rename_session` 立即发出该事件，排在 `control_response` 之前，之前要等下一轮（#1458、#1459）。
+- `-p` / SDK 下前台 Bash 命令运行超过 2 秒时发 `task_started`（`is_backgrounded: false`），结束时发 `task_notification`（`completed` / `failed` / `stopped`）；`run_in_background` 的 `task_started` 带 `is_backgrounded: true`；`background_tasks` 控制请求先发 `background_tasks_changed` 和 `task_updated`（`is_backgrounded: true`）再回 `control_response`；后台命令结束时 `task_notification` 排在 `background_tasks_changed` 之前（#1462）。
+- Workflow 任务的 `task_progress` 带 `workflow_progress`（每个 agent 和阶段一行），task 事件带 `run_id`；workflow 结束时依次发 `task_updated`、`task_notification`、`background_tasks_changed`。后台子代理完成时 `task_notification` 带 `summary_is_report`，通过 SubagentHandback 交回的带 `handback` 和 `handback_report`（#1506）。
+- UserPromptSubmit hook 返回的 `systemMessage` 在 `system/init` 之后作为 `system/informational` 发出（如 `UserPromptSubmit says: ups msg`），之前不发（#1482）。
+
+#### 修复
+
+- hook 的 `systemMessage` 有多行时每行都加 `<hook> says: ` 前缀，去掉 ANSI 码和不可见字符；之前只有第一行有前缀，转义序列原样输出（#1482）。
+- Stop hook 连续阻止结束时，`stop-hook-error` 每轮只发一次，不再每次续跑都发；达到上限时另发 `stop-hook-block-cap` 通知（`priority: "high"`）（#1458）。
+- stream-json 输入的 user 消息 `content` 为数字、布尔或对象时丢弃这条消息，`null` 或缺失当作空 prompt；之前以 `error_during_execution`（`e.at is not a function`）结束（#1429、#1424）。
+- SDK `hooks` 回调超时或取消时，stderr 不再打印约 3.5 KB 的 `Error in hook callback` 和 `AbortError` 堆栈；回调自己抛出的错误照常打印（#1429、#1424）。
+- refusal 重试说明里的 `refused_message_id` 经 DirectConnect 转发时不再被 schema 校验去掉（#1459）。
+
+### 测试覆盖
+
+- #1429：`src/main.systemPromptFile.test.ts`（两个参数合并、CRLF、空文件）、`src/cli/print.malformedUserContent.test.ts`（非法 `content`）、`src/cli/structuredIO.hookCallbackAbort.test.ts`（回调中止不打印、一般错误照常打印）、`src/cli/print.sdkMcpDenyRules.test.ts`（SDK MCP 和动态 MCP 工具的 deny rules），均在修复前失败；重建的 binary 在假 API 下与官方 2.1.329 对照了表中各场景，SDK-4 的交互模式用 tmux 驱动。
+- #1458、#1459、#1461：`src/query.refusalRetry.test.ts`（重试一次、补 `Not run`、终局 refusal 事件与文案）、`src/query.test.ts`、`src/utils/hooks/execPromptHook.test.ts`、`src/services/api/errors.test.ts`、`src/utils/messages/mappers.test.ts`、`src/utils/queryHelpers.requestId.test.ts`、`src/cli/print.sdkControlRequests.test.ts`（空闲 `rename_session`）、`src/entrypoints/sdk/controlSchemas.refusal.test.ts`（schema 保留 `refused_message_id`）。与官方 2.1.329 并排比对 refusal、hook、标题、HTTP 400 至 529 错误等场景的 stream-json，tmux 下两次 refusal 后画面文案逐字相同。`api_message_id` 没有单测，只用 binary 确认。
+- #1462：新增 `src/tasks/LocalShellTask/foregroundSdkEvents.test.ts`（3 例）；与官方并排比对前台、后台、失败、超时、interrupt、`background_tasks` 等 9 个情境的事件序列。
+- #1463：`src/commands/clear/conversation.test.ts`（2 例）、`processSlashCommand.localError.test.ts`；`/clear`、`/clear <name>` 的事件顺序和字段与官方对照，tmux 下 `/cost` 归零。
+- #1482：`src/utils/messages/mappers.test.ts` 补多行格式和 compaction 保留消息两例；UserPromptSubmit 和 PreToolUse 场景与官方输出一致。
+- #1486、#1489：`src/utils/messages/systemInit.test.ts`、`src/services/api/claude-thinkingDisplay.test.ts`、`src/QueryEngine.result.test.ts`、`src/cost-tracker.sinceLastResult.test.ts`、`src/tools/AgentTool/subagentStats.test.ts`、`src/tasks/LocalAgentTask/LocalAgentTask.subagentStats.test.ts`，每个字段的测试在没有修复时失败。#1489 没有用重建的 binary 实测。
+- #1506（SDK 部分）：`LocalAgentTask.workflowSdkEvents.test.ts`、`runWorkflow.test.ts`、`workflowNotifications.test.ts`、`agentReport.background.test.ts`、`agentReport.foreground.test.ts`；对照官方的 13 个 report 场景中 11 个一致，wf-complete 和 wf-fail 只差 start 行时机和 token 数。handback 只有单测，官方探针里没有 SubagentHandback 工具，无法对照。
+
+## 2026-11-26 - Hooks 行为对齐、未信任文件夹、权限设置同步、回退模型接手不可重试错误与沙箱嵌套 user namespace
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 同一条 hook 同时写在 user、project、local 设置和 `--settings` 里时，以前每个来源各执行一次，现在只执行一次，用优先级最高的来源那份（`timeout` 不同时 project 优先于 user，`--settings` 优先于 local）。组织托管设置里的 hook 只在整个 matcher 完全相同（不看 JSON 键顺序）时才和其他来源合并，`matcher` 或 `timeout` 不同仍各执行一次。同官方 2.1.329。（#1428、#1426）
+- 两个 marketplace 装了同名插件时，以前两份插件的 hook 都注册并执行，现在只注册先加载的那份，`--debug` 记 `Skipping duplicate hook registration for plugin "<名字>" from <来源> - already registered from another source`；托管设置 `enabledPlugins` 里为 `true` 的插件排在最前，会话中途修改托管设置也会重新加载插件 hook。（#1428、#1426）
+- 未信任的文件夹在 `claude -p`、Agent SDK、`claude mcp list` 这些不显示信任框的入口里，以前照样载入文件夹自带的配置，现在和交互启动一样按是否信任过判断：`.claude/settings.local.json` 的 `enableAllProjectMcpServers` / `enabledMcpjsonServers` 不论是否被 git 跟踪都不生效（`mcp list` 显示 ``⏸ Pending approval (run `claude` to approve)``），项目和本地设置的 `extraKnownMarketplaces` 及 `--add-dir` 目录里的声明被跳过，项目和本地 agent frontmatter 里的 hook 不注册。需要这些配置的文件夹，先交互运行一次 `claude` 并选择信任。在主目录下 `.claude/settings.json` 就是用户设置，不受影响。（#1436、#1434）
+- 信任框的第一项改为 `No, exit` 并默认选中，去掉编号；直接按 Enter 会退出（退出码 1），并提示 `Claude Code didn't start because this folder isn't trusted.` / `Run claude again and choose Yes, or run it in another folder.`。文件夹里有 `.mcp.json` 时多一行 `Trusting this folder loads .mcp.json here or above (MCP servers).`。同官方 2.1.329。（#1436、#1434）
+- 主模型返回 404 时，assistant 消息的 `error` 字段由 `invalid_request` 改为 `model_not_found`（SDK 的枚举新增此值），按旧值判断的 SDK 程序需要更新。（#1468、#1427）
+
+#### 新功能
+
+- PreToolUse hook 可以返回 `"permissionDecision": "defer"`：在 `claude -p` 和 SDK 里、这一轮只有一个工具调用时，工具不执行，结果以 `stop_reason` / `terminal_reason` = `tool_deferred` 结束并带上 `deferred_tool_use`；之后 `claude -p --resume` / `--continue`（可以不带提示词）会让这次调用重新经过 PreToolUse 再执行，工具已不存在时结果是 `tool_deferred_unavailable`。交互会话和一轮多个工具调用时忽略 `defer`。同官方 2.1.329。（#1441、#1416）
+- SDK `initialize` 登记的 callback hook 支持 matcher 上的 `onFailure: "block"`，回应带 `hook_on_failure_supported: true`；callback 失败时和 command / http hook 一样阻断工具。（#1441、#1425）
+- command hook 的环境里新增 `CLAUDECODE=1`、`CLAUDE_CODE_SESSION_ID`、`CLAUDE_CODE_CHILD_SESSION=1`、`CLAUDE_CODE_SESSION_ATTENDED`（有人在场为 `1`，否则 `0`）、`CLAUDE_PID`，以及 `CLAUDE_CODE_CHILD_NOTES_DIR`（`<项目临时目录>/<会话 ID>/started`，各级目录 `0700`，路径上有符号链接时不设置）；打包 binary 内部的 `CLAUDE_CODE_BUILTIN_*` / `CLAUDE_CODE_EMBEDDED_*` 不再传给 hook。`CLAUDE_CODE_CHILD_NOTES_DIR` 目前只下发，本 fork 还没有读取它的一方。（#1479、#1500、#1472）
+- PreModelSwitch / PostModelSwitch hook 的输入新增 `prompt_cache_warm`、`cache_ttl`、`estimated_cache_write_usd`、`pricing`（本 fork 只会是 `catalog` 或 `default`）。（#1491、#1472）
+- 新增设置 `permissions.blockWritesOutsideWorkingDirectories`：任一设置来源为 `true` 时，Write、Edit、NotebookEdit 写工作目录以外的路径一律拒绝，权限模式（包括 Bypass）、allow 规则和 hook 的 allow 都不能解除，工作目录内的 Claude Code settings 文件也不能写；`/add-dir`、`--add-dir`、`permissions.additionalDirectories` 加入的目录仍可写，Bash 不受限制。同官方 2.1.329。（#1430、#1409）
+- 新增设置 `permissions.denyInsteadOfPrompting`：只从 user 设置、`--settings` 和托管设置读取，开启后交互会话、子代理和 agent team 成员里本来要弹确认框的调用直接拒绝（PreToolUse hook 返回 `ask` 也一样），模型收到 `Permission for this tool use was denied. It requires approval, and this session has no approval surface — …`；开启时不向模型提供 AskUserQuestion、EnterPlanMode、ExitPlanMode。`-p --permission-prompts none` 的拒绝文案改为同一句。（#1430、#1410）
+- 支持 `sandbox.allowNestedUserNamespaces`（仅 Linux / WSL）：设为 `true` 时允许沙箱里的命令自己建 user namespace，Chromium / Electron 的沙箱、嵌套 bubblewrap、`unshare` 可以运行，代价是移除代码执行隔离。只认 user、`--settings` 和托管设置里的 `true`，项目和本地设置的 `true` 被忽略、`false` 仍生效。同官方 2.1.329。（#1478、#1413）
+- 支持环境变量 `CLAUDE_CODE_DISABLE_ULTRATHINK`：为真时关闭 `ultrathink` 关键词的高亮、`Effort set to high` 提示和 effort 附件。本 fork 默认构建没有打开 `ULTRATHINK` 功能，这个变量只在 `CLAUDE_CODE_RECOVER_FEATURES=ULTRATHINK` 构建时有作用。（#1477、#1414）
+- 配置了 `--fallback-model` / `fallbackModel` 时，主模型返回无法重试的拒绝（400、422、非流式请求的 404）以前直接报错退出，现在换成备用模型回答，显示 `Switched to <备用> because <主模型> returned an error that could not be retried (…)`，`system/model_fallback` 的 `trigger` 为 `last_resort`（404 `not_found_error` 为 `model_not_found`）。401、403、407、413、429、prompt too long、额度不足、组织停用、billing、内容策略等换模型也无效的错误不触发。同官方 2.1.329。（#1468、#1427）
+
+#### 修复
+
+- SDK 的 PreToolUse callback hook 超时（不是用户中断）时，以前工具照常执行，现在不执行，模型收到 `PreToolUse hook did not respond before its timeout (host client may be unreachable). The tool call was not executed; …`。（#1441、#1425）
+- 单次 `claude -p`（非 stream-json 输入）里 `asyncRewake` hook 以前在后台运行、结束后无人接收，现在同步等它跑完；在后台运行的 `asyncRewake` hook 以退出码 2 结束时，以前没有任何提示，现在显示 `Stop hook feedback` 并把输出交给模型。（#1441、#1491、#1472）
+- `claude -p` 退出时取消还在运行的 `async` hook，以前只杀掉子进程，shell 会继续执行后面的命令（例如照样写出日志文件），现在先杀 shell 本身。（#1479、#1472）
+- hook JSON 输出校验失败时，以前报 `JSON validation failed: Hook JSON output validation failed:\n  - : Invalid input` 且 `exit_code` 固定为 1，现在报 `Hook JSON output validation failed — <字段路径>: <原因>`，缺 `hookEventName`、PermissionRequest 的 `decision`、旧版顶层 `decision` 各有提示，`hook_response.exit_code` 是真实退出码，非零退出时附上 stderr；后面的 `Expected schema` 提示块补上 PermissionRequest、PostToolBatch、Stop / SubagentStop，去掉顶层 `permissionDecision`。（#1479、#1500、#1472）
+- WorktreeCreate hook 成功但没给路径时，以前报 `WorktreeCreate hook failed: no successful output`，现在报 `hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)`；配置了但一个都没运行时报 `hook is configured but did not run (workspace not trusted or matcher mismatch)`。（#1479、#1472）
+- 被 UserPromptSubmit hook 阻止的提示词以前从输入框消失，现在放回输入框。（#1491、#1472）
+- `/model` 和 `-p` 被 PreModelSwitch hook 阻止时显示 `Model switch to X was blocked by a PreModelSwitch hook: <原因>`，`ask` 判定在 `-p` 下附 `(run /model interactively to confirm)`；原因压成一行：去尾部空白、超过 2000 字符截断加 `…`、tab 换成空格、换行和控制字符及不可见格式字符换成 U+FFFD。（#1491、#1500、#1472）
+- 会话里还没有模型回复（只运行过本地命令）时，`/compact <指令>` 以前不触发 PreCompact，现在先运行 PreCompact（`custom_instructions` 为该指令）再报 `Not enough messages to compact.`，SDK 收到 `compacting` 和失败两条 status。（#1500、#1472）
+- `disableAllHooks` 时 `/hooks` 的停用页改为标题 `Hooks`、副标题 `off · N hooks not running`（托管设置停用时为 `turned off by your organization`），正文与官方一致；交互权限确认的 Notification 消息固定为 `Claude needs your permission`；Elicitation hook 最后取消时，MCP server 收到 `{"action":"cancel","content":{}}`。（#1491、#1472）
+- SDK `apply_flag_settings` 撤掉的 `--settings` 权限规则（以及托管设置的规则）以前一直留在会话里，现在重新载入时清空所有设置来源的规则再套用；`cliArg`、会话内和命令里的规则不受影响。（#1430、#1423）
+- `~/.claude.json` 读取失败（`EIO`、`EACCES` 等，`ENOENT` 除外）时，以前保存会以默认值为基底把既有设置整份覆盖掉并报告成功；现在先重试一次，仍失败时以本进程已读到的设置为基底写回，没读到过或文件已被其他进程改过就不写。`claude mcp add` / `mcp remove` 的 user、local scope 在没保存时以非 0 退出，提示 `MCP server "<名字>" may not have been saved: … could not be read to confirm the change (…)`。（#1446、#1419）
+- macOS 钥匙串可读不可写时，以前刷新 OAuth 令牌会照常发出刷新请求、作废旧令牌，新令牌只写进明文回退存储又被钥匙串旧条目遮住，其他会话只能重新登录；现在刷新前先确认能写：能删掉钥匙串旧条目就先把凭据搬到回退存储再刷新，不能就不发刷新令牌，同一令牌 60 秒内不再尝试。（#1476、#1420）
+- 流式响应在还没有完整内容块之前断线时，以前直接改用非流式请求，现在用剩余重试次数重新流式请求并送出 `api_retry`，次数用完才走非流式回退；最终文案改为 `API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.`（`server_error`）。流里的 SSE `error` 事件不再当作断线重试和计费。`result.usage` 计入非流式回退和断线后重试的请求。（#1468、#1427）
+- 同一 PR 的其他 API 修复：headless / SDK 中断时保留已流出的 assistant 文字；`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` 时不送 `thinking-token-count` beta；单轮对话的 prompt too long 直接报错，不先 compact；`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 时不做 preconnect，也不做默认开启的网关模型发现（显式 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 仍请求）；本身就是 1M 上下文的模型不再带 `[1m]`；输出 token 上限续写时注入的 user 消息计入 `num_turns`；credit balance 的 400 不再去掉 tool search 重发。（#1468、#1427）
+
+### 测试覆盖
+
+- `src/utils/hooks.sourceScope.test.ts`、`src/services/tools/toolHooks.test.ts`：跨来源同一 hook 只执行一次且高优先级那份生效，托管与其他来源 matcher / `timeout` 不同时各执行一次；`src/utils/plugins/loadPluginHooks.duplicateName.test.ts`：同名插件只注册一份、托管 `enabledPlugins` 优先。
+- `src/services/mcp/projectApproval.trust.test.ts`、`src/tools/AgentTool/runAgent.frontmatterHooksTrust.test.ts`、`src/utils/plugins/marketplaceManager.declared.test.ts`、`src/utils/plugins/pluginLoader.inPlaceTrust.test.ts`、`src/components/TrustDialog/TrustDialog.test.tsx`：未信任文件夹的 MCP 批准、agent hook、marketplace 声明与就地载入被跳过，信任框默认 `No, exit` 与退出文案。
+- `src/query.deferredTool.test.ts`、`src/utils/conversationRecovery.deferredTool.test.ts`、`src/cli/structuredIO.hookCallback.test.ts`、`src/cli/print.initializeCapabilities.test.ts`：`defer` 的停止与恢复、SDK callback 超时不执行工具、`hook_on_failure_supported`。
+- `src/utils/hooks.validation.test.ts`、`src/utils/hooks.worktreeCreate.test.ts`、`src/utils/hooks.env.test.ts`、`src/utils/ShellCommand.kill.test.ts`：校验文案与 `Expected schema` 提示块、WorktreeCreate 报错、hook 环境变量与 `CLAUDE_CODE_CHILD_NOTES_DIR`、取消 async hook 时先杀 shell（没有 `setsid` 的平台跳过 own-group 用例）。
+- `src/components/hooks/HooksConfigMenu.layout.test.tsx`、`src/components/permissions/PermissionRequest.notification.test.ts`、`src/screens/REPL.submit.test.ts`、`src/utils/promptCacheFacts.test.ts`、`src/commands/model/modelNonInteractive.test.ts`、`src/utils/model/modelSwitchHooks.test.ts`、`src/commands/compact/compact.test.ts`：`/hooks` 停用页、Notification 文案、被阻止提示词回填、model switch 输入字段与阻断原因清洗、`/compact` 触发 PreCompact。
+- `src/utils/permissions/permissions.syncRevokedRules.test.ts`、`src/utils/permissions/filesystem.blockWrites.test.ts`、`src/utils/permissions/permissions.denyInsteadOfPrompting.test.ts`、`src/cli/print.permissionPrompts.test.ts`：撤销规则、两个新权限设置及其与 hook、Mods `tool.check` 的交互。
+- `src/utils/configReadErrorSave.test.ts`：单次 `EIO`、载入后持续 `EIO`、被其他进程改写后持续 `EIO`、从头读不到四种情况都不覆盖 `~/.claude.json`。
+- `src/utils/auth.keychainReadOnly.test.ts`：钥匙串可读不可写时不发送刷新令牌、能删除旧条目时先迁移再刷新（假存储后端，未接触真实钥匙串）。
+- `src/services/api/withRetry.test.ts`、`errors.test.ts`、`claude-model-contract.test.ts`、`src/query.test.ts`、`src/QueryEngine.result.test.ts`、`src/utils/toolSearch.test.ts`、`src/services/mods/turnStepStreamCut.test.ts` 等：`last_resort` 回退与排除的错误、断线重试次数与文案、usage 计数。
+- `src/utils/sandbox/sandbox-adapter.test.ts`：`allowNestedUserNamespaces` 未设置时不传，user / `--settings` / 托管的 `true` 传给 runtime，项目和本地的 `true` 被忽略、`false` 生效。
+- `src/utils/thinking.ultrathink.test.ts`：以 `--feature=ULTRATHINK` 子进程验证 `CLAUDE_CODE_DISABLE_ULTRATHINK` 为 `1` / `true` 时关闭，未设置和 `0` 时开启。
+
+## 2026-11-26 - 插件新增 tag、configure、details、restore-set-aside、prune 子命令与依赖解析，MCP 作用域、输出与报错对齐官方，.mcp.json 回写保留原内容
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `claude plugin disable <插件>` 在还有已启用的插件依赖它时改为拒绝，退出码为 1，设置不变，并提示先停用依赖方或一起停用：`base is still required by child. Disable that plugin first, or disable everything together: claude plugin disable child@mk && claude plugin disable base@mk`。此前只给警告照样停用。`/plugin` 的 Installed 页同样拒绝，`disable --all` 不受影响；与官方 2.1.329 一致（#1453、#1438）。
+- 在 `/plugin` 菜单里安装、启用 / 停用、卸载、改设置或增删 marketplace 后，关闭菜单时自动执行 `/reload-plugins`，不用再手动运行；Claude 正在回复时关闭，`/reload-plugins` 排到回复结束后执行并提示 `Plugin changes apply when the current response finishes (/reload-plugins is queued).`。Installed 页底部改为 `Changes apply when you close this menu`，reload 后 `Run /reload-plugins to activate` 通知会消失；菜单里没有改动时不 reload（#1454、#1438）。
+- `/plugin` 的 Errors 页对插件错误按 `Enter` 不再直接卸载，先弹出 `Uninstall <name>?` 确认框，默认选中 `No, cancel`，按 `Esc` 也会取消（#1454、#1438）。
+
+#### 新功能
+
+- 新增 `claude plugin tag [path]`：校验 `plugin.json` 和列出这个插件的 `marketplace.json`（警告逐行列出，有错误就停止），确认版本是合法 semver、两处版本一致、工作区没有未提交改动、tag 不存在后，在 `HEAD` 创建带注释的 `<name>--v<version>` tag。选项 `--dry-run`、`-f/--force`、`-m <msg>`（`%s` 替换为版本号）、`--push`、`--remote <name>`（默认 `origin`，推送前检查 remote 名，不会被当成 git 选项）。此前报 `error: unknown command 'tag'`；文案与官方 2.1.329 一致（#1449、#1417）。
+- 新增 `claude plugin configure <plugin>`：按完整 ID 列出插件 `userConfig` 里每个选项是否必填、是否敏感、是否已设置；`--json` 输出 `pluginId`、`displayName`、`schema`、`inputs`、`choices`、`configured`、`unconfigured`，不输出敏感值。`--values-stdin` 从标准输入读一个值全是字符串的 JSON 对象并保存（输入上限 256 KB，单个值上限 64 KB，不接受多行值和未声明的选项），按类型转换并检查范围、可选值和必填项，没写到的选项保留原值，成功时输出 `Configuration saved. Restart Claude Code to apply it.`。敏感值存进安全存储，其余写进用户设置的 `pluginConfigs`（#1450、#1417）。
+- 新增 `claude plugin details <name>`：按 `name` 或 `name@marketplace` 查找已启用或已停用的插件，列出 Skills、Agents、Hooks、MCP servers、LSP servers，并给出 Always-on 和 On-invoke 的 token 成本与逐组件表格。有可用认证时用 `count_tokens` 计数，取不到时按字符数估算；manifest 指向插件目录外的路径和 `.mcpb` 不读取。找不到插件时退出码为 1（#1451、#1417）。
+- 新增 `claude plugin restore-set-aside <plugin> [--discard]`：把用户设置 `pluginConfigs` 和安全存储里 `.set-aside/<stamp>/<plugin id>` 下被搁置的选项和密钥合并回这个插件 ID（现有值优先），`--discard` 则删除；没有搁置项时输出 `No options or secrets are set aside for <id>.` 且不改写设置文件。`claude plugin list` 发现搁置项时在末尾提示这个命令（#1452、#1417）。
+- `claude plugin install` 会沿依赖插件 `plugin.json` 的 `dependencies` 逐层安装，此前只读 marketplace 条目里的依赖，依赖只写在 `plugin.json` 时插件装上后就加载失败。成功信息列出装上的依赖名，如 `(+ 1 dependency: base)`；找不到的依赖改为警告，不再让安装失败。作为依赖装上的插件在 `installed_plugins.json` 里记为 `auto: true`（#1453、#1438）。
+- `claude plugin enable <插件>` 会连带启用已安装但被停用的依赖，输出 `(also enabled 1 dependency: base)`；依赖没有安装时启用失败（#1453、#1438）。
+- 新增 `claude plugin prune`（别名 `autoremove`），选项 `--dry-run`、`-s <scope>`、`-y`：列出并移除不再被需要的自动安装依赖；输入或输出被管道、重定向时必须加 `-y`。`claude plugin uninstall` 新增 `--prune` 和 `-y`，卸载后有不再需要的自动安装依赖时提示 ``Run `claude plugin prune` to remove.``（#1453、#1417）。
+- `/reload-plugins` 发现已启用插件缺少依赖时，把依赖装回声明方启用的范围并再重载一次，结果显示 `(+ 1 dependency: base) resolved`（#1453、#1438）。
+- `claude mcp add-json <name> -` 从标准输入读取 JSON（上限 1 MiB）。标准输入为空、只有空白或是终端时报 `There is no JSON on stdin. Pipe it in, or pass it as the argument.`；设置了 `CLAUDE_CODE_CHILD_SESSION` 时拒绝从标准输入读。此前 `-` 被当成 JSON 解析，报 `Invalid configuration`；与官方 2.1.329 一致（#1447、#1418）。
+
+#### 修复
+
+- `claude mcp add -s project` 和 `claude mcp remove -s project` 回写 `.mcp.json` 时只增删目标条目：此前会把 `${VAR}` 展开成明文写回，并丢掉 `$schema` 等其他顶层键和本版本不认识 `type` 的条目，现在原样保留。`.mcp.json` 不是合法 JSON 或 `mcpServers` 不是对象时，此前回报成功并清空原内容，现在报 `.mcp.json is malformed (not valid JSON, or mcpServers is not an object)`，退出码为 1，不写文件；读文件出错（如 `EACCES`）时同样不写（#1445、#1444）。
+- 用户配置和未批准的项目 `.mcp.json` 有同名 server 时，`mcp list`、`mcp get` 改为使用已批准的用户配置，不再显示 `Pending approval` 和 `Scope: Project config`；两边地址不同时诊断区新增 `[Conflicting scopes]` 说明和删除建议（#1439、#1432）。
+- `claude mcp add -H` 回显 header 时把 `Authorization` 等凭据类 header 的值显示为 `[REDACTED]`，写进配置的仍是原值（#1439、#1432）。
+- `claude mcp add-json` 拒绝 `sdk`、`sse-ide`、`ws-ide`、`claudeai-proxy` 类型（此前 `sdk` 会被写进配置）；配置不合法时指出字段和原因，如 `Invalid configuration: url: expected string, received undefined`，此前是 `Invalid configuration: : Invalid input`（#1439、#1432）。
+- `mcp remove`、`mcp reset-project-choices`、URL 被当成 stdio 命令时的警告和 `mcp --help` 文案与官方 2.1.329 一致；`mcp get` 无参数的 stdio server 的 `Args:` 行不再带尾空格（#1439、#1432）。
+- HTTP MCP server 返回 404 时报 `MCP endpoint not found at <origin>. Check the URL in your MCP config.`，返回 500 时报 `HTTP 500: Error POSTing to endpoint: <body>`（#1439、#1432）。
+- `count_tokens` 失败或返回空时，MCP 工具结果改按字符数估算是否超过 `MAX_MCP_OUTPUT_TOKENS`，此前直接放行整段结果。只有一个 text 块的超大结果存成纯文本 `.txt`，提示写明字符数和行数以及长行的读取方式，此前存成 JSON 数组（#1439、#1432）。
+- `ReadMcpResourceTool` 读到不存在的资源（-32002 或 invalid params）时不再标记为工具错误，改为返回 `Resource not found: <uri> — it may have been deleted or the URI is stale. Re-run ListMcpResourcesTool to refresh.`（#1439、#1432）。
+- 按需加载、input schema 还没发给模型的 MCP 工具返回错误时，结果末尾附上它的 input schema（超过 10,000 字符时只说明用 `ToolSearch` 加载），每个工具只附一次（#1439、#1432）。
+- `-p` 模式下，server 发出 `tools/list_changed` 后模型立刻调用新工具，此前报 `No such tool available`，现在等工具列表刷新完成再执行（#1439、#1432）。
+
+### 测试覆盖
+
+- `src/utils/plugins/pluginTag.test.ts`：tag 名与 `HEAD` 上的注释 tag；缺版本、非 semver、未提交改动被拒；与 marketplace 条目比对版本；非法 remote 名不推送且保留本地 tag；tag 名不是合法 git 引用名；带 BOM 的 `marketplace.json`；`status.showUntrackedFiles=no` 时仍能发现未跟踪文件。
+- `src/utils/plugins/pluginConfigure.test.ts`：只接受字符串值的 JSON 对象；类型转换与空值不覆盖；拒绝不符合声明的值；`--json` 不输出敏感值；去掉插件提供文本里的控制字符。
+- `src/utils/plugins/pluginDetails.test.ts`：组件清单、字符估算与 `count_tokens` 计数两种输出；空插件；不列出解析到 marketplace 之外的文件。
+- `src/utils/plugins/pluginSetAside.test.ts`：选项与密钥（含每个 server 的密钥）还原时现有值优先；搁置的插件 ID 去重并忽略格式错误的键。`src/utils/settings/changeDetector.test.ts` 新增 updater 返回 `null` 时不改写设置文件。
+- `src/utils/plugins/dependencyResolver.test.ts` 与 `src/services/plugins/pluginOperations.dependencies.test.ts`：安装后缀列出依赖名；按 `plugin.json` 安装依赖并标记 `auto`；被依赖的插件不能单独停用；启用时连带启用依赖；卸载后提示与 prune 移除；以名称安装后变回手动安装；reload 补装缺失依赖。
+- `src/commands/plugin/PluginSettings.errorsTab.test.tsx`（以真实按键驱动）：Errors 页 Enter 先确认且默认 No；有改动时关闭菜单提交 `/reload-plugins`；回复进行中关闭时提示排队。`ManagePlugins.toggleFailure.test.tsx`：停用成功时切换即标记为有改动，底部提示改为 `Changes apply when you close this menu`，停用失败时不标记。
+- `src/services/mcp/config.mcpjsonRewrite.test.ts`：添加时保留 `${VAR}`、其他键和未知类型条目；删除时其余内容不变；未知类型条目占用名字且可删除；非法 `.mcp.json` 不被改写；文件缺失或空白时新建；没有 `mcpServers` 时补上。
+- `src/cli/handlers/mcp.addJsonStdin.test.ts`：`-` 读取管道里的 JSON；标准输入有问题时给出原因而不读取。
+- `src/cli/handlers/mcp.messages.test.ts`、`mcp.get.test.ts`、`mcp.list.test.ts`：header 脱敏、URL 警告、`add-json` 拒绝宿主类型并指出非法字段、`remove` 指出范围、`reset-project-choices` 提示、同名 server 的范围选择与 `Args:` 尾空格。
+- `src/services/mcp/client.httpStatus.test.ts`、`clientProtocol.test.ts`：404 与 500 的错误文案。`src/utils/mcpValidation.test.ts`：计数失败时退回字符估算。`src/tools/ReadMcpResourceTool/ReadMcpResourceTool.test.ts`、`UI.test.tsx`：资源不存在时返回提示而不是错误。`src/services/tools/toolExecution.test.ts`：未发送 schema 的工具报错附 schema；等待进行中的 `tools/list_changed` 刷新，调用被中止时不再等待。
+
+## 2026-11-26 - 退出提示与恢复会话对齐官方、/tasks 重新打开已结束的子代理和排程任务、跨会话消息显示、Code Mode 的 Ctrl+E 与 REPL 结果隔离、子代理压缩不再重置主对话
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 不带 `--name` 启动的交互会话，名字改为启动目录名加两位随机十六进制，例如在 `alpha` 目录得到 `alpha-91`，同一目录开几个会话不再重名（和官方 2.1.329 相同）。此前直接用目录名 `alpha`。脚本或提示里按目录名给这类会话发 `SendMessage` 的，改用 `/peers` 列出的名字，或启动时用 `--name` 固定名字。`-p` 等非交互会话仍用目录名（#1504、#1502）。
+
+#### 新功能
+
+- 退出时的恢复提示带上可以安全重放的启动参数，例如 `claude --permission-mode acceptEdits --effort high --resume <id>`。`--resume`、`--continue`、`--name`、`--worktree` 这类选会话的参数不带；有值不能原样粘进 shell，或用了 `--agent-id`、`--messaging-socket-path` 这类只属于这个进程的参数时整串不带；含 `/` 或 `.` 的参数只在整条命令一行放得下时才带。此前一律是 `claude --resume <id>`（#1435、#1431）。
+- 新增环境变量 `CLAUDE_CODE_RESUME_HINT_COMMAND`：值符合 `^\w[\w-]*$`（如 `myhost`）时，恢复提示变成 `myhost --resume <id>`；写成路径或含 `.` 时不生效。只改提示，不改恢复行为（#1435、#1415）。
+- Code Mode 会话的恢复提示加 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 ` 前缀；Windows 上不加前缀，改为多打印一行 `This session resumes only with the environment variable CLAUDE_CODE_EXPERIMENTAL_CODE_MODE equal to 1`（#1435、#1431）。
+- 在 worktree 里退出并保留 worktree 时，恢复提示带 `--worktree "<名字>"`，放不下时改用 `-w "<名字>" -r <id>`，再放不下就打印普通命令，前面加三行 `This session ran in a worktree` 等说明。worktree 已删除时不带（#1435、#1431）。
+- `/tasks` 里 `Completed` 分组的子代理按 `Enter` 进入它的对话视图（记一行 `Viewing agent`），可以继续发消息。结束超过 30 秒、已经移出任务列表的子代理收在 `Earlier in this session (N)` 下，展开后按 `Enter` 打开；列表读本会话的 `subagents/agent-*.jsonl` 和 `.meta.json`，`--continue`、`--resume` 后同样可用，不列 teammate。每行显示类型或 `@名字`、`started …`、`last active …`，用户停止过的标 `stopped`，没有类型记录的标 `cannot be opened`（#1464、#1411）。
+- `/tasks` 新增 `Scheduled` 分组（`CronCreate` 的任务和 `/loop` 唤醒，一次性任务显示 `Runs once in …`）和 `Goal` 分组，标题下多一段 `N scheduled task(s)`。在这两类行上按 `x` 先确认（`Stop this scheduled task?` / `Stop the goal?`，默认 `No, keep running`），确认后只停这一项，对话里记 `Stopped scheduled task: …` 或 `Goal cleared: …`；停 `/loop` 行会取消之后的唤醒。`durable: true` 的任务不列，和官方相同（#1464、#1412）。
+- `/list-agents`（`/peers`）改为纯文本输出，`-p` 模式下也能用：第一行 `This session: <名字> [<ref>] (the name other sessions use to message it)`，下面按 `Subagents`、`Teammates`、`Other Claude sessions` 分组，每行是 `[状态]`、名字、类型或目录、`started …`；peer 字段里的转义序列和控制字符被去掉。此前是要按 Enter 或 Esc 关闭的对话框，也不列子代理和 teammate（#1504、#1502）。
+- `SendMessage` 发给同机其他会话时，对话里显示一行 `“<预览>” → sent to <名字> — another Claude session on this machine`；`notify_when_idle` 订阅显示 `You will be told here when <名字> is next idle.`；空闲通知附对方最后一条回复的摘录 `«…»`，Claude 收到的文字含 `Its harness reports: «…»`。此前显示给模型的长句，60 列下占 5 到 7 行（#1504、#1502）。
+- 收到其他会话的消息折成一行 `› Message from @<发送者>: <首行> (ctrl+o to expand)`，展开后是 `@ <发送者>❯` 和全文。此前是两行 `Peer · <发送者>` 加全文（#1504、#1502）。
+- 后台子代理面板：选中某行时底部提示换成这一行能用的按键，例如 `↑/↓ to select`、`enter to view · x to stop`，已结束的是 `x to clear`；workflow 行同样能查看、停止或清除。被停止的子代理那一行图标为红色 `◯`，显示 `stopped · 2m 40s`，主对话记 `Agent "…" was stopped by user`；主会话那一行显示 `⏺`（#1506、#1408）。
+- Code Mode 的全屏渲染（`CLAUDE_CODE_NO_FLICKER=1`）详细记录里，`Ctrl+E` 能显示和收起脚本源码。普通会话的全屏详细记录、记录搜索和一次性导出到回滚区的记录仍不响应（#1400、#1399）。
+
+#### 修复
+
+- 用 `-w` 启动、退出 worktree 后，在启动目录 `claude --resume <id>`（包括 `-p`）能找到这个会话；退出 worktree（保留或删除）时会话记录搬回启动目录。此前报 `No conversation found with session ID`。`-p` 模式的 `--continue`、`--resume` 也会回到会话所在的 worktree（#1435、#1431）。
+- 会话里 `EnterWorktree` 后，会话记录和 `<sid>/` 目录（tool-results、subagents）随即搬到 worktree 对应的项目下并写一条 `{"type":"relocated"}`，`ExitWorktree` 时搬回。`--resume <id>` 回到 worktree 继续，在启动目录 `--continue` 会开新会话，和官方相同。目标已存在时原文件另存为 `.superseded-<ts>`，跨设备时复制后删除，失败时还原，记录不丢（#1487、#1431）。
+- `/cd` 切换目录后会话记录也搬到新目录，从新目录 `claude -c` 能接上。搬移失败时照常切换，记录留在原处（#1490、#1431）。
+- 恢复后再退出，会话记录里不再重复追加内容相同的 `worktree-state` 和 `relocated`。此前测试场景里累积了 6 条 `relocated`（#1490、#1431）。
+- 上次退出时没拿到结果的工具调用，恢复后补一条出错的 `tool_result`，文案和官方相同（`[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. …]`），界面显示 `Interrupted · What should Claude do instead?`。已有真实结果的调用不补（#1435、#1431）。
+- 恢复工具调用中断的会话时，只有设了 `CLAUDE_CODE_RESUME_INTERRUPTED_TURN` 自动续跑才在历史里加 `Continue from where you left off.`；没设时中断的结果后面直接是 `No response requested.` 和你的下一条输入，和官方相同（#1480、#1431）。
+- 折叠显示的 shell 和 MCP 调用里，没有结果的不再算进 `Ran N shell commands`，改写 `no result recorded for N call(s)`，例如 `Ran 1 shell command, no result recorded for 2 other calls`，也不再逐条显示 Interrupted 行；被权限规则、自动模式或你拒绝而没运行的写 `did not run N call(s)`，例如 `Ran 2 shell commands, did not run 1 other call`（#1487、#1490、#1431）。
+- 用户停止的子代理，你在它的对话视图发消息或通过 SDK `send_task_message` 发消息就能恢复，`.meta.json` 里的 `stoppedByUser` 同时清除，之后 Claude 的 `SendMessage` 也能照常续跑。恢复前 Claude 的 `SendMessage` 仍被拒绝，文案改为官方的 `was stopped and was not resumed` / `was stopped and won't be resumed`。此前你自己发消息也被拒绝，提示 `was stopped by the user`（#1467、#1466）。
+- `/tasks` 里按 `x` 停止子代理算作用户停止，和底部面板一致（#1464、#1411）。
+- 从 `Earlier in this session` 打开 fork 技能启动的子代理后能发消息续跑，按原技能的权限范围；技能身份和权限记录对不上时标 `cannot be opened`。此前续跑必定失败（`no matching forked-skill provenance witness`）（#1465、#1411）。
+- 只有一个任务时 `/tasks` 直接进入详情，按 `←` 回到清单（能看到 `Earlier in this session`），不再直接关闭对话框（#1465、#1411）。
+- 会话启动后 `/peers` 马上显示 `[idle]` 等状态。此前头 30 秒左右显示 `[unknown]`（#1504、#1502）。
+- 模型调用 `ListAgents` 的结果不再在对话里渲染成一整块列表，模型收到的文字补上每个会话的状态（#1504、#1502）。
+- 切入、切出子代理视图时重绘一次画面，不再留下残影（#1506、#1408）。
+- `/clear` 和 `/resume` 换到另一个会话时，旧对话里排队的 REPL 结果和状态事件直接丢弃，之后才结束的脚本也不会把结果送进新对话（#1401）。
+- `/rewind` 或 SDK `rewind_conversation` 回退之后，被回退的那几轮里还在跑的 REPL 脚本照样跑完，但结果和迟到的输出不再进入对话；回退点之前的脚本不受影响。此前这些结果会在下一轮或 `Poll` 里出现（#1475、#1473）。
+- Code Mode 里按 `Ctrl+E` 显示源码后马上搜索，能搜到刚显示的源码。此前搜索索引可能还是旧的，搜不到（#1481、#1400）。
+- 子代理自动压缩不再重置主对话的状态：服务端顾问被拒绝的记录、microcompact 记录、自动模式分类器的批准、beta 标识追踪都保留，主对话继续由本地 advisor 回答；主对话压缩和 `/clear` 仍会重置。转到后台的主会话压缩时也保留自己的 beta 标识和顾问。此前子代理一压缩，主对话下一次请求又带上服务端顾问，多一次被拒绝再重发（#1406、#1404）。
+- Codex 式压缩按消息的来源记录判断是不是 `!` 命令或本地斜杠命令的输出，你在提示里引用 `<bash-stdout>` 这类标签时，这条提示照常保留；没有来源记录的旧会话，只有整条就是完整的命令输出块时才排除。空白消息不保留，每条保留的消息至少按 1 个 token 计入预算（#1407、#1403）。
+- 在 IDE 的 diff 里接受或保存后，文件保留原来的末尾换行和 UTF-8 BOM。此前 `Write` 接受或保存会把 `new\n` 写成 `new`，`Edit` 保存会删掉 BOM。IDE 交回 CRLF 文本的情况没有处理（#1474、#1421）。
+- 在 Bun 下，主题文件被原子替换（写临时文件再改名）后，即使大小和修改时间都没变，配色也会刷新。没有增加新的轮询（#1405、#1402）。
+
+### 测试覆盖
+
+- `src/utils/resumeHint.test.ts`、`src/utils/worktree.resumeHint.test.ts`：launcher 命令、重放的启动参数、Code Mode 前缀、`--worktree "<名字>"` 和窄终端下的回退（#1435）。
+- `src/utils/sessionStorage.worktree.test.ts`：worktree 会话从启动目录恢复，EnterWorktree 和再次进入时搬移会话记录，恢复后不重复追加 `worktree-state` / `relocated`，`/cd` 搬移（#1435、#1487、#1490）。`src/cli/print.resumeWorktree.test.ts`：`-p` 的 `--continue` / `--resume` 回到 worktree（#1435）。
+- `src/utils/conversationRecovery.interruptedToolUse.test.ts`：给中断的 `tool_use` 补出错结果；不自动续跑时没有合成的继续提示，自动续跑时仍有续跑消息和 sentinel（#1435、#1480）。`src/components/messages/UserToolResultMessage/UserToolErrorMessage.interrupted.test.tsx`：显示 `Interrupted · What should Claude do instead?`（#1435）。
+- `src/components/messages/CollapsedReadSearchContent.noResult.test.tsx`：折叠组里的 `no result recorded for N call(s)` 和 `did not run N call(s)`（#1487、#1490）。
+- `src/components/tasks/BackgroundTasksDialog.rows.test.tsx`：重新打开已完成的子代理、`Earlier in this session`、`Scheduled` / `Goal` 分组和停止确认、fork 技能子代理带回技能名、单任务详情按 `←` 回到清单（#1464、#1465）。
+- `src/tools/SendMessageTool/SendMessageTool.cancel.test.ts`、`src/tasks/deliverTaskMessage.test.ts`、`src/cli/print.sdkControlRequests.test.ts`：用户消息和 SDK `send_task_message` 恢复用户停止的子代理并清除标记，模型 `SendMessage` 在此之前仍被拒绝（#1467）。
+- `src/tools/ListAgentsTool/ListAgentsTool.test.ts`、`src/tools/SendMessageTool/SendMessageTool.test.ts`、`src/components/messages/UserCrossSessionMessage.test.tsx`、`src/components/messages/UserAgentMessage.test.tsx`、`src/utils/peerNotices.test.ts`、`src/utils/concurrentSessions.activity.test.ts`、`src/utils/udsMessaging.test.ts`、`src/utils/messages.promptModes.test.ts`：`/list-agents` 文本、SendMessage 和订阅的显示、空闲通知摘录、接收端折叠、注册前上报的状态、派生会话名（#1504）。
+- `src/components/CoordinatorAgentStatus.test.ts`、`src/components/CoordinatorAgentStatus.layout.test.tsx`、`src/components/CoordinatorAgentStatusRows.teammates.test.ts`、`src/components/PromptInput/PromptInput.footerClose.test.ts`：面板的停止行、主会话行、选中提示（#1506）。
+- `src/tools/REPLTool/ScriptSourceRow.test.tsx`、`src/components/Messages.transcriptShowAll.test.tsx`、`src/components/VirtualMessageList.search.test.tsx`：全屏 Code Mode 记录的 `Ctrl+E`，普通全屏记录和搜索不受影响（#1400）。
+- `src/tools/REPLTool/sessions.test.ts`、`src/tools/REPLTool/asyncLane.test.ts`、`src/screens/REPL.submit.test.ts`：`/clear`、`/resume` 后丢弃排队和迟到的 REPL 事件（#1401）；交互 `/rewind` 和 SDK `rewind_conversation` 丢弃被回退调用的结果和已入队的结果（#1475）。
+- `src/services/compact/postCompactCleanup.test.ts`、`src/query.localAdvisor.test.ts`、`src/services/compact/autoCompact.classifierOverflow.test.ts`：子代理压缩不重置主对话的 microcompact、分类器批准、beta 追踪和顾问被拒绝的记录，主对话压缩仍重置（#1406）。
+- `src/services/compact/codexCompact.test.ts`：引用标签的提示被保留、旧会话只排除完整的命令输出块、保留消息至少计 1 个 token（#1407）。
+- `src/hooks/useDiffInIDE.test.ts`：`Write` / `Edit` × 接受 / 保存 × 有无 BOM × 有无末尾换行共 16 种，按字节比对写入结果，另测中间行编辑和在编辑器里增删末尾换行（#1474）。
+- `src/utils/customThemes.test.ts`：Bun 下原子替换主题文件后配色重新加载（#1405）。
+
+#### 测试
+
+- `bunfig.toml` 的 `[test] preload` 加载 `src/testSetup.ts`，没有凭据变量时设一个占位 `ANTHROPIC_API_KEY`（`src/testSetup.test.ts` 验证）；`src/cli/update.test.ts`、`src/services/plugins/pluginOperations.test.ts` 跑完后还原被 `mock.module` 替换的模块，`src/utils/plugins/pluginModules.test.ts` 还原设置；`PromptInputQueuedCommands`、`use-program-status`、`ModsPane` 的测试去掉 `TMUX` / `STY` 或指定终端，在 tmux 里运行也能通过（#1437、#1433）。
+- `src/tools/REPLTool/asyncLane.test.ts`：`running()` 用例按 `REPL_ASYNC_WALL_CAP_MS` 转后台，固定延迟改为等到条件满足，慢机器上不再偶发失败（#1481、#1483）。
+- `src/tools/REPLTool/spliceWait.test.ts`、`src/tools/REPLTool/executor/host.test.ts`、`src/services/mods/processSpawn.test.ts`、`src/commands/bridge/bridge.failedDialog.test.tsx`：慢机器上偶发失败的时序断言改为只依赖要测的计时器，对话框测试等对话框和焦点出现再按键；`processSpawn` 的临时目录取实际路径，macOS 的 `/var` 和 `/private/var` 不再对不上（#1485）。
+- `src/components/messages/UserAgentNotificationMessage.test.tsx` 的预期改用 `BLACK_CIRCLE`（darwin 上是 `⏺`），macOS 上不再失败；`src/cli/print.malformedUserContent.test.ts`、`src/cli/print.sdkSystemPrompt.test.ts` mock `countMessagesTokensWithAPI` 返回 null，`get_context_usage` 改用本地估算，不再真的请求 count_tokens API，设了不响应的代理时不会超时（#1488）。
+
+## 2026-11-26 - claude web 刷新后的最后一轮与排队消息、断线撤下确认框、取消封存、主题沿用 CLI 并在打印与 Mermaid 下一致、动效开关、favicon
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- claude web 的外观在这个浏览器里没选过时，改为沿用 CLI 的 `/theme`：`light` 开头的主题为浅色，`dark` 开头的为深色，`auto` 和自定义主题跟随系统。CLI 没改过主题时取默认值 `dark`，所以之前跟随系统显示浅色的页面会变成深色；想跟随系统，在设置 → 常规 → 外观选“跟随系统”，或在终端 `/theme` 选 auto。已经在页面里选过外观的不受影响。`/api/info` 新增 `theme` 字段，最后一次读到的值缓存在 localStorage 的 `claude-web-cli-theme`（#1495、#1494）。
+
+#### 新功能
+
+- claude web 的会话和项目可以取消封存：在侧栏搜索结果里右键已封存的会话，菜单里的“封存”换成“取消封存”（`A`）；已封存的项目在搜索时列在“项目”段，点击或右键只有“取消封存”。服务端新增 `GET /api/projects?archived=1` 和 `POST /api/projects/:id/unarchive`。此前封存后没有入口恢复（#1443、#1442）。
+- claude web 设置 → 常规新增“动效”：“跟随系统”或“减少”，存在 localStorage 的 `claude-web-motion`。选“减少”后根元素带 `data-motion="reduce"`，运行中的圆点、转圈和加载闪光停下来，和系统打开减少动态效果时一样（#1495、#1494）。
+- claude web 的浏览器标签页和书签有了图标 `/favicon.svg`：侧边栏的像素蟹放在圆角方块上，系统为浅色时是 `#faf9f5` 底，深色时是 `#1f1d1a` 底。此前显示浏览器默认的空白图标（#1499、#1498）。
+- 桌面应用里，网页的外观设置在页面载入和切换时调用 `window.claudeDesktop.setTheme(theme)`，窗口原生外观随之变化；浏览器里没有这个对象，不受影响（#1495）。
+
+#### 修复
+
+- claude web 回合刚结束就刷新页面，最后一轮不再丢失：服务端保留主对话最近 5 秒的消息，页面重新连上时补发。修复前 6 次刷新有 3 次看不到最后一轮，修复后 6 次都显示且只显示一次（#1443、#1442）。
+- claude web 回合进行中排队的消息，刷新页面后仍显示为“排队中”，轮到时各显示一次。此前刷新后排队消息消失，回合结束后变成普通气泡。多条排队消息合并成一次提问（`"B\nC"`）与官方 2.1.329 相同，未改动（#1443、#1442）。
+- claude web 会话断开连接（网络中断、服务重启、被别的标签页占用）时，还没回答的确认框立刻撤下，重新连上后服务端再弹出一张，回答后命令照常执行。此前断线后卡片还能点，显示已允许但命令没有执行，重连后又多一张（#1443、#1442）。
+- claude web 新会话收到第一条回复后，侧栏不再短暂显示空名的目录和 UUID 标题（#1443、#1442）。
+- claude web 起始页附 0 字节文件时会话能正常开始。此前上传返回 411 `Content-Length required`，会话起不来，还留下一个侧栏看不到的会话进程；现在附件准备失败时也会停掉已经建立的会话。上传只拒绝缺少、不是整数或为负数的 `Content-Length`（#1443、#1442）。
+- claude web 删除会话时一并删除 `~/.claude/web/uploads/<session id>/`，此前上传目录会残留。“从这里分支”出来的会话带走一份自己的上传文件，消息里的上传路径改写成新目录，删除原会话不影响它；复制失败时不建立分支（#1443、#1442）。
+- claude web 刷新后服务端重发的 teammate 消息不再重复显示（#1443、#1442）。
+- claude web 服务端对带合法登录 cookie、不带 Origin 的 `HEAD` 请求与 `GET` 一样放行，返回 200，不再返回 403（#1443、#1442）。
+- claude web 回复刚结束就封存或取消封存，侧栏的行不再“弹回来”：回复结束时页面会读两次 `/api/sidebar`，如果读到的是封存之前的清单，现在丢掉这份重新读取，不再用旧的 `archived` 状态覆盖。这也是 web e2e “starts with an empty attachment, unarchives…” 在 CI 上偶发失败的原因（#1484）。
+- claude web 的 Mod 终端颜色（`--mod-*`）跟随配色和浅色 / 深色：clay 和 mono 各有浅深两组，default 与之前相同。此前三个配色的 Mod 颜色都一样，深色模式下输入框里 Mod 的装饰还用浅色值（例如 red 是 `rgb(209, 36, 47)`）；现在输入框和 Mod 面板里的颜色一致，例如 clay 深色下 red 是 `rgb(236, 138, 111)`（#1493、#1492）。
+- claude web 在深色外观或 clay、mono 配色下打印时一律白底黑字，代码高亮用浅色，权限模式和 channel 标记用浅色值。此前深色下打印带深色底（#1495、#1494）。
+- claude web 深色外观下打印，Mermaid 图换成浅色版本（深色连线、浅色节点）；深色页面另外画一份浅色版，只在打印时显示，屏幕上仍是深色版。此前打印出来是深底浅字、浅灰连线，在白纸上很淡（#1497、#1496）。
+- claude web 的 Mermaid 图按页面当前的浅色 / 深色绘制（页面没指定时按系统），切换外观时重画；多张图逐张绘制，不会因为 Mermaid 的全局主题设置互相干扰。此前 Mermaid 不看页面主题，切换后不重画（#1495、#1497）。
+- claude web 切换浅色 / 深色时，正在显示的 MCP App 收到 `ui/notifications/host-context-changed`（`{ theme }`）；只在 MCP App 初始化完成后发送，初始化期间变化的会补发（#1495、#1494）。
+- claude web 刷新时首屏就按保存的外观、配色和动效上色，不再先闪一下 Clay 浅色：新增 `web/public/theme-init.js`，在 `<head>` 里于 React 之前同步执行，符合 CSP `script-src 'self'`（#1495、#1494）。
+- claude web 的对比度：选中态、账号头像和 channel 标记的文字改用 `--surface` 颜色；权限模式（`--perm-edit`、`--perm-plan`、`--perm-auto`）和 channel（`--chan`）各有浅深两组颜色；队友头像和状态符号的颜色对应到 Mod 终端色，不再写死。三个配色在浅深两种外观下，头像文字对比度最低 4.87:1、状态符号（`--glyph`）最低 3.64:1（#1495、#1494）。
+
+### 测试覆盖
+
+- `src/server/server.test.ts`：回合刚结束时连上的客户端收到这一轮的消息；回合中连上的客户端收到仍在排队的提示（#1443）。
+- `src/web/webServer.test.ts`：0 字节上传能保存，删除会话时删除它的上传目录；带 cookie、无 Origin 的 `HEAD` 与 `GET` 一样返回（#1443）；`cliWebTheme` 把 `light`、`light-daltonized`、`light-ansi` 映射为 light，`dark*` 为 dark，`auto`、`custom:*` 和未设置为 system，`/api/info` 返回 `theme`（#1495）。
+- `src/web/history.test.ts`：分支会话复制上传文件，删除原会话后仍在；复制失败时不分支（#1443）。
+- `web/src/store.test.ts`：会话失去连接时清空确认框；侧栏清单没有目录和标题时保留本标签页建立会话时的值（#1443）。`web/src/protocol.test.ts`：刷新后服务端重发的排队消息只取回一次，teammate 消息只显示一次（#1443）。
+- `src/web/web.binary.test.ts`：新增两个 E2E，覆盖刷新后的排队消息和刚结束的回合，以及空附件、取消封存、删除会话清理上传、断线与服务重启后的确认框（#1443）；Markdown 用例在 Mermaid 图画好后切到深色并模拟打印，检查深色版隐藏、浅色版显示且节点填色为 `rgb(236, 236, 255)`（#1497）。
+- `web/src/components/Mods.test.ts` 通过；Mod 颜色和主题的对比度、打印和首次绘制在 headless Chrome 中按 3 配色 × 浅色 / 深色 / 跟随系统读 computed style 验证（#1493、#1495）。`bun run build:web` 确认 `assets.json` 含 `/favicon.svg`（`image/svg+xml`）和 `theme-init.js`（#1499、#1495）。
+
 ## 2026-11-22 - 桌面应用（Electron，实验性）
 
 ### 变更内容

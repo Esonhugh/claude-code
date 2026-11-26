@@ -67,7 +67,7 @@
 |  | [缓存命中与用户体验基准](cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |
 |  | [Agent 基准测试套件（bench/）](agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画散点图；公开基准带防污染扰动 |
 |  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
-| 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
+| 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等；退出时的恢复提示和 `--resume` 恢复 worktree 会话 |
 |  | [自主 Goal](goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |
 |  | [快捷键与 Vim 模式](keybindings-vim.md) | 自己改快捷键、回合中途排队或立即插话、在输入框里用 Vim 的选择和括号跳转 |
 |  | [自定义 UI / Branding 与 Status line](branding.md) | 改界面上显示的产品名、换掉 Logo 的 ASCII 图，用自己的脚本定制底部状态栏 |
@@ -75,6 +75,7 @@
 |  | [Claude Web](web-ui.md) | `claude web` 在浏览器里用 Claude Code：公式、Mermaid、代码和 diff 按网页渲染，上传并预览 PDF / Office 文档、在图片和代码上直接评论，回合中途插话或立刻打断，右侧面板看状态、agent、终端抽屉、workflow 看板和后台任务，网页里切换 OAuth / API key；默认只监听本机，局域网访问需显式开启 |
 |  | [Claude Web 界面导览](web-ui-tour.md) | 按一次真实操作的顺序一步一张截图：改代码、确认命令、Status、后台 agent、`@` 发消息、排队插话、终端、workflow、文件评论、项目与任务看板、深色外观 |
 |  | [Claude Web 项目](web-projects.md) | 在 `claude web` 里建项目：协调者把活拆成任务派给多个 worker 并行做，右侧看每个任务的过程、批准、发消息、停止和审阅；项目和任务存在本机 SQLite，重启后能接着聊 |
+|  | [桌面应用（Electron，实验性）](desktop-app.md) | 把 claude web 装成 Windows、macOS、Linux 桌面应用：自带 `claude` binary，经 `claude web --stdio` 管道通信，不占本机端口；窗口原生外观跟随网页的浅深色设置；安装包需从源码构建，未签名 |
 |  | [调试日志](debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
 |  | [遥测与反馈](telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开 |
 | 远程执行 | [Direct Connect](direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
@@ -83,7 +84,7 @@
 |  | [MCP 配置与认证](mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录；`claude web` 能显示 MCP Apps 界面 |
 |  | [Skills](skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
 |  | [Channels](channels.md) | 让 Telegram、Discord 或你自己写的 MCP server 把消息推进正在运行的会话，还能在手机上远程批准工具调用 |
-|  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
+|  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（作者声明基线官方 2.1.303，运行时部分跟进 2.1.329） |
 |  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
 |  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI，用 `env` / `settings` / `plugins` 打开 fork 功能（附示例）；补齐了 SDK 0.3 会用到的控制请求 |
 |  | [VS Code 插件](vscode-extension.md) | 让官方 VS Code 插件改用本 fork 运行：面板里的 `/status`、`/usage`、`/memory` 等对话框都能正常打开 |
@@ -156,7 +157,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Cache hit and user experience benchmark](cache-benchmark.md) | This fork against the official Claude Code, Codex, opencode, pi and oh-my-pi on the same real tasks: cache hit rate, tokens, API-equivalent cost, startup speed and stability (with charts) |
 |  | [Agent benchmark suite (bench/)](agent-bench.md) | The benchmark tool in the repo: several CLIs × Claude / ChatGPT accounts on the same tasks, every request logged, hit rate, tokens and API-equivalent cost computed and plotted; public benchmarks get anti-contamination perturbation |
 |  | [Usage, cost and status](usage-and-cost.md) | `/usage` shows what this session cost and how many tokens it used; `/stats` shows long-term habits; cost keeps adding up after a resume |
-| UI and interaction | [Session commands](session-commands.md) | Slash commands this fork adds or completes: `/recap` to review, `/cd` to change directory, `/focus` for a lean view, `/autocompact` for compaction timing, `/usage` for usage and more |
+| UI and interaction | [Session commands](session-commands.md) | Slash commands this fork adds or completes: `/recap` to review, `/cd` to change directory, `/focus` for a lean view, `/autocompact` for compaction timing, `/usage` for usage and more; the resume hint printed on exit and resuming worktree sessions with `--resume` |
 |  | [Autonomous Goal](goal.md) | Give Claude a "done only when" condition (such as "all tests pass"); it is checked after each turn and Claude keeps going until it holds |
 |  | [Keybindings and Vim mode](keybindings-vim.md) | Change keybindings, queue or interject mid-turn, and use Vim selection and bracket jumps in the input box |
 |  | [Custom UI / branding and status line](branding.md) | Change the product name shown in the UI, replace the ASCII logo, and customise the bottom status line with your own script |
@@ -164,6 +165,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Claude Web](web-ui.md) | `claude web` puts Claude Code in the browser: math, Mermaid, code and diffs rendered as web content, PDF / Office upload and preview, comments on images and code, interject or stop mid-turn, a right panel for status, agents, the terminal drawer, the workflow board and background tasks, OAuth / API key switching in the page; listens only on localhost unless LAN access is turned on explicitly |
 |  | [Claude Web tour](web-ui-tour.md) | One screenshot per step, in the order of a real session: change code, approve a command, Status, a background agent, `@` messages, queued interjections, the terminal, workflows, file comments, the project and task board, dark theme |
 |  | [Claude Web projects](web-projects.md) | Create a project in `claude web`: a coordinator splits the work into tasks for several workers in parallel; on the right, follow, approve, message, stop and review each task; projects and tasks live in local SQLite and survive a restart |
+|  | [Desktop app (Electron, experimental)](desktop-app.md) | claude web as a Windows, macOS and Linux desktop app: it ships its own `claude` binary and talks to it over `claude web --stdio`, so no port is opened; the window's native appearance follows the page's light / dark setting; installers are built from source and unsigned |
 |  | [Debug logs](debugging.md) | Turn on detailed logs when something is wrong to see what Claude Code did behind the scenes and where requests went |
 |  | [Telemetry and feedback](telemetry.md) | No usage data goes to Anthropic by default, and `/feedback` is hidden with it; one environment variable turns it on when needed |
 | Remote execution | [Direct Connect](direct-connect.md) | Run `claude server` on one machine and `claude cc://...` from another: tools run on the server, the UI and permission prompts stay with you |
@@ -172,7 +174,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [MCP configuration and auth](mcp.md) | Connect external tool servers (databases, browsers, internal APIs and more); one bad entry only skips that entry; `/mcp` shows status, reconnects and signs in; `claude web` shows MCP Apps UIs |
 |  | [Skills](skills.md) | Write a procedure into SKILL.md and call it with `/name`, or let Claude use it when it fits; `/skill-doctor` finds skills that take prompt space but are never used |
 |  | [Channels](channels.md) | Telegram, Discord or your own MCP server push messages into a running session, and you can approve tool calls remotely from your phone |
-|  | [Mods / Function Hooks](mods.md) | Reshape Claude itself with one JS/TS file: add commands, intercept or rewrite tool calls, add status bands and side panels to the UI (baseline official 2.1.303) |
+|  | [Mods / Function Hooks](mods.md) | Reshape Claude itself with one JS/TS file: add commands, intercept or rewrite tool calls, add status bands and side panels to the UI (author declarations follow official 2.1.303; the runtime partly follows 2.1.329) |
 |  | [Mods remote client (stream-json)](mods-sdk-client.md) | A protocol for desktop, IDE and other outside front ends: over stream-json, Mods draw their UI in your own front end and get clicks and input back |
 |  | [Agent SDK and the stream-json control protocol](agent-sdk.md) | Call Claude from your own program: the official Agent SDK (TS / Python) can drive this fork's CLI directly, with `env` / `settings` / `plugins` turning on fork features (with examples); adds the control requests SDK 0.3 uses |
 |  | [VS Code extension](vscode-extension.md) | Run the official VS Code extension on this fork: `/status`, `/usage`, `/memory` and other dialogs in its panel open normally |
@@ -246,7 +248,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [快取命中與使用者體驗基準](cache-benchmark.md) | 本 fork 與官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真實任務：快取命中率、token、API 等價花費、啟動速度與穩定性（附圖表） |
 |  | [Agent 基準測試套件（bench/）](agent-bench.md) | 倉庫裡的基準工具：多個 CLI × Claude / ChatGPT 帳號跑同一批任務，逐請求記錄，算命中率、token、API 等價花費並畫散點圖；公開基準帶防汙染擾動 |
 |  | [用量、成本與狀態](usage-and-cost.md) | `/usage` 看本次會話花了多少錢、用了多少 token；`/stats` 看長期使用習慣；恢復會話後成本繼續累計 |
-| 介面與互動 | [會話命令](session-commands.md) | 本 fork 新增或補齊的斜槓命令：`/recap` 回顧、`/cd` 換目錄、`/focus` 精簡顯示、`/autocompact` 調壓縮時機、`/usage` 用量等 |
+| 介面與互動 | [會話命令](session-commands.md) | 本 fork 新增或補齊的斜槓命令：`/recap` 回顧、`/cd` 換目錄、`/focus` 精簡顯示、`/autocompact` 調壓縮時機、`/usage` 用量等；退出時的恢復提示和 `--resume` 恢復 worktree 會話 |
 |  | [自主 Goal](goal.md) | 給 Claude 一個「做到才算完」的條件（如「所有測試通過」），每輪結束時自動檢查，沒達成就繼續幹 |
 |  | [快捷鍵與 Vim 模式](keybindings-vim.md) | 自己改快捷鍵、回合中途排隊或立即插話、在輸入框裡用 Vim 的選擇和括號跳轉 |
 |  | [自定義 UI / Branding 與 Status line](branding.md) | 改介面上顯示的產品名、換掉 Logo 的 ASCII 圖，用自己的腳本定製底部狀態列 |
@@ -254,6 +256,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Claude Web](web-ui.md) | `claude web` 在瀏覽器裡用 Claude Code：公式、Mermaid、程式碼和 diff 按網頁渲染，上傳並預覽 PDF / Office 文件、在圖片和程式碼上直接評論，回合中途插話或立刻打斷，右側面板看狀態、agent、終端抽屜、workflow 看板和後台任務，網頁裡切換 OAuth / API key；預設只監聽本機，區域網訪問需顯式開啟 |
 |  | [Claude Web 介面導覽](web-ui-tour.md) | 按一次真實操作的順序一步一張截圖：改程式碼、確認命令、Status、後台 agent、`@` 發訊息、排隊插話、終端、workflow、檔案評論、專案與任務看板、深色外觀 |
 |  | [Claude Web 專案](web-projects.md) | 在 `claude web` 裡建專案：協調者把活拆成任務派給多個 worker 並行做，右側看每個任務的過程、批准、發訊息、停止和審閱；專案和任務存在本機 SQLite，重啟後能接著聊 |
+|  | [桌面應用（Electron，實驗性）](desktop-app.md) | 把 claude web 裝成 Windows、macOS、Linux 桌面應用：自帶 `claude` binary，經 `claude web --stdio` 管道通訊，不佔本機埠；視窗原生外觀跟隨網頁的淺深色設定；安裝包需從原始碼建置，未簽名 |
 |  | [除錯日誌](debugging.md) | 遇到問題時開啟詳細日誌，看清楚 Claude Code 在後台做了什麼、請求發到了哪 |
 |  | [遙測與反饋](telemetry.md) | 預設不向 Anthropic 傳送使用資料，`/feedback` 也隨之隱藏；需要時一個環境變數開啟 |
 | 遠端執行 | [Direct Connect](direct-connect.md) | 在一台機器上 `claude server`，在另一處用 `claude cc://...` 連過去：工具在 server 上執行，介面和權限確認在你這邊 |
@@ -262,7 +265,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [MCP 配置與認證](mcp.md) | 接入外部工具伺服器（資料庫、瀏覽器、內部 API 等）；配置錯一條只跳過那一條，`/mcp` 檢視狀態、重連、登入；`claude web` 能顯示 MCP Apps 介面 |
 |  | [Skills](skills.md) | 把一套做事步驟寫進 SKILL.md，用 `/名字` 呼叫，或讓 Claude 在合適時自動使用；`/skill-doctor` 找出從沒用過卻佔提示的 skill |
 |  | [Channels](channels.md) | 讓 Telegram、Discord 或你自己寫的 MCP server 把訊息推進正在執行的會話，還能在手機上遠端批准工具呼叫 |
-|  | [Mods / Function Hooks](mods.md) | 用一個 JS/TS 檔案改造 Claude 本身：加命令、攔截或改寫工具呼叫、在介面上加狀態條和側邊面板（基線官方 2.1.303） |
+|  | [Mods / Function Hooks](mods.md) | 用一個 JS/TS 檔案改造 Claude 本身：加命令、攔截或改寫工具呼叫、在介面上加狀態條和側邊面板（作者宣告基線官方 2.1.303，執行期部分跟進 2.1.329） |
 |  | [Mods 遠端客戶端（stream-json）](mods-sdk-client.md) | 給桌面 / IDE 等外部介面用的協議：通過 stream-json 讓 Mod 把介面畫到你自己的前端上，並把點選、輸入傳回來 |
 |  | [Agent SDK 與 stream-json 控制協議](agent-sdk.md) | 在自己的程式裡呼叫 Claude：官方 Agent SDK（TS / Python）可以直接驅動本 fork 的 CLI，用 `env` / `settings` / `plugins` 開啟 fork 功能（附示例）；補齊了 SDK 0.3 會用到的控制請求 |
 |  | [VS Code 插件](vscode-extension.md) | 讓官方 VS Code 插件改用本 fork 執行：面板裡的 `/status`、`/usage`、`/memory` 等對話方塊都能正常開啟 |

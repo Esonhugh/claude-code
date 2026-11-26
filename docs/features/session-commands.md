@@ -41,7 +41,7 @@ Typing `/` in the input box opens the command list. This page collects the sessi
 | `/goal` | 给 Claude 设一个「做完才停」的目标 | [goal.md](goal.md) |
 | `/diff` | 查看未提交的改动 | [diff-view.md](diff-view.md) |
 | `/workflows` | 查看本会话跑过的 workflow | [workflows.md](workflows.md) |
-| `/list-agents`（`/peers`） | 列出同一台机器上其他 Claude 会话 | [peer-messaging.md](peer-messaging.md) |
+| `/list-agents`（`/peers`） | 用纯文本列出本会话的子代理、teammate 和同机其他 Claude 会话 | [peer-messaging.md](peer-messaging.md) |
 | `/background`、`/stop`、`/daemon` | 把会话放到后台继续跑 | [background-sessions.md](background-sessions.md) |
 | `/fast` | 切换快速模式（OpenAI provider 下发送 `service_tier: "priority"`） | [openai-provider.md](openai-provider.md) |
 
@@ -71,6 +71,8 @@ Claude 每轮可能调用很多工具，画面很长。`/focus` 打开后，每�
 
 ![/cd 完成](images/session-commands-cd.png)
 
+切换后会话记录也搬到新目录对应的项目下（和官方 2.1.329 相同），所以退出后在新目录用 `claude -c` 能接上这个会话。此前记录留在启动目录，从新目录 `-c` 找不到。搬移失败时照常切换目录，记录留在原处继续写。
+
 ## `/autocompact`：什么时候自动压缩
 
 对话越长越贵，到一定长度会自动压缩（把早期内容总结成摘要）。`/autocompact` 设置这个长度：
@@ -89,6 +91,30 @@ Claude 每轮可能调用很多工具，画面很长。`/focus` 打开后，每�
 
 终端失去焦点 5 分钟后也会自动生成一次。关闭自动回顾：设置 `awaySummaryEnabled: false` 或环境变量 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0`（`=1` 强制开启）。`-p` 模式也可用。
 
+## 退出后接着聊：恢复提示和 `--resume`
+
+退出交互会话时，终端最后打印 `Resume this session with:` 和一条可以直接粘贴的命令。命令的拼法和官方 2.1.329 相同：
+
+- **带上启动参数**：例如用 `claude --permission-mode acceptEdits --effort high` 启动，提示就是 `claude --permission-mode acceptEdits --effort high --resume <id>`。`--resume`、`--continue`、`--name`、`--worktree` 这类选会话的参数不重复带；有参数的值不能安全地原样粘进 shell，或用了 `--agent-id`、`--messaging-socket-path` 这类只属于这个进程的参数时，整串都不带。含 `/` 或 `.` 的参数（多半是路径）只在整条命令一行放得下时才带。此前一律是 `claude --resume <id>`。
+- **换成自己的启动命令**：设 `CLAUDE_CODE_RESUME_HINT_COMMAND=myhost`，提示变成 `myhost --resume <id>`。值只能是字母、数字、`_` 和 `-`（首字符不能是 `-`）；写成路径（`/usr/local/bin/myhost`）或含 `.` 时不生效，回到默认提示。这个变量只改提示，不改恢复行为。
+- **Code Mode 会话**：提示前加 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 `，照着执行就能接着用 Code Mode。Windows 上不加前缀，改为多打印一行 `This session resumes only with the environment variable CLAUDE_CODE_EXPERIMENTAL_CODE_MODE equal to 1`。
+- **在 worktree 里退出并保留了 worktree**：提示带上 `--worktree "<名字>"`，例如 `claude --worktree "wtJ" --resume <id>`，太长时改用 `-w "wtJ" -r <id>`。还放不下时只打印普通命令，前面加三行说明（`This session ran in a worktree` 等），让你到 worktree 目录里再执行。worktree 已被删除时不带 `--worktree`。
+- 后台会话（`/background`）退出时不打印，它用 `claude attach` 接回，见 [background-sessions.md](background-sessions.md)。SSH 会话的提示不变。
+
+恢复 worktree 里的会话：
+
+- 用 `-w` 启动、退出 worktree 后，在启动目录 `claude --resume <id>`（包括 `-p` 模式）能找到这个会话。此前报 `No conversation found with session ID`。
+- 会话里用 `EnterWorktree` 进入 worktree 后，会话记录随即搬到 worktree 对应的项目下，`ExitWorktree` 时搬回来。所以 `--resume <id>` 会回到那个 worktree 里继续，`-p` 模式也一样；在启动目录用 `--continue` 接不到它，会开新会话（和官方相同）。
+- 多次恢复再退出，会话记录里不再重复追加同样的 worktree 状态。
+
+上次退出时还有工具调用没拿到结果（比如进程被杀），恢复后：
+
+- 这次调用记为出错，结果是官方的文案 `[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. …]`，提醒 Claude 先确认它是否已经生效再决定是否重跑。界面上显示 `Interrupted · What should Claude do instead?`。
+- 几个 shell 或 MCP 调用折叠成一行时，没有结果的不再算进 `Ran N shell commands`，改写 `no result recorded for N call(s)`，例如 `Ran 1 shell command, no result recorded for 2 other calls`。被权限规则、自动模式或你拒绝而没跑的，写 `did not run N call(s)`，例如 `Ran 2 shell commands, did not run 1 other call`。
+- 只有设了 `CLAUDE_CODE_RESUME_INTERRUPTED_TURN` 自动续跑时，才在历史里加一条 `Continue from where you left off.`。没设时不加，中断的结果后面直接接你下次输入的内容，和官方相同。
+
+和官方仍有的不同：不设 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE` 恢复 Code Mode 会话时，官方拒绝恢复，本 fork 改用普通工具继续。这是有意保留的，见 [code-mode.md](code-mode.md#子代理压缩和恢复会话)。
+
 ## 其他命令的细节
 
 - `/reload-plugins`：应用 `/plugin` 里的安装、更新、启停，重新加载插件的命令、skill、hook、MCP 和 LSP。已安装的插件用本地缓存，不会因为 reload 去下载。
@@ -105,6 +131,7 @@ Claude 每轮可能调用很多工具，画面很长。`/focus` 打开后，每�
 | `viewMode` | `default` / `verbose` / `focus` | 启动时的显示方式；`/focus` 的选择保存在全局配置 `briefTranscript` |
 | `awaySummaryEnabled` | `true` / `false` | 自动回顾；环境变量 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0/1` 同效 |
 | `modelSettings.<模型>.autoCompactWindow` | token 数 | `/autocompact` 写入的值 |
+| `CLAUDE_CODE_RESUME_HINT_COMMAND` | 命令名，如 `myhost` | 退出时恢复提示用的启动命令，替换整个 `claude …` 前缀 |
 
 ## 输入框的小改进
 

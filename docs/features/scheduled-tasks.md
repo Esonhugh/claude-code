@@ -66,6 +66,16 @@ Times use standard 5-field cron expressions (minute hour day month weekday) in t
 
 Claude 用 `CronList` 列出、`CronDelete` 取消任务；你也可以直接让它「列出 / 取消定时任务」。
 
+## 在 `/tasks` 里查看和停止
+
+和官方 2.1.329 一样，`/tasks` 对话框列出本会话的定时任务：
+
+- `Scheduled` 分组：`CronCreate` 建的任务和 `/loop` 的唤醒（`ScheduleWakeup`），每行是任务的指令和频率；一次性任务显示 `Runs once in …`。对话框标题下的统计多一段 `N scheduled task(s)`。
+- `Goal` 分组：当前的 [`/goal`](goal.md)。
+- 选中其中一行按 `x`，先弹出确认框 `Stop this scheduled task?` 或 `Stop the goal?`，默认选中 `No, keep running`。选 `Yes, stop` 只停掉这一项，对话里加一行 `Stopped scheduled task: …` 或 `Goal cleared: …`；停 `/loop` 那一行会取消它之后的唤醒。按 `Esc` 或选 `No, keep running` 什么都不改。
+
+此前有定时任务或 goal 时，`/tasks` 仍显示 `No tasks currently running`。`durable: true` 保存到文件的任务不在 `/tasks` 里列出，官方 2.1.329 也是这样。
+
 ## 关掉会话后还要继续：`durable`
 
 默认任务只活在当前会话里，退出就没了。加 `durable: true` 会保存到项目的 `.claude/scheduled_tasks.json`，下次在这个项目打开 Claude 时继续生效：
