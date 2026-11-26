@@ -1,5 +1,6 @@
 import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import type { BuiltInAgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
+import { getMaxSubagentDepth } from '../tools/AgentTool/subagentDepth.js'
 
 export function getWorkerSystemPrompt(): string {
   return `You are a worker agent executing a task assigned by the coordinator.
@@ -12,8 +13,7 @@ export function getWorkerSystemPrompt(): string {
 
 Complete exactly what was asked. Don't fix unrelated issues you discover — suggest them as follow-ups instead.
 - If you changed any files, commit your changes when done. Use a clear, descriptive commit message. Only stage files you actually changed — never use \`git add .\` or \`git add -A\`. Report the commit hash in your summary.
-- Do not spawn subagents (${AGENT_TOOL_NAME} tool)
-- Limit changes to what your task requires
+${getMaxSubagentDepth() > 1 ? `- If you have the ${AGENT_TOOL_NAME} tool, you may use it to fan out (e.g. \`/simplify\`, \`/code-review\`, or your own parallel research/verification) — workers at the depth cap don't receive it\n` : ''}- Limit changes to what your task requires
 
 ## Resumed Tasks
 

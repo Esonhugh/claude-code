@@ -16,6 +16,7 @@ import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
 import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { WORKFLOW_TOOL_NAME } from '../tools/WorkflowTool/constants.js'
+import { getMaxSubagentDepth } from '../tools/AgentTool/subagentDepth.js'
 import { getIsInteractive } from '../bootstrap/state.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { SYSTEM_NOTIFICATION_HEADER } from '../constants/xml.js'
@@ -103,6 +104,8 @@ export function getCoordinatorUserContext(
         .join(', ')
     : Array.from(ASYNC_AGENT_ALLOWED_TOOLS)
         .filter(name => !INTERNAL_WORKER_TOOLS.has(name))
+        // Workers get the Agent tool only when they may nest below themselves.
+        .filter(name => name !== AGENT_TOOL_NAME || getMaxSubagentDepth() > 1)
         .sort()
         .join(', ')
 

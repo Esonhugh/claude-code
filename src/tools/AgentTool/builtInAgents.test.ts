@@ -98,7 +98,7 @@ describe('Coordinator built-in worker agent', () => {
     expect(prompt).toContain(
       'You are a worker agent executing a task assigned by the coordinator.',
     )
-    expect(prompt).toContain('Do not spawn subagents (Agent tool)')
+    expect(prompt).toContain('If you have the Agent tool, you may use it to fan out')
     expect(prompt).toContain('If a tool is denied')
     expect(prompt).toContain('Summary:')
   })
