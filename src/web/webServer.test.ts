@@ -313,6 +313,12 @@ describe('claude web server', () => {
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', effort: '--max' })).status).toBe(400)
     expect((await post({ resume: '99999999-2222-4333-8444-666666666666', model: 'gpt-5.6-terra', effort: 'high' })).status).toBe(200)
     expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'gpt-5.6-terra', effort: 'high' })
+    // A gateway's ids may hold spaces and any script; a flag, edge whitespace or a control character may not.
+    expect((await post({ resume: '99999999-2222-4333-8444-777777777777', model: 'Fable 5.2 尝鲜' })).status).toBe(200)
+    expect(r.spawned.at(-1)).toMatchObject({ resume: true, model: 'Fable 5.2 尝鲜' })
+    for (const model of ['', '--model', ' Opus 5.5', 'Opus 5.5 ', 'Opus\n5.5', 'Opus\u200b5.5', 'x'.repeat(129)]) {
+      expect((await post({ resume: '99999999-2222-4333-8444-888888888888', model })).status).toBe(400)
+    }
     // The page starts in the CLI's theme until one is picked there.
     const cliTheme = getGlobalConfig().theme
     saveGlobalConfig(c => ({ ...c, theme: 'light-daltonized' }))
@@ -782,6 +788,7 @@ describe('claude web server', () => {
     expect((await call('PATCH', '/api/projects/not-an-id', { name: 'x' })).status).toBe(400)
     expect((await call('PATCH', `/api/projects/${crypto.randomUUID()}`, { name: 'x' })).status).toBe(404)
     expect((await call('PATCH', `/api/projects/${id}`, { cwd: '/' })).status).toBe(400)
+    expect(await (await call('PATCH', `/api/projects/${id}`, { worker_model: 'Opus 5.5' })).json()).toMatchObject({ worker_model: 'Opus 5.5' })
     const patched = await call('PATCH', `/api/projects/${id}`, { name: 'Beta', worker_model: null, permission_mode: 'plan' })
     expect(await patched.json()).toMatchObject({ name: 'Beta', worker_model: null, permission_mode: 'plan', cwd: dir })
 
@@ -1054,15 +1061,15 @@ describe('claude web server', () => {
     expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: { message: { content: string } }[] }).messages.map(m => m.message.content)).toEqual(['also this', 'RESUME first', 'then this'])
 
     // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
-    send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'sonnet' } })
+    send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'Opus 5.5' } })
     send({ type: 'control_request', request_id: 'web-effort-1', request: { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } } })
     await waitFor(async () => {
       const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
-      return p!.coordinator_model === 'sonnet' && p!.coordinator_effort === 'high'
+      return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high'
     })
     await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
     await waitFor(() => r.spawned.length === 2)
-    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'sonnet', effort: 'high', appendSystemPrompt: 'NEW' })
+    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', appendSystemPrompt: 'NEW' })
 
     // Stopping the coordinator stops what was still running.
     send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hold' }] } })
@@ -1070,7 +1077,7 @@ describe('claude web server', () => {
     await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
     // Reopened, it starts on the model and effort it had.
     const reopened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
-    expect(r.spawned.at(-1)).toMatchObject({ model: 'sonnet', effort: 'high' })
+    expect(r.spawned.at(-1)).toMatchObject({ model: 'Opus 5.5', effort: 'high' })
 
     // A worker killed because the server stops can be continued after the restart.
     const next = (await reopened.json()) as { session_id: string }
