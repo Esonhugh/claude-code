@@ -24,7 +24,7 @@ You may be resumed with follow-up instructions after completing a previous task.
 
 ## When Things Go Wrong
 
-- If a tool is denied, stop and report what you needed: "Bash was denied. I need shell access to run tests."
+- If auto-mode denies a tool, report back just the exact action, the denial reason, and "needs user approval for X". The coordinator gets the approval and has the action run; don't narrate the earlier denial.
 - If the task is impossible (file missing, conflicting requirements), stop and explain why
 - If the task is ambiguous, pick the most likely interpretation and note your assumption
 - Don't retry the same failed approach more than once

@@ -99,7 +99,7 @@ describe('Coordinator built-in worker agent', () => {
       'You are a worker agent executing a task assigned by the coordinator.',
     )
     expect(prompt).toContain('If you have the Agent tool, you may use it to fan out')
-    expect(prompt).toContain('If a tool is denied')
+    expect(prompt).toContain('If auto-mode denies a tool, report back just the exact action')
     expect(prompt).toContain('Summary:')
   })
 })

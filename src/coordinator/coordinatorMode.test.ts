@@ -88,3 +88,13 @@ test('coordinator prompt tells it to leave the worker model alone when the sessi
     else process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL = saved
   }
 })
+
+test('coordinator prompt has official\'s approved-action section and no worker capabilities paragraph', async () => {
+  const { getCoordinatorSystemPrompt } = await import('./coordinatorMode.js')
+  const prompt = getCoordinatorSystemPrompt([])
+  expect(prompt).toContain('use `worker`. Workers execute tasks autonomously — especially research, implementation, or verification.\n\n## 4. Task Workflow')
+  expect(prompt).not.toContain('Workers have access to standard tools')
+  expect(prompt).toContain('without evidence"\n\n### Executing user-approved actions\n\n')
+  expect(prompt).toContain('Do NOT `SendMessage` the approval back to the preparing worker.')
+  expect(prompt).toContain('the exact one-liner to run themselves.\n\n## 6. Example Session')
+})
