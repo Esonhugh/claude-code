@@ -90,6 +90,8 @@ hits.content + `\n(${files.numFiles} files scanned)`
 
 ![按 Ctrl+E 显示脚本源码](images/code-mode-source.png)
 
+全屏渲染（`CLAUDE_CODE_NO_FLICKER=1`）的详细记录里 `Ctrl+E` 同样能显示和收起源码，此前全屏下按了没反应。普通会话的全屏详细记录、记录里的搜索和一次性导出到终端回滚区的记录仍不响应 `Ctrl+E`。按 `Ctrl+E` 后马上搜索，能搜到刚显示出来的源码。
+
 **2. 变量在调用之间保留。** 脚本里用 `var` 或 `globalThis` 存下的值，下一次 `REPL` 还在，Claude 不用重新读一遍：
 
 ```text
@@ -182,6 +184,9 @@ MCP 工具不在 Claude 的工具列表里：系统提示列出已连接的 MCP 
 - **Agent Teams 的 teammate** 使用普通工具，不进入 Code Mode。
 - **`/compact`**：压缩后脚本里的变量还在，摘要会告诉 Claude 哪些变量仍可直接使用。
 - **恢复会话**：Code Mode 会话要在打开开关时 `--resume` 才继续用 Code Mode。新进程里上一次的脚本变量已经不在，Claude 会收到提示。上一个进程退出时还在后台跑的脚本，会以 `<event kind="repl-eval" … status="lost">eval #N never settled: …</event>` 事件告诉 Claude 结果已丢失；这个事件不会自己开始一轮，等你下次说话时一起送给 Claude（不设开关恢复时，同样的文字放在提醒里）。
+- **退出提示**：Code Mode 会话退出时，恢复命令带上 `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` 前缀（Windows 上改为多打印一行说明），见 [session-commands.md](session-commands.md#退出后接着聊恢复提示和---resume)。
+- **`/clear` 和 `/resume` 换会话**：旧对话里还没送到的脚本结果和状态事件直接丢弃，之后才结束的脚本也不会把结果送进新对话。
+- **`/rewind`**：回退到某条消息之前时，被回退的那几轮里还在跑的脚本照样跑完，但结果和脚本里迟到的输出不再进入对话。SDK 的 `rewind_conversation` 也一样。回退点之前的脚本不受影响。此前这些结果会在下一轮或 `Poll` 里冒出来。
 - 不设开关恢复 Code Mode 会话时，会话改用普通工具继续，界面显示 `This session was started in Code Mode (experimental), which isn't available where it runs now. It continues with the ordinary tools and stays out of Code Mode from now on.`
 
 ## 与官方的差异

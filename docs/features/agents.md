@@ -51,7 +51,7 @@ In interactive sessions subagents run in the **background** by default. Built-in
 
 ![后台子代理](images/agents-background.png)
 
-**2. 按 `↓` 进入任务列表。** 用 `↑` `↓` 选中某个子代理：运行中的可以按 `x` 停止，已结束的按 `x` 从列表清掉；按 `Enter` 查看：
+**2. 按 `↓` 进入任务列表。** 用 `↑` `↓` 选中某个子代理：运行中的可以按 `x` 停止，已结束的按 `x` 从列表清掉；按 `Enter` 查看。选中某一行时，底部提示换成这一行能用的按键，例如 `enter to view · x to stop`（已结束的是 `x to clear`），和官方 2.1.329 相同：
 
 ![管理子代理](images/agents-manage.png)
 
@@ -59,7 +59,22 @@ In interactive sessions subagents run in the **background** by default. Built-in
 
 ![查看子代理](images/agents-view.png)
 
-**4. 子代理结束后**，主对话出现 `Agent "scan repo" completed`，Claude 会读它的报告继续工作。被你停止的显示 `was stopped`。
+**4. 子代理结束后**，主对话出现 `Agent "scan repo" completed`，Claude 会读它的报告继续工作。被你停止的，面板里那一行的图标变成红色的 `◯`，末尾显示 `stopped · 2m 40s` 这样的停止状态和耗时；主对话显示 `Agent "scan repo" was stopped by user`。
+
+## `/tasks`：重新打开已结束的子代理
+
+输入 `/tasks` 打开任务对话框。和官方 2.1.329 一样，已经结束的子代理也能重新打开、继续对话：
+
+- `Completed` 分组里的子代理按 `Enter`，进入它的对话视图（主对话记一行 `Viewing agent`），可以直接给它发消息。此前这里按 `Enter` 没有反应。
+- 已经不在任务列表里的子代理（结束 30 秒后会移出），收在 `Earlier in this session (N)` 这一行下面：按 `Enter` 展开，选中一个再按 `Enter` 打开。这份列表读的是本会话 transcript 目录下的 `subagents/agent-*.jsonl` 和 `.meta.json`，所以 `--continue`、`--resume` 之后同样可用；teammate 不列在这里。
+- 历史里的每行显示 agent 类型（有名字时显示 `@名字`）、`started …` 和 `last active …`；被你停止过的标 `stopped`。记录里没有 agent 类型的，或者是 fork 技能启动、但技能身份和权限记录对不上的，标 `cannot be opened`。
+- 从历史打开 fork 技能启动的子代理，给它发消息时按原技能的权限范围续跑。
+- 只有一个任务时，`/tasks` 直接进入它的详情；按 `←` 回到清单，能看到 `Earlier in this session`。
+- 在对话框里按 `x` 停止子代理，和底部面板的 `x` 一样算作你停止的。
+
+排程任务、`/loop` 唤醒和 `/goal` 也列在 `/tasks` 里，见[定时任务](scheduled-tasks.md#在-tasks-里查看和停止)。
+
+和官方仍有的不同：官方把你聊过的已结束子代理一直留在 `Completed`，本 fork 30 秒后移到 `Earlier in this session`；官方把嵌套的子代理排成树，本 fork 是平铺列表；本 fork 没有 `Forks` 分组；每行的样式也不同（官方 `✔ alpha worker   done · Opus 5.5`，本 fork `alpha worker (done)`）。
 
 ## 自己把当前对话分一份出去：`/subtask`
 
@@ -106,6 +121,7 @@ You review the staged diff and report concrete bugs with file:line. Do not edit 
 | --- | --- | --- |
 | `↓` | 主输入框为空时 | 进入底部任务列表 |
 | `↑` `↓` / `Enter` | 任务列表 | 选择 / 查看子代理 |
+| `/tasks` | 主输入框 | 打开任务对话框，可重新打开已结束的子代理 |
 | `x` | 任务列表 | 停止运行中的子代理；清除已结束的 |
 | `Esc` | 子代理视图 | 返回主对话 |
 | `ctrl+x ctrl+k`（按两次确认） | 任意 | 停止所有后台子代理 |
@@ -121,7 +137,7 @@ You review the staged diff and report concrete bugs with file:line. Do not edit 
 ## 续跑、停止与并发
 
 - **续跑**：子代理结束后，Claude 可以用 `SendMessage` 给它发新消息，它带着原来的记录继续干，ID 不变。名字被新的子代理占用后，用旧名字发消息会被拒绝，需要用回执里的 `name [ref]` 或原 ID。
-- **你停止的不会被自动续跑**：用 `x`、`ctrl+x ctrl+k` 或 SDK `stop_task` 停的子代理，会记下「用户停止」，Claude 再发 `SendMessage` 会被拒绝（重启后也一样），只能开新的。Claude 自己用 `TaskStop` 停的不受此限。
+- **你停止的，只有你能叫回来**：用 `x`（底部面板或 `/tasks`）、`ctrl+x ctrl+k` 或 SDK `stop_task` 停的子代理，会在 `.meta.json` 记下「用户停止」（`stoppedByUser`）。之后 Claude 用 `SendMessage` 续跑会被拒绝，重启后也一样，拒绝文案和官方 2.1.329 相同（`Agent <id> was stopped and won't be resumed. …`）。你自己在它的对话视图里发一条消息（或通过 SDK `send_task_message`），它就恢复运行，停止标记同时清除，此后 Claude 的 `SendMessage` 也能照常续跑。此前你发的消息同样被拒绝，提示 `was stopped by the user`。Claude 自己用 `TaskStop` 停的不受此限。
 - **等子任务**：后台子代理自己又开了后台子任务时，它会先让出名额进入 `waiting`，子任务完成后自动以原 ID 续跑。
 - **并发上限**：同时运行的子代理默认最多 20 个，`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` 可调；超出时启动会被拒绝。
 
@@ -185,7 +201,7 @@ Review $ARGUMENTS and report concrete findings.
 
 - 调试日志标签：`[AgentConcurrency]`、`[AgentLifecycle]`、`[ForkMode]`、`[ConversationFork]`、`[AgentResume]`、`[AgentCancellation]`、`[SendMessage]`（用 `--debug --debug-file <path>` 打开）。
 - Mods 脚本：`$.agent.spawn()` 在全局额度不足时返回 `{ deny }`；`$.agent.list()` 显示 `running` / `waiting` / `idle`；`$.tool.call({tool: 'SendMessage', …})` 走同一续跑路径。
-- 相关测试：`src/tools/AgentTool/` 下的 `backgroundRouting`、`forkMode`、`backgroundOwner`、`AgentTool.receipt292` 测试，以及 `src/utils/forkedSkill.test.ts`。
+- 相关测试：`src/tools/AgentTool/` 下的 `backgroundRouting`、`forkMode`、`backgroundOwner`、`AgentTool.receipt292` 测试，`src/utils/forkedSkill.test.ts`，`/tasks` 的 `src/components/tasks/BackgroundTasksDialog.rows.test.tsx`，用户恢复已停止子代理的 `src/tools/SendMessageTool/SendMessageTool.cancel.test.ts`，以及面板的 `src/components/CoordinatorAgentStatus*.test.ts*`。
 - 专项验收记录：[并发](../research/mods-agent-concurrency-20261007.md)、[fork 技能名额](../research/mods-fork-capacity-20261007.md)、[插件 fork](../research/mods-plugin-fork-20261007.md)、[父子任务](../research/mods-background-owner-20261007.md)、[fork 技能后台](../research/mods-fork-background-20261007.md)、[默认后台](../research/mods-agent-background-default-20261007.md)、[fork 模式](../research/mods-fork-mode-20261007.md)、[/subtask](../research/mods-subtask-20261007.md)、[同步续跑](../research/mods-inline-resume-20261007.md)、[用户停止](../research/mods-user-cancellation-20261007.md)、[SendMessage 绑定](../research/mods-sendmessage-pin-20261007.md)。
 - 尚未实现：内置 `/fork`（复制整个后台会话）和 fork 指令折叠 UI。
 

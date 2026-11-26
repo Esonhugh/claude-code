@@ -69,6 +69,16 @@ r5 background_tasks    success  {}
 
 通用的 SDK 控制请求（`initialize`、`set_model`、`read_file` 等）见 [agent-sdk.md](agent-sdk.md)。
 
+## 在 IDE 里看 diff 后接受或保存
+
+Claude 改文件时在 VS Code 里打开 diff，你直接接受，或在 diff 里改完再保存，写回的文件保留原来的 UTF-8 BOM 和末尾换行：
+
+- `Write` 接受或保存后，文件末尾的换行还在。此前 `new\n` 写成了 `new`。
+- 带 BOM 的文件，在 diff 里保存后 BOM 还在。此前 VS Code 交回的文本不含 BOM，写回时把 BOM 删掉了。
+- 你在编辑器里自己删掉或加上末尾换行，按你保存的内容写入。
+
+IDE 保存时交回 CRLF 换行的情况没有处理：`Edit` 按原文件的换行方式写回，`Write` 固定用 LF。
+
 ## 已知差异
 
 - 尚未支持：`get_chrome_*`、`mcp_call`、`register_repo_root`、`set_mcp_permission_mode_override`。

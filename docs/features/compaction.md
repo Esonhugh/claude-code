@@ -103,6 +103,7 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 - 写摘要的请求本身太长时，多保留几轮最近的原文、只摘要更早的部分，不再直接丢掉最早的对话。
 - 连续三次压缩、每次都在上一次之后 3 轮内又满了，回合停止并显示 `Autocompact is thrashing`（SDK 的 `terminal_reason` 为 `rapid_refill_breaker`），避免无限压缩烧 token。
 - 压缩后重新列出可用的 skill，并提醒模型还开着的 Tmux 终端；`ToolSearch` 已加载的工具在 Codex 式压缩和 Mod 改写的压缩后同样保留。
+- 子代理自己压缩时，不再清掉主对话的状态：主对话的 microcompact 记录、自动模式分类器的批准、beta 标识和服务端[顾问](advisor.md#服务端拒绝时)被拒绝的记录都保留，只有主对话压缩或 `/clear` 才重置。此前子代理一压缩，主对话的这些状态也跟着清空。
 
 ## 自动压缩时多保留最近原文（选用）
 
@@ -150,7 +151,7 @@ This fork lets you set that window per model: with a 1M-context model, for examp
 打开后，手动 `/compact` 和自动压缩都按这种方式进行：
 
 - **用 OpenAI provider 时**：交给 OpenAI 服务端压缩（请求里带 `compaction_trigger`），服务端返回一段加密的压缩内容，之后的请求带着它继续，多次压缩会接上之前的压缩历史。服务端不支持时（返回 404 / 405 / 426 或 `not supported`），改走下面的方式。
-- **其他情况**：照常写摘要，并和 Codex 一样**只原样保留最近的用户消息**，从新到旧累计大约 `retainedUserMessageTokens` 个 token（默认 20000）。模型的回复、工具调用（包括 `Write` 写入的文件内容）和工具结果都不保留，交给摘要概括；放不下的那条用户消息只保留开头一段，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
+- **其他情况**：照常写摘要，并和 Codex 一样**只原样保留最近的用户消息**，从新到旧累计大约 `retainedUserMessageTokens` 个 token（默认 20000）。模型的回复、工具调用（包括 `Write` 写入的文件内容）和工具结果都不保留，交给摘要概括；放不下的那条用户消息只保留开头一段，图片等非文本内容不保留；`!` 命令和本地斜杠命令的输出不算用户消息，判断看的是这条消息的来源记录，所以你在提示里引用 `<bash-stdout>` 这类标签时，这条提示照常保留（旧会话没有来源记录，只有整条就是完整的命令输出块时才排除）。每条保留的消息至少按 1 个 token 计入预算。这种情况下压缩后默认不再重新附上文件、计划等附件（`keepPostCompactAttachments` 设为 `true` 可保留）。
 - 两种情况都不走 session memory 压缩。
 
 | 配置项 | 写法 | 默认 | 说明 |
