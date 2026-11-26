@@ -40,6 +40,8 @@ import {
 } from '../../Tool.js'
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
+import { ASYNC_AGENT_ALLOWED_TOOLS, COORDINATOR_MODE_ALLOWED_TOOLS } from '../../constants/tools.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { codeModeOnlyToolSuffix, codeModeRefusesDirectCall, isCodeModeEnabled } from '../../tools/REPLTool/codeModeGate.js'
@@ -477,6 +479,12 @@ const SWITCHABLE_BUILT_IN_TOOLS = new Set([
   'LSP',
 ])
 
+function isCoordinatorModeActive(): boolean {
+  if (!feature('COORDINATOR_MODE')) return false
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return (require('../../coordinator/coordinatorMode.js') as typeof import('../../coordinator/coordinatorMode.js')).isCoordinatorMode()
+}
+
 /**
  * Why a built-in tool the model called is missing, as official 2.1.311 words
  * it, so the model stops retrying it.
@@ -487,6 +495,7 @@ export function unknownToolSuffix(
   sessionToolNames: readonly string[] = [],
   embeddedSearch = hasEmbeddedSearchTools(),
   subagent = getAgentContext() !== undefined,
+  coordinator = isCoordinatorModeActive(),
 ): string {
   const codeModeOnly = codeModeOnlyToolSuffix(toolName, sessionToolNames)
   if (codeModeOnly) return codeModeOnly
@@ -505,7 +514,20 @@ export function unknownToolSuffix(
       ? `. ${toolName} is disabled for this session, in subagents as well as here.`
       : ''
   }
-  return !known.isEnabled() || getDenyRuleForTool(context, known)
+  const disabled = !known.isEnabled() || getDenyRuleForTool(context, known) !== null
+  // Like official 2.1.329: a coordinator reaching for a worker's tool is pointed at a worker.
+  if (
+    coordinator &&
+    !subagent &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) &&
+    !disabled &&
+    known.name !== REPL_TOOL_NAME &&
+    ASYNC_AGENT_ALLOWED_TOOLS.has(known.name) &&
+    !COORDINATOR_MODE_ALLOWED_TOOLS.has(known.name) &&
+    sessionToolNames.includes(AGENT_TOOL_NAME)
+  )
+    return `. ${toolName} is not available to you as the coordinator \u2014 run it from a worker via the ${AGENT_TOOL_NAME} tool instead.`
+  return disabled
     ? `. ${toolName} is disabled for this session, in subagents as well as here.`
     : `. ${toolName} is not among the tools available here. Continue with the tools you have.`
 }

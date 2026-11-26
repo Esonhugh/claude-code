@@ -64,3 +64,30 @@ test('a subagent calling Poll in Code Mode is told to finish with its own tools,
     resetCodeModeGateForTesting()
   }
 })
+
+test('a coordinator calling a worker tool is pointed at a worker like 2.1.329', () => {
+  const context = getEmptyToolPermissionContext()
+  const coordinatorSuffix = '. Bash is not available to you as the coordinator \u2014 run it from a worker via the Agent tool instead.'
+  expect(unknownToolSuffix('Bash', context, ['Agent'], false, false, true)).toBe(coordinatorSuffix)
+  expect(unknownToolSuffix('Bash', context, [], false, false, true)).toBe(
+    '. Bash is not among the tools available here. Continue with the tools you have.',
+  )
+  expect(unknownToolSuffix('Bash', context, ['Agent'], false, true, true)).not.toContain('coordinator')
+  expect(unknownToolSuffix('Bash', context, ['Agent'], false, false, false)).not.toContain('coordinator')
+  const denied = {
+    ...context,
+    alwaysDenyRules: { ...context.alwaysDenyRules, userSettings: ['Bash'] },
+  }
+  expect(unknownToolSuffix('Bash', denied, ['Agent'], false, false, true)).toBe(
+    '. Bash is disabled for this session, in subagents as well as here.',
+  )
+  expect(unknownToolSuffix('SendMessage', context, ['Agent'], false, false, true)).not.toContain('coordinator')
+  const saved = process.env.CLAUDE_CODE_SIMPLE
+  process.env.CLAUDE_CODE_SIMPLE = '1'
+  try {
+    expect(unknownToolSuffix('Bash', context, ['Agent'], false, false, true)).not.toContain('coordinator')
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_SIMPLE
+    else process.env.CLAUDE_CODE_SIMPLE = saved
+  }
+})
