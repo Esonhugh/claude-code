@@ -684,7 +684,8 @@ export function startWebServer(
   // Coordinator session id → its project, for the lines the session manager relays.
   const coordinators = new Map<string, string>()
   // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
-  const settingRequests = new Map<string, { projectId: string; patch: Pick<Project, 'coordinator_model'> | Pick<Project, 'coordinator_effort'> }>()
+  // Keyed by `<session id>:<request id>`: each page numbers its requests from 1.
+  const settingRequests = new Map<string, { projectId: string; patch: Partial<Pick<Project, 'coordinator_model' | 'coordinator_effort'>> }>()
   // Messages the page sent a session's agent or teammate (queued, resuming it, or
   // injected for a teammate's next turn), shown in
   // the agent's conversation from the moment they are sent until its transcript
@@ -771,10 +772,10 @@ export function startWebServer(
         tasks().fromChild(projectId, sessionId, line)
         if (settingRequests.size && line.includes('"type":"control_response"')) {
           const response = parseLine(line)?.response as { request_id?: unknown; subtype?: unknown } | undefined
-          const requestId = typeof response?.request_id === 'string' ? response.request_id : ''
-          const pending = settingRequests.get(requestId)
+          const key = `${sessionId}:${String(response?.request_id)}`
+          const pending = settingRequests.get(key)
           if (pending) {
-            settingRequests.delete(requestId)
+            settingRequests.delete(key)
             if (response!.subtype === 'success') projects().update(pending.projectId, pending.patch)
           }
         }
@@ -786,22 +787,25 @@ export function startWebServer(
       const request = (msg?.request ?? {}) as Record<string, unknown>
       const requestId = typeof msg?.request_id === 'string' ? msg.request_id : undefined
       if (!requestId) return
+      const key = `${sessionId}:${requestId}`
       if (request.subtype === 'set_model' && typeof request.model === 'string') {
+        // A model switch also resets the effort to the new model's own, as the session does.
         const model = request.model === 'default' || !MODEL.test(request.model) ? null : request.model
-        settingRequests.set(requestId, { projectId, patch: { coordinator_model: model } })
+        settingRequests.set(key, { projectId, patch: { coordinator_model: model, coordinator_effort: null } })
       }
       const effort = (request.settings as { effortLevel?: unknown } | undefined)?.effortLevel
       if (request.subtype === 'apply_flag_settings' && typeof effort === 'string' && EFFORT.test(effort)) {
-        settingRequests.set(requestId, { projectId, patch: { coordinator_effort: effort } })
+        settingRequests.set(key, { projectId, patch: { coordinator_effort: effort } })
       }
     },
     exit(sessionId) {
       sessionProviders.delete(sessionId)
-      for (const key of [...agentSends.keys(), ...agentQueued.keys(), ...sessionSettingRequests.keys()]) {
+      for (const key of [...agentSends.keys(), ...agentQueued.keys(), ...sessionSettingRequests.keys(), ...settingRequests.keys()]) {
         if (!key.startsWith(`${sessionId}:`)) continue
         agentSends.delete(key)
         agentQueued.delete(key)
         sessionSettingRequests.delete(key)
+        settingRequests.delete(key)
       }
       const projectId = coordinators.get(sessionId)
       if (!projectId) return

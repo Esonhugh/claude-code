@@ -1067,6 +1067,12 @@ describe('claude web server', () => {
     await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
     await waitFor(() => r.spawned.length === 2)
     expect(r.spawned[1]).toMatchObject({ resume: true, model: 'sonnet', effort: 'high', appendSystemPrompt: 'NEW' })
+    // A model switch resets the effort to the new model's own, as the session does.
+    send({ type: 'control_request', request_id: 'web-model-2', request: { subtype: 'set_model', model: 'opus' } })
+    await waitFor(async () => {
+      const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
+      return p!.coordinator_model === 'opus' && p!.coordinator_effort === null
+    })
 
     // Stopping the coordinator stops what was still running.
     send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hold' }] } })
@@ -1074,7 +1080,8 @@ describe('claude web server', () => {
     await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
     // Reopened, it starts on the model and effort it had.
     const reopened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
-    expect(r.spawned.at(-1)).toMatchObject({ model: 'sonnet', effort: 'high' })
+    expect(r.spawned.at(-1)).toMatchObject({ model: 'opus' })
+    expect(r.spawned.at(-1)!.effort).toBeUndefined()
 
     // A worker killed because the server stops can be continued after the restart.
     const next = (await reopened.json()) as { session_id: string }
