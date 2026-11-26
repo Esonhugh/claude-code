@@ -972,7 +972,11 @@ export function startWebServer(
     return errorResponse(405, 'Method not allowed')
   }
 
-  /** The running coordinator, else its transcript resumed, else a new one recorded on the project. */
+  /**
+   * The running coordinator, else its transcript resumed, else a new one recorded on the project.
+   * A coordinator that never ran a turn has no transcript: the new one keeps its id, so a page
+   * attached to it reconnects, and a second open at the same time gets the same process.
+   */
   async function openCoordinator(project: Project): Promise<Response> {
     if (!isDirectory(project.cwd)) return errorResponse(400, 'Not a directory')
     const previous = project.coordinator_session_id
@@ -985,6 +989,7 @@ export function startWebServer(
         ...(project.coordinator_model && { model: project.coordinator_model }),
         ...(project.coordinator_effort && { effort: project.coordinator_effort }),
         resume,
+        ...(!resume && previous && { sessionId: previous }),
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
         coordinator: coordinatorSpawn(project),
       })

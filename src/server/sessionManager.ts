@@ -328,6 +328,7 @@ export class SessionManager {
     model,
     effort,
     resume,
+    sessionId,
     sessionKey,
     channels,
     coordinator,
@@ -338,14 +339,16 @@ export class SessionManager {
     effort?: string
     /** Transcript id to continue; reuses a running session with that id. */
     resume?: string
+    /** Id for a new session without a transcript (`--session-id`); reuses a running session with that id. */
+    sessionId?: string
     sessionKey?: string
     /** `--channels` entries for the new session's process. */
     channels?: string[]
     /** Prompt flags and environment of a project's coordinator. */
     coordinator?: CoordinatorOptions
   }): SessionInfo {
-    if (resume) {
-      const running = this.sessions.get(resume)
+    if (resume || sessionId) {
+      const running = this.sessions.get((resume ?? sessionId)!)
       if (running) return running
     }
     if (sessionKey) {
@@ -360,7 +363,7 @@ export class SessionManager {
       )
     }
 
-    const id = resume ?? randomUUID()
+    const id = resume ?? sessionId ?? randomUUID()
     const spawnOptions: SpawnSessionOptions = {
       sessionId: id,
       cwd,

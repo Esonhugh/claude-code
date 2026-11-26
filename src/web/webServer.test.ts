@@ -847,10 +847,14 @@ describe('claude web server', () => {
     const listed = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as { coordinator_session_id: string; running: boolean }[]
     expect(listed[0]).toMatchObject({ coordinator_session_id: first.session_id, running: true })
 
-    // Stopped before it wrote a transcript: a fresh coordinator replaces it.
+    // Stopped before it wrote a transcript: a fresh coordinator under the same id, so a page
+    // attached to it reconnects; two opens at once get one process.
     await fetch(`${r.base}/api/sessions/${first.session_id}`, { method: 'DELETE', headers })
-    const second = await open()
-    expect(second.session_id).not.toBe(first.session_id)
+    const [second, third] = await Promise.all([open(), open()])
+    expect(second).toMatchObject({ session_id: first.session_id, fresh: true })
+    expect(third!.session_id).toBe(first.session_id)
+    expect(r.spawned).toHaveLength(2)
+    expect(r.spawned[1]).toMatchObject({ sessionId: first.session_id })
     expect(r.spawned[1]!.resume).toBeUndefined()
 
     // Archiving stops it.
