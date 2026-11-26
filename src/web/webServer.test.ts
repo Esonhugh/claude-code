@@ -1064,16 +1064,17 @@ describe('claude web server', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: { message: { content: string } }[] }).messages.map(m => m.message.content)).toEqual(['also this', 'RESUME first', 'then this'])
 
-    // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
+    // The coordinator's model, effort and context window are kept once it accepts them, and a restart keeps them.
     send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'Opus 5.5' } })
     send({ type: 'control_request', request_id: 'web-effort-1', request: { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } } })
+    send({ type: 'control_request', request_id: 'web-effort-2', request: { subtype: 'apply_flag_settings', settings: { autoCompactWindow: 300000 } } })
     await waitFor(async () => {
       const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
-      return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high'
+      return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high' && p!.coordinator_context_window === 300000
     })
     await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
     await waitFor(() => r.spawned.length === 2)
-    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', appendSystemPrompt: 'NEW' })
+    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', autoCompactWindow: 300000, appendSystemPrompt: 'NEW' })
     // A model switch resets the effort to the new model's own, as the session does.
     send({ type: 'control_request', request_id: 'web-model-2', request: { subtype: 'set_model', model: 'opus' } })
     await waitFor(async () => {
@@ -1087,7 +1088,7 @@ describe('claude web server', () => {
     await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
     // Reopened, it starts on the model and effort it had.
     const reopened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
-    expect(r.spawned.at(-1)).toMatchObject({ model: 'opus' })
+    expect(r.spawned.at(-1)).toMatchObject({ model: 'opus', autoCompactWindow: 300000 })
     expect(r.spawned.at(-1)!.effort).toBeUndefined()
 
     // A worker killed because the server stops can be continued after the restart.

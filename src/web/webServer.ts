@@ -685,7 +685,7 @@ export function startWebServer(
   const coordinators = new Map<string, string>()
   // The coordinator's own set_model / effort requests in flight, kept once it accepts them.
   // Keyed by `<session id>:<request id>`: each page numbers its requests from 1.
-  const settingRequests = new Map<string, { projectId: string; patch: Partial<Pick<Project, 'coordinator_model' | 'coordinator_effort'>> }>()
+  const settingRequests = new Map<string, { projectId: string; patch: Partial<Pick<Project, 'coordinator_model' | 'coordinator_effort' | 'coordinator_context_window'>> }>()
   // Messages the page sent a session's agent or teammate (queued, resuming it, or
   // injected for a teammate's next turn), shown in
   // the agent's conversation from the moment they are sent until its transcript
@@ -793,9 +793,14 @@ export function startWebServer(
         const model = request.model === 'default' || !MODEL.test(request.model) ? null : request.model
         settingRequests.set(key, { projectId, patch: { coordinator_model: model, coordinator_effort: null } })
       }
-      const effort = (request.settings as { effortLevel?: unknown } | undefined)?.effortLevel
-      if (request.subtype === 'apply_flag_settings' && typeof effort === 'string' && EFFORT.test(effort)) {
-        settingRequests.set(key, { projectId, patch: { coordinator_effort: effort } })
+      if (request.subtype === 'apply_flag_settings') {
+        const { effortLevel: effort, autoCompactWindow: window } = (request.settings ?? {}) as { effortLevel?: unknown; autoCompactWindow?: unknown }
+        const patch = {
+          ...(typeof effort === 'string' && EFFORT.test(effort) && { coordinator_effort: effort }),
+          ...(typeof window === 'number' && { coordinator_context_window: window }),
+          ...(window === 'auto' && { coordinator_context_window: null }),
+        }
+        if (Object.keys(patch).length) settingRequests.set(key, { projectId, patch })
       }
     },
     exit(sessionId) {
@@ -919,12 +924,14 @@ export function startWebServer(
         updated.instructions !== project.instructions ||
         updated.worker_model !== project.worker_model ||
         updated.worker_effort !== project.worker_effort
-      // A running coordinator picks up new instructions or task model by restarting with --resume.
+      // A running coordinator picks up new instructions or task model by restarting with --resume,
+      // with the model, effort and context window it had.
       if (changed && updated.coordinator_session_id) {
         sessionManager.restart(updated.coordinator_session_id, {
           permissionMode: updated.permission_mode,
           ...(updated.coordinator_model && { model: updated.coordinator_model }),
           ...(updated.coordinator_effort && { effort: updated.coordinator_effort }),
+          ...(updated.coordinator_context_window && { autoCompactWindow: updated.coordinator_context_window }),
           coordinator: coordinatorSpawn(updated),
         })
       }
@@ -992,6 +999,7 @@ export function startWebServer(
         permissionMode: project.permission_mode,
         ...(project.coordinator_model && { model: project.coordinator_model }),
         ...(project.coordinator_effort && { effort: project.coordinator_effort }),
+        ...(project.coordinator_context_window && { autoCompactWindow: project.coordinator_context_window }),
         resume,
         ...(!resume && previous && { sessionId: previous }),
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),

@@ -22,13 +22,31 @@ describe('projects database', () => {
   it('migrates once and keeps rows across reopen', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'web-pdb-')), 'web', 'projects.sqlite')
     const db = openProjectsDb(path)
-    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+    expect((db.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
     const created = new ProjectStore(db).create(input)
     db.close()
     const again = openProjectsDb(path)
-    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(6)
+    expect((again.query('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(7)
     expect(new ProjectStore(again).get(created.id)).toEqual(created)
     again.close()
+  })
+
+  it('copies a coordinator\'s context window from its session when it gains the column', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'web-pdb-')), 'web', 'projects.sqlite')
+    const db = openProjectsDb(path)
+    const store = new ProjectStore(db)
+    const kept = store.create(input)
+    const auto = store.create({ ...input, name: 'B' })
+    store.update(kept.id, { coordinator_session_id: 'c1' })
+    store.update(auto.id, { coordinator_session_id: 'c2' })
+    patchSessionSettings(db, 'c1', 'anthropic', { context_window: 300_000 })
+    // Back to the schema before the column.
+    db.run('ALTER TABLE projects DROP COLUMN coordinator_context_window')
+    db.run('PRAGMA user_version = 6')
+    db.close()
+    const again = new ProjectStore(openProjectsDb(path))
+    expect(again.get(kept.id)?.coordinator_context_window).toBe(300_000)
+    expect(again.get(auto.id)?.coordinator_context_window).toBeNull()
   })
 
   it('keeps a session\'s settings per provider and drops them with the session', () => {

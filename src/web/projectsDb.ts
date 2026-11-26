@@ -56,6 +56,12 @@ const MIGRATIONS: string[][] = [
       updated_at INTEGER NOT NULL
     )`,
   ],
+  // The coordinator's context window, next to its model and effort; until now only its session kept it.
+  [
+    'ALTER TABLE projects ADD COLUMN coordinator_context_window INTEGER',
+    `UPDATE projects SET coordinator_context_window =
+      (SELECT context_window FROM session_settings WHERE session_id = projects.coordinator_session_id)`,
+  ],
 ]
 
 export type Project = {
@@ -68,9 +74,11 @@ export type Project = {
   worker_effort: string | null
   permission_mode: string
   coordinator_session_id: string | null
-  /** The coordinator's model and effort as last changed from its input box; kept across restarts. */
+  /** The coordinator's model, effort and context window as last changed from its input box; kept across restarts. */
   coordinator_model: string | null
   coordinator_effort: string | null
+  /** null: auto. */
+  coordinator_context_window: number | null
   created_at: number
   updated_at: number
   archived_at: number | null
@@ -87,6 +95,7 @@ export type ProjectPatch = Partial<
     | 'coordinator_session_id'
     | 'coordinator_model'
     | 'coordinator_effort'
+    | 'coordinator_context_window'
   >
 >
 
