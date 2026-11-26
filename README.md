@@ -79,7 +79,7 @@ bun ./dist/cli.js --help
 | 模型与 Provider | [OpenAI / Codex provider](docs/features/openai-provider.md) | 把 Claude Code 的模型换成 OpenAI（GPT / Codex）：用 ChatGPT 账号登录或 API key，工具、界面、命令照常使用；多一个 Codex 式的 `apply_patch` 工具，一次改多个文件；上下文窗口与 effort 档位跟随账号的模型目录；ToolSearch 按需加载工具不会让提示缓存失效 |
 |  | [OpenAI 网络安全档位（Daybreak）](docs/features/openai-provider.md#网络安全访问档位daybreak) | OpenAI provider 下用 `/daybreak blue\|red\|off` 切换 OpenAI 的网络安全访问档位，请求自动带上 `access_programs` |
 |  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
-|  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | API 过载或断线时自动重试；主模型一直过载就换备用模型；可以让无人值守任务一直等到额度恢复 |
+|  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | API 过载或断线时自动重试；主模型一直过载或返回无法重试的错误时换备用模型；可以让无人值守任务一直等到额度恢复 |
 |  | [Effort 档位](docs/features/effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；按模型保存（与官方共用 `modelSettings.<模型>.effortLevel`），可按会话切，也可给子代理单独指定；`-p` 与 SDK 默认 `high` |
 |  | [Advisor 顾问模型（实验性）](docs/features/advisor.md) | 让主模型在关键节点向更强的模型请教（例如 Sonnet 干活、Opus 把关）：设置 `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL=1` 后用 `/advisor` 选顾问；Claude 模式下先用服务端顾问，其他接入方式由本地 advisor 回答；走自定义网关前请先看文档里的注意事项 |
 |  | [Codex Apps](docs/features/codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
@@ -89,9 +89,9 @@ bun ./dist/cli.js --help
 |  | [Dynamic Workflow](docs/features/workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
 |  | [背景会话、daemon 与 agents 视图](docs/features/background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
 |  | [独立会话通信](docs/features/peer-messaging.md) | 同一台机器上开着的几个 Claude 会话可以互相发现、互发消息：一个写代码，一个做 review，完成了喊一声 |
-| 权限与安全 | [权限规则、权限模式与 Safe mode](docs/features/permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
+| 权限与安全 | [权限规则、权限模式与 Safe mode](docs/features/permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问；未信任的文件夹在 `-p` 和 SDK 里也不载入自带的 MCP 批准和插件 |
 |  | [自动模式（Auto mode）](docs/features/auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
-|  | [Hooks 事件、匹配与输出校验](docs/features/hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
+|  | [Hooks 事件、匹配与输出校验](docs/features/hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文；`-p` 下可以用 `defer` 先停下、回头再执行；同一个 hook 写在多处只跑一次 |
 |  | [Bash 沙箱](docs/features/sandbox.md) | 让 Claude 跑的命令只能写项目目录、只能连你允许的域名、读不到你指定的密钥；开了以后命令可以不再逐条确认；Linux、macOS、Windows 都支持 |
 | 工具 | [Tmux 工具（原 Terminal）](docs/features/terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知；开了 Bash 沙箱时终端也在沙箱里跑 |
 |  | [Monitor 工具](docs/features/monitor-tool.md) | 让 Claude 在后台盯着日志或命令输出，有新内容就自动叫醒它，不用反复 sleep 轮询 |
@@ -104,25 +104,26 @@ bun ./dist/cli.js --help
 |  | [Agent 基准测试套件（bench/）](docs/features/agent-bench.md) | 仓库里的基准工具：多个 CLI × Claude / ChatGPT 账号跑同一批任务，逐请求记录，算命中率、token、API 等价花费并画图；公开基准带防污染扰动 |
 |  | [缓存命中与用户体验基准](docs/features/cache-benchmark.md) | 本 fork 与官方 Claude Code、Codex、opencode、pi、oh-my-pi 跑同一批真实任务：缓存命中率、token、API 等价花费、启动速度与稳定性（附图表） |
 |  | [用量、成本与状态](docs/features/usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
-| 界面与交互 | [会话命令](docs/features/session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
+| 界面与交互 | [会话命令](docs/features/session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等；退出时的恢复提示和 `--resume` 恢复 worktree 会话 |
 |  | [自主 Goal](docs/features/goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |
 |  | [快捷键与 Vim 模式](docs/features/keybindings-vim.md) | 自己改快捷键、回合中途排队或立即插话、在输入框里用 Vim 的选择和括号跳转 |
 |  | [自定义 UI / Branding 与 Status line](docs/features/branding.md) | 改界面上显示的产品名、换掉 Logo 的 ASCII 图，用自己的脚本定制底部状态栏 |
 |  | [/diff 视图](docs/features/diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
-|  | [Claude Web](docs/features/web-ui.md) | `claude web` 在浏览器里用 Claude Code：公式、Mermaid、代码和 diff 按网页渲染，上传并预览 PDF / Office 文档（没有 LibreOffice 也能看 PPTX）、在图片、代码、PDF 和幻灯片上直接评论，回合中途插话或立刻打断，右侧面板看状态、agent、终端抽屉、workflow 看板、后台任务和 Mods，网页里切换 OAuth / API key；默认只监听本机，局域网访问需显式开启 |
+|  | [Claude Web](docs/features/web-ui.md) | `claude web` 在浏览器里用 Claude Code：公式、Mermaid、代码和 diff 按网页渲染，上传并预览 PDF / Office 文档（没有 LibreOffice 也能看 PPTX）、在图片、代码、PDF 和幻灯片上直接评论，回合中途插话或立刻打断，刷新页面不丢最后一轮和排队的消息，右侧面板看状态、agent、终端抽屉、workflow 看板、后台任务和 Mods，网页里切换 OAuth / API key；外观默认沿用 CLI 的 `/theme`，打印一律白底；默认只监听本机，局域网访问需显式开启 |
 |  | [Claude Web 界面导览](docs/features/web-ui-tour.md) | 按一次真实操作的顺序一步一张截图：改代码、确认命令、Status、后台 agent、`@` 发消息、排队插话、终端、workflow、文件评论、项目与任务看板、深色外观 |
 |  | [Claude Web 项目](docs/features/web-projects.md) | 在 `claude web` 里建项目：协调者把活拆成任务派给多个 worker 并行做，右侧看每个任务的过程、批准、发消息、停止和审阅；项目和任务存在本机 SQLite，重启后能接着聊 |
+|  | [桌面应用（Electron，实验性）](docs/features/desktop-app.md) | 把 claude web 装成 Windows、macOS、Linux 桌面应用：自带 `claude` binary，经 `claude web --stdio` 管道通信，不占本机端口；窗口原生外观跟随网页的浅深色设置；安装包需从源码构建（`make desktop`），未签名 |
 |  | [调试日志](docs/features/debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
 |  | [遥测与反馈](docs/features/telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开；设了 `DO_NOT_TRACK=1` 则一律不发 |
 | 远程执行 | [Direct Connect](docs/features/direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
 |  | [SSH Remote](docs/features/ssh-remote.md) | `claude ssh 主机` 让 Claude 在远程 Linux 机器上读写文件、跑命令，界面和权限确认留在本机；API 凭据不离开本机 |
-| 插件与扩展 | [插件与 Marketplace](docs/features/plugins-marketplace.md) | 从插件市场一键安装命令、skill、agent、hook 和 MCP；团队可以自建 marketplace，装完 `/reload-plugins` 立即生效 |
-|  | [MCP 配置与认证](docs/features/mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录；`claude web` 能显示 MCP Apps 界面 |
+| 插件与扩展 | [插件与 Marketplace](docs/features/plugins-marketplace.md) | 从插件市场一键安装命令、skill、agent、hook 和 MCP，依赖一起装上；团队可以自建 marketplace，关闭 `/plugin` 菜单即生效；`claude plugin details` 看 token 占用，`configure` 设置选项，`tag` 打发布 tag，`prune` 清理不再需要的依赖 |
+|  | [MCP 配置与认证](docs/features/mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录；`mcp add -s project` 不改动 `.mcp.json` 里的其他内容，`mcp add-json` 可从标准输入读取；`claude web` 能显示 MCP Apps 界面 |
 |  | [Skills](docs/features/skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
 |  | [Channels](docs/features/channels.md) | 让 Telegram、Discord 或你自己写的 MCP server 把消息推进正在运行的会话，还能在手机上远程批准工具调用 |
-|  | [Mods / Function Hooks](docs/features/mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板，终端和 `claude web` 里都能显示（基线官方 2.1.303） |
+|  | [Mods / Function Hooks](docs/features/mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板，终端和 `claude web` 里都能显示（作者声明基线官方 2.1.303，运行时部分跟进 2.1.329） |
 |  | [Mods 远程客户端（stream-json）](docs/features/mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
-|  | [Agent SDK 与 stream-json 控制协议](docs/features/agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI，用 `env` / `settings` / `plugins` 打开 fork 功能（附示例）；补齐了 SDK 0.3 会用到的控制请求 |
+|  | [Agent SDK 与 stream-json 控制协议](docs/features/agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI，用 `env` / `settings` / `plugins` 打开 fork 功能（附示例）；补齐了 SDK 0.3 会用到的控制请求；`system/init`、`stream_event`、`result` 的字段和 refusal、`/clear`、任务事件按官方 2.1.329 输出 |
 |  | [VS Code 插件](docs/features/vscode-extension.md) | 让官方 VS Code 插件改用本 fork 运行：面板里的 `/status`、`/usage`、`/memory`、`/sandbox` 等对话框都能正常打开 |
 | 开发与发布 | [构建、发布与终端验收工具](docs/features/build-and-release.md) | 给贡献者：怎么从源码构建出可运行的 binary、怎么和官方版本对照、发布流程做了什么 |
 
