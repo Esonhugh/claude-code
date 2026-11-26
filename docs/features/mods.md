@@ -236,7 +236,9 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](../../docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](../../mods-test.md)。
 
-当前 Mods/API 支持基线为官方 **2.1.303**：作者声明直接采用 2.1.303 原生制品内的完整声明体，不再叠加 2.1.295 Button children 投影；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不表示全部 UI 已完成迁移。声明列出但本构建未实现的调用会以点名该调用的运行时错误拒绝，不会静默成功：
+运行时正在跟进官方 **2.1.329**（#1408，部分对齐）：工具与 Agent 生命周期、`agent.call`、`agent.report`、`session.stop`、`wasm.compile`、主题宿主，以及加载、校验和热重载的报错，见下文 [对齐官方 2.1.329 的加载、校验与重载](#对齐官方-21329-的加载校验与重载)。生成的作者声明仍是 2.1.303，2.1.329 的声明另存为 `assets/mods-2.1.329.d.ts.txt` 供比对；Shader 未实现，计划见 [Mods 2.1.329 对齐计划](../plan/mods-2.1.329.md)。
+
+当前作者声明基线为官方 **2.1.303**：作者声明直接采用 2.1.303 原生制品内的完整声明体，不再叠加 2.1.295 Button children 投影；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不表示全部 UI 已完成迁移。声明列出但本构建未实现的调用会以点名该调用的运行时错误拒绝，不会静默成功：
 
 - `$.ui.view`、`$.prompt.media`、`$.audio.play`、`$.audio.speak`：拒绝为 `$.<call> is not available in this build`（本构建没有音频输出路径）。
 - `prompt.change` 事件：注册时加载失败并报告 `unsupported core event prompt.change`；prompt 装饰的 `virtualText` 拒绝为 `Prompt decoration virtualText is not available in this build`。
@@ -459,6 +461,8 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 
 `next.to` 的类型推导不授予跨 tier 权限：`prepend` 可继续到 `append/builtin/core`，`append` 可继续到 `core`；普通用户 Mod 使用 `next(event)`。
 
+`next.to` 要在 hook 里直接写成 `next.to(e, "<tier>")`，tier 是 `user`、`append`、`builtin`、`core` 之一的字符串字面量，最多两个参数；扫描只从这种写法读出 `nextTiers`。把 `next` 传给 helper 可以，但 helper 里的 `next.to(...)` 在运行时被拒绝：`<plugin>: next.to("append") refused: its hooks module does not spell next.to:append in a literal the scan reads (host rule)`。除 `engine.create` 外，以下写法加载时就报错：把 `next` 赋给另一个名字（`const n = next`、`x = next`）、从 `next` 解构出 `to`、用 computed key 或 `next?.to` 访问 `to`、把 `next.to` 当作值使用（取 `typeof`、传出去、`.call`）。
+
 生成目录按官方规则刷新；内容校验仅用于清理旧本地生成的辅助模块。本批补齐 command/config/tool 列表、注册回执、`agent.spawn`、`mcp.call`、UI 返回，以及官方 289 的 `AgentSpec`、七态 `AgentStatus` 和精确 Agent/tool.check hook 定义；全部官方类型及真实生产路径仍在对齐中。
 
 `$.agent.register` 接受具名 `AgentSpec`，保留 `permissionMode`、`hooks`、`mcpServers`、`omitClaudeMd` 等官方字段。公开 `$.agent.spawn` 接受 `prompt` 与可选 `description/subagentType/model/name/cwd`，默认描述取 prompt 的前五个空白分词；hook 输入另含宿主固定的父身份、provider、permission、fork 与 teammate 字段，不能改写这些身份。返回可带 `agentId` 和 `teammateId`；当前同进程 teammate 已生成独立的 logical ID，完整生命周期仍待对照。`tool.check` 返回 `{ decision: 'allow' | 'ask' | 'deny' }`，可选 `reason/rule/hook/setting` 及 `decider: 'host'`（仅在 headless 宿主权限回调会被询问的 ask 上出现）；`ceiling` 由引擎按工具设置，hook 自带的 `ceiling` 会被丢弃；来源字段来自实际权限决策。
@@ -514,6 +518,42 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - 官方 diff 使用：运行 `/diff` 打开面板。全屏中可用 `Ctrl+X` 后按 `b` 切换 base，`Ctrl/Opt+Up/Down` 翻动文件列表，点击文件定位正文；点击 `ask` 后选中 diff 随下一条被接受的 prompt 传入。再次点击 `asked ✓` 取消附加。按键仍遵循当前 keybindings 和插件实际声明的 action。已验证的接受路径与待验证的取消、内联及 resize 路径分别记录在 `mods-test.md`。
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：已提供自动作者声明、`claude plugin validate`、`claude plugin test` 和 `/plugin-authoring`，但不宣称实现全部官方 API、模型流、桌面/远端 surface 或官方 binary 动态 parity。Node `dist/cli.js` 不是当前作者工具验收目标；跨平台、完整 release gate、逐帧 logical/physical 与未执行的官方 rollout 分支仍记为未覆盖。
+
+### 对齐官方 2.1.329 的加载、校验与重载
+
+以下行为按官方 2.1.329 实测对齐（#1455、#1456、#1460、#1469、#1470、#1471、#1501、#1503、#1506、#1507）。
+
+**加载**
+
+- 模块加载失败时报 `<plugin>: hooks module did not load: <file>:<源码行>: <原因>`，行号是源码行号，不是转译后的行号。这条写进 debug log 的 `[ERROR]`，text、json、stream-json 输出一致，不再打印到 stderr。语法错误报 `<path> does not parse: <原因> (line L, column C)`。
+- 注册了建好的 `$` 上没有的事件（如 `on("nope.event")`），或 `on("nope.*")` 选不到任何事件时，整个模块不加载：`hooks module did not load: the $ build failed (...)`。冷启动时只在最后一次建置检查，提供该事件的 plugin 排在后面也能加载。
+- `$` 的 noun 不能当作值使用：`const c = $.clock` 会被拒绝（`$.clock is used as a value …`），请写 `$.clock.now()`。把 `$` 本身赋给别的名字、传给函数或返回出去同样被拒绝。`$` 和 `next` 不能被同名变量遮蔽。`next` 的写法规则见上文 `next.to` 一节。
+- `engine.create` 写法不合（rest、`ui: undefined`、改名、分两步、没读 below 等）时，在 `load` 阶段报 `hooks module did not load: engine.create failed (...)`。user tier 的 plugin 在 `engine.create` 里移除任何 noun 都不加载（以前只拦 `telemetry`），例如 `engine.create withheld $.greeting, added by provider; it runs in the user tier ...`。
+- `plugin.register` 判定：判定者都已确认时，仍在求值前判定，被拒的模块不会执行。有判定者注册的事件当时没人提供时，受它判定的 plugin 先载入但不准入，全部加载完再判定，被拒则撤回。注册无效而没加载的模块不会拒绝任何 plugin。
+- `$.wasm.compile` 的参数要写成相对调用文件、以 `.wasm` 结尾的字符串字面量。`plugin validate` 列出每个 `.wasm` 文件，保存 `.wasm` 文件会重载对应的 Mod；使用 shared memory 的模块以 `HooksError` 拒绝。
+
+**`plugin validate` 输出**
+
+- 错误前缀用 plugin 的目录名，并带上 hooks 模块的路径；notes 排在 errors 和 warnings 之后。新增 gating 行（`gating hook with/without .catch: …`）、Provides 列表，以及 `Hosts:`、`Hosts not read for:`、`Hosts not declared:` 三行。host 来自模块里的字面量 URL、`plugin.json` 的 `network.hosts` 和 stdio MCP server 声明的 network hosts。
+- env 名或 state 引用不是字面量时报 `… takes a reference whose plugin and key are string literals … (got the variable n)`，没有插值的模板字符串算字面量。不在会话里运行 validate 时，其他插件的 state 键显示 `not checked (run validate in a session with them enabled)`。
+
+**热重载**
+
+- 监看到文件变化并重载后，向 plugin 发 `system/ui_log` 通知：改模块源码时是 `reloaded (1 hook: tool.call)`，改 `hooks.json` 时是 `hooks.json changed — reloaded (modules: hooks/register.ts unchanged; 1 hook: tool.call)` 这类文字。`/reload-plugins` 等显式重载不发。
+- 重载失败时报 `reload failed, the previous version stays loaded: ...`。`hooks.json` 缺失、JSON 非法或校验失败时保留已加载的版本，磁盘上改过的模块源码也不生效；一个 plugin 有多份 hooks 设置时逐份处理。`{"hooks":{}}` 这类合法但不含模块的设置会卸载模块，plugin 目录继续监看，改回后自动重新加载。
+- `{"modules":[]}` 判为非法：``hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both``。
+- 整个 plugin 目录或入口模块被删除时保留已加载的版本，不报 `ENOENT`，文件回来后再重载。Windows 上 plugin 根目录的监看路径比对已修正。
+
+**`$.store`**
+
+- 数据存到 `<plugins>/store/<id>.json`，内容是 2 空格缩排的 JSON 对象，文件权限 `0600`、目录 `0700`。旧位置 `<plugins>/data/<id>/mod-store-<sha>.json` 的数据在新文件不存在时照常读取，下次写入时搬到新位置；旧文件读不到时报 `store file <path> is unreadable (...)`，不写入。整份文件一次读取，不再有 16 MiB 上限。
+- `$.store.keys()` 里形如数组下标的 key（`"2"`、`"10"`）排在最前并按数值排序，其余按写入顺序，与官方相同。
+
+**Stop 与 agent**
+
+- Stop 之后、用户再输入之前，`prompt.submit` 返回 `{drop: "the session was stopped and nobody has sent input since"}`；Stop 时已排队的 plugin prompt 和 command 以 `the prompt was removed from the queue before it ran`、`the command was removed from the queue before it ran` 结束。
+- `agent.report`：非 auto 模式下失败或停止的 agent，review 为 `off`；前台 agent 因 API 错误结束时报为 failed（`Agent terminated early due to an API error: …`）。`agent.list` 每行带完整的 AgentInfo 和任务类型。
+- `agent.call`：`AskUserQuestion` 照常运行；指向 Workflow 工具、参数格式不对或 `signal` 为 `null` 时按官方文案拒绝。
 
 插件缓存由启动流程自动清理：普通孤立版本的 `.orphaned_at` 标记超过 14 天后才删除，已安装版本会清除过时标记，新临时目录按其命名时间获得保留期保护。安装记录读取失败时保留缓存；版本和标记链接不作为普通文件递归处理。本批真实启动对照限 macOS 普通文件系统，Windows/WSL 及其他存储后端仍单独验收。
 
