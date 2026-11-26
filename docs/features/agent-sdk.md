@@ -147,6 +147,75 @@ result success 完成。
 
 想让工具权限请求交给你的程序决定（SDK 的 `canUseTool`），加 `--permission-prompt-tool stdio`。
 
+## 输出事件和字段（对齐官方 2.1.329）
+
+下面这些字段和事件按官方 2.1.329 补齐，用同一个假 API 脚本并排运行本 fork 和官方 binary，比对过 stream-json 输出。
+
+### `system/init`
+
+- `served_by_anthropic`：Anthropic API 且没有设置 base URL、或 base URL 的 host 是 `api.anthropic.com` 时为 `true`，其他情况为 `false`；设置了 `ANTHROPIC_UNIX_SOCKET`（`claude ssh` 的子进程）时不带这个字段。
+- `ultrathink_available`、`ultrathink_typed_raises`：固定为 `false`。本 fork 的 ultrathink 只附加一条 effort 提示，不会把请求的 effort 升到 xhigh。
+
+### `stream_event` 和 assistant 消息
+
+- 每个 `stream_event` 都带 `api_message_id`。
+- 请求里设置了 `thinking.display`（例如 `--thinking-display summarized`）时，`message_start`、thinking 块的 `content_block_start` 和 `thinking_delta` 带 `thinking_display`；只有一个 thinking 块的 assistant 消息也带（`redacted_thinking` 不算）。
+
+### `result`
+
+| 字段 | 说明 |
+| --- | --- |
+| `safety_stops` | 本进程里被安全分类器中止的回应数，`/clear` 后归零 |
+| `terminal_reason: "api_error"` | API 报错（例如 500 重试用完）结束时 |
+| `api_error_type` / `api_error_code` | 取自错误 body 的 `error.type` 和 `error.details.error_code`，如 `"api_error_type":"invalid_request_error"` |
+| `ttft_ms` | 到第一条 assistant 消息的耗时；API 报错结束的 result 不带 |
+| `ttft_stream_ms` / `time_to_request_ms` / `first_content_frame_ms` | 只出现在成功、非 API 错误、非 deferred tool 的 result 上 |
+| `model_usage_since_last_result` | 上一个 result 之后各模型的用量，每个 result 输出后归零；只在 stream-json 输出或 `--sdk-url` 时统计 |
+| `usage.fallback_credit` | 固定 `null` |
+| `subagent_stats` | 子代理统计：`spawned`、`requested`（按 `run_in_background` 分 `background` / `foreground` / `unset`）、`started_in_background`、`by_type`、`max_depth`、`spawned_by_subagents`、`completed`、`failed`、`killed`（`parent` / `user` / `system`）、`refused`（`depth_limit` / `concurrency_limit` / `budget`）。只在会话有 Agent 工具时出现，`/clear` 和恢复会话后归零，workflow 里的 agent 不计入 |
+
+### API 错误、refusal 和模型回退
+
+- API 错误产生的 assistant 行另带 `is_api_error_message`、`api_error_status`、`api_error_type`、`api_error_code`（之前只有 `error`）。529 重试时 `system/api_retry` 的 `error` 为 `overloaded`。
+- 换到备用模型时输出 `system/model_fallback`，带 `trigger`（`overloaded`、`server_error`、`model_not_found`、`last_resort`）、`original_model`、`fallback_model`。
+- 回应中途遇到 `stop_reason: "refusal"` 时不再直接以错误结束，而是重试一次：未执行的 `tool_use` 补一条 `is_error` 的 `tool_result`（没开始的写 `Not run`，正在跑的写 `Interrupted`），输出一条 `system/informational`（level `notice`，文案如 `Opus 5.5's safeguards stopped the response above · continuing once with that noted`）和一条带 `refused_message_id` 的 meta user 消息，然后再请求一次。同一次 query 只重试一次，交互界面也一样。环境变量 `CLAUDE_CODE_DISABLE_REFUSAL_RETRY` 设为任意非空值即关闭重试。
+- 第二次仍然 refusal，或关闭了重试时：先输出 `system/model_refusal_no_fallback`（`original_model`、`request_id`、`api_refusal_category`、`api_refusal_explanation`、`refused_user_message_uuid`、`content: ""`），再输出错误文案，如 `Opus 5.5's safeguards flagged this message (...)`；`category=cyber` 时用 cyber 专用文案，末尾依次带 ``Details: `[category]` ``、`Request ID`、`Message ID`。旧文案 `Claude Code is unable to respond to this request...` 不再使用。
+
+### hook 消息
+
+- UserPromptSubmit hook 返回的 `systemMessage` 现在会输出：紧跟在 `system/init` 之后发一条 `system/informational`，如 `{"systemMessage":"ups msg"}` 得到 `content: "UserPromptSubmit says: ups msg"`。之前这条消息不输出。
+- hook 的 `systemMessage` 有多行时，每一行都加 `<hook> says: ` 前缀，ANSI 码和不可见字符被去掉，其他控制字符换成空格。例如 PreToolUse 的 `line1\nline2\r\nline3\e[31mred` 输出为 `PreToolUse:Bash says: line1\nPreToolUse:Bash says: line2\nPreToolUse:Bash says: line3red`。
+- Stop hook 出错的 `stop-hook-error` 每轮只发一次，被 hook 强制续跑的几次不再重复。连续阻止结束达到上限时另发 `system/notification`，`key` 为 `stop-hook-block-cap`，`priority: "high"`、`color: "warning"`。
+- SDK `hooks` 回调因超时或取消结束时，stderr 不再打印 `Error in hook callback` 和 `AbortError` 堆栈；回调自己抛出的错误照常打印。
+
+### 会话事件
+
+- `system/session_title_changed`（`title`）：启动时会话已有名称就发一次，之后每次改名再发。空闲时发 `rename_session` 控制请求，事件立即发出，排在 `control_response` 之前；之前要等下一轮才发。
+- stream-json 下执行 `/clear`，不再输出一条 `(no content)` 的 assistant 行，改为下面的顺序（与官方相同）：
+
+  ```text
+  {"type":"conversation_reset","new_conversation_id":U,"uuid":U,"trigger":"clear","user_message_uuid":<该 /clear 消息的 uuid>,"timestamp":…,"session_id":<离开的 session>}
+  {"type":"system","subtype":"background_tasks_changed","tasks":[…],"session_id":<离开的 session>}
+  {"type":"system","subtype":"init","session_id":<新 session>}
+  {"type":"result","subtype":"success","result":"","local_command":"clear","num_turns":0,"duration_api_ms":0,"total_cost_usd":0,"session_id":<新 session>}
+  ```
+
+  `new_conversation_id` 和 `uuid` 是同一个新 UUID，不是新的 session id。`/clear` 之后才发出的事件仍标原来的 session。`/clear <name>` 把名称写进离开的那个 session 的记录，不发 `session_title_changed`。`/clear` 后费用和时长从 0 开始，交互界面的 `/cost` 也一样。
+
+### 任务事件
+
+- 前台 Bash 命令在 `-p` / SDK 下运行超过 2 秒时，发 `task_started`（`is_backgrounded: false`），结束时发 `task_notification`，`status` 为 `completed`、`failed`（非 0 退出或超时）或 `stopped`（被 interrupt）。短于 2 秒的命令不发。`run_in_background` 的 `task_started` 带 `is_backgrounded: true`。
+- `background_tasks` 控制请求把前台命令转到后台时，依次发 `background_tasks_changed`、`task_updated`（`patch: {is_backgrounded: true}`）、`control_response`。
+- 后台命令结束时的顺序是 `task_updated` → `task_notification` → `background_tasks_changed`。
+- Workflow 任务的 `task_progress` 带 `workflow_progress`：到目前为止的全部行，每个 `agent()` 调用一行（`type: "workflow_agent"`，含 `state`、`tokens`、`error` 等），每个阶段一行（`type: "workflow_phase"`）；只有 agent 活动变化时不带。workflow 里的 agent 不再各自发 task 事件。workflow 结束时依次发 `task_updated`、`task_notification`、`background_tasks_changed`，出错的 agent 行显示 API 错误原文。
+- 后台子代理完成时，`task_notification` 在 `summary` 就是子代理报告时带 `summary_is_report: true`。子代理通过 SubagentHandback 工具交回结果时，`completed` 通知带 `handback`（`send`、`flagged`、`withheld`）和 `handback_report`（`text`，可选 `warning`、`toolUseId`）。
+
+### 输入和权限
+
+- `--system-prompt` 和 `--system-prompt-file` 可以同时给：文件内容在前，flag 文字在后，中间空一行（先去掉文件末尾的一个 LF 或 CRLF）。之前报 `Error: Cannot use both --system-prompt and --system-prompt-file.` 并退出。交互模式同样适用。
+- stream-json 输入的 user 消息 `content` 不是字符串也不是数组（数字、布尔、对象）时，这条消息被丢弃，后面的消息照常处理；`null` 或缺少 `content` 当作空 prompt。之前会以 `error_during_execution`（`e.at is not a function`）结束。
+- `disallowedTools` 现在也作用于 SDK MCP 工具和 `mcp_set_servers` 加入的工具：被禁用的工具不出现在 `system/init` 的 `tools` 里，调用时得到 `No such tool available: mcp__calc__add`。可以写到单个工具（`mcp__calc__add`），也可以写整个 server（`mcp__calc`）。之前这些工具仍会列出，调用时才被拒绝。
+
 ## 和官方的区别
 
 - 补齐 SDK 0.3 会调用的控制请求：`reload_skills`、`reload_output_styles`、`read_file`（按 Read 工具的权限判断）、`update_settings`（只接受官方白名单内的设置）、`mcp_read_resource`（只读 `ui://`）。
@@ -165,7 +234,12 @@ result success 完成。
 - `stop_task` 对不存在或已结束的任务回成功（和官方一致），`task_id` 不是字符串时回错误。
 - 与官方 2.1.319 一样，`-p` 的输入关闭后最多等后台任务 `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`（默认 10 分钟，`0` 表示一直等），到时停止它们；被停止的 shell 会通知模型，模型再跑一轮说明后退出，不会因为守护进程占着输出管道而挂起。
 - OpenAI provider 的 `apply_patch` 在 `canUseTool` / `--permission-prompt-tool stdio` 里按文件拆成 Edit / Write 逐个询问，被拒的文件也按 Edit / Write 列进 `permission_denials`，宿主不用认识 `apply_patch`，细节见 [openai-provider.md](openai-provider.md)。
-- 尚未实现：`set_mcp_permission_mode_override`。另外后台子代理结束时，本 fork 的 `background_tasks_changed`（空清单）比 `task_notification` 早一条，官方是之后；两者内容相同，只是先后不同。
+- 尚未实现：`set_mcp_permission_mode_override`。后台子代理和后台 shell 结束时，`task_notification` 都排在 `background_tasks_changed` 之前，和官方一致。
+- 与官方 2.1.329 仍有的差异：
+  - 没有 refusal fallback：官方对带 `category`（bio、cyber、frontier_llm）的 refusal 在部分模型上会换到回退模型重试并发 `system/model_refusal_fallback`，本 fork 直接结束。长短两种 refusal 文案按模型族（`claude-opus-5-5`、`claude-opus-5`、`claude-sonnet-5-5`）近似选择。
+  - `subagent_stats.refused.budget` 恒为 0（本 fork 没有预算拒绝）；子代理在通过容量检查、实际启动时才计数；较早的 deferred / interrupted result 不带 `subagent_stats`。
+  - host 的 user 消息带 `uuid` 时，官方另发 `command_lifecycle` 事件，本 fork 不发。
+  - 两个前台 Bash 命令同时结束时，两条 `task_notification` 的先后不固定。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
 
