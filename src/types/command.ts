@@ -15,7 +15,12 @@ import type { AttachmentMessage, Message } from './message.js'
 import type { PluginManifest } from './plugin.js'
 
 export type LocalCommandResult =
-  | { type: 'text'; value: string }
+  | {
+      type: 'text'
+      value: string
+      /** Model-visible meta messages for the next request (e.g. hook context). */
+      metaMessages?: string[]
+    }
   | {
       type: 'compact'
       compactionResult: CompactionResult

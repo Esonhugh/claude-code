@@ -4,6 +4,7 @@ import {
   executePostModelSwitchHooks,
   executePreModelSwitchHooks,
   type ModelSwitchHookInfo,
+  type ModelSwitchVerdict,
 } from '../hooks.js'
 import { escapeSystemReminderTags, wrapInSystemReminder } from '../messages.js'
 import { getModelSwitchCacheFacts } from '../promptCacheFacts.js'
@@ -42,7 +43,7 @@ export async function checkModelSwitch(
   info: ModelSwitchHookInfo,
   source: 'command' | 'picker' | 'sdk',
   toolUseContext?: ToolUseContext,
-): Promise<{ decision: 'proceed' | 'ask' | 'block'; reason?: string }> {
+): Promise<ModelSwitchVerdict> {
   return executePreModelSwitchHooks(
     { ...info, source },
     toolUseContext,
@@ -84,16 +85,32 @@ function showHookText(text: string): string {
 
 /**
  * What /model shows when a PreModelSwitch hook refused the switch to
- * `requestedModel` (null = default), worded like official 2.1.329.
+ * `requestedModel` (null = default), worded like official 2.1.329. The hooks'
+ * messages follow, one per line.
  */
 export function describeBlockedModelSwitch(
   requestedModel: string | null,
   reason: string | undefined,
+  messages: string[] = [],
 ): string {
   const label = renderDefaultModelSetting(
     requestedModel ?? getDefaultMainLoopModelSetting(),
   )
-  return `Model switch to ${requestedModel === null ? `${label} (default)` : label} was blocked by a PreModelSwitch hook${reason ? `: ${showHookText(reason)}` : ''}`
+  return [
+    `Model switch to ${requestedModel === null ? `${label} (default)` : label} was blocked by a PreModelSwitch hook${reason ? `: ${showHookText(reason)}` : ''}`,
+    ...messages.map(showHookText),
+  ].join('\n')
+}
+
+/**
+ * Add PreModelSwitch hook messages after a /model result, one per line
+ * (official 2.1.329).
+ */
+export function withModelSwitchHookMessages(
+  text: string,
+  messages: string[],
+): string {
+  return [text, ...messages.map(showHookText)].join('\n')
 }
 
 /**

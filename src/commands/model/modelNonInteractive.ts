@@ -13,6 +13,8 @@ import {
   checkModelSwitch,
   describeBlockedModelSwitch,
   getModelSwitchHookInfo,
+  getPostModelSwitchContext,
+  withModelSwitchHookMessages,
 } from '../../utils/model/modelSwitchHooks.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import { notifySessionMetadataChanged } from '../../utils/sessionState.js'
@@ -49,10 +51,8 @@ export const call: LocalCommandCall = async (args, context) => {
     }
   }
 
-  const verdict = await checkModelSwitch(
-    getModelSwitchHookInfo(requested, context.messages),
-    'command',
-  )
+  const info = getModelSwitchHookInfo(requested, context.messages)
+  const verdict = await checkModelSwitch(info, 'command')
   if (verdict.decision !== 'proceed') {
     return {
       type: 'text',
@@ -62,6 +62,7 @@ export const call: LocalCommandCall = async (args, context) => {
           verdict.decision === 'ask'
             ? `${verdict.reason ?? 'confirmation required'} (run /model interactively to confirm)`
             : verdict.reason,
+          verdict.messages,
         ),
     }
   }
@@ -74,6 +75,10 @@ export const call: LocalCommandCall = async (args, context) => {
   notifySessionMetadataChanged({ model })
   return {
     type: 'text',
-    value: `Set model to \`${renderDefaultModelSetting(model)}\` for this session only`,
+    value: withModelSwitchHookMessages(
+      `Set model to \`${renderDefaultModelSetting(model)}\` for this session only`,
+      verdict.messages,
+    ),
+    metaMessages: await getPostModelSwitchContext(info, 'command'),
   }
 }

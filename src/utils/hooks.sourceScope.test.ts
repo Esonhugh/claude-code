@@ -2100,7 +2100,11 @@ describe('model switch hooks', () => {
       { ...info, source: 'command' },
       f.context,
     )
-    expect(verdict).toEqual({ decision: 'proceed' })
+    expect(verdict).toEqual({
+      decision: 'proceed',
+      skipConfirm: false,
+      messages: [],
+    })
     expect(f.calls[0]?.input).toMatchObject({
       hook_event_name: 'PreModelSwitch',
       from_model: 'model-a',
@@ -2118,7 +2122,7 @@ describe('model switch hooks', () => {
   test.each([
     ['deny', { decision: 'block', reason: 'too expensive' }],
     ['ask', { decision: 'ask', reason: 'too expensive' }],
-    ['allow', { decision: 'proceed' }],
+    ['allow', { decision: 'proceed', skipConfirm: true }],
   ] as const)('permissionDecision %s', async (permissionDecision, expected) => {
     const f = fixture()
     f.add('userSettings', 'PreModelSwitch', 'decide')
@@ -2134,7 +2138,7 @@ describe('model switch hooks', () => {
         { ...info, source: 'picker' },
         f.context,
       ),
-    ).toEqual(expected)
+    ).toEqual({ ...expected, messages: [] })
   })
 
   test('exit code 2 blocks the switch with stderr', async () => {
@@ -2143,7 +2147,29 @@ describe('model switch hooks', () => {
     f.exits.set('no-switch', { code: 2, stderr: 'stay on model-a' })
     expect(
       await f.hooks.executePreModelSwitchHooks({ ...info, source: 'sdk' }),
-    ).toEqual({ decision: 'block', reason: '[no-switch]: stay on model-a' })
+    ).toEqual({
+      decision: 'block',
+      reason: '[no-switch]: stay on model-a',
+      messages: [],
+    })
+  })
+
+  test('PreModelSwitch returns systemMessage and failure lines (official 2.1.329)', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'note')
+    f.add('userSettings', 'PreModelSwitch', 'broken')
+    f.commands.set('note', { systemMessage: 'model-b costs more' })
+    f.exits.set('broken', { code: 1, stderr: 'lookup failed\n' })
+    const verdict = await f.hooks.executePreModelSwitchHooks(
+      { ...info, source: 'command' },
+      f.context,
+    )
+    expect(verdict).toMatchObject({ decision: 'proceed', skipConfirm: false })
+    // Hooks run in parallel, so their messages come in finishing order.
+    expect([...verdict.messages].sort()).toEqual([
+      'PreModelSwitch hook PreModelSwitch:model-b failed: Failed with non-blocking status code: lookup failed',
+      'model-b costs more',
+    ])
   })
 
   test('PostModelSwitch returns additionalContext', async () => {
