@@ -188,6 +188,23 @@ Claude 每次要改檔案、跑命令、訪問網路之前，都會判斷要不�
 
 组织托管设置开启 `allowManagedPermissionRulesOnly` 后，skill 和命令里声明的 `allowed-tools` 不再自动放行。
 
+## 未信任的文件夹
+
+第一次在某个文件夹启动时，Claude Code 先问你是否信任它。信任框的第一项是 `No, exit`，光标默认停在这里（同官方 2.1.329）；文件夹里有 `.mcp.json` 时，`Security guide` 上方多一行 `Trusting this folder loads .mcp.json here or above (MCP servers).`。直接按 Enter 会退出，退出码为 1，并提示：
+
+```text
+Claude Code didn't start because this folder isn't trusted.
+Run claude again and choose Yes, or run it in another folder.
+```
+
+`claude -p`、Agent SDK、`claude mcp list` 等不显示信任框的入口，也按这个文件夹是否信任过来判断。没信任过时：
+
+- `.claude/settings.local.json` 里的 `enableAllProjectMcpServers`、`enabledMcpjsonServers` 不生效，不论它是否被 git 跟踪；`claude mcp list` 把这些服务器显示为 ``⏸ Pending approval (run `claude` to approve)``，也不会启动它们。
+- 项目和本地设置里的 `extraKnownMarketplaces` 不生效，其中声明的插件不会被安装或载入；`--add-dir` 目录里的声明同样跳过。user、`--settings`、托管设置里的声明，以及你自己用 `claude plugin marketplace add` 加的 marketplace 不受影响。
+- 项目和本地 agent 定义里的 hook 不注册，见 [hooks.md](hooks.md#未信任的文件夹)。
+
+在主目录下运行时，`.claude/settings.json` 就是你自己的用户设置，不需要信任。
+
 ## 只让文件工具写工作目录：`blockWritesOutsideWorkingDirectories`
 
 ```json
@@ -228,6 +245,7 @@ Permission for this tool use was denied. It requires approval, and this session 
 把 `--permission-prompts none` 的行为用到所有会话（交互会话、子代理、agent team 成员）：本来要弹确认框的调用立即拒绝，模型收到上面那句话后继续这一轮。
 
 - 只会拒绝：allow 规则、权限模式（如 Accept edits）、自动模式分类器和 PermissionRequest hook 先决定。
+- PreToolUse hook 返回 `ask` 时同样直接拒绝，拒绝说明末尾带上 hook 给的原因（`What required approval: <原因>`）；hook 返回 `allow` 照常放行。
 - 只从 user 设置、`--settings` 和托管设置读取；项目级和本地设置里写了会被忽略。
 - 开启后不向模型提供 AskUserQuestion 和 Plan 模式工具（EnterPlanMode / ExitPlanMode）。
 - 尚未实现官方的另外三项：连续拒绝后结束这一轮、取消 MCP elicitation、沙箱网络询问直接拒绝。

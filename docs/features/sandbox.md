@@ -117,14 +117,29 @@ sudo apt install bubblewrap socat
 | `network.strictAllowlist` | `true` | 不在允许列表的域名直接拒绝，不弹窗 |
 | `credentials.envVars` | `[{ "name": "X", "mode": "deny" \| "mask" }]` | `deny`：沙箱里没有这个变量；`mask`：沙箱里是占位符，代理在发出请求时换回真值 |
 | `credentials.files` | `[{ "path": "~/.aws", "mode": "deny" \| "mask" }]` | 同上，作用于文件或目录；macOS 上 `mask` 等同 `deny` |
+| `allowNestedUserNamespaces` | `true` / `false`（默认） | 仅 Linux / WSL：允许沙箱里的命令自己建 user namespace，Chromium / Electron 的沙箱、嵌套 bubblewrap、`unshare` 需要它；**会移除代码执行隔离**，见下文 |
 
 `mask`、`network.tlsTerminate`、`credentials.awsPairs`、`sigv4` 属于实验功能，需要沙箱代理解开 HTTPS 才能替换请求里的值，一般用不到。
+
+## `allowNestedUserNamespaces`：允许嵌套 user namespace
+
+默认沙箱拒绝命令创建 user namespace，所以 Chromium、Electron、嵌套 bubblewrap、`unshare` 在沙箱里会失败。设成 `true` 后这些命令能运行（同官方 2.1.329，由 sandbox-runtime 0.0.80 实现，不再加 `bwrap --disable-userns`，seccomp 也不再拒绝 `unshare` / `clone(CLONE_NEWUSER)`）：
+
+```json
+{ "sandbox": { "allowNestedUserNamespaces": true } }
+```
+
+代价是沙箱里的命令可以在自己的 user namespace 里卸掉 bubblewrap 的挂载。在它能写的任何目录里，`filesystem.denyWrite`、`filesystem.denyRead`、`credentials.files` 和下文「总是被保护的位置」都不再可靠，它可以植入之后在沙箱外运行的代码；开着 `autoAllowBashIfSandboxed` 时，这条命令也不需要你确认。网络隔离不受影响。只在确实需要运行这类程序时打开。
+
+- 只认 user 设置、`--settings` 和托管设置；项目的 `.claude/settings.json`、`.claude/settings.local.json` 写 `true` 被忽略，写 `false` 仍然生效。
+- 所有来源合并后的值是 `false`（例如项目设置写了 `false`）时为 `false`；否则依次看托管设置、`--settings`、user 设置，取第一个写了这个键的值。
+- 只影响 Linux / WSL，macOS、Windows 不读这个设置。
 
 ## 仓库里的设置不能放松沙箱
 
 项目目录里的 `.claude/settings.json` 是仓库作者写的，可能不可信，所以有些「放松」只认用户设置、`--settings` 或托管设置（managed）：
 
-- `credentials` 的 `mask` 项、`strictAllowlist`、`tlsTerminate`、`filesystem.disabled`、`ripgrep` 写在项目设置里无效；项目里的 `deny` 项照常生效。
+- `credentials` 的 `mask` 项、`strictAllowlist`、`tlsTerminate`、`filesystem.disabled`、`ripgrep`、`allowNestedUserNamespaces: true` 写在项目设置里无效；项目里的 `deny` 项照常生效。
 - 项目里加的域名不会扩大 `strictAllowlist`。
 - 托管设置或 `--settings` 写了 `allowUnsandboxedCommands: false` 时，项目的 `excludedCommands` 被忽略，项目的 `allowRead` 也不能重新放开受信设置里 `denyRead` 的路径。
 - 托管设置开了 `allowManagedReadPathsOnly` / `allowManagedDomainsOnly` 后，其他来源的 `allowRead` / `allowedDomains` 不生效；`/status` 和 `/doctor` 会逐条列出被忽略的项，例如 `sandbox.network.allowedDomains is ignored — managed settings set allowManagedDomainsOnly ...`。

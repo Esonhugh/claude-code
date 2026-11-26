@@ -122,6 +122,8 @@ Claude 调用 Agent 工具时可以按次指定 `effort`，例如让搜索类子
 
 从旧版本升级时，如果原来只在用户设置里写了顶层 `effortLevel`，运行一次 `/effort <档位>` 就会按当前模型重新保存。用 ChatGPT 账号登录 OpenAI provider 时，可选档位和默认值来自账号的模型目录。
 
+环境变量 `CLAUDE_CODE_DISABLE_ULTRATHINK=1`（或 `true`）关闭 `ultrathink` 关键词，同官方 2.1.329：输入框不再高亮这个词、不再提示 `Effort set to high`，请求里也不再附带 ultrathink 的 effort 提示，「开了 ultrathink 时默认 effort 为 `medium`」这条规则也不再适用。本 fork 的默认构建没有打开 `ULTRATHINK` 功能，关键词本来就不生效，这个变量只在用 `CLAUDE_CODE_RECOVER_FEATURES=ULTRATHINK` 构建的 binary 上有作用。
+
 ## 和官方的区别
 
 - 你通过命令行、settings、环境变量指定的档位**原样发给 API**，不会按模型能力自动改写；`/model` 里可选的档位仍按模型能力显示。OpenAI provider 下也是这样：`ultra` 发 `ultra`，服务端不接受时显示 API 错误，用 `/effort` 换一档。

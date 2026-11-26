@@ -13,7 +13,7 @@ Hook 是「到了某个时刻就自动执行的命令」。你在 settings.json 
 - **补充信息**：会话开始时把当前分支、待办事项塞给 Claude；
 - **通知**：Claude 需要你确认时发桌面通知。
 
-行为对齐官方 2.1.303。
+行为对齐官方 2.1.303；2.1.329 新增和改动的 hook 行为已逐项对照，还没移植的列在文末「已知差异」。
 
 <details lang="en"><summary>English</summary>
 
@@ -28,7 +28,7 @@ A hook is a command that runs automatically at a certain moment. In settings.jso
 - **Add context**: give Claude the current branch and open to-dos when a session starts.
 - **Notify**: send a desktop notification when Claude needs your approval.
 
-Behaviour matches the official 2.1.303.
+Behaviour matches the official 2.1.303. Hook changes up to 2.1.329 were compared item by item; what is not ported yet is listed under "Known differences" at the end.
 
 </details>
 <details lang="zh-Hant"><summary>繁體中文</summary>
@@ -44,7 +44,7 @@ Hook 是「到了某個時刻就自動執行的命令」。你在 settings.json 
 - **補充資訊**：會話開始時把當前分支、待辦事項塞給 Claude；
 - **通知**：Claude 需要你確認時發桌面通知。
 
-行為對齊官方 2.1.303。
+行為對齊官方 2.1.303；2.1.329 新增和改動的 hook 行為已逐項對照，還沒移植的列在文末「已知差異」。
 
 </details>
 
@@ -102,6 +102,8 @@ exit 0
 
 ![/hooks 详情](images/hooks-detail.png)
 
+设置里写了 `"disableAllHooks": true` 时，`/hooks` 只显示停用页：标题 `Hooks`，副标题 `off · N hooks not running`（N 是已登记但不会运行的 hook 数）；如果是组织托管设置停用的，`off` 换成 `turned off by your organization`。
+
 ## 退出码和输出
 
 | 结果 | 效果 |
@@ -109,10 +111,17 @@ exit 0
 | 退出码 `0` | 放行；stdout / stderr 不显示（少数事件如 SessionStart、UserPromptSubmit 的 stdout 会作为上下文交给 Claude） |
 | 退出码 `2` | 阻止这次操作，stderr 交给 Claude |
 | 其他退出码 | 只给你看 stderr，操作继续 |
-| stdout 输出 JSON | 更精细的控制，例如 `hookSpecificOutput.additionalContext` 补充上下文、`permissionDecision` 直接允许 / 拒绝、`updatedInput` 改写工具参数 |
+| stdout 输出 JSON | 更精细的控制，例如 `hookSpecificOutput.additionalContext` 补充上下文、`permissionDecision`（`allow` / `deny` / `ask` / `defer`）直接决定这次工具调用、`updatedInput` 改写工具参数 |
 
 几条规则：
 
+- stdout 的 JSON 不符合格式时，报错第一行指出哪个字段错了，后面附上 `Expected schema` 提示块，例如：
+
+  ```text
+  Hook JSON output validation failed — hookSpecificOutput.permissionDecision: Invalid option: expected one of "allow"|"deny"|"ask"|"defer"
+  ```
+
+  缺 `hookEventName`、PermissionRequest 的 `decision` 写错、用了旧版顶层 `decision` 时各有单独提示。SDK 收到的 `hook_response.exit_code` 是 hook 的真实退出码；退出码非零时，报错后面附上 stderr。
 - `updatedInput` 会按工具参数格式校验：未知字段丢掉；其他格式错误、或工具自己的校验不通过，这次调用就被拒绝。
 - hook 输出里的 `<system-reminder>` 标签会被转义，不能伪造系统提示。
 - 插件 hook 的命令里不能直接引用 `${user_config.*}`，请改读环境变量 `$CLAUDE_PLUGIN_OPTION_<KEY>`。
@@ -140,6 +149,31 @@ exit 0
 ```
 
 `onFailure` 对 Stop、SubagentStop、TaskCompleted、TeammateIdle 和异步 hook 不生效。
+
+Agent SDK 在 `initialize` 里登记的 callback hook 也接受 matcher 上的 `onFailure`，回应里带 `hook_on_failure_supported: true`；callback 失败时和 command / http hook 一样阻断。SDK 的 PreToolUse callback 超时（不是用户中断）时，工具不会执行，模型收到：
+
+```text
+PreToolUse hook did not respond before its timeout (host client may be unreachable). The tool call was not executed; other configured hooks may not have completed.
+```
+
+## 先停下，回头再执行：`defer`
+
+PreToolUse hook 返回 `"permissionDecision": "defer"` 时，这次工具调用先不执行，会话停下来等外部决定（同官方 2.1.329）：
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "defer" } }
+```
+
+- 只在 `claude -p` 和 SDK 里生效，而且这一轮只能有一个工具调用；交互会话或一轮里有多个工具调用时，`defer` 被忽略（`--debug` 里有一行警告）。有 hook 返回 `deny` 时以 `deny` 为准。
+- 结果的 `stop_reason` 和 `terminal_reason` 是 `tool_deferred`，并带上 `deferred_tool_use`（被推迟的那次调用）。
+- 之后用 `claude -p --resume <会话>` 或 `--continue` 回来，可以不带提示词：这次调用先重新经过 PreToolUse hook，再执行。工具已经不存在时，结果是 `tool_deferred_unavailable`。
+
+## 同一个 hook 只跑一次
+
+同一条 hook 同时写在 user、project、local 设置和 `--settings` 里时，只执行一次，用优先级最高的来源那份（例如 `timeout` 不同时，project 优先于 user，`--settings` 优先于 local）。
+
+- 组织托管设置里的 hook 单独算：只有整个 matcher（`matcher`、命令、`timeout` 等全部字段）和其他来源完全相同时才合并成一份，JSON 键的顺序不影响判断；有任何字段不同，两份都执行。
+- 插件按名字去重：两个 marketplace 装了同名插件时，只注册先加载的那份的 hook，`--debug` 里记 `Skipping duplicate hook registration for plugin "<名字>" from <来源> - already registered from another source`。托管设置的 `enabledPlugins` 里设为 `true` 的插件排在最前，会话中途改了也会重新加载。
 
 ## matcher 怎么写
 
@@ -172,13 +206,58 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 | `WorktreeCreate` / `WorktreeRemove` | 建 / 删 worktree | 自定义 worktree 流程 |
 | `MessageDisplay` | 每段回复文本显示完成时（只触发一次，`final: true`） | 朗读、转发 |
 
+几个事件的细节（同官方 2.1.329）：
+
+- **UserPromptSubmit** 阻止提交后，你输入的提示词放回输入框，不会丢。
+- **PreCompact**：会话里还没有模型回复（只跑过本地命令）时，`/compact <指令>` 也会先运行 PreCompact，`custom_instructions` 是你写的指令，然后报 `Not enough messages to compact.`；SDK 收到 `compacting` 和失败两条 status。
+- **PreModelSwitch / PostModelSwitch** 的输入带 `prompt_cache_warm`、`cache_ttl`（`5m` / `1h`）、`estimated_cache_write_usd`（在新模型上重建缓存的估算费用）和 `pricing`（本 fork 没有托管 `modelPricing`，只会是 `catalog` 或 `default`）。PreModelSwitch 阻止时，`/model` 和 `-p` 显示 `Model switch to X was blocked by a PreModelSwitch hook: <原因>`；hook 返回 `ask` 时 `-p` 下会附上 `(run /model interactively to confirm)`。原因压成一行显示：去掉末尾空白，超过 2000 字符截断并加 `…`，tab 换成空格，换行和控制字符、不可见格式字符换成 `�`。
+- **Notification**：交互会话弹权限确认时，消息固定是 `Claude needs your permission`，不带工具名。
+- **Elicitation** hook 最后决定取消时，MCP server 收到 `{"action":"cancel","content":{}}`，不带 hook 返回的 content。
+- **WorktreeCreate** 失败时说明原因：hook 成功但没给路径时报 `WorktreeCreate hook failed: hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)`；配置了但一个都没运行时报 `WorktreeCreate hook failed: hook is configured but did not run (workspace not trusted or matcher mismatch)`。
+
+## 异步 hook
+
+`"async": true` 的 hook 在后台运行，不等它结束；`"asyncRewake": true` 的 hook 在后台运行，结束时如果退出码是 `2`，会显示 `Stop hook feedback`，并把它的输出交给 Claude 继续处理。
+
+- `claude -p` 结束时，还没跑完的 `async` hook 会被终止，后面的命令不再执行。
+- 单次 `claude -p`（不是 `--input-format stream-json`）没有下一轮可以唤醒，所以 `asyncRewake` hook 改为同步运行，等它跑完再结束。
+
+## hook 能读到的环境变量
+
+除了你自己的环境，command hook 还能读到：
+
+| 变量 | 值 |
+| --- | --- |
+| `CLAUDECODE` | `1` |
+| `CLAUDE_CODE_SESSION_ID` | 当前会话 ID |
+| `CLAUDE_CODE_CHILD_SESSION` | `1` |
+| `CLAUDE_CODE_SESSION_ATTENDED` | 有人在场的会话为 `1`（交互会话，或 IDE、桌面应用等入口启动的 `-p`），后台、daemon 和普通 `-p` 为 `0` |
+| `CLAUDE_PID` | Claude Code 进程的 PID |
+| `CLAUDE_CODE_CHILD_NOTES_DIR` | `<项目临时目录>/<会话 ID>/started`，各级目录权限为 `0700`；路径上有符号链接时不设置 |
+| `CLAUDE_EFFORT` | 当前 effort 档位（JSON 输入里也有 `effort.level`） |
+
+打包 binary 自己用的 `CLAUDE_CODE_BUILTIN_*`、`CLAUDE_CODE_EMBEDDED_*` 不会传给 hook。`CLAUDE_CODE_CHILD_NOTES_DIR` 目前只创建目录并传下去，本 fork 还没有读取它的一方。
+
+## 未信任的文件夹
+
+项目或本地 agent（`.claude/agents/`）frontmatter 里的 hook，只有在这个文件夹被信任后才注册；`-p` 和 SDK 不显示信任框，同样按是否信任过判断。没信任时不运行，`--debug` 里记 `Skipping frontmatter hooks for agent '<名字>': the folder its definition file came from is not trusted (source: projectSettings)`。用户级 agent 不受影响。信任框的变化见 [permissions.md](permissions.md#未信任的文件夹)。
+
 ## 其他细节
 
 - **并行**：同一事件里的 prompt / agent 类型 hook 最多 12 个同时运行。
 - **Stop 防死循环**：Stop hook 连续阻止结束时，默认第 9 次后强制结束；用环境变量 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整（整数，`0` 表示不限制）。
-- **环境变量**：hook 能读到 `$CLAUDE_EFFORT`，JSON 输入里也有 `effort.level`。
 - **调试**：`claude --debug` 会记录每个 command hook 的结果和耗时。
 - **UserPromptSubmit 拦截时**，自定义命令里嵌入的 shell 命令不会执行。
+
+## 已知差异
+
+和官方 2.1.329 相比，下面几项还没有移植：
+
+- PreModelSwitch hook 返回的 `systemMessage` 不会附在 `/model` 的结果后面；`-p '/model x'` 不触发 PostModelSwitch；hook 返回 allow 时的 `skipConfirm` 没有处理。
+- hook 输出的 `terminalSequence` 字段没有实现，`Expected schema` 提示块里也没有这一行。
+- `CLAUDE_CODE_CHILD_NOTES_DIR` 只下发了变量；读取这个目录记录会话来源的一侧，以及官方对临时目录属主的检查，都没有移植。
+- 未信任文件夹里 agent frontmatter hook 被跳过时，debug 日志只有前半句，没有官方后面那句「如何信任这个文件夹」。
+- `CLAUDE_EFFORT` 在 `-p` 下默认是 `high`，官方是 `medium`，这是本 fork 有意的差异，见 [effort.md](effort.md)。
 
 ## 说明
 

@@ -31,6 +31,13 @@ Model requests fail for many reasons: overload (529), rate limits (429), dropped
 
 - **自动重试**：可恢复的错误最多重试 10 次，间隔逐渐拉长；从第 1 次重试起，spinner 那一行就变成 `API error · Retrying in 4s · attempt 1/10` 倒计时，第 3 次起把 `API error` 换成具体错误（如 `529 Overloaded`），和官方一致。
 - **响应卡住会重来**：响应流 5 分钟没有任何数据，就中止这次请求并重试。
+- **连接中途断开会重新请求**：响应流在还没有完整内容块之前断线时，用剩下的重试次数重新发起流式请求，SDK 收到 `api_retry` 事件；次数用完才改用非流式请求，非流式请求也只用剩下的次数。全部用完后报：
+
+```text
+API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.
+```
+
+- **流里的 `error` 事件不是断线**：服务端在响应流里发来的 SSE `error` 事件不重试，也不计入用量，直接显示事件自己的错误信息。
 - **不会无限挂着**：重试用完就报错。例如网关端口没开、`-p` 模式下设 `CLAUDE_CODE_MAX_RETRIES=1`，重试一次后直接退出：
 
 ```text
@@ -56,6 +63,18 @@ claude --fallback-model sonnet,haiku
 ![自动切换到备用模型](images/request-resilience-fallback.png)
 
 **3. 下一轮自动换回。** 你下一次输入时会重新从主模型开始尝试，不会一直停留在备用模型上。
+
+### 无法重试的错误也交给备用模型
+
+配置了回退模型时，主模型返回无法重试的拒绝（400、422，或非流式请求的 404），也不再直接报错，而是换成备用模型回答（同官方 2.1.329）。对话里显示：
+
+```text
+Switched to <备用模型> because <主模型> returned an error that could not be retried (<错误信息>)
+```
+
+404 且错误类型是 `not_found_error` 时，提示改为 `Switched to <备用模型> because <主模型> is not available`。SDK 的 `system/model_fallback` 事件里，`trigger` 分别是 `last_resort` 和 `model_not_found`；不触发回退时，404 的 assistant `error` 字段是 `model_not_found`（以前是 `invalid_request`）。
+
+换模型也解决不了的错误照常直接失败：401、403、407、413、429，以及 prompt too long、额度不足（credit balance）、组织被停用、billing、内容策略拦截、超出上下文等。
 
 ## 无人值守：一直等到能用
 
@@ -91,6 +110,13 @@ CLAUDE_CODE_RETRY_WATCHDOG=1 claude -p "..."
 | `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | 毫秒 | — | 429/529 累计等待上限 |
 | `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` | 毫秒 | — | 额度恢复时间超过它就不等 |
 | `ANTHROPIC_DEFAULT_MODEL` | 模型名 | — | 新会话默认模型（优先级最低） |
+
+## 和官方 2.1.329 的差异
+
+- 400 / 422 时，官方会先逐个去掉 beta header 重试，本 fork 不会。
+- 已经有完整内容块之后才断线时，官方让模型接着写（注入 `Your response above was cut off mid-stream…`），本 fork 改用非流式请求重来。
+- 413 的错误文案和 `terminal_reason` 与官方不同。
+- 不认识的模型名，官方按 1M 上下文处理并在 stderr 打印 `[claude-code:unrecognized_model]`，本 fork 仍按 200k。
 
 ## 说明
 
