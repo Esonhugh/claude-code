@@ -68,3 +68,19 @@ test('coordinator adds brief tools under CLAUDE_CODE_BRIEF and named extras from
     }
   }
 })
+
+test('coordinator prompt tells it to leave the worker model alone when the session forces inheritance', async () => {
+  const { getCoordinatorSystemPrompt } = await import('./coordinatorMode.js')
+  const saved = process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+  try {
+    delete process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+    expect(getCoordinatorSystemPrompt([])).toContain('- Omit the model parameter so workers inherit the session model')
+    process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL = '1'
+    const forced = getCoordinatorSystemPrompt([])
+    expect(forced).toContain('- The model parameter is ignored on this session. Do not set it.')
+    expect(forced).not.toContain('Omit the model parameter')
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+    else process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL = saved
+  }
+})
