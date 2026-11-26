@@ -98,7 +98,7 @@ A walk through `claude web` in the order of a real session, one screenshot per s
 
 ![任务看板](images/web-tour-project-board.png)
 
-**第 13 步：深色外观。** 外观默认跟随系统；系统是深色时整页换成深色，图里是第 2–11 步那个会话重新打开后的样子。
+**第 13 步：深色外观。** 外观选“跟随系统”时，系统是深色就整页换成深色（设置里没选过外观时沿用 CLI 的 `/theme`）。图里是第 2–11 步那个会话重新打开后的样子。
 
 ![深色外观](images/web-tour-dark.png)
 

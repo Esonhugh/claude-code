@@ -16,7 +16,7 @@
 - 管多个会话：置顶、按目录分组、悬停看详情、右键重命名 / 封存 / 删除。
 - 分派一批任务：建一个“项目”，让协调者把活拆给多个 worker 并行做，见 [Claude Web 项目](web-projects.md)。
 
-想先看一遍实际界面，见按操作顺序截图的 [Claude Web 界面导览](web-ui-tour.md)。
+想先看一遍实际界面，见按操作顺序截图的 [Claude Web 界面导览](web-ui-tour.md)。想在独立窗口里用、不占本机端口，见 [桌面应用](desktop-app.md)。
 
 <details lang="en"><summary>English</summary>
 
@@ -34,7 +34,7 @@ Compared with the terminal, the web UI is better for:
 - Managing many sessions: pin, group by directory, hover for details, right-click to rename, archive or delete.
 - Handing out a batch of tasks: create a project and let the coordinator split the work across several workers, see [Claude Web projects](web-projects.md).
 
-To see the real UI first, read the step-by-step [Claude Web tour](web-ui-tour.md).
+To see the real UI first, read the step-by-step [Claude Web tour](web-ui-tour.md). For a separate window that listens on no port, see the [desktop app](desktop-app.md).
 
 </details>
 <details lang="zh-Hant"><summary>繁體中文</summary>
@@ -53,7 +53,7 @@ To see the real UI first, read the step-by-step [Claude Web tour](web-ui-tour.md
 - 管多個會話：置頂、按目錄分組、懸停看詳情、右鍵重新命名 / 封存 / 刪除。
 - 分派一批任務：建一個“專案”，讓協調者把活拆給多個 worker 並行做，見 [Claude Web 專案](web-projects.md)。
 
-想先看一遍實際介面，見按操作順序截圖的 [Claude Web 介面導覽](web-ui-tour.md)。
+想先看一遍實際介面，見按操作順序截圖的 [Claude Web 介面導覽](web-ui-tour.md)。想在獨立視窗裡用、不佔本機埠，見 [桌面應用](desktop-app.md)。
 
 </details>
 
@@ -73,7 +73,7 @@ Claude web UI: http://127.0.0.1:33777/?token=…
 Sessions start in ~/.claude/web/workspace and run with your local credentials and full access to this machine. Press Ctrl+C to stop.
 ```
 
-浏览器会自动打开这个地址（SSH 会话里或加 `--no-open` 时只打印）。地址里的 token 用一次就换成 cookie，地址栏随即去掉 token。已经有一个 `claude web` 在跑时不会再起第二个，而是打印 `claude web is already running (pid …) at …` 并打开它。
+浏览器会自动打开这个地址（SSH 会话里或加 `--no-open` 时只打印）。地址里的 token 用一次就换成 cookie，地址栏随即去掉 token。已经有一个 `claude web` 在跑时不会再起第二个，而是打印 `claude web is already running (pid …) at …` 并打开它。浏览器标签页的图标是侧边栏的像素蟹，系统为深色时图标底色变深。
 
 **第 2 步：开始对话。** 起始页是一个大输入框，下面左边选工作目录（默认 `~/.claude/web/workspace`，也可以选临时目录（排在最前）、最近用过的目录或手填路径），右边选权限模式和模型。还没有会话时输入 `/` 也列出命令和已启用的 skill，`@` 搜索所选目录里的文件。下方列出这个目录最近的 3 个会话。第一条消息发出时才启动会话进程；在默认工作目录以外的目录第一次开会话时，页面会先问你是否信任这个目录。
 
@@ -83,11 +83,11 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![审批](images/web-tour-approval.png)
 
-**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。MCP 工具如果带 `ui://` 界面（MCP Apps），卡片下方直接显示这个页面，见 [MCP Apps](mcp.md#mcp-apps工具自带界面)。回复按 Markdown 增量渲染，代码块带复制按钮。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
+**第 4 步：看过程和结果。** 每次工具调用是一张卡片：Read、Bash 显示路径或命令，Edit / Write 显示 diff 和增删行数，点文件路径在右侧预览这个文件。MCP 工具如果带 `ui://` 界面（MCP Apps），卡片下方直接显示这个页面，见 [MCP Apps](mcp.md#mcp-apps工具自带界面)；切换浅色 / 深色时页面会通知它（`ui/notifications/host-context-changed`，带 `theme`）。回复按 Markdown 增量渲染，代码块带复制按钮；Mermaid 图按页面当前的浅色 / 深色画，切换外观时重画。顶栏是运行状态、工作目录、上下文占用（点开看明细，可以立即 `/compact`）和“导出”。右侧 Status 页签汇总这个会话的模型、权限模式、上下文、用量、目标与待办和后台任务数。
 
 ![对话、工具卡片和 diff](images/web-tour-chat.png)
 
-**第 5 步：预览文件。** 点“+”上传文件、添加图片，或者直接拖进页面、粘贴截图（单个文件不超过 50 MB，每个会话共 500 MB；5 MB 以内的图片直接作为图片发给模型）。输入 `@` 按路径搜索工作区文件并引用。消息里的文件、工具卡片里的路径都能点开预览：
+**第 5 步：预览文件。** 点“+”上传文件、添加图片，或者直接拖进页面、粘贴截图（单个文件不超过 50 MB，每个会话共 500 MB，0 字节的空文件也能上传；5 MB 以内的图片直接作为图片发给模型）。输入 `@` 按路径搜索工作区文件并引用。消息里的文件、工具卡片里的路径都能点开预览：
 
 | 类型 | 预览方式 |
 | --- | --- |
@@ -120,7 +120,7 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 
 ![账号与认证](images/web-ui-account.png)
 
-**第 9 步：设置和统计。** “设置”有三个页签：常规（界面语言、界面名称、外观、配色、工作目录、访问地址、局域网访问状态）、用量（本会话和订阅额度）、功能开关（自动压缩、Git 指引、记忆提取、agent 摘要、提示建议，写入用户设置）。界面语言、外观和配色只存在这个浏览器里，外观默认跟随系统的浅色 / 深色，配色默认 Clay。“统计”按 7 天 / 30 天 / 全部汇总最常用模型、输出 tokens、会话数、连续使用天数，下面是按模型的每日 tokens 曲线和活跃热力图（悬停看当天数字）。
+**第 9 步：设置和统计。** “设置”有三个页签：常规（界面语言、界面名称、外观、配色、动效、工作目录、访问地址、局域网访问状态）、用量（本会话和订阅额度）、功能开关（自动压缩、Git 指引、记忆提取、agent 摘要、提示建议，写入用户设置）。界面语言、外观、配色和动效只存在这个浏览器里。外观在这个浏览器里没选过时沿用 CLI 的 `/theme`：`light` 开头的主题为浅色，`dark` 开头的为深色，`auto` 和自定义主题跟随系统；CLI 没改过主题时是默认的 `dark`，页面也显示深色，想跟随系统就在这里选“跟随系统”，或在终端 `/theme` 选 auto。配色默认 Clay。动效默认“跟随系统”，选“减少”后运行中的圆点、转圈和加载闪光停下来，和系统打开“减少动态效果”时一样。页面在 React 启动前就按保存的外观、配色和动效上色，刷新时不再先闪一下 Clay 浅色。“统计”按 7 天 / 30 天 / 全部汇总最常用模型、输出 tokens、会话数、连续使用天数，下面是按模型的每日 tokens 曲线和活跃热力图（悬停看当天数字）。
 
 ![设置](images/web-ui-settings.png)
 
@@ -144,15 +144,16 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 | 会话 | 置顶此会话 / 取消置顶 | `P` | 移到“置顶”段，刷新后保留 |
 | 会话 | 重命名 | `R` | 行内编辑，`Enter` 保存，`Esc` 取消 |
 | 会话 | 移至项目 › | | 子菜单里选一个项目；会话从“最近目录”移到项目的任务列表，搜索仍能找到 |
-| 会话 | 封存 | `A` | 从列表移走，搜索仍能找到 |
-| 会话 | 删除 | `D` | 菜单里再确认一次；先结束会话，再删除它的 transcript |
+| 会话 | 封存 / 取消封存 | `A` | 封存后从列表移走，搜索仍能找到；在搜索结果里右键已封存的会话，同一位置是“取消封存”，放回列表 |
+| 会话 | 删除 | `D` | 菜单里再确认一次；先结束会话，再删除它的 transcript 和上传目录 `~/.claude/web/uploads/<session id>/` |
 | 项目 | 重命名 / 项目设置 / 封存 / 删除 | `R` / `S` / `A` / `D` | 见 [Claude Web 项目](web-projects.md) |
+| 已封存的项目 | 取消封存 | `A` | 已封存的项目只在搜索时列在“项目”段里，不能打开；点击或右键只有这一项，取消后回到项目列表 |
 
 `Esc` 关闭菜单。输入框和重命名框里右键仍是浏览器自带的菜单。
 
 点一个历史会话先只读显示记录，长会话往上滚时加载更早的消息；在输入框里开始输入才在原目录恢复它，之前的上下文照常带上。同一个会话同一时间只能在一个标签页里打开。没有标签页连着的会话空闲 `--idle-timeout` 后结束。
 
-会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收；占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。网络断开（切换 Wi-Fi、电脑休眠）时页面自动重连还在运行的会话进程，约三分钟内连不上或进程已经结束，就提示断开，发一条消息即可恢复。输入 `/clear`（或 `/reset`、`/new`）会在同一目录开一个新会话，沿用原来的模型、effort 和权限模式；项目协调者里不支持。地址里的会话即使不在侧栏最新 200 条里，刷新后也会重新打开。
+会话选的模型、effort、上下文窗口和权限模式保存在服务端（`projects.sqlite`），刷新页面、新开标签页或会话进程空闲结束后再恢复，都按原来的选择继续；断线期间改的选择会在重新连上后补发。刷新时如果回合还在跑，页面显示到目前为止的输出并继续接收，回合中排队的消息仍显示为“排队中”，轮到时各显示一次；回合刚结束就刷新，最后一轮也会显示且只显示一次。占着会话的标签页关闭后，被锁住的标签页自动接管。会话进程异常退出时，错误框显示退出码和最后一行 stderr，而不是只写“The session ended.”。会话断开连接（网络中断、服务重启、被别的标签页占用）时，还没回答的确认框立刻撤下，重新连上后服务端再弹出一次，回答后照常执行。网络断开（切换 Wi-Fi、电脑休眠）时页面自动重连还在运行的会话进程，约三分钟内连不上或进程已经结束，就提示断开，发一条消息即可恢复。输入 `/clear`（或 `/reset`、`/new`）会在同一目录开一个新会话，沿用原来的模型、effort 和权限模式；项目协调者里不支持。地址里的会话即使不在侧栏最新 200 条里，刷新后也会重新打开。
 
 ## 右侧面板
 
@@ -169,7 +170,7 @@ Status、Files、Agents 一直在；Workflow、Terminals、Monitor、Background 
 | Background Tasks | 后台 shell、终端、Monitor 等任务的命令、状态、时长和最后一行输出，可以停止 |
 | Mods | 启用的 [Mod](mods.md) 写的状态条目和它们打开的每个面板；面板上的“Open on canvas”把它作为一个页签放进中间栏（和文件预览并列，切换页签时 Mod 保留自己的状态） |
 
-Mod 画在终端里的东西在网页里也有对应位置：输入框上方的状态条（band）、输入框上方的 toast、对话里被 `ui.render` hook 改写的消息行、输入框的改写 / 补全 / 装饰，以及 Mod 自己的斜杠命令。Mod 的 Client 代码在独立来源的沙箱 iframe + Worker 里运行，不能联网，不能 `eval`，卡住 2 秒就被停止。
+Mod 画在终端里的东西在网页里也有对应位置：输入框上方的状态条（band）、输入框上方的 toast、对话里被 `ui.render` hook 改写的消息行、输入框的改写 / 补全 / 装饰，以及 Mod 自己的斜杠命令。Mod 用的终端颜色（red、gray 等）跟随当前配色和浅色 / 深色，输入框里的装饰和面板里的颜色一致。Mod 的 Client 代码在独立来源的沙箱 iframe + Worker 里运行，不能联网，不能 `eval`，卡住 2 秒就被停止。
 
 窗口窄于 1100px 时左侧栏收起成抽屉；760px 以下右侧面板也变成抽屉，从顶栏的按钮打开。
 
@@ -203,7 +204,7 @@ Mod 画在终端里的东西在网页里也有对应位置：输入框上方的�
 | 操作 | 作用 |
 | --- | --- |
 | 用户消息上的“↶ 回退” | 回退到这条消息之前（只回退对话，或连文件改动一起还原，并显示还原了几个文件），原消息放回输入框；只出现在引擎能回退的消息上（本地命令、回合中途发的消息和压缩前的消息没有） |
-| 回复下方的 复制 / 重试 / 从这里分支 / 回退 | 复制这条回复；重发上一条提示（带原来的图片）；从这里分出一个新会话；回退到这条回复对应的提示之前 |
+| 回复下方的 复制 / 重试 / 从这里分支 / 回退 | 复制这条回复；重发上一条提示（带原来的图片）；从这里分出一个新会话（带走一份自己的上传文件，删除原会话不影响它）；回退到这条回复对应的提示之前 |
 | 回复下方的 token 数（如 `22k tok`） | 这一轮用了多少 token；鼠标停上去显示输入、缓存读、缓存写和输出 |
 | 核准框的“总是允许”选项 | 文字写明规则存到哪里：本会话、本项目或所有项目 |
 | `apply_patch` 卡片 | 列出改动的每个文件，各自显示 Update / Delete / Write 的 diff |
@@ -221,7 +222,7 @@ Mod 画在终端里的东西在网页里也有对应位置：输入框上方的�
 
 每轮回答下面列出这一轮读过的网页来源（WebSearch、WebFetch 和 deep-research workflow 引用的链接，只保留 http / https）。`/compact` 和 `/recap` 在对话里折叠成一行。TodoWrite 或 TaskCreate / TaskUpdate 建的待办固定在输入框上方，显示“待办 1/2”和正在做的那一项；两项之间显示“下一项：…”，全部做完才显示“全部完成”。
 
-导出的 Markdown 带工具调用摘要和来源列表；打印成 PDF 时去掉侧栏和输入框。
+导出的 Markdown 带工具调用摘要和来源列表；打印成 PDF 时去掉侧栏和输入框，不论当前外观和配色，一律白底黑字，代码高亮用浅色，深色外观下的 Mermaid 图换成浅色版本。
 
 `claude web --dangerously-allow-local-network` 启动时额外打印每个局域网地址的登录链接，并在 stderr 给出警告：
 
