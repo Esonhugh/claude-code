@@ -812,7 +812,10 @@ export function createModEnvironmentHost({
         call = hostHandle(environment, (input: unknown) => { live(); return next(input as ModInput) }, id)
         to = hostHandle(environment, (input: unknown, tier: unknown) => {
           live()
-          if (!['prepend', 'user', 'append', 'builtin', 'core'].includes(tier as string) || !state.declaration.nextTiers.includes(tier as Parameters<ModNext['to']>[1])) throw new Error('Module next tier is absent from scan')
+          if (!['prepend', 'user', 'append', 'builtin', 'core'].includes(tier as string) || !state.declaration.nextTiers.includes(tier as Parameters<ModNext['to']>[1])) {
+            // Official 2.1.329 wording; a helper's next.to is not read by the scan, so it lands here.
+            throw Object.assign(new Error(`${state.declaration.name}: next.to(${JSON.stringify(tier)}) refused: its hooks module does not spell next.to:${String(tier)} in a literal the scan reads (host rule)`), {name:'HooksError'})
+          }
           return next.to(input as ModInput, tier as Parameters<ModNext['to']>[1])
         }, id)
         if (next.event === 'turn.step' || next.event === 'process.spawn') {
