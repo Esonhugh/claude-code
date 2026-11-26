@@ -210,7 +210,7 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 
 - **UserPromptSubmit** 阻止提交后，你输入的提示词放回输入框，不会丢。
 - **PreCompact**：会话里还没有模型回复（只跑过本地命令）时，`/compact <指令>` 也会先运行 PreCompact，`custom_instructions` 是你写的指令，然后报 `Not enough messages to compact.`；SDK 收到 `compacting` 和失败两条 status。
-- **PreModelSwitch / PostModelSwitch** 的输入带 `prompt_cache_warm`、`cache_ttl`（`5m` / `1h`）、`estimated_cache_write_usd`（在新模型上重建缓存的估算费用）和 `pricing`（本 fork 没有托管 `modelPricing`，只会是 `catalog` 或 `default`）。PreModelSwitch 阻止时，`/model` 和 `-p` 显示 `Model switch to X was blocked by a PreModelSwitch hook: <原因>`；hook 返回 `ask` 时 `-p` 下会附上 `(run /model interactively to confirm)`。原因压成一行显示：去掉末尾空白，超过 2000 字符截断并加 `…`，tab 换成空格，换行和控制字符、不可见格式字符换成 `�`。
+- **PreModelSwitch / PostModelSwitch** 的输入带 `prompt_cache_warm`、`cache_ttl`（`5m` / `1h`）、`estimated_cache_write_usd`（在新模型上重建缓存的估算费用）和 `pricing`（本 fork 没有托管 `modelPricing`，只会是 `catalog` 或 `default`）。PreModelSwitch 阻止时，`/model` 和 `-p` 显示 `Model switch to X was blocked by a PreModelSwitch hook: <原因>`；hook 返回 `ask` 时 `-p` 下会附上 `(run /model interactively to confirm)`。原因压成一行显示：去掉末尾空白，超过 2000 字符截断并加 `…`，tab 换成空格，换行和控制字符、不可见格式字符换成 `�`。PreModelSwitch hook 的 `systemMessage` 和执行失败的提示（`PreModelSwitch hook <名称> failed: <stderr>`）逐行附在 `/model` 的结果或阻止原因后面，按同样规则压成一行。hook 返回 `allow` 时，`/model` 不再因 prompt cache 仍热而弹 `Switch model?` 确认。`-p '/model x'` 切换后也会运行 PostModelSwitch（`source` 为 `command`），它的 `additionalContext` 进入下一次请求。官方会对 plan mode 下要用的模型再运行一次 PreModelSwitch，同一条消息可能出现两次；本 fork 只运行一次。
 - **Notification**：交互会话弹权限确认时，消息固定是 `Claude needs your permission`，不带工具名。
 - **Elicitation** hook 最后决定取消时，MCP server 收到 `{"action":"cancel","content":{}}`，不带 hook 返回的 content。
 - **WorktreeCreate** 失败时说明原因：hook 成功但没给路径时报 `WorktreeCreate hook failed: hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)`；配置了但一个都没运行时报 `WorktreeCreate hook failed: hook is configured but did not run (workspace not trusted or matcher mismatch)`。
@@ -253,7 +253,6 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 
 和官方 2.1.329 相比，下面几项还没有移植：
 
-- PreModelSwitch hook 返回的 `systemMessage` 不会附在 `/model` 的结果后面；`-p '/model x'` 不触发 PostModelSwitch；hook 返回 allow 时的 `skipConfirm` 没有处理。
 - hook 输出的 `terminalSequence` 字段没有实现，`Expected schema` 提示块里也没有这一行。
 - 未信任文件夹里 agent frontmatter hook 被跳过时，debug 日志只有前半句，没有官方后面那句「如何信任这个文件夹」。
 - `CLAUDE_EFFORT` 在 `-p` 下默认是 `high`，官方是 `medium`，这是本 fork 有意的差异，见 [effort.md](effort.md)。
