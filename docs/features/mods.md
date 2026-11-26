@@ -543,6 +543,7 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - 重载失败时报 `reload failed, the previous version stays loaded: ...`。`hooks.json` 缺失、JSON 非法或校验失败时保留已加载的版本，磁盘上改过的模块源码也不生效；一个 plugin 有多份 hooks 设置时逐份处理。`{"hooks":{}}` 这类合法但不含模块的设置会卸载模块，plugin 目录继续监看，改回后自动重新加载。
 - `{"modules":[]}` 判为非法：``hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both``。
 - 整个 plugin 目录或入口模块被删除时保留已加载的版本，不报 `ENOENT`，文件回来后再重载。Windows 上 plugin 根目录的监看路径比对已修正。
+- 与官方仍有的差异：官方重载时另发一条空的 `system/ui_status`，本 fork 不发；`/reload-plugins` 的汇总文案不同；TUI 里被 Mod 拒绝的工具行，官方显示 `Not run · permission denied` 和 `Reason: ...`，本 fork 显示 `Error reading file`。`hooks.json` 和 `plugin.json` 几乎同时变化时，通知里的文件名取决于 watcher 事件顺序，官方同样不固定。
 
 **`$.store`**
 
