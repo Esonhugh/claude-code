@@ -360,7 +360,8 @@ test.each([
   await expect(loadModDeclaration(input)).rejects.toThrow(new RegExp(`^example: .*main\\.ts, compiled line \\d+ \`[^\`]*\`: \\$ itself is ${how} \\(bound, passed, spread, returned or read\\); \\$ is always spelled \\$\\.noun\\.event\\(\\.\\.\\.\\) at the call site, on is always on\\("<event>", hook\\), and next\\.to always next\\.to\\(e, "<tier>"\\)$`))
 })
 
-test('tracks local helper arguments and const Next aliases by lexical binding', async () => {
+// Official 2.1.329 reads next.to tiers only on the hook's own next; a helper's next.to is left to the host.
+test('tracks local helper arguments by lexical binding, without tiers from a helper', async () => {
   const input = await plugin({
     'main.ts': `function read(api, input, proceed) {
       const resume = proceed;
@@ -380,7 +381,7 @@ test('tracks local helper arguments and const Next aliases by lexical binding', 
   expect(result.events).toEqual(['session.end'])
   expect(result.calls).toEqual(['env.get', 'env.set', 'fs.ancestors'])
   expect(result.env).toEqual({ reads: ['LOCAL_READ'], writes: ['LOCAL_WRITE'] })
-  expect(result.nextTiers).toEqual(['append'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test('refuses a module-local capture of $ and its identity observation', async () => {
@@ -402,7 +403,7 @@ test('refuses let initializers and reassignment of $ itself', async () => {
       on('tool.call', ($, e, next) => {
         first.env.get('CAPTURE_READ');
         let local = $; local = first; local.env.set('CAPTURE_WRITE', 'value');
-        let resume = next; resume = next; return resume.to(e, 'append');
+        return next(e);
       });
       on('session.start', ($) => { first = $; first = $; });
       on('session.end', ($) => first !== $);
@@ -437,7 +438,7 @@ test.each([
       on('tool.call', ($, e, next) => { ${body} });
       on('session.start', ($) => { first = $; });
     }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|assignment|itself|used as a value/)
+  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape|assignment|itself|used as a value|assigned to another name/)
 })
 
 test.each([
@@ -490,14 +491,13 @@ test('specializes a captured helper used before its assignment', async () => {
   const result = await loadModDeclaration(input)
   expect(result.calls).toEqual(['env.get'])
   expect(result.env).toEqual({ reads: ['CAPTURED_HELPER'], writes: [] })
-  expect(result.nextTiers).toEqual(['core'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test.each([
   `return api.env.get(input.name)`,
-  `return resume.to(input, input.tier)`,
   `return unknown(api)`,
-])('retains env, tiers and callee admission in captured helpers: %s', async body => {
+])('retains env and callee admission in captured helpers: %s', async body => {
   const input = await plugin({ 'main.ts': `let captured;
     export function register(on) {
       on('tool.call', ($, e, next) => captured($, e, next));
@@ -560,15 +560,6 @@ test('does not admit a replaced isFrozen through an alias of the builtin Object'
   await expect(loadModDeclaration(input)).rejects.toThrow(/escape|itself/)
 })
 
-test('does not confuse destructuring property keys with capture writes', async () => {
-  const input = await plugin({ 'main.ts': `let first;
-    export function register(on) {
-      on('session.start', ($, e, next) => { first = next; });
-      on('tool.call', ($, e) => { let value; ({first:value} = e); return first.to(e, 'core'); });
-    }` })
-  expect((await loadModDeclaration(input)).nextTiers).toEqual(['core'])
-})
-
 test.each([
   `delete Object.isFrozen`,
   `Object.__defineGetter__('isFrozen', () => unknown)`,
@@ -583,13 +574,13 @@ test.each([
   `resume.to(e, 'unknown')`,
   `unknown(resume)`,
   `resume['to'](e, 'core')`,
-])('retains Next restrictions through a module let capture: %s', async expression => {
+])('refuses a module let capture of next: %s', async expression => {
   const input = await plugin({ 'main.ts': `let resume;
     export function register(on) {
       on('tool.call', ($, e) => ${expression});
       on('session.start', ($, e, next) => { resume = next; });
     }` })
-  await expect(loadModDeclaration(input)).rejects.toThrow(/unsupported|literal|escape/)
+  await expect(loadModDeclaration(input)).rejects.toThrow('"next" (the hook\'s next) is assigned to another name')
 })
 
 test.each([
@@ -607,11 +598,11 @@ test.each([
   else {
     const result = await loadModDeclaration(input)
     expect(result.calls).toEqual(body.startsWith('api.') ? ['env.get'] : [])
-    expect(result.nextTiers).toEqual(body.startsWith('resume.') ? ['core'] : [])
+    expect(result.nextTiers).toEqual([])
   }
 })
 
-test('tracks a module capture exported from a later imported module', async () => {
+test('refuses a module capture of next exported from a later imported module', async () => {
   const input = await plugin({
     'main.ts': `import { first } from './other'; export function register(on) {
       on('tool.call', ($, e) => first.to(e, 'core'));
@@ -620,8 +611,8 @@ test('tracks a module capture exported from a later imported module', async () =
       on('session.start', ($, e, next) => { first = next; });
     }`,
   })
-  const result = await loadModDeclaration({ ...input, entrypoints: [...input.entrypoints, join(input.pluginRoot, 'other.ts')] })
-  expect(result.nextTiers).toEqual(['core'])
+  await expect(loadModDeclaration({ ...input, entrypoints: [...input.entrypoints, join(input.pluginRoot, 'other.ts')] }))
+    .rejects.toThrow('"next" (the hook\'s next) is assigned to another name')
 })
 
 test.each([
@@ -640,11 +631,11 @@ test.each([
 test.each([
   `let first = next; const firstLater = () => first.to(e, 'core'); firstLater()`,
   `let first = next; { let first = e; unknown(first); } first.to(e, 'core')`,
-])('preserves local capture closures without confusing ordinary shadows: %s', async body => {
+])('refuses a local capture of next: %s', async body => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('tool.call', ($, e, next) => { ${body} });
   }` })
-  expect((await loadModDeclaration(input)).nextTiers).toEqual(['core'])
+  await expect(loadModDeclaration(input)).rejects.toThrow('"next" (the hook\'s next) is bound to another name')
 })
 
 test.each([
@@ -669,16 +660,14 @@ test('rejects a same-name imported Object instead of assuming the builtin', asyn
   await expect(loadModDeclaration(input)).rejects.toThrow(/escape|itself/)
 })
 
-test('tracks a captured Next method alias and a single stable helper target', async () => {
+test('refuses a captured next.to alias', async () => {
   const input = await plugin({ 'main.ts': `let to, captured;
     function helper(api) { return api.clock.now(); }
     export function register(on) {
       on('tool.call', ($, e) => { captured($); return to(e, 'core'); });
       on('session.start', ($, e, next) => { to = next.to; captured = helper; captured = helper; });
     }` })
-  const result = await loadModDeclaration(input)
-  expect(result.calls).toEqual(['clock.now'])
-  expect(result.nextTiers).toEqual(['core'])
+  await expect(loadModDeclaration(input)).rejects.toThrow('next.to is used as a value (bound, passed or read)')
 })
 
 test('refuses a captured method alias of $ with the official text', async () => {
@@ -725,7 +714,7 @@ test('follows renamed imports, re-exports and method aliases without guessing pa
   const result = await loadModDeclaration(input)
   expect(result.calls).toEqual(['env.get', 'env.set'])
   expect(result.env).toEqual({ reads: ['IMPORTED_READ'], writes: ['IMPORTED_WRITE'] })
-  expect(result.nextTiers).toEqual(['core'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test.each([
@@ -754,7 +743,6 @@ test.each([
   `function helper(api) { unknown(api) }; helper($)`,
   `function helper(api) { return api }; helper($).clock.now()`,
   `function helper(api) { const read = api.env.get; return read(e.name) }; helper($)`,
-  `function helper(resume) { const to = resume.to; return to(e, e.tier) }; helper(next)`,
   `function helper(api) { api.clock.now() }; { const helper = external; helper($) }`,
   `function helper(api) { api.clock.now() }; function wrapper(helper) { helper($) }; wrapper(external)`,
 ])('rejects untrackable or inadmissible helper capability flow: %s', async body => {
@@ -781,7 +769,7 @@ test('follows the selected module and lexical binding, not same-name or conventi
   const result = await loadModDeclaration(input)
   expect(result.calls).toEqual(['env.get', 'fs.read'])
   expect(result.env).toEqual({ reads: ['SELECTED'], writes: [] })
-  expect(result.nextTiers).toEqual(['append'])
+  expect(result.nextTiers).toEqual([])
 })
 
 // Official 2.1.329 holds the value of next(e) at engine.create to the rule for $.
@@ -899,12 +887,11 @@ test('rejects reassignment of a helper through a loop target', async () => {
   await expect(loadModDeclaration(input)).rejects.toThrow(/assignment/)
 })
 
-test('preserves Next aliases and local closure helpers with precise calls', async () => {
+test('preserves local closure helpers with precise calls', async () => {
   const input = await plugin({ 'main.ts': `export function register(on) {
     on('session.start', ($, e, next) => {
       const helper = api => api.clock.sleep(e);
-      const alias = next;
-      $.clock.now(e); helper($); return alias(e);
+      $.clock.now(e); helper($); return next(e);
     });
   }` })
   const result = await loadModDeclaration(input)
@@ -922,7 +909,7 @@ test('resolves the official self-namespace default re-export helper pattern', as
   })
   const result = await loadModDeclaration(input)
   expect(result.calls).toEqual([])
-  expect(result.nextTiers).toEqual(['append'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test('follows a named default-exported helper through a renamed re-export', async () => {
@@ -978,7 +965,7 @@ test('tracks star re-export helpers, multi-hop calls, and recursive bindings', a
   const result = await loadModDeclaration(input)
   expect(result.calls).toEqual(['env.get'])
   expect(result.env).toEqual({ reads: ['MULTIHOP'], writes: [] })
-  expect(result.nextTiers).toEqual(['core'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test('tracks renamed capabilities, closures, provider function parameters, and catch handlers lexically', async () => {
@@ -1067,8 +1054,8 @@ test.each([
   [`on('session.start', ($, e, next) => $.clock.now?.(e))`, /\$\.clock\.now is used as a value \(an event of \$ bound, passed or read\) instead of called/],
   [`on('session.start', ($, e, next) => { const { clock } = $; clock.now(e) })`, /\$ itself is bound to a name/],
   [`on('session.start', ($, e, next) => next.to(e, e.tier))`, /literal/],
-  [`on('session.start', ($, e, next) => next['to'](e, 'core'))`, /literal/],
-  [`on('session.start', ($, e, next) => next.to(e, 'unknown'))`, /literal/],
+  [`on('session.start', ($, e, next) => next['to'](e, 'core'))`, /computed member access on "next"/],
+  [`on('session.start', ($, e, next) => next.to(e, 'unknown'))`, /names "unknown", which is not a tier a dispatch continues at/],
   [`on('engine.create', ($, e, next) => next(e)).catch(() => {})`, /engine.create catch/],
   [`on('session.start', ({ clock }, e, next) => clock.now(e))`, /parameters/],
   [`on('session.start', ($, ...args) => args[1].to(args[0], 'core'))`, /parameters/],
@@ -1323,9 +1310,9 @@ test('follows an unknown capability into an imported helper', async () => {
 test('collects a renamed Next parameter from the selected module despite a same-name decoy', async () => {
   const input = await plugin({
     'main.ts': `import { helper } from './selected'; import './decoy'; export function register(on) {
-      on('tool.describe', ($, e, next) => helper(e, next));
+      on('tool.describe', helper);
     }`,
-    'selected.ts': `export function helper(e, value) { return value.to(e, 'append'); }`,
+    'selected.ts': `export function helper($, e, value) { return value.to(e, 'append'); }`,
     'decoy.ts': `export function helper(next, e) { return next.to(e, 'core'); }`,
   })
   const result = await loadModDeclaration(input)
@@ -1336,10 +1323,10 @@ test('collects a renamed Next parameter from the selected module despite a same-
 test('does not approve an imported capability helper through an unrelated same-name function', async () => {
   const input = await plugin({
     'main.ts': `import { helper } from './unsafe.js'; import './safe.js'; export function register(on) {
-      on('tool.describe', ($, e, next) => helper(e, next))
+      on('tool.describe', ($, e, next) => helper(e, $))
     }`,
     'unsafe.js': `export function helper(e, value) { return unknown(value) }`,
-    'safe.js': `export function helper(next, e) { return next(e) }`,
+    'safe.js': `export function helper(api, e) { return api.clock.now() }`,
   })
   await expect(loadModDeclaration(input)).rejects.toThrow('helpers')
 })
@@ -1354,7 +1341,7 @@ test('tracks passing the whole engine to an imported capability helper', async (
   expect((await loadModDeclaration(input)).calls).toEqual(['clock.now'])
 })
 
-test('scans capabilities and tiers in imported helpers that receive next', async () => {
+test('loads an imported helper that receives next without listing its tiers', async () => {
   const input = await plugin({
     'main.ts': `import { continuePastUsers } from './helper.js'; export function register(on) {
       on('tool.describe', ($, e, next) => continuePastUsers(e, next))
@@ -1363,7 +1350,7 @@ test('scans capabilities and tiers in imported helpers that receive next', async
   })
   const result = await loadModDeclaration(input)
   expect(result.events).toEqual(['tool.describe'])
-  expect(result.nextTiers).toEqual(['append'])
+  expect(result.nextTiers).toEqual([])
 })
 
 test('enforces lexical and realpath containment for entrypoints and relative imports', async () => {
