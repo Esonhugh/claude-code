@@ -1071,6 +1071,10 @@ function isAttendedSession(): boolean {
 
 // Official 2.1.329: where a Claude session started by a hook leaves a note
 // for the session that ran the hook. Owner-only, and never through a symlink.
+// Officially the child writes a note named after its session id, and the
+// parent reads the notes only into its data-flow ledger. This fork has no such
+// ledger, so it hands the directory down to match the hook environment and
+// neither writes nor reads notes.
 function childNotesDirEnv(sessionId: string): NodeJS.ProcessEnv {
   if (!validateUuid(sessionId)) return {}
   const dir = join(getProjectTempDir(), sessionId, 'started')

@@ -236,7 +236,7 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 | `CLAUDE_CODE_CHILD_NOTES_DIR` | `<项目临时目录>/<会话 ID>/started`，各级目录权限为 `0700`；路径上有符号链接时不设置 |
 | `CLAUDE_EFFORT` | 当前 effort 档位（JSON 输入里也有 `effort.level`） |
 
-打包 binary 自己用的 `CLAUDE_CODE_BUILTIN_*`、`CLAUDE_CODE_EMBEDDED_*` 不会传给 hook。`CLAUDE_CODE_CHILD_NOTES_DIR` 目前只创建目录并传下去，本 fork 还没有读取它的一方。
+打包 binary 自己用的 `CLAUDE_CODE_BUILTIN_*`、`CLAUDE_CODE_EMBEDDED_*` 不会传给 hook。`CLAUDE_CODE_CHILD_NOTES_DIR` 只创建目录并传下去，让 hook 的环境和官方一致。官方里，由 hook 启动的 Claude 子会话会在这个目录写一个以自己会话 ID 命名的记录，父会话读取这些记录，只用来写自己的数据流记录，界面上看不到。本 fork 没有这套数据流记录，所以不写也不读这个目录，这是有意的取舍。
 
 ## 未信任的文件夹
 
@@ -255,7 +255,6 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 
 - PreModelSwitch hook 返回的 `systemMessage` 不会附在 `/model` 的结果后面；`-p '/model x'` 不触发 PostModelSwitch；hook 返回 allow 时的 `skipConfirm` 没有处理。
 - hook 输出的 `terminalSequence` 字段没有实现，`Expected schema` 提示块里也没有这一行。
-- `CLAUDE_CODE_CHILD_NOTES_DIR` 只下发了变量；读取这个目录记录会话来源的一侧，以及官方对临时目录属主的检查，都没有移植。
 - 未信任文件夹里 agent frontmatter hook 被跳过时，debug 日志只有前半句，没有官方后面那句「如何信任这个文件夹」。
 - `CLAUDE_EFFORT` 在 `-p` 下默认是 `high`，官方是 `medium`，这是本 fork 有意的差异，见 [effort.md](effort.md)。
 
