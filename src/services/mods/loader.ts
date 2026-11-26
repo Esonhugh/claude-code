@@ -845,6 +845,56 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     walk(body, undefined, undefined)
   }
 
+  // Official 2.1.329 checks a hook's next syntactically: each use of the name itself, wherever it flows after that.
+  function refuseNextForms(body: Node, name: string) {
+    const continued = tiers.filter(tier => tier !== 'prepend')
+    const hint = 'next.to is reached only on the hook\'s own next'
+    const walk = (node: Node, parent: Node | undefined, grandparent: Node | undefined) => {
+      if (node.type === 'Identifier' && node.name === name && !(parent?.type === 'MemberExpression' && parent.property === node && !parent.computed) &&
+        !(['Property', 'MethodDefinition', 'PropertyDefinition'].includes(parent?.type) && parent.key === node && !parent.computed && !parent.shorthand)) {
+        if (parent?.type === 'MemberExpression' && parent.object === node) {
+          if (parent.computed) {
+            if (parent.property.type === 'Literal' && typeof parent.property.value === 'string' && parent.property.value !== 'to') return
+            fail(path, `a computed member access on "${name}" (it may reach next.to)`, parent)
+          }
+          if (parent.property.name !== 'to') return
+          if (parent.optional) fail(path, 'next.to is reached through optional chaining', parent)
+          const call = grandparent
+          if (!(call?.type === 'CallExpression' && call.callee === parent && !call.optional)) {
+            fail(path, 'next.to is used as a value (bound, passed or read) instead of called as next.to(e, "<tier>")', parent)
+          }
+          const tier = call.arguments[1]
+          if (call.arguments.length > 2) fail(path, 'next.to is called with more than (e, "<tier>")', call)
+          if (tier?.type !== 'Literal' || typeof tier.value !== 'string') {
+            fail(path, 'next.to names its tier other than as a string literal (a variable, a template or an expression)', call)
+          }
+          if (!continued.includes(tier.value)) {
+            fail(path, `next.to names "${tier.value}", which is not a tier a dispatch continues at (${continued.join(', ')})`, call)
+          }
+          nextTiers.add(tier.value)
+          return
+        }
+        if (parent?.type === 'VariableDeclarator' && parent.init === node) {
+          if (parent.id.type === 'Identifier') fail(path, `"${name}" (the hook's next) is bound to another name; ${hint}`, parent)
+          if (parent.id.type !== 'ObjectPattern') fail(path, 'next is destructured other than into an object pattern of plain keys', parent)
+          for (const property of parent.id.properties) {
+            if (property.type === 'RestElement') fail(path, 'a rest of next (it holds next.to)', property)
+            if (property.computed || property.key.type !== 'Identifier') fail(path, 'a computed or quoted key destructured from next', property)
+            if (property.key.name === 'to') {
+              fail(path, `next.to is destructured from next; it is reached only as next.to(e, "<tier>") on the hook's own next`, property)
+            }
+          }
+        }
+        if (parent?.type === 'AssignmentExpression' && parent.right === node) {
+          fail(path, `"${name}" (the hook's next) is assigned to another name; ${hint}`, parent)
+        }
+        return
+      }
+      for (const child of children(node)) walk(child, node, parent)
+    }
+    walk(body, undefined, undefined)
+  }
+
   // Official 2.1.329 takes a noun of $ only as $.noun.event(...) and $.plugin only as $.plugin.<name>;
   // the value of next(e) at engine.create is held to the same.
   const membersChecked = new Map<Node, Set<string>>()
@@ -902,7 +952,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   }
 
   // Official 2.1.329 checks only the async generator form, and only on a hook or .catch handler; a plain generator passes.
-  function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler: false | 'the hook' | 'the .catch handler' = false) {
+  function visitFunction(node: Node, scope: Scope, declared: (Capability | undefined)[] = [], event?: string, handler: false | 'the hook' | 'the .catch handler' = false) {
+    // Outside engine.create, a hook's next is checked by refuseNextForms alone and is not tracked as a capability.
+    const formsOnly = !!handler && event !== 'engine.create' && declared[2]?.role === 'next' && node.params[2]?.type === 'Identifier'
+    const roles = formsOnly ? declared.map((value, index) => index === 2 ? undefined : value) : declared
     if (handler) {
       const streaming = event === 'turn.step' || event === 'process.spawn'
       const asyncGenerator = node.async === true && node.generator === true
@@ -930,6 +983,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         refuseNextValues(node.body, param.name)
       }
     })
+    if (formsOnly) {
+      refuseShadow(node.body, node.params[2].name, 'next')
+      refuseNextForms(node.body, node.params[2].name)
+    }
     if (collecting) {
       if (collectedFunctions.has(inner)) return
       collectedFunctions.add(inner)
@@ -1322,8 +1379,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         if ((node.computed || node.optional) && capabilityValue(node.object, scope)) fail(path, 'computed/optional capability access is unsupported; next.to requires a literal tier')
         if (['engine', 'beneath'].includes(roleOf(node.object, scope) ?? '') &&
           !node.computed && !node.optional && node.property.name === 'plugin') return
+        // At engine.create official 2.1.329 leaves any other read of next to the hook's form check.
         if (roleOf(node.object, scope) === 'next' && !node.computed && !node.optional &&
-          ['signal', 'event', 'origin', 'trace', 'budget', 'error', 'called'].includes(node.property.name)) return
+          (['signal', 'event', 'origin', 'trace', 'budget', 'error', 'called'].includes(node.property.name) ||
+            (event === 'engine.create' && node.property.name !== 'to'))) return
         visit(node.object, scope, event)
         if (node.computed) visit(node.property, scope, event)
         return

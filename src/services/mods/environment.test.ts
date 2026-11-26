@@ -1066,7 +1066,7 @@ describe('Mods Worker environment', () => {
     let called = false
     const error = await environment.invoke(environment.registrations[0]!.id, [{}, {}], next(async () => { called = true })).then(() => null, error => error)
     expect(error).toBeInstanceOf(Error)
-    expect(error.message).toContain('tier')
+    expect(error.message).toContain('next.to("core") refused')
     expect(called).toBe(false)
   })
 
