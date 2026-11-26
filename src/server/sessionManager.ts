@@ -455,6 +455,13 @@ export class SessionManager {
     session.exited = closed(child)
     session.spawnOptions = options
     session.busy = false
+    // The old process's permission requests die with it: the page takes their dialogs down, the tasks they blocked unblock.
+    for (const requestId of session.asks.keys()) {
+      const line = JSON.stringify({ type: 'control_cancel_request', request_id: requestId })
+      this.observer?.line?.(session.id, line, 'child')
+      if (session.socket) session.socket.send(line + '\n')
+      else session.pending.push(line)
+    }
     session.asks.clear()
     this.wire(session, child)
     this.write(session.id, queued.join('\n'))

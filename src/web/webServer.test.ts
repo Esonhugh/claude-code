@@ -28,7 +28,7 @@ const TOKEN = 'web-test-token'
 // Stands in for `claude -p` stream-json: a user message is answered with a
 // result naming the text and the child's cwd. With session state events on,
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
-// "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
+// "dispatch" starts worker a1 and finishes it; "ask" leaves a1's permission request open; "start" starts worker a2,
 // which is killed with the child, as `claude -p` does; control requests succeed,
 // and a message to a task is queued (one starting with RESUME resumes it, one
 // starting with INJECT goes to a teammate's next turn and names its transcript).
@@ -60,6 +60,9 @@ process.stdin.on('data', chunk => {
       if (text === 'start') {
         worker = 'a2'
         out({ type: 'system', subtype: 'task_started', task_id: 'a2', description: 'Worker two', prompt: 'go on', task_type: 'local_agent', spawn_depth: 1 })
+      }
+      if (text === 'ask') {
+        out({ type: 'control_request', request_id: 'ask-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {}, agent_id: 'a1' } })
       }
       if (text === 'dispatch') {
         out({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'Worker one', prompt: 'do it', task_type: 'local_agent', spawn_depth: 1 })
@@ -1072,9 +1075,15 @@ describe('claude web server', () => {
       const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
       return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high' && p!.coordinator_context_window === 300000
     })
+    // A permission request still open when it restarts goes with the old process: the page is told to take it down.
+    send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'ask' }] } })
+    await waitFor(() => lines.some(l => l.type === 'control_request' && l.request_id === 'ask-1'))
+    await waitFor(async () => ((await (await api('/tasks')).json()) as { state: string }[])[0]?.state === 'blocked')
     await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
     await waitFor(() => r.spawned.length === 2)
     expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', autoCompactWindow: 300000, appendSystemPrompt: 'NEW' })
+    await waitFor(() => lines.some(l => l.type === 'control_cancel_request' && l.request_id === 'ask-1'))
+    expect(((await (await api('/tasks')).json()) as { state: string }[])[0]?.state).not.toBe('blocked')
     // A model switch resets the effort to the new model's own, as the session does.
     send({ type: 'control_request', request_id: 'web-model-2', request: { subtype: 'set_model', model: 'opus' } })
     await waitFor(async () => {

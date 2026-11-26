@@ -496,6 +496,12 @@ describe('reduce', () => {
     expect(state.approvals.map(a => [a.requestId, a.agentId])).toEqual([['r2', 'a1']])
   })
 
+  it('takes a withdrawn request\'s dialog down', () => {
+    const ask = (id: string) => ({ type: 'control_request', request_id: id, request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {} } })
+    const state = fold([ask('r1'), ask('r2'), { type: 'control_cancel_request', request_id: 'r1' }])
+    expect(state.approvals.map(a => a.requestId)).toEqual(['r2'])
+  })
+
   it('sends the offered rules with "always allow"', () => {
     const rule = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'ls:*' }], behavior: 'allow', destination: 'localSettings' }
     const state = fold([
