@@ -56,6 +56,17 @@ server 有兩種接法：
 
 也可以用命令添加：`claude mcp add weather -- bun ./weather-mcp.mjs`（加 `-s project` 写进 `.mcp.json`，默认只对你自己生效）。
 
+`claude mcp add -s project` 和 `claude mcp remove <name> -s project` 只增删 `.mcp.json` 里的那一条，其余内容原样写回：`"${MY_SECRET}"` 这样的变量引用不会被展开成明文，`$schema` 等其他顶层键和本版本不认识 `type` 的条目都保留。是否已存在按文件里的键名判断，所以不认识的条目也不会被同名 `add` 覆盖，也可以 `remove`。`.mcp.json` 不是合法 JSON、顶层不是对象或 `mcpServers` 不是对象时报 `.mcp.json is malformed (not valid JSON, or mcpServers is not an object)`，读不了文件（例如 `EACCES`）时直接报错，两种情况都不写文件，退出码为 1。文件不存在或只有空白时新建。
+
+已经有一份 JSON 配置时用 `claude mcp add-json`。JSON 写成 `-` 时从标准输入读：
+
+```bash
+echo '{"type":"stdio","command":"echo"}' | claude mcp add-json -s user x -
+# Added stdio MCP server x to user config
+```
+
+标准输入为空、只有空白或是终端时报 `There is no JSON on stdin. Pipe it in, or pass it as the argument.`；超过 1 MiB 时报 `The JSON on stdin is over the limit of 1 MiB.`。在 Claude Code 会话里运行（设置了 `CLAUDE_CODE_CHILD_SESSION`）时拒绝从标准输入读，因为权限确认看不到 server 的内容，要到会话外运行。JSON 直接写在参数里时不读标准输入。
+
 **2. 批准。** 项目里的 server 可能执行任意代码，所以第一次打开时会问你是否启用：
 
 ![批准项目 MCP server](images/mcp-approve.png)
@@ -130,6 +141,24 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 
 跳过原因：`invalid_config`（字段不合法）、`unknown_type`（type 不认识）、`url_missing_type`（写了 url 却没写 type）。整份文件格式坏掉（例如 `mcpServers` 不是对象）时才整体不加载。
 
+**同一个名字写在多个范围里。** 用户配置和项目 `.mcp.json` 都有 `dup`、项目那条还没批准时，`mcp list` 和 `mcp get dup` 用的是已批准的用户配置（`Scope: User config`），未批准的项目条目不再把它盖掉。两边地址不同时，诊断区多出一段 `[Conflicting scopes]`：`Server "dup" is defined in multiple scopes with different endpoints: user (…), project (…). OAuth tokens are stored per endpoint, so authenticating in one context will not carry over.`，下一行建议用 `claude mcp remove dup -s <范围>` 删掉多余的那条。
+
+**添加时的检查和提示：**
+
+- `claude mcp add -H` 回显 header 时，名字里带 `authorization`、`token`、`secret`、`api-key`、`cookie` 等字样的值显示为 `[REDACTED]`，写进配置的仍是原值。
+- `claude mcp add-json` 不接受 `sdk`、`sse-ide`、`ws-ide`、`claudeai-proxy` 类型，例如 `Cannot add MCP server "sdkx": type "sdk" servers are registered by the host application at runtime, not stored in configuration`，退出码为 1。字段不合法时指出是哪个字段，例如 `Invalid configuration: url: expected string, received undefined`。
+- `claude mcp add x https://example.com/mcp` 没写 `--transport` 时，警告文案为 `… looks like a URL, but is treated as a stdio server because --transport wasn't set.`。
+- `claude mcp remove st -s user` 找不到时报 `No MCP server named "st" in user scope`。`claude mcp reset-project-choices` 在有待批准的 server 时多一行 `You will be prompted for approval next time you start Claude Code.`。
+
+**连接失败的原因。** HTTP server 返回 404 时显示 `MCP endpoint not found at <origin>. Check the URL in your MCP config.`；返回 500 时显示 `HTTP 500: Error POSTing to endpoint: <响应正文>`。
+
+## 调用工具时的结果与报错
+
+- **结果太大。** MCP 工具结果超过 token 上限（环境变量 `MAX_MCP_OUTPUT_TOKENS`，不设时默认 25000）时存到文件，模型拿到的是文件路径和读取方式。用 `count_tokens` 计数失败或返回空时，改按字符数估算，不再直接放行整段结果。结果只有一个 text 块时存成纯文本 `.txt`（`Format: Plain text`），提示里写字符数和行数，例如 `Error: result (5,000 characters across 1 line) exceeds maximum allowed tokens. Output has been saved to …`，行太长不能用 Read 的 offset / limit 分段时会说明改用按字符范围读取。
+- **读不存在的资源。** `ReadMcpResourceTool` 读到不存在的 URI（server 返回 -32002 或 invalid params）时不再算工具错误，而是返回 `Resource not found: <uri> — it may have been deleted or the URI is stale. Re-run ListMcpResourcesTool to refresh.`。
+- **模型没见过 schema 的工具报错。** 工具按需加载（tool search）且这个工具的 input schema 还没发给模型时，工具返回错误后会在结果末尾附上它的 input schema；schema 超过 10,000 字符时只说明用 `ToolSearch` 的 `select:<工具名>` 加载后再调用。每个工具只附一次。
+- **刚出现的工具。** server 发出 `tools/list_changed` 后模型立刻调用新工具，会等这次工具列表刷新完成再找工具，不再报 `No such tool available`。这项修复针对 `-p` 模式，交互模式下工具列表的批量刷新没有改，也没有验证过。
+
 ## 命令速查
 
 | 命令 | 作用 |
@@ -137,8 +166,10 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 | `/mcp` | 查看、启用 / 停用、重连、登录 server，查看工具 |
 | `/mcp reconnect all` | 重连所有失败或待认证的 server；`-p` 模式下 `/mcp` 只打印状态 |
 | `claude mcp add <name> -- <命令>` | 添加 stdio server；`--transport http <url>` 添加远程 server；`-s user/project/local` 选范围 |
+| `claude mcp add-json <name> <json>` | 用一段 JSON 添加；`<json>` 写 `-` 时从标准输入读（上限 1 MiB） |
 | `claude mcp list` | 列出 server 和健康状态（待批准、已停用的项目 server 不连接） |
-| `claude mcp get <name>` / `remove <name>` | 查看 / 删除 |
+| `claude mcp get <name>` / `remove <name>` | 查看 / 删除；`-s project` 只改 `.mcp.json` 里的这一条 |
+| `claude mcp reset-project-choices` | 清除对项目 server 的批准 / 拒绝选择，下次启动重新询问 |
 | `claude mcp login <name> [--no-browser]` / `logout <name>` | HTTP / SSE server 的 OAuth 登录与登出 |
 
 ## 设置（写在每个 server 的配置里）
