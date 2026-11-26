@@ -37,6 +37,7 @@ import {
   describeBlockedModelSwitch,
   getModelSwitchHookInfo,
   getPostModelSwitchContext,
+  withModelSwitchHookMessages,
 } from '../../utils/model/modelSwitchHooks.js'
 import { validateModel } from '../../utils/model/validateModel.js'
 import { getPromptCacheFacts } from '../../utils/promptCacheFacts.js'
@@ -92,9 +93,10 @@ function ConfirmModelSwitch({
 }
 
 /**
- * Run PreModelSwitch hooks for a /model switch. Returns true when the switch
- * may proceed now; otherwise it was blocked (onDone already called) or a
- * confirmation was queued via setPending.
+ * Run PreModelSwitch hooks for a /model switch. Returns the hooks' messages
+ * when the switch may proceed now; otherwise it was blocked (onDone already
+ * called) or a confirmation was queued via setPending, whose apply passes the
+ * messages on.
  */
 async function preModelSwitch(
   info: ModelSwitchHookInfo,
@@ -105,30 +107,37 @@ async function preModelSwitch(
     options?: { display?: CommandResultDisplay },
   ) => void,
   setPending: (pending: PendingModelSwitch) => void,
-  apply: () => void,
-): Promise<boolean> {
+  apply: (hookMessages: string[]) => void,
+): Promise<string[] | undefined> {
   const verdict = await checkModelSwitch(info, source, context)
+  const applyLater = () => apply(verdict.messages)
   if (verdict.decision === 'block') {
     onDone(
-      describeBlockedModelSwitch(info.requestedModel, verdict.reason),
+      describeBlockedModelSwitch(
+        info.requestedModel,
+        verdict.reason,
+        verdict.messages,
+      ),
       { display: 'system' },
     )
-    return false
+    return undefined
   }
   if (verdict.decision === 'ask') {
-    setPending({ info, fromHook: true, reason: verdict.reason, apply })
-    return false
+    setPending({ info, fromHook: true, reason: verdict.reason, apply: applyLater })
+    return undefined
   }
+  // A hook that allowed the switch already confirmed it (official 2.1.329).
   const cache = getPromptCacheFacts(context.messages, info.fromModel)
   if (
+    !verdict.skipConfirm &&
     info.toModel !== info.fromModel &&
     cache !== undefined &&
     !cache.promptCacheLikelyExpired
   ) {
-    setPending({ info, fromHook: false, apply })
-    return false
+    setPending({ info, fromHook: false, apply: applyLater })
+    return undefined
   }
-  return true
+  return verdict.messages
 }
 
 function ModelPickerWrapper({
@@ -167,11 +176,12 @@ function ModelPickerWrapper({
     effort: EffortLevel | undefined,
   ): void {
     const info = getModelSwitchHookInfo(model, context.messages)
-    const apply = () => void applySelect(model, effort, info)
+    const apply = (hookMessages: string[]) =>
+      void applySelect(model, effort, info, hookMessages)
     setSwitching(true)
     void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
-      proceed => {
-        if (proceed) apply()
+      hookMessages => {
+        if (hookMessages) apply(hookMessages)
       },
     )
   }
@@ -181,11 +191,12 @@ function ModelPickerWrapper({
     effort: EffortLevel | undefined,
   ): void {
     const info = getModelSwitchHookInfo(model, context.messages)
-    const apply = () => void applySelect(model, effort, info, true)
+    const apply = (hookMessages: string[]) =>
+      void applySelect(model, effort, info, hookMessages, true)
     setSwitching(true)
     void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
-      proceed => {
-        if (proceed) apply()
+      hookMessages => {
+        if (hookMessages) apply(hookMessages)
       },
     )
   }
@@ -194,6 +205,7 @@ function ModelPickerWrapper({
     model: string | null,
     effort: EffortLevel | undefined,
     info: ModelSwitchHookInfo,
+    hookMessages: string[],
     forSession = false,
   ): Promise<void> {
     logEvent('tengu_model_command_menu', {
@@ -253,7 +265,7 @@ function ModelPickerWrapper({
       message += ` · Fast mode OFF`
     }
 
-    onDone(message, {
+    onDone(withModelSwitchHookMessages(message, hookMessages), {
       metaMessages: await getPostModelSwitchContext(info, 'picker', context),
     })
   }
@@ -362,17 +374,23 @@ function SetModelAndClose({
 
     async function switchModel(modelValue: string | null): Promise<void> {
       const info = getModelSwitchHookInfo(modelValue, context.messages)
-      const apply = () => void setModel(modelValue, info)
-      if (
-        await preModelSwitch(info, 'command', context, onDone, setPending, apply)
-      ) {
-        apply()
-      }
+      const apply = (hookMessages: string[]) =>
+        void setModel(modelValue, info, hookMessages)
+      const hookMessages = await preModelSwitch(
+        info,
+        'command',
+        context,
+        onDone,
+        setPending,
+        apply,
+      )
+      if (hookMessages) apply(hookMessages)
     }
 
     async function setModel(
       modelValue: string | null,
       info: ModelSwitchHookInfo,
+      hookMessages: string[],
     ): Promise<void> {
       setAppState(prev => ({
         ...prev,
@@ -413,7 +431,7 @@ function SetModelAndClose({
         message += ` · Fast mode OFF`
       }
 
-      onDone(message, {
+      onDone(withModelSwitchHookMessages(message, hookMessages), {
         metaMessages: await getPostModelSwitchContext(info, 'command', context),
       })
     }

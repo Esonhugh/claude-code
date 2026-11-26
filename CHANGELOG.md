@@ -130,6 +130,7 @@
 - WorktreeCreate hook 成功但没给路径时，以前报 `WorktreeCreate hook failed: no successful output`，现在报 `hook succeeded but returned no worktree path (command: echo the path to stdout; http/callback: return hookSpecificOutput.worktreePath)`；配置了但一个都没运行时报 `hook is configured but did not run (workspace not trusted or matcher mismatch)`。（#1479、#1472）
 - 被 UserPromptSubmit hook 阻止的提示词以前从输入框消失，现在放回输入框。（#1491、#1472）
 - `/model` 和 `-p` 被 PreModelSwitch hook 阻止时显示 `Model switch to X was blocked by a PreModelSwitch hook: <原因>`，`ask` 判定在 `-p` 下附 `(run /model interactively to confirm)`；原因压成一行：去尾部空白、超过 2000 字符截断加 `…`、tab 换成空格、换行和控制字符及不可见格式字符换成 U+FFFD。（#1491、#1500、#1472）
+- PreModelSwitch hook 的 `systemMessage` 和执行失败的提示以前被丢掉，现在逐行附在 `/model` 的结果或阻止原因后面；hook 返回 `allow` 时以前仍会因 prompt cache 仍热弹 `Switch model?` 确认，现在直接切换；`-p '/model x'` 以前不触发 PostModelSwitch，现在切换后运行（`source` 为 `command`），`additionalContext` 进入下一次请求。（#1515、#1472）
 - 会话里还没有模型回复（只运行过本地命令）时，`/compact <指令>` 以前不触发 PreCompact，现在先运行 PreCompact（`custom_instructions` 为该指令）再报 `Not enough messages to compact.`，SDK 收到 `compacting` 和失败两条 status。（#1500、#1472）
 - `disableAllHooks` 时 `/hooks` 的停用页改为标题 `Hooks`、副标题 `off · N hooks not running`（托管设置停用时为 `turned off by your organization`），正文与官方一致；交互权限确认的 Notification 消息固定为 `Claude needs your permission`；Elicitation hook 最后取消时，MCP server 收到 `{"action":"cancel","content":{}}`。（#1491、#1472）
 - SDK `apply_flag_settings` 撤掉的 `--settings` 权限规则（以及托管设置的规则）以前一直留在会话里，现在重新载入时清空所有设置来源的规则再套用；`cliArg`、会话内和命令里的规则不受影响。（#1430、#1423）

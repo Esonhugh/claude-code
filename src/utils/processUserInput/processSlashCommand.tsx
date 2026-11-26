@@ -1131,6 +1131,9 @@ async function getMessagesForSlashCommand(
               createCommandInputMessage(
                 `<local-command-stdout>${result.value}</local-command-stdout>`,
               ),
+              ...(result.metaMessages ?? []).map(content =>
+                createUserMessage({ content, isMeta: true }),
+              ),
             ],
             shouldQuery: false,
             command,

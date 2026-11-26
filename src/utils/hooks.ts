@@ -5211,6 +5211,11 @@ function createModelSwitchHookFields<S extends string>(
   }
 }
 
+export type ModelSwitchVerdict =
+  | { decision: 'proceed'; skipConfirm: boolean; messages: string[] }
+  | { decision: 'ask'; reason?: string; messages: string[] }
+  | { decision: 'block'; reason?: string; messages: string[] }
+
 export function hasPreModelSwitchHook(appState?: AppState): boolean {
   return hasHookForEvent('PreModelSwitch', appState, getSessionId())
 }
@@ -5218,13 +5223,16 @@ export function hasPreModelSwitchHook(appState?: AppState): boolean {
 /**
  * Run PreModelSwitch hooks before a requested model switch. A hook blocks with
  * exit code 2 or permissionDecision "deny" (a timeout also blocks), and asks
- * for confirmation with permissionDecision "ask".
+ * for confirmation with permissionDecision "ask". "allow" sets skipConfirm,
+ * which skips the warm-cache confirmation. `messages` holds the hooks'
+ * systemMessage and failure lines that /model shows after its result, as in
+ * official 2.1.329.
  */
 export async function executePreModelSwitchHooks(
   info: ModelSwitchHookInfo & { source: PreModelSwitchHookInput['source'] },
   toolUseContext?: ToolUseContext,
   signal?: AbortSignal,
-): Promise<{ decision: 'proceed' | 'ask' | 'block'; reason?: string }> {
+): Promise<ModelSwitchVerdict> {
   const hookInput: PreModelSwitchHookInput = {
     ...createBaseHookInput(undefined, undefined, toolUseContext),
     hook_event_name: 'PreModelSwitch',
@@ -5233,6 +5241,8 @@ export async function executePreModelSwitchHooks(
   let blockReason: string | undefined
   let ask = false
   let askReason: string | undefined
+  let allow = false
+  const messages: string[] = []
   for await (const result of executeHooks({
     hookInput,
     toolUseID: randomUUID(),
@@ -5242,10 +5252,26 @@ export async function executePreModelSwitchHooks(
     messages: toolUseContext?.messages,
   })) {
     const message = result.message as
-      | { type: string; attachment?: { type: string; hookName?: string } }
+      | {
+          type: string
+          attachment?: {
+            type: string
+            hookName?: string
+            content?: string
+            stderr?: string
+          }
+        }
       | undefined
     const attachment =
       message?.type === 'attachment' ? message.attachment : undefined
+    if (attachment?.type === 'hook_system_message' && attachment.content) {
+      messages.push(attachment.content)
+    } else if (attachment?.type === 'hook_non_blocking_error') {
+      const stderr = attachment.stderr?.trim()
+      messages.push(
+        `PreModelSwitch hook ${attachment.hookName ?? ''} failed${stderr ? `: ${stderr}` : ''}`,
+      )
+    }
     if (attachment?.type === 'hook_cancelled' && !signal?.aborted) {
       blockReason ??= `PreModelSwitch hook ${attachment.hookName ?? ''} did not respond before its timeout`
     }
@@ -5254,11 +5280,15 @@ export async function executePreModelSwitchHooks(
     } else if (result.permissionBehavior === 'ask') {
       ask = true
       askReason ??= result.hookPermissionDecisionReason
+    } else if (result.permissionBehavior === 'allow') {
+      allow = true
     }
   }
-  if (blockReason !== undefined) return { decision: 'block', reason: blockReason }
-  if (ask) return { decision: 'ask', reason: askReason }
-  return { decision: 'proceed' }
+  if (blockReason !== undefined) {
+    return { decision: 'block', reason: blockReason, messages }
+  }
+  if (ask) return { decision: 'ask', reason: askReason, messages }
+  return { decision: 'proceed', skipConfirm: allow, messages }
 }
 
 /**
