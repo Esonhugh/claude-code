@@ -22,7 +22,8 @@ const boot=await import(m.bootstrap);boot.setOriginalCwd(process.cwd());boot.set
 const {enableConfigs}=await import(m.config);enableConfigs()
 if(variant==='coordinator'){const original=await import(m.coordinator);mock.module(m.coordinator,()=>({...original,isCoordinatorMode:()=>true}))}
 const {default:command}=await import(m.command)
-assert.equal(command.type,'local-jsx');assert.equal(command.argumentHint,'<task>');assert.equal(command.isEnabled(),variant!=='headless')
+assert.equal(command.type,'local-jsx');assert.equal(command.argumentHint,'<task>');assert.equal(command.isEnabled(),variant!=='headless'&&variant!=='coordinator')
+if(variant==='coordinator')process.exit(0)
 const {getDefaultAppState}=await import(m.app),{getEmptyToolPermissionContext}=await import(m.tool)
 const {createUserMessage,createAssistantMessage}=await import(m.messages),{createFileStateCacheWithSizeLimit}=await import(m.files)
 const {getAgentModel}=await import(m.model)
@@ -34,9 +35,7 @@ const context={options:{commands:[command],debug:false,mainLoopModel:'claude-son
 const {processSlashCommand}=await import(m.slash)
 const run=input=>processSlashCommand(input,[],[],[],context,()=>{},undefined,undefined,permit)
 const usage=await run('/subtask   ');assert.equal(usage.shouldQuery,false);assert.equal(usage.resultText,'Usage: /subtask \\\\<task\\\\>');assert.equal(executions.length,0)
-if(variant==='coordinator'){
- process.env.CLAUDE_CODE_COORDINATOR_MODE='1';const {call}=await import(m.call);let output;assert.equal(await call(text=>{output=text},context,'directive'),null);assert.equal(output,'Subtasks are not available in coordinator sessions. Use /branch instead.');assert.equal(executions.length,0)
-}else if(variant==='headless'){
+if(variant==='headless'){
  assert.equal(command.isEnabled(),false)
 }else{
  const result=await run('/subtask   Review THE files   ');assert.equal(result.shouldQuery,false);assert.match(result.resultText,/^\u2442 forked review-the-files \\(....\\)$/)
