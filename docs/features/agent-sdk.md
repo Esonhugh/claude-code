@@ -240,6 +240,7 @@ result success 完成。
   - `subagent_stats.refused.budget` 恒为 0（本 fork 没有预算拒绝）；子代理在通过容量检查、实际启动时才计数；较早的 deferred / interrupted result 不带 `subagent_stats`。
   - host 的 user 消息带 `uuid` 时，官方另发 `command_lifecycle` 事件，本 fork 不发。
   - 两个前台 Bash 命令同时结束时，两条 `task_notification` 的先后不固定。
+  - Stop hook 连续阻断达到上限的那一轮，`result.result` 是最后一条 assistant 文本，官方是空字符串。保留这一点是为了让 `--json-schema` 下模型始终不调用 StructuredOutput 时结果不为空（dec7806d）。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
 
