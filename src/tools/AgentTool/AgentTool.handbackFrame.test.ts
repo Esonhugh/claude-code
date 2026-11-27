@@ -76,3 +76,10 @@ test('with provenance off the report goes back as the run wrote it', () => {
   process.env.CLAUDE_CODE_HANDBACK_PROVENANCE = '0'
   expect(blocks(result([{ type: 'text', text: '2' }]))).toEqual([{ type: 'text', text: '2' }, { type: 'text', text: TRAILER }] as never)
 })
+
+test('with provenance off a delivered hand-back goes back unframed too', () => {
+  process.env.CLAUDE_CODE_HANDBACK_PROVENANCE = '0'
+  const content = [{ type: 'text' as const, text: 'SECURITY WARNING: blocked.' }, { type: 'text' as const, text: 'the report' }]
+  const flagged = result(content, { handback: 'flagged', harnessNoteCount: 1, harnessTailCount: 0, harnessSectionHash: hashSubagentHandbackSections(content) })
+  expect(blocks(flagged)).toEqual([...content, { type: 'text', text: TRAILER }] as never)
+})

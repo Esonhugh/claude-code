@@ -225,9 +225,13 @@ export function withSubagentHandbackReport(result: HandbackResult, text: string,
   }
 }
 
-/** The text a parent reads for an agent result: a delivered hand-back is framed, anything else is plain. */
+/**
+ * The text a parent reads for an agent result: a delivered hand-back is
+ * framed, anything else is plain. With hand-back provenance off every result
+ * is plain, as official 2.1.329's `Jue()` leaves it.
+ */
 export function subagentResultText(result: SubagentHandback & { handback?: SubagentHandbackOutcome }): string {
-  return result.handback === 'send' || result.handback === 'flagged'
+  return (result.handback === 'send' || result.handback === 'flagged') && isHandbackProvenanceEnabled()
     ? frameSubagentHandback(result.content, result)
     : result.content.map(block => block.text).join('\n')
 }

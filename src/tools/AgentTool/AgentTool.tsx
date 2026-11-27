@@ -2629,7 +2629,7 @@ The agent is now running and will receive instructions via mailbox. Its messages
                 text: '(Subagent completed but returned no output.)',
               },
             ]
-      // As official 2.1.322: every finished run reads as a hand-back, the
+      // As official 2.1.329: every finished run reads as a hand-back, the
       // harness notes above the frame and the report indented under it.
       const framed = isHandbackProvenanceEnabled()
         ? [{ type: 'text' as const, text: frameSubagentHandback(contentOrMarker, data.content.length > 0 ? data : undefined) }]

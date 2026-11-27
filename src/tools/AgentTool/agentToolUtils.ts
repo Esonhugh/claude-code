@@ -992,7 +992,7 @@ export async function reportAgentEnd(
 export function applyAgentReport<T extends AgentToolResult>(result: T, report: AgentReport, answer: { text: string; warning?: string } | { consumed: string }): T {
   if ('consumed' in answer) {
     const { handback, handbackToolUseId: _call, harnessNoteCount: _notes, harnessTailCount: _tail, harnessSectionHash: _hash, ...rest } = result
-    // The reason is the mod's, not the agent's: framed, it shows as a note with no report under it.
+    // The reason is the mod's, not the agent's: with hand-back enabled a framed result shows it as a note with no report under it.
     return withHarnessNote({ ...rest, ...(handback !== undefined && { handback: 'withheld' }), content: [] } as unknown as T, answer.consumed)
   }
   if (result.handback !== undefined) {
