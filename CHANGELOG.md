@@ -12,6 +12,25 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - claude web 与桌面应用使用各自的 settings.json 和 .claude.json
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `claude web` 改读写 `~/.claude/web/settings.json` 和 `~/.claude/web/.claude.json`，桌面应用改用 `~/.claude/desktop/` 下的同名文件，不再改动命令行用的 `~/.claude/settings.json` 和 `~/.claude.json`。首次启动时从命令行那份复制，那份不存在时写 `{}`；之后两边不再同步。会话继承 `CLAUDE_CODE_SETTINGS_PROFILE`，设为空字符串可回到共用一份。
+- 网页里改 base URL、界面名称、功能开关、记忆开关不再影响终端里的 claude。
+
+#### 修复
+
+- web 和桌面应用的 `.claude.json` 备份存在各自目录的 `backups/` 下，损坏恢复不会拿另一边的备份。
+- 使用独立设置时，命令行那份 settings.json 仍按设置文件保护：工具修改要确认，沙箱禁止写入。
+
+### 测试覆盖
+
+- `src/utils/settingsProfile.test.ts`：`claude web`、`web --stdio` 和前置 root flag 的识别；首次启动复制、已有文件不覆盖、没有可复制的文件时写 `{}`、空值和非法名字回到共用文件；写入只进 profile 文件；命令行那份 settings.json 仍被认作设置文件。
+- 打包后的 `built-claude` 在隔离配置目录里实测：`web` 和 `web --stdio` 分别建出 `web/`、`desktop/` 两份，经 `PATCH /api/settings` 改的值只进 `web/`，会话子进程带 `CLAUDE_CODE_SETTINGS_PROFILE=web`，`-p` 仍用共用文件。
+
 ## 2026-11-26 - Mods 跟进官方新版：生命周期与主题宿主、加载与校验报错、hook 的 next 写法、热重载通知、$.store 新位置
 
 ### 变更内容
