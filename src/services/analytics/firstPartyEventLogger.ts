@@ -91,10 +91,7 @@ type BatchConfig = {
   scheduledDelayMillis?: number
   maxExportBatchSize?: number
   maxQueueSize?: number
-  skipAuth?: boolean
   maxAttempts?: number
-  path?: string
-  baseUrl?: string
 }
 function getBatchConfig(): BatchConfig {
   return getDynamicConfig_CACHED_MAY_BE_STALE<BatchConfig>(
@@ -133,7 +130,7 @@ export async function shutdown1PEventLogging(): Promise<void> {
  * Check if 1P event logging is enabled.
  * Respects the same opt-outs as other analytics sinks:
  * - Test environment
- * - Third-party cloud providers (Bedrock/Vertex)
+ * - Providers other than first-party Anthropic, or a gateway base URL
  * - Global telemetry opt-outs
  * - Non-essential traffic disabled
  *
@@ -363,10 +360,7 @@ export function initialize1PEventLogging(): void {
   // We don't register this globally - it's only used for internal event logging.
   const eventLoggingExporter = new FirstPartyEventLoggingExporter({
     maxBatchSize: maxExportBatchSize,
-    skipAuth: batchConfig.skipAuth,
     maxAttempts: batchConfig.maxAttempts,
-    path: batchConfig.path,
-    baseUrl: batchConfig.baseUrl,
     isKilled: () => isSinkKilled('firstParty'),
   })
   firstPartyEventLoggerProvider = new LoggerProvider({
