@@ -2262,9 +2262,10 @@ assert.deepEqual(
 )
 const killedProgressNotification = dequeuedTerminalNotification(killedProgressUsageTask.id)
 assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), true)
+// Like official 2.1.329, the user's stop leaves the passive stop notice, which
+// carries no usage, instead of the run's own notification.
 assert.deepEqual(
   {
-    // print.ts maps the XML 'killed' status to the SDK 'stopped' status.
     notificationStatus: killedProgressNotification.status,
     notificationUsage: {
       totalTokens: killedProgressNotification.total_tokens,
@@ -2273,7 +2274,7 @@ assert.deepEqual(
   },
   {
     notificationStatus: 'killed',
-    notificationUsage: killedProgressExpectedUsage,
+    notificationUsage: { totalTokens: NaN, toolUses: NaN },
   },
 )
 

@@ -89,7 +89,6 @@ import {
   getPluginReadFromFolder,
   loadAllPlugins,
   loadAllPluginsCacheOnly,
-  loadPluginsForContractValidation,
 } from '../../utils/plugins/pluginLoader.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
@@ -508,34 +507,33 @@ export async function pluginValidateHandler(
         pluginRoot = dirname(manifestDir)
         let foreignDeclarations: Awaited<ReturnType<typeof resolveForeignModStateDeclarations>>['declarations']
         let foreignWarning: string | undefined
+        // Official 2.1.329 checks foreign state only against a session's plugins. Outside a
+        // session it reads no other plugin's contract, so every foreign key stays unchecked.
         const cachedPlugins = loadAllPluginsCacheOnly.cache?.get(undefined)
-        try {
-          const context = cachedPlugins
-            ? { ...await cachedPlugins, complete: true }
-            : await loadPluginsForContractValidation()
-          if (!context.complete || context.errors.length) {
-            const details = context.errors.map(error => `${error.source}: ${getPluginErrorMessage(error)}`).join('; ')
-            foreignWarning = `${cachedPlugins ? 'Cached plugin' : 'Plugin contract'} context has ${context.errors.length} loader ${plural(context.errors.length, 'error')}${context.complete ? '' : ' and is incomplete'}; foreign state references were left unchecked.${details ? ` ${details}` : ''}`
-          } else {
-            const manifest = jsonParse(await readFile(pluginResult.filePath, 'utf8')) as { name?: unknown }
-            if (typeof manifest.name === 'string') {
-              const resolved = await resolveForeignModStateDeclarations(
-                context.enabled,
-                manifest.name,
-              )
-              foreignDeclarations = resolved.declarations
-              foreignWarning = resolved.warning
+        if (cachedPlugins) {
+          try {
+            const context = await cachedPlugins
+            if (context.errors.length) {
+              const details = context.errors.map(error => `${error.source}: ${getPluginErrorMessage(error)}`).join('; ')
+              foreignWarning = `Cached plugin context has ${context.errors.length} loader ${plural(context.errors.length, 'error')}; foreign state references were left unchecked.${details ? ` ${details}` : ''}`
+            } else {
+              const manifest = jsonParse(await readFile(pluginResult.filePath, 'utf8')) as { name?: unknown }
+              if (typeof manifest.name === 'string') {
+                const resolved = await resolveForeignModStateDeclarations(
+                  context.enabled,
+                  manifest.name,
+                )
+                foreignDeclarations = resolved.declarations
+                foreignWarning = resolved.warning
+              }
             }
+          } catch (error) {
+            foreignWarning = `Could not use cached plugin context: ${errorMessage(error)}. Foreign state references were left unchecked.`
           }
-        } catch (error) {
-          foreignWarning = `Could not use ${cachedPlugins ? 'cached plugin' : 'plugin contract'} context: ${errorMessage(error)}. Foreign state references were left unchecked.`
         }
-        // Official 2.1.329 checks foreign state only against a session's plugins; contracts discovered
-        // outside a session confirm a key they name, and one they do not name stays unchecked.
         contentResults = await validatePluginContents(
           dirname(manifestDir),
           foreignDeclarations,
-          !!cachedPlugins,
         )
         if (foreignWarning) {
           const hooksResult = contentResults.find(r => r.fileType === 'hooks')

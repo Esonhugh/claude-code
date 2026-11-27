@@ -10,7 +10,7 @@
 
 - 运行前会让你确认，看清楚要派多少 Agent；
 - 在后台运行，不占住对话；`/workflows` 里能看到每个阶段、每个 Agent 的进度；
-- 结束（完成、失败或被你停止）时，主对话会收到一条通知和结果；
+- 完成或失败时，主对话会收到一条通知和结果；被你停止时不会马上通知，Claude 在你下一条消息里得知它已停止；
 - 跑得好的脚本可以保存成命名 workflow，下次按名字直接用。
 
 脚本格式和官方 Workflow 兼容（不是 Anthropic 的官方实现）。
@@ -25,7 +25,7 @@ For big jobs that need many agents at once (for example, split the repo by modul
 
 - before it starts, you confirm it and see how many agents it will launch;
 - it runs in the background without holding the conversation, and `/workflows` shows the progress of each phase and each agent;
-- when it ends (finished, failed or stopped by you), the main conversation gets a notification and the result;
+- when it finishes or fails, the main conversation gets a notification and the result; if you stop it, nothing is sent right away, and Claude learns it was stopped with your next message;
 - scripts that work well can be saved as named workflows and reused by name.
 
 The script format is compatible with the official Workflow (this is not Anthropic's official implementation).
@@ -41,7 +41,7 @@ The script format is compatible with the official Workflow (this is not Anthropi
 
 - 執行前會讓你確認，看清楚要派多少 Agent；
 - 在後台執行，不佔住對話；`/workflows` 裡能看到每個階段、每個 Agent 的進度；
-- 結束（完成、失敗或被你停止）時，主對話會收到一條通知和結果；
+- 完成或失敗時，主對話會收到一條通知和結果；被你停止時不會馬上通知，Claude 在你下一條訊息裡得知它已停止；
 - 跑得好的腳本可以儲存成命名 workflow，下次按名字直接用。
 
 腳本格式和官方 Workflow 相容（不是 Anthropic 的官方實現）。
@@ -182,6 +182,7 @@ return await agent('Summarize the findings', { label: 'summary' })
 - 运行过程会记日志（journal）。用 `resumeFromRunId` 重新运行时，已经完成的 Agent 直接复用结果，只重跑改动过或没跑完的部分。
 - 支持暂停 / 恢复，以及对失败的步骤跳过或重试；暂停时不会发终态通知。
 - 完成、失败或被 `TaskStop` 停止时，主对话收到一条通知，带 token / 工具用量、耗时和输出文件；已经完成的分支结果会保留。对已经结束的运行再次执行不会重复启动。
+- 你在面板或 `/workflows` 里按 `x` 停止时，和官方 2.1.329 一样不发这条通知，也不开新一轮回复。Claude 在你下一条消息里收到 `Task "<描述>" was stopped by the user. No result will follow unless the user has it resumed.`，附带续跑用的 `Workflow({scriptPath, resumeFromRunId})`，只在你要求时才续跑。
 - `agent()` 会一直等到那个 Agent 真正结束，即使它被路由到后台或被你切到后台。它返回报告原文，不带 hand-back frame 和 tools-used 提示。
 - **撞到 claude.ai 用量上限时自动等。** 订阅用户的 Agent 因用量上限停下时，工作流暂停到额度重置后 30–90 秒，再以 `<label> (after usage limit)` 重跑这些 Agent；等待期间后台任务列表显示 `Paused · usage limit resets at <时间>`，也不会启动新 Agent。重置时间超过 24 小时、或本次运行已经等过 2 次时直接失败并写明原因。不想等就设 `autoContinueAtUsageLimit: false`。
 

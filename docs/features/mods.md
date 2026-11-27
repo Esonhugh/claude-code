@@ -535,7 +535,8 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 **`plugin validate` 输出**
 
 - 错误前缀用 plugin 的目录名，并带上 hooks 模块的路径；notes 排在 errors 和 warnings 之后。新增 gating 行（`gating hook with/without .catch: …`）、Provides 列表，以及 `Hosts:`、`Hosts not read for:`、`Hosts not declared:` 三行。host 来自模块里的字面量 URL、`plugin.json` 的 `network.hosts` 和 stdio MCP server 声明的 network hosts。
-- env 名或 state 引用不是字面量时报 `… takes a reference whose plugin and key are string literals … (got the variable n)`，没有插值的模板字符串算字面量。不在会话里运行 validate 时，其他插件的 state 键显示 `not checked (run validate in a session with them enabled)`。
+- env 名或 state 引用不是字面量时报 `… takes a reference whose plugin and key are string literals … (got the variable n)`，没有插值的模板字符串算字面量。不在会话里运行 validate 时，其他插件的 state 键显示 `not checked (run validate in a session with them enabled)`：和官方 2.1.329 一样不读取其他插件的契约，已安装的插件声明了这个键也不算确认，契约读不了也不报警告。
+- 未对齐：官方 2.1.329 会在子进程里对 `.ts`、`.tsx`、`.mts` hooks 模块（及其相对导入）做类型检查，每个文件一段 `Validating hooks: <文件>`，诊断以 warning 形式列出，如 `line 1, column 26: error TS7006: Parameter 'on' implicitly has an 'any' type.`。它不读取插件的 `tsconfig.json`，超时 60 秒，子进程没结果时报 `not type-checked: …`。本地不做这一步，因为要把 TypeScript 编译器和 lib 声明打进二进制。需要时请用上文的 `tsc -p` 命令检查。
 
 **热重载**
 

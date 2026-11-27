@@ -13,6 +13,7 @@ import type { WorkflowUsageLimitWaitStatus } from '../../tools/WorkflowTool/work
 import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
+import { enqueueStopSweepNotices } from '../userStopNotice.js'
 import { endWorkflowProgressRows } from './workflowProgressRows.js'
 
 const MAX_RECENT_ACTIVITIES = 5
@@ -1210,11 +1211,27 @@ export function pauseWorkflowTask(
   })
 }
 
+/**
+ * The user stopping a workflow from the panel or /workflows. Like official
+ * 2.1.329, the model hears of it with its next prompt, which the stop doesn't
+ * start; the run's own stop notification is not queued.
+ */
 export function killWorkflowTask(
   taskId: string,
   setAppState: SetAppState,
 ): void {
-  setAppState(endWorkflowTask(taskId, 'killed'))
+  let stopped: LocalWorkflowTaskState | undefined
+  setAppState(prev => {
+    const task = prev.tasks?.[taskId]
+    if (task?.type !== 'local_workflow' || task.status !== 'running') return endWorkflowTask(taskId, 'killed')(prev)
+    stopped = task
+    // Notified before the run sees its abort, so its own stop notification is not queued.
+    return { ...prev, tasks: { ...prev.tasks, [taskId]: { ...endedWorkflowTask(task, 'killed'), notified: true } } }
+  })
+  if (!stopped) return
+  // The run's notification would have told SDK hosts; this says it instead.
+  emitTaskTerminatedSdk(stopped.id, 'stopped', { toolUseId: stopped.toolUseId, summary: stopped.description, outputFile: getTaskOutputPath(stopped.id) })
+  enqueueStopSweepNotices([stopped], 'user')
 }
 
 /**

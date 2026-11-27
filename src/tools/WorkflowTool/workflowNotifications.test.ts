@@ -89,6 +89,15 @@ for (const entry of ['plan', 'script'] as const) {
         expect(finished.notified).toBe(false)
         return
       }
+      if (status === 'killed') {
+        // Like official 2.1.329, the user's stop leaves a passive notice for the next prompt, not the run's own.
+        expect(notifications).toHaveLength(1)
+        expect(notifications[0]).toMatchObject({ priority: 'next', passive: true })
+        expect(String(notifications[0]!.value)).toContain('<summary>Task "Description &lt;safe&gt;" was stopped by the user.')
+        expect(sdk).toHaveLength(1)
+        expect(sdk[0]).toMatchObject({ task_id: finished.id, tool_use_id: 'toolu_terminal', status: 'stopped', output_file: finished.outputFile })
+        return
+      }
       expect(notifications).toHaveLength(1)
       const text = String(notifications[0]!.value)
       expect(text).toContain(`<task-id>${finished.id}</task-id>`)
@@ -104,7 +113,7 @@ for (const entry of ['plan', 'script'] as const) {
       expect(sdk[0]).toMatchObject({
         task_id: finished.id,
         tool_use_id: 'toolu_terminal',
-        status: status === 'killed' ? 'stopped' : status,
+        status,
         output_file: finished.outputFile,
         usage: { total_tokens: 110, tool_uses: 1 },
       })
