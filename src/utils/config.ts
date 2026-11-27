@@ -16,7 +16,7 @@ import { getCwd } from '../utils/cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { getGlobalClaudeFile } from './env.js'
+import { getGlobalClaudeFile, getSharedGlobalClaudeFile } from './env.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { getSettingsProfileDir } from './settingsProfile.js'
 import { ConfigParseError, errorMessage, getErrnoCode } from './errors.js'
@@ -868,6 +868,27 @@ export function saveGlobalConfig(
   return true
 }
 
+/**
+ * saveGlobalConfig for any of getAllGlobalClaudeFiles(), such as another
+ * settings profile's: the same lock, backup and 0600 write, without this
+ * process's cache. Backups go where that profile keeps them. The file must
+ * exist and parse, since an unreadable one would be replaced with the
+ * defaults. False when the write was refused (see saveGlobalConfig); throws
+ * when the file can't be locked or written.
+ */
+export function saveGlobalConfigFile(
+  file: string,
+  updater: (currentConfig: GlobalConfig) => GlobalConfig,
+): boolean {
+  if (file === getGlobalClaudeFile()) return saveGlobalConfig(updater)
+  const backupDir =
+    file === getSharedGlobalClaudeFile()
+      ? join(getClaudeConfigHomeDir(), 'backups')
+      : join(dirname(file), 'backups')
+  saveConfigWithLock(file, createDefaultGlobalConfig, updater, backupDir)
+  return true
+}
+
 // True while the cache holds the defaults of a startup read that failed.
 let globalConfigCacheIsUnread = false
 
@@ -1163,6 +1184,7 @@ function saveConfigWithLock<A extends object>(
   file: string,
   createDefault: () => A,
   mergeFn: (current: A) => A,
+  backupDir = getConfigBackupDir(),
 ): boolean {
   const defaultConfig = createDefault()
   const dir = dirname(file)
@@ -1263,7 +1285,6 @@ function saveConfigWithLock<A extends object>(
     // keep the home directory clean.
     try {
       const fileBase = basename(file)
-      const backupDir = getConfigBackupDir()
 
       // Ensure backup directory exists
       try {

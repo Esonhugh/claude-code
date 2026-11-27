@@ -6,7 +6,11 @@ import { isRunningWithBun } from './bundledMode.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { findExecutable } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
-import { getSettingsProfileDir, seedSettingsProfileFile } from './settingsProfile.js'
+import {
+  APP_SETTINGS_PROFILES,
+  getSettingsProfileDir,
+  seedSettingsProfileFile,
+} from './settingsProfile.js'
 import { which } from './which.js'
 
 type Platform = 'win32' | 'darwin' | 'linux'
@@ -21,7 +25,18 @@ export const getGlobalClaudeFile = memoize((): string => {
   return path
 })
 
-function getSharedGlobalClaudeFile(): string {
+/**
+ * Every global config this install may use: the shared one, the web and
+ * desktop profiles' and the active one. Some may not exist.
+ */
+export function getAllGlobalClaudeFiles(): string[] {
+  const profiles = APP_SETTINGS_PROFILES.map(profile =>
+    join(getClaudeConfigHomeDir(), profile, `.claude${fileSuffixForOauthConfig()}.json`),
+  )
+  return [...new Set([getSharedGlobalClaudeFile(), ...profiles, getGlobalClaudeFile()])]
+}
+
+export function getSharedGlobalClaudeFile(): string {
   // Legacy fallback for backwards compatibility
   if (
     getFsImplementation().existsSync(

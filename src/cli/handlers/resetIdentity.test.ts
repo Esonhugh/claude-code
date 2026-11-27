@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -10,7 +10,8 @@ const config = process.env.CLAUDE_CONFIG_DIR
 
 const auth = await import('../../utils/auth.js')
 const secureStorage = await import('../../utils/secureStorage/index.js')
-const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
+const configModule = await import('../../utils/config.js')
+const { getGlobalConfig, saveGlobalConfig } = configModule
 const { resetIdentityHandler } = await import('./resetIdentity.js')
 
 // Never read the real keychain: each test says what is stored.
@@ -36,7 +37,20 @@ beforeEach(() => {
   mkdirSync(join(config, 'telemetry'), { recursive: true })
   writeFileSync(join(config, 'telemetry', '1p_failed_events.s.b.json'), '{}\n{}\n')
   writeFileSync(join(config, 'telemetry', 'unrelated.json'), '{}')
+  for (const profile of ['web', 'desktop']) rmSync(join(config, profile), { recursive: true, force: true })
 })
+
+// The `claude web` and desktop profiles keep their own .claude.json.
+function writeProfile(profile: string, content: Record<string, unknown> | string): string {
+  const file = join(config, profile, '.claude.json')
+  mkdirSync(join(config, profile), { recursive: true })
+  writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content))
+  return file
+}
+
+function readProfile(file: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(file, 'utf8'))
+}
 
 afterEach(() => {
   spies.splice(0).forEach(spy => spy.mockRestore())
@@ -117,4 +131,66 @@ test('running again finds nothing to reset', async () => {
   const result = await run({ yes: true })
   expect(result.code).toBe('exit 0')
   expect(result.out).toContain('Nothing to reset')
+})
+
+test('resets the web and desktop profiles too, one write each, and keeps their other keys', async () => {
+  const web = writeProfile('web', { userID: 'web-device', firstStartTime: '2026-01-03T00:00:00.000Z', theme: 'light' })
+  const desktop = writeProfile('desktop', { userID: 'desktop-device', numStartups: 3 })
+  const dryRun = await run({ dryRun: true })
+  expect(dryRun.out).toContain(`userID = web-device (device id sent with API requests and telemetry; ${web})`)
+  expect(dryRun.out).toContain('userID = desktop-device')
+  expect(dryRun.out).toContain('Dry run: 7 item(s) would be reset.')
+
+  const result = await run({ yes: true })
+  expect(result.code).toBe('exit 0')
+  expect(result.out).toContain('Reset 7 item(s).')
+  expect(result.out).toContain('backups/')
+  expect(readProfile(web)).toEqual({ theme: 'light' })
+  expect(readProfile(desktop)).toEqual({ numStartups: 3 })
+  expect(getGlobalConfig().userID).toBeUndefined()
+})
+
+test.each([
+  ['cached account details', { oauthAccount: { accountUuid: 'a' } }],
+  ['an API key saved by /login', { primaryApiKey: 'fixture' }],
+] as const)('refuses while a profile has %s, and names the logout command', async (label, login) => {
+  const web = writeProfile('web', { userID: 'web-device', ...login })
+  const result = await run({ yes: true })
+  expect(result.code).toBe('exit 1')
+  expect(result.err).toContain(`${label} in ${web} (CLAUDE_CODE_SETTINGS_PROFILE=web claude auth logout)`)
+  expect(readProfile(web).userID).toBe('web-device')
+  expect(getGlobalConfig().userID).toBe('old-device')
+})
+
+test('a refused write exits 1 without claiming success', async () => {
+  spies.push(spyOn(configModule, 'saveGlobalConfigFile').mockReturnValue(false))
+  const result = await run({ yes: true })
+  expect(result.code).toBe('exit 1')
+  expect(result.err).toContain('Could not reset')
+  expect(result.out).not.toMatch(/^Reset \d+ item/m)
+})
+
+test('an unreadable profile is left alone and fails the run', async () => {
+  const web = writeProfile('web', '{ not json')
+  const dryRun = await run({ dryRun: true })
+  expect(dryRun.out).toContain(`Could not read ${web}`)
+
+  const result = await run({ yes: true })
+  expect(result.code).toBe('exit 1')
+  expect(result.err).toContain(`Could not read ${web}`)
+  expect(result.out).not.toMatch(/^Reset \d+ item/m)
+  expect(readFileSync(web, 'utf8')).toBe('{ not json')
+})
+
+test('warns about credentials in the environment', async () => {
+  const previous = process.env.ANTHROPIC_AUTH_TOKEN
+  process.env.ANTHROPIC_AUTH_TOKEN = 'fixture'
+  try {
+    const result = await run({ yes: true })
+    expect(result.code).toBe('exit 0')
+    expect(result.err).toContain('Warning: ANTHROPIC_AUTH_TOKEN is set.')
+  } finally {
+    if (previous === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+    else process.env.ANTHROPIC_AUTH_TOKEN = previous
+  }
 })

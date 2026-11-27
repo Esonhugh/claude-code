@@ -12,11 +12,14 @@ export const SETTINGS_PROFILE_ENV = 'CLAUDE_CODE_SETTINGS_PROFILE'
 
 const PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
+/** The profiles `claude web` and the desktop app use. */
+export const APP_SETTINGS_PROFILES = ['web', 'desktop'] as const
+
 /**
  * `desktop` for the desktop app's `claude web --stdio`, else `web`. Root
  * options have no `--stdio`, so any one before `--` belongs to `web`.
  */
-export function webSettingsProfile(argv: string[]): 'web' | 'desktop' {
+export function webSettingsProfile(argv: string[]): (typeof APP_SETTINGS_PROFILES)[number] {
   const separator = argv.indexOf('--')
   return (separator === -1 ? argv : argv.slice(0, separator)).includes('--stdio') ? 'desktop' : 'web'
 }
