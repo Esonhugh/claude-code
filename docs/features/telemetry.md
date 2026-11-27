@@ -100,7 +100,7 @@ claude reset-identity             # 确认后重置；加 -y 跳过确认
 
 | 内容 | 位置 |
 | --- | --- |
-| `userID`（device id）、`firstStartTime`（首次运行时间）、`claudeCodeFirstTokenDate`（账号首次用 Claude Code 的日期） | 共用的 `.claude.json`，以及 `claude web` 和桌面应用各自的 `<配置目录>/web/.claude.json`、`<配置目录>/desktop/.claude.json`（存在才处理） |
+| `userID`（device id）、`firstStartTime`（首次运行时间）、`claudeCodeFirstTokenDate`（账号首次用 Claude Code 的日期） | 共用的 `.claude.json`，以及 `claude web` 和桌面应用各自的 `<配置目录>/web/.claude.json`、`<配置目录>/desktop/.claude.json`（存在才处理）。自定义 profile（如 `CLAUDE_CODE_SETTINGS_PROFILE=foo` 的 `<配置目录>/foo/.claude.json`）只有在设了这个变量运行命令、它是当前 profile 时才处理 |
 | 还没发出的遥测事件 `1p_failed_events.*` | `<配置目录>/telemetry/`；这些文件只有同一会话 id 的进程会重发，其他会话不会读，所以会一直留在磁盘上 |
 
 下次启动时生成新的 device id；已经在运行的会话要重启后才换。每个文件只写一次，和平时保存配置一样加锁、备份，权限 `0600`，其他配置项不动。
