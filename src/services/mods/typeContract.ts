@@ -219,9 +219,8 @@ export function validateModStateReferences(input: {
   owner: string
   references: { reads: ModStateReference[]; writes: ModStateReference[] }
   declared: ModStateDeclaration[]
+  /** Undefined outside a session: no other plugin's contract was read, so foreign keys stay unchecked. */
   others?: ModStateDeclaration[]
-  /** False when others came from discovery outside a session: a foreign key none of them names stays unchecked. */
-  othersComplete?: boolean
 }): { problems: string[]; unchecked: string[] } {
   const known = new Map<string, Set<string>>()
   for (const declaration of [...input.declared, ...(input.others ?? [])]) {
@@ -241,7 +240,7 @@ export function validateModStateReferences(input: {
   for (const reference of [...input.references.reads, ...input.references.writes]) {
     const display = `${spell(reference.plugin)}.${spell(reference.key)}`
     const found = known.get(reference.plugin)?.has(reference.key)
-    if (reference.plugin !== input.owner && (input.others === undefined || (input.othersComplete === false && !found))) {
+    if (reference.plugin !== input.owner && input.others === undefined) {
       unchecked.add(display)
       continue
     }

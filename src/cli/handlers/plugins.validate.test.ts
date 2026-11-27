@@ -179,18 +179,22 @@ test('keeps errors and warnings alongside notes and accepts absent notes', () =>
   expect(print({ ...result, notes: undefined })).not.toContain('undefined')
 })
 
-test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-empty', 'throw', 'broken-types', 'foreign-write'])(
-  'standalone validate consumes only complete contract discovery: %s', async mode => {
+test.each(['declared', 'undeclared', 'broken-types', 'foreign-write'])(
+  'standalone validate reads no other plugin\'s contract, as official 2.1.329: %s', async mode => {
     const owner = await pluginRoot('owner')
     const foreign = await pluginRoot('other')
     await mkdir(join(owner, 'hooks'))
     await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))
     await writeFile(join(owner, 'hooks', 'register.ts'), `throw new Error('must never execute'); export function register(on) { on('tool.call', async ($) => { await $.state.${mode === 'foreign-write' ? 'set' : 'get'}({plugin:'other', key:'value'}${mode === 'foreign-write' ? ', 1' : ''}); }); }`)
-    await writeFile(join(foreign, 'contract.d.ts'), `declare module 'claude-code' { interface PluginState { other: { ${mode === 'complete-missing' ? 'different' : 'value'}: string } } }`)
+    if (mode !== 'broken-types') {
+      await writeFile(join(foreign, 'contract.d.ts'), `declare module 'claude-code' { interface PluginState { other: { ${mode === 'undeclared' ? 'different' : 'value'}: string } } }`)
+    }
+    // Installed, enabled and with a contract on disk: official still leaves its keys unchecked.
+    await mkdir(join(foreign, '.claude-plugin'), { recursive: true })
+    await writeFile(join(foreign, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'other', types: './contract.d.ts' }))
     const lines: string[] = []
     const exits: number[] = []
-    let discoveries = 0
-    const forbidden = () => { throw new Error('materializing loader forbidden') }
+    const forbidden = () => { throw new Error('plugin loading forbidden') }
     const bindings = {
       validateManifest, validatePluginContents, resolveForeignModStateDeclarations,
       listPluginProvides, formatPluginProvides,
@@ -201,15 +205,6 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
       getPluginErrorMessage: (error: { error?: string }) => error.error,
       logError: forbidden, setUseCoworkPlugins: forbidden,
       loadAllPlugins: forbidden, loadAllPluginsCacheOnly: forbidden,
-      loadPluginsForContractValidation: async () => {
-        discoveries++
-        if (mode === 'throw') throw new Error('unreadable context')
-        return {
-          complete: !mode.startsWith('incomplete'),
-          enabled: ['empty', 'incomplete-empty'].includes(mode) ? [] : [loadedPlugin(foreign, 'other', mode === 'broken-types' ? './missing.d.ts' : './contract.d.ts')],
-          errors: mode === 'incomplete' ? [{ type: 'generic-error', source: 'builtin', error: 'builtin unavailable' }] : [],
-        }
-      },
       printValidationResult: (result: ValidationResult) => lines.push(print(result)),
       console: { log: (...args: unknown[]) => lines.push(args.join(' ')), error: forbidden },
       process: { exit: (code: number) => exits.push(code) },
@@ -217,25 +212,15 @@ test.each(['complete', 'complete-missing', 'empty', 'incomplete', 'incomplete-em
     }
     const run = new Function(...Object.keys(bindings), `${compileFunction('pluginValidateHandler')}\nreturn pluginValidateHandler`)(...Object.values(bindings)) as typeof pluginValidateHandler
     await run(owner, {})
-    expect(discoveries).toBe(1)
     const output = lines.join('\n')
-    if (['incomplete', 'incomplete-empty', 'throw', 'broken-types'].includes(mode)) {
-      expect(output).toMatch(/not checked.*other\.value/)
-      expect(output).toContain('Validation passed with warnings')
-      expect(output).not.toContain("not declared: no enabled plugin's contract names it")
-      expect(output).toContain(mode === 'incomplete' ? 'builtin unavailable' : mode === 'incomplete-empty' ? 'is incomplete' : mode === 'throw' ? 'unreadable context' : 'missing.d.ts')
-      expect(exits).toEqual([0])
-    } else if (mode === 'empty' || mode === 'complete-missing') {
-      expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
-      expect(output).not.toContain("not declared: no enabled plugin's contract names it")
-      expect(exits).toEqual([0])
-    } else if (mode === 'foreign-write') {
+    expect(output).not.toContain("not declared: no enabled plugin's contract names it")
+    expect(output).not.toMatch(/types contract|context/)
+    if (mode === 'foreign-write') {
       expect(output).toContain("only a value's owner writes it")
       expect(exits).toEqual([1])
     } else {
-      expect(output).not.toContain('not checked')
-      expect(output).toContain(`Provides:\n\n  ${figures.pointer} modules: hooks/register.ts`)
-      expect(output).not.toContain('Hosts')
+      expect(output).toMatch(/not checked \(run validate in a session with them enabled\): other\.value/)
+      expect(output).toContain('Validation passed')
       expect(exits).toEqual([0])
     }
   },
@@ -256,7 +241,7 @@ test.each([true, false])('shared merge retains managed enabled=%s against an inl
   expect(result.errors[0]?.source).toBe('other@inline')
 })
 
-test('cold real handler discovers builtin contracts without invoking runtime loaders', async () => {
+test('cold real handler leaves foreign state unchecked without loading plugins', async () => {
   const owner = await pluginRoot('owner')
   await mkdir(join(owner, 'hooks'))
   await writeFile(join(owner, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./register.ts'] }))

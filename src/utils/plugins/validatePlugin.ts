@@ -881,7 +881,6 @@ async function validateHooksJson(
   filePath: string,
   pluginRoot: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
-  foreignComplete = true,
 ): Promise<ValidationResult> {
   let content: string
   try {
@@ -1007,7 +1006,6 @@ async function validateHooksJson(
         references: declaration.state,
         declared,
         others: foreignDeclarations ? [...foreignDeclarations] : undefined,
-        othersComplete: foreignComplete,
       })
       errors.push(...state.problems.map(message => ({
         path: `modules.${modulePath}`,
@@ -1120,7 +1118,6 @@ async function collectMarkdown(
 export async function validatePluginContents(
   pluginDir: string,
   foreignDeclarations?: readonly ModStateDeclaration[],
-  foreignComplete = true,
 ): Promise<ValidationResult[]> {
   const results: ValidationResult[] = []
 
@@ -1161,7 +1158,6 @@ export async function validatePluginContents(
     path.join(pluginDir, 'hooks', 'hooks.json'),
     pluginDir,
     foreignDeclarations,
-    foreignComplete,
   )
   if (
     hooksResult.errors.length > 0 ||
