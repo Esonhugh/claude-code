@@ -124,6 +124,7 @@ exit 0
   缺 `hookEventName`、PermissionRequest 的 `decision` 写错、用了旧版顶层 `decision` 时各有单独提示。SDK 收到的 `hook_response.exit_code` 是 hook 的真实退出码；退出码非零时，报错后面附上 stderr。
 - `updatedInput` 会按工具参数格式校验：未知字段丢掉；其他格式错误、或工具自己的校验不通过，这次调用就被拒绝。
 - hook 输出里的 `<system-reminder>` 标签会被转义，不能伪造系统提示。
+- JSON 里的 `terminalSequence` 让 Claude Code 代 hook 向终端写一段转义序列，用来改标题或发桌面通知。只接受 OSC 0、1、2、9、99、777 和单独的 BEL，整段不超过 4096 字节；OSC 9 的内容不能以数字开头（`9;4;…` 进度条格式除外）。有一部分不符合就整段丢弃，`--debug` 里记 `Hook <名称> (<事件>) returned a terminalSequence that was rejected by the allowlist …`。通过的序列去掉内容里的控制字符，按当前终端重新拼好（kitty 用 ST 结尾，tmux、screen 里加转发包装）再写出。只有交互界面会写，`-p` 和 SDK 下丢弃。
 - 插件 hook 的命令里不能直接引用 `${user_config.*}`，请改读环境变量 `$CLAUDE_PLUGIN_OPTION_<KEY>`。
 
 ## hook 自己出错时：`onFailure`
@@ -240,7 +241,7 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 
 ## 未信任的文件夹
 
-项目或本地 agent（`.claude/agents/`）frontmatter 里的 hook，只有在这个文件夹被信任后才注册；`-p` 和 SDK 不显示信任框，同样按是否信任过判断。没信任时不运行，`--debug` 里记 `Skipping frontmatter hooks for agent '<名字>': the folder its definition file came from is not trusted (source: projectSettings)`。用户级 agent 不受影响。信任框的变化见 [permissions.md](permissions.md#未信任的文件夹)。
+项目或本地 agent（`.claude/agents/`）frontmatter 里的 hook，只有在这个文件夹被信任后才注册；`-p` 和 SDK 不显示信任框，同样按是否信任过判断。没信任时不运行，`--debug` 里记 `Skipping frontmatter hooks for agent '<名字>': the folder its definition file came from is not trusted (source: projectSettings). Run Claude Code in that folder once and accept the trust dialog, or set projects["<项目路径>"].hasTrustDialogAccepted: true in <全局配置文件>.`。名字里的控制字符和不可见格式字符换成空格。官方的 `<项目路径>` 取 agent 定义文件所在的项目，本 fork 取本地信任判断实际读取的键（git 根目录，不在 git 仓库里时是启动目录），照着改就能生效。用户级 agent 不受影响。信任框的变化见 [permissions.md](permissions.md#未信任的文件夹)。
 
 ## 其他细节
 
@@ -251,10 +252,9 @@ OpenAI provider 的 `apply_patch` 工具在 `PreToolUse` / `PostToolUse` / `Post
 
 ## 已知差异
 
-和官方 2.1.329 相比，下面几项还没有移植：
+和官方 2.1.329 相比，下面几项没有移植：
 
-- hook 输出的 `terminalSequence` 字段没有实现，`Expected schema` 提示块里也没有这一行。
-- 未信任文件夹里 agent frontmatter hook 被跳过时，debug 日志只有前半句，没有官方后面那句「如何信任这个文件夹」。
+- 阻断原因的字素宽度修复未移植。官方这一步依赖内部 Bun 才有的 `Bun.ant.CellSegmenter`，本 fork 的 Bun 没有；能移植的一半（按 `Bun.stringWidth` 逐个字素比对宽度）在已清理过的文本上不会改动任何字符。
 - `CLAUDE_EFFORT` 在 `-p` 下默认是 `high`，官方是 `medium`，这是本 fork 有意的差异，见 [effort.md](effort.md)。
 
 ## 说明
