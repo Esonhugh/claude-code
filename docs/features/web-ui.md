@@ -268,7 +268,9 @@ Ctrl+C 或 SIGTERM 会停止服务、结束所有会话并删除 `~/.claude/web.
 `claude web` 不读写命令行用的 `~/.claude/settings.json` 和 `~/.claude.json`，改用 `~/.claude/web/settings.json` 和 `~/.claude/web/.claude.json`；桌面应用用 `~/.claude/desktop/` 下的同名文件。网页里改的 base URL、界面名称、功能开关、记忆开关，会话里的 `/config`、`/model` 等写进的设置，都只留在这一份里，终端里的 claude 看不到，反过来也一样。
 
 - **首次启动。** 文件不存在时，启动时把这次本来会用的文件复制过来（`CLAUDE_CONFIG_DIR` 和 cowork 模式照常生效）；那份文件也不存在时写 `{}`。之后两边各改各的，不再同步；要重新从命令行那份复制，删掉 web 这份再启动。复制的文件权限 0600。
-- **会话。** `claude web` 起的每个会话都继承环境变量 `CLAUDE_CODE_SETTINGS_PROFILE=web`（桌面应用是 `desktop`），所以会话和会话里用 Bash 运行的 `claude` 读的也是这一份。启动前自己设了这个变量的，按设的值；设为空字符串就用命令行那一份。
+- **怎么认出是 web。** 命令行解析到 `web` 子命令时才用这一份，`web` 前面写了哪些 root 选项（`--model`、`--debug`、`--add-dir` 等）都不影响；`web` 后面带 `--stdio` 的是桌面应用。其他子命令和普通的 `claude`、`claude -p` 照旧用命令行那一份。
+- **`--settings` 和 `--setting-sources`。** 写在 `web` 前时照常生效，也传给每个会话。`--settings` 指定的文件只读，网页和会话里的修改都写进 `~/.claude/web/settings.json`（桌面应用是 `desktop/`），不写那个文件，也不写命令行那一份；同一个键在 `--settings` 里有值时，它的优先级更高，网页里改了也以它为准。
+- **会话。** `claude web` 起的每个会话都继承环境变量 `CLAUDE_CODE_SETTINGS_PROFILE=web`（桌面应用是 `desktop`），所以会话和会话里用 Bash 运行的 `claude` 读写的也是这一份。终端里直接启动的 claude 不受影响。启动前自己设了这个变量的，按设的值；设为空字符串就用命令行那一份。
 - **仍然共用的。** 登录凭据（钥匙串或 `.credentials.json`）、会话记录、插件目录、项目的 `.claude/settings*.json` 和 managed settings 都不变。
 - **命令行那份 settings.json 仍受保护。** 会话里的工具改它和改自己的设置文件一样需要确认，沙箱也不允许写。
 
