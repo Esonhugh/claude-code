@@ -50,6 +50,7 @@ Background tasks are hosted by a small on-demand service (the daemon). It starts
 - 一个要跑很久的任务（迁移、大范围重构、跑完整测试），不想盯着它。
 - 同时开几个互不相关的任务，各自独立进行。
 - 正在聊的会话突然需要让位给别的事：输入 `/background`，当前对话原样转到后台继续。
+- 想让 Claude 顺着当前对话去试另一条路，自己留在原会话：输入 `/fork`，复制一份到后台。
 - 想让 Claude 在独立的 git worktree 里改代码，不碰你当前的工作目录（配合 `-w`）。
 
 ## 快速上手
@@ -136,6 +137,24 @@ Completed
 ```
 
 后台会话的名字取这段对话的第一句话。在后台会话里面（attach 进去以后）可以用 `/stop` 停止它自己，对话和 worktree 都会保留。
+
+## 复制一份到后台、自己留下：`/fork`
+
+`/fork` 和 `/background` 一样把对话交给后台，区别是前台会话不退出：它把到目前为止的对话复制成一个新的后台会话（新的 session id），你接着在原会话里聊。后面带的一句话是副本要做的第一件事；不带就让副本停在输入框，等你 attach 进去再说：
+
+```text
+❯ /fork Run the bash command `sleep 60` and then reply DONE.
+  ⎿  session running · Reply with just the word PONG. ⑂ Run the bash command sleep 60 and then reply DONE. · 191a929e
+```
+
+- 副本的名字是 `原会话名 ⑂ 这句话`；原会话名取 `/rename` 起的名字，没有就取第一句话。
+- 副本沿用原会话的权限模式和模型。在 git 仓库里时，副本会被告知原会话还在这个目录工作，改代码前先用 EnterWorktree 建自己的 worktree。
+- 还没发过消息时拒绝：`Nothing to fork yet. Send a message first.`；用 safe / bare 模式启动的会话也拒绝，因为副本不会带上这些启动参数。
+- 副本是普通的后台会话，`claude agents`、`claude attach`、`claude stop` 都能用。
+
+在原会话里打开 `/tasks`，最下面的 **Forks** 分组列出从这个会话复制出去的副本，打开期间每 2 秒刷新一次。在跑的显示 `⏺ … working`，结束的显示 `• … stopped` 或 `exited`，在跑的排前面。选中在跑的副本按 `x` 会先问 `Stop this fork?`，默认是 `No, keep running`；选 `Yes, stop` 只停这一个，对话里留一条 `Stopped fork: <名字>`，停不掉时是 `Couldn't stop fork: <名字>`。
+
+`/branch` 不再占用 `/fork` 这个别名，原有的对话分支功能照旧用 `/branch`。
 
 ## 命令行速查
 
@@ -303,4 +322,5 @@ note: the next `claude agents` or `claude --bg` will start a new one
 
 - 以上画面均为实际运行截取，模型回复由测试用假 API 按脚本生成。
 - 列表里「Working」同时包含正在处理和已经回复完、等你下一句话的会话；用 `claude agents --json` 的 `status`（`busy` / `idle`）可以区分。
+- 后台会话没有记录「回复完了」和「在等确认」，所以 Forks 里只要副本进程还在就显示 `working`，官方这时会显示 `done` 或 `needs input`；原会话 `/clear` 换了 session 以后，之前复制出去的副本不再列在 Forks 里，用 `claude agents` 查看。
 - 只在 Linux 上实测；macOS、Windows、Termux 的路径与管道逻辑有单元测试，未在真机验证。
