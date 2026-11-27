@@ -77,7 +77,7 @@
 |  | [Claude Web 项目](web-projects.md) | 在 `claude web` 里建项目：协调者把活拆成任务派给多个 worker 并行做，右侧看每个任务的过程、批准、发消息、停止和审阅；项目和任务存在本机 SQLite，重启后能接着聊 |
 |  | [桌面应用（Electron，实验性）](desktop-app.md) | 把 claude web 装成 Windows、macOS、Linux 桌面应用：自带 `claude` binary，经 `claude web --stdio` 管道通信，不占本机端口；窗口原生外观跟随网页的浅深色设置；安装包需从源码构建，未签名 |
 |  | [调试日志](debugging.md) | 遇到问题时打开详细日志，看清楚 Claude Code 在后台做了什么、请求发到了哪 |
-|  | [遥测与反馈](telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 也随之隐藏；需要时一个环境变量打开 |
+|  | [遥测与反馈](telemetry.md) | 默认不向 Anthropic 发送使用数据，`/feedback` 和问卷已删除；需要时一个环境变量打开遥测 |
 | 远程执行 | [Direct Connect](direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh 主机` 让 Claude 在远程 Linux 机器上读写文件、跑命令，界面和权限确认留在本机；API 凭据不离开本机 |
 | 插件与扩展 | [插件与 Marketplace](plugins-marketplace.md) | 从插件市场一键安装命令、skill、agent、hook 和 MCP；团队可以自建 marketplace，装完 `/reload-plugins` 立即生效 |
@@ -167,7 +167,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Claude Web projects](web-projects.md) | Create a project in `claude web`: a coordinator splits the work into tasks for several workers in parallel; on the right, follow, approve, message, stop and review each task; projects and tasks live in local SQLite and survive a restart |
 |  | [Desktop app (Electron, experimental)](desktop-app.md) | claude web as a Windows, macOS and Linux desktop app: it ships its own `claude` binary and talks to it over `claude web --stdio`, so no port is opened; the window's native appearance follows the page's light / dark setting; installers are built from source and unsigned |
 |  | [Debug logs](debugging.md) | Turn on detailed logs when something is wrong to see what Claude Code did behind the scenes and where requests went |
-|  | [Telemetry and feedback](telemetry.md) | No usage data goes to Anthropic by default, and `/feedback` is hidden with it; one environment variable turns it on when needed |
+|  | [Telemetry and feedback](telemetry.md) | No usage data goes to Anthropic by default, and `/feedback` and the surveys are removed; one environment variable turns telemetry on when needed |
 | Remote execution | [Direct Connect](direct-connect.md) | Run `claude server` on one machine and `claude cc://...` from another: tools run on the server, the UI and permission prompts stay with you |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh host` lets Claude read and write files and run commands on a remote Linux machine while the UI and permission prompts stay local; API credentials never leave your machine |
 | Plugins and extensions | [Plugins and marketplaces](plugins-marketplace.md) | Install commands, skills, agents, hooks and MCP servers from a marketplace in one step; teams can host their own marketplace; `/reload-plugins` applies them at once |
@@ -258,7 +258,7 @@ An [interactive scatter plot](https://claude.ai/artifact/5c7HFWBN11ZAVcFHConfbm)
 |  | [Claude Web 專案](web-projects.md) | 在 `claude web` 裡建專案：協調者把活拆成任務派給多個 worker 並行做，右側看每個任務的過程、批准、發訊息、停止和審閱；專案和任務存在本機 SQLite，重啟後能接著聊 |
 |  | [桌面應用（Electron，實驗性）](desktop-app.md) | 把 claude web 裝成 Windows、macOS、Linux 桌面應用：自帶 `claude` binary，經 `claude web --stdio` 管道通訊，不佔本機埠；視窗原生外觀跟隨網頁的淺深色設定；安裝包需從原始碼建置，未簽名 |
 |  | [除錯日誌](debugging.md) | 遇到問題時開啟詳細日誌，看清楚 Claude Code 在後台做了什麼、請求發到了哪 |
-|  | [遙測與反饋](telemetry.md) | 預設不向 Anthropic 傳送使用資料，`/feedback` 也隨之隱藏；需要時一個環境變數開啟 |
+|  | [遙測與反饋](telemetry.md) | 預設不向 Anthropic 傳送使用資料，`/feedback` 和問卷已刪除；需要時一個環境變數開啟遙測 |
 | 遠端執行 | [Direct Connect](direct-connect.md) | 在一台機器上 `claude server`，在另一處用 `claude cc://...` 連過去：工具在 server 上執行，介面和權限確認在你這邊 |
 |  | [SSH Remote](ssh-remote.md) | `claude ssh 主机` 讓 Claude 在遠端 Linux 機器上讀寫檔案、跑命令，介面和權限確認留在本機；API 憑據不離開本機 |
 | 插件與擴充 | [插件與 Marketplace](plugins-marketplace.md) | 從插件市場一鍵安裝命令、skill、agent、hook 和 MCP；團隊可以自建 marketplace，裝完 `/reload-plugins` 立即生效 |

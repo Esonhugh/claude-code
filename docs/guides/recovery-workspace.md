@@ -200,7 +200,6 @@ CLAUDE_RECOVERY_SKIP_GLOBAL_ENV=1 npm run cli:run
 | `src/commands/export` | 导出会话、内容或报告。 |
 | `src/commands/extra-usage` | 附加用量/额外额度相关命令。 |
 | `src/commands/fast` | fast mode 相关命令。 |
-| `src/commands/feedback` | 反馈提交。 |
 | `src/commands/files` | 文件资源管理和下载。 |
 | `src/commands/fork` | 派生/分叉代理或会话。 |
 | `src/commands/good-claude` | 内部/实验命令。 |
@@ -269,7 +268,6 @@ CLAUDE_RECOVERY_SKIP_GLOBAL_ENV=1 npm run cli:run
 | `src/components/ClaudeCodeHint` | Claude Code 提示信息组件。 |
 | `src/components/CustomSelect` | 自定义选择器组件。 |
 | `src/components/DesktopUpsell` | 桌面端能力升级引导组件。 |
-| `src/components/FeedbackSurvey` | 反馈问卷 UI。 |
 | `src/components/HelpV2` | 新版帮助页组件。 |
 | `src/components/HighlightedCode` | 代码高亮展示。 |
 | `src/components/LogoV2` | Logo 与品牌展示组件。 |

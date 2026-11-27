@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - 删除 /feedback 和会话中的问卷
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `/feedback`（别名 `/bug`）已删除，不再把对话记录、git 状态和最后一次 API 请求上传给 Anthropic；打开 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 后也一样（#1533）。
+- 会话中的满意度问卷、记忆问卷、压缩后问卷、挫败感检测和对话记录分享提示已删除，不再弹出、不再上传对话记录；宿主发来的 `submit_feedback` 请求返回 `Feedback is not available in this build`（#1533）。
+
+### 测试覆盖
+
+- `src/commands/immediate.test.ts`：去掉 `/feedback` 后其余命令仍在运行中立即打开；删除随命令一起移除的 `src/commands/feedback/index.test.ts` 和 `submitTranscriptShare.test.ts`（#1533）。
+
 ## 2026-11-27 - 1P 事件：OAuth token 缺 user:profile scope 时直接丢弃，不再反复写盘
 
 ### 变更内容
@@ -84,10 +97,6 @@
 - 用网关（非官方 `ANTHROPIC_BASE_URL`）、Bedrock / Vertex / Foundry 或 OpenAI 模式时，不再加载 claude.ai MCP connectors，不再拉取 Grove、referral passes、OAuth 账号信息、fast mode 状态和官方 MCP registry，也不再用网关的 API key 查 Anthropic 账号资料。用 claude.ai 账号登录、同时通过代理设了 `ANTHROPIC_BASE_URL` 的会话也按网关处理（#1526、#1527）。
 - 这类会话的模型请求里，`metadata.user_id` 只带 `session_id` 和 `CLAUDE_CODE_EXTRA_METADATA` 的字段，不再带 device id 和账号 id；靠 device id 区分用户的网关需要改用别的字段（#1527）。
 - 打开 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 后，1P 事件只在 first-party 会话里、带这个会话自己的 Anthropic 凭据发送，不再匿名发送或在 401 后去掉凭据重发；OpenAI 模式下也保持关闭。凭据暂时不可用时事件先存盘，退避重试，失败 8 次后丢弃（#1524、#1525）。
-
-#### 修复
-
-- 非 first-party 会话里 `/feedback` 和问卷不再上传对话记录（#1527）。
 
 ### 测试覆盖
 

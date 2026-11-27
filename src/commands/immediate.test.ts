@@ -3,7 +3,6 @@ import '../commands.js'
 import addDir from './add-dir/index.js'
 import config from './config/index.js'
 import diff from './diff/index.js'
-import feedback from './feedback/index.js'
 import help from './help/index.js'
 import permissions from './permissions/index.js'
 import skills from './skills/index.js'
@@ -29,7 +28,6 @@ test.each([
   ['permissions', permissions],
   ['skills', skills],
   ['tasks', tasks],
-  ['feedback', feedback],
   ['stats', stats],
 ] as const)('/%s is always immediate', (_name, command) => {
   expect(isCommandImmediate(command, '', context)).toBe(true)

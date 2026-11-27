@@ -1,7 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import * as React from 'react'
-import { BULLET_OPERATOR } from '../../../constants/figures.js'
 import { Text } from '../../../ink.js'
 import {
   filterToolProgressMessages,
@@ -74,10 +73,7 @@ export function UserToolErrorMessage({
   ) {
     return (
       <MessageResponse height={1}>
-        <Text dimColor>
-          Denied by auto mode classifier {BULLET_OPERATOR} /feedback if
-          incorrect
-        </Text>
+        <Text dimColor>Denied by auto mode classifier</Text>
       </MessageResponse>
     )
   }

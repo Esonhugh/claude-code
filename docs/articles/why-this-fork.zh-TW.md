@@ -18,7 +18,7 @@
 
 **能長時間自己做事。** Agent Teams、Dynamic Workflow、`/goal`、Monitor、定時任務、互動式 Terminal 工具、背景會話，讓 Claude 能分工、並行、持續做到目標達成。
 
-**預設尊重隱私。** 預設不向 Anthropic 傳送遙測資料，`/feedback` 也隨之隱藏；專案設定無法替你打開遙測。
+**預設尊重隱私。** 預設不向 Anthropic 傳送遙測資料，`/feedback` 和工作階段中的問卷已刪除；專案設定無法替你打開遙測。
 
 ## 安裝
 
