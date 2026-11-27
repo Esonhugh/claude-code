@@ -18,6 +18,7 @@ import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalClaudeFile } from './env.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getSettingsProfileDir } from './settingsProfile.js'
 import { ConfigParseError, errorMessage, getErrnoCode } from './errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -1375,10 +1376,11 @@ export function enableConfigs(): void {
 
 /**
  * Returns the directory where config backup files are stored.
- * Uses ~/.claude/backups/ to keep the home directory clean.
+ * Uses ~/.claude/backups/ to keep the home directory clean; a settings
+ * profile (`claude web`, the desktop app) keeps its own next to its config.
  */
 function getConfigBackupDir(): string {
-  return join(getClaudeConfigHomeDir(), 'backups')
+  return join(getSettingsProfileDir() ?? getClaudeConfigHomeDir(), 'backups')
 }
 
 /**

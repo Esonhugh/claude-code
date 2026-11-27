@@ -330,6 +330,8 @@ import {
   getSettingsWithErrors,
 } from './utils/settings/settings.js'
 import { resetSettingsCache } from './utils/settings/settingsCache.js'
+import { SETTINGS_PROFILE_ENV, webSettingsProfile } from './utils/settingsProfile.js'
+import { getGlobalClaudeFile } from './utils/env.js'
 import type { ValidationError } from './utils/settings/validation.js'
 import { formatSettingsLoadReport } from './utils/settings/validation.js'
 import {
@@ -1301,6 +1303,16 @@ async function run(): Promise<CommanderCommand> {
   profileCheckpoint('run_commander_initialized')
 
   let launchInput: ReturnType<typeof captureLaunchInitialize> | undefined
+
+  // `claude web` and the desktop app keep their own settings.json and
+  // .claude.json, whatever root options come before `web`. This runs before
+  // preAction's init() reads either; an explicit value (even empty) wins.
+  program.hook('preSubcommand', (_program, subcommand) => {
+    if (subcommand.name() !== 'web' || process.env[SETTINGS_PROFILE_ENV] !== undefined) return
+    process.env[SETTINGS_PROFILE_ENV] = webSettingsProfile(process.argv)
+    getGlobalClaudeFile.cache.clear?.()
+    resetSettingsCache()
+  })
 
   // Use preAction hook to run initialization only when executing a command,
   // not when displaying help. This avoids the need for env variable signaling.

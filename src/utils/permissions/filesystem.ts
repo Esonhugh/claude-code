@@ -48,6 +48,7 @@ import { SETTING_SOURCES } from '../settings/constants.js'
 import {
   getSettingsFilePathForSource,
   getSettingsRootPathForSource,
+  getSharedUserSettingsFilePath,
 } from '../settings/settings.js'
 import { containsVulnerableUncPath } from '../shell/readOnlyCommandValidation.js'
 import { getToolResultsDir } from '../toolResultStorage.js'
@@ -247,9 +248,9 @@ export function toPosixPath(path: string): string {
 }
 
 function getSettingsPaths(): string[] {
-  return SETTING_SOURCES.map(source =>
-    getSettingsFilePathForSource(source),
-  ).filter(path => path !== undefined)
+  return [...SETTING_SOURCES.map(source => getSettingsFilePathForSource(source)), getSharedUserSettingsFilePath()].filter(
+    path => path !== undefined,
+  )
 }
 
 export function isClaudeSettingsPath(filePath: string): boolean {

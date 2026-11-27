@@ -6,12 +6,22 @@ import { isRunningWithBun } from './bundledMode.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { findExecutable } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
+import { getSettingsProfileDir, seedSettingsProfileFile } from './settingsProfile.js'
 import { which } from './which.js'
 
 type Platform = 'win32' | 'darwin' | 'linux'
 
 // Config and data paths
 export const getGlobalClaudeFile = memoize((): string => {
+  const shared = getSharedGlobalClaudeFile()
+  const profileDir = getSettingsProfileDir()
+  if (!profileDir) return shared
+  const path = join(profileDir, `.claude${fileSuffixForOauthConfig()}.json`)
+  seedSettingsProfileFile(path, shared)
+  return path
+})
+
+function getSharedGlobalClaudeFile(): string {
   // Legacy fallback for backwards compatibility
   if (
     getFsImplementation().existsSync(
@@ -23,7 +33,7 @@ export const getGlobalClaudeFile = memoize((): string => {
 
   const filename = `.claude${fileSuffixForOauthConfig()}.json`
   return join(process.env.CLAUDE_CONFIG_DIR || homedir(), filename)
-})
+}
 
 const hasInternetAccess = memoize(async (): Promise<boolean> => {
   try {

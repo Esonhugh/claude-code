@@ -38,6 +38,27 @@
 - `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
 - 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 112 个测试文件逐个运行，与 dev 基线相比没有新增失败。
 
+## 2026-11-27 - claude web 与桌面应用使用各自的 settings.json 和 .claude.json
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- `claude web` 改读写 `~/.claude/web/settings.json` 和 `~/.claude/web/.claude.json`，桌面应用改用 `~/.claude/desktop/` 下的同名文件，不再改动命令行用的 `~/.claude/settings.json` 和 `~/.claude.json`。首次启动时从命令行那份复制，那份不存在时写 `{}`；之后两边不再同步。会话继承 `CLAUDE_CODE_SETTINGS_PROFILE`，设为空字符串可回到共用一份。
+- 网页里改 base URL、界面名称、功能开关、记忆开关不再影响终端里的 claude。Linux 和 Windows 上网页里保存的 API key 存在 web 那份 `.claude.json`，终端里的 claude 读不到；OAuth 凭据和 macOS 钥匙串仍共用。
+- 按命令行解析出的 `web` 子命令识别，`web` 前面带任何 root 选项（`--model`、`--debug`、`--add-dir` 等）都用 web 那份；`--settings` 指定的文件只读，修改写进 web 或 desktop 那份。
+
+#### 修复
+
+- web 和桌面应用的 `.claude.json` 备份存在各自目录的 `backups/` 下，损坏恢复不会拿另一边的备份。
+- 使用独立设置时，命令行那份 settings.json 仍按设置文件保护：工具修改要确认，沙箱禁止写入。
+
+### 测试覆盖
+
+- `src/utils/settingsProfile.test.ts`：`web --stdio` 识别为桌面应用（`--` 之后的不算）；首次启动复制、已有文件不覆盖、没有可复制的文件时写 `{}`、空值和非法名字回到共用文件；写入只进 profile 文件；命令行那份 settings.json 仍被认作设置文件。
+- `src/web/web.binary.test.ts`：hooks 弹窗读 `web/settings.json` 里手加的 hook；Auth 子菜单保存的 base URL 和 API key 写进 `web/settings.json`、`web/.claude.json`，命令行那份 settings.json 不含这个 base URL。
+- 打包后的 `built-claude` 在隔离配置目录里实测：`web` 和 `web --stdio` 分别建出 `web/`、`desktop/` 两份，经 `PATCH /api/settings` 改的值只进 `web/`，会话子进程带 `CLAUDE_CODE_SETTINGS_PROFILE=web`，`-p` 仍用共用文件。`--model opus web`、`--add-dir <dir> --settings <file> --setting-sources user,project web` 用 `web/`，`--debug --name x web --stdio` 用 `desktop/`，`--model opus mcp list` 不建目录；带 `--settings` 启动时 `PATCH /api/settings` 只改 `web/settings.json` 和 `web/.claude.json`，`--settings` 文件和命令行那份都不变。
+
 ## 2026-11-26 - Mods 跟进官方新版：生命周期与主题宿主、加载与校验报错、hook 的 next 写法、热重载通知、$.store 新位置
 
 ### 变更内容
