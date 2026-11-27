@@ -12,19 +12,13 @@ export const SETTINGS_PROFILE_ENV = 'CLAUDE_CODE_SETTINGS_PROFILE'
 
 const PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/
 
-// Root flags `claude web` forwards to its sessions; each takes one value.
-const ROOT_VALUE_FLAGS = new Set(['--plugin-dir', '--plugin-dir-no-mcp', '--plugin-url', '--settings', '--setting-sources'])
-
-/** `web` for `claude web`, `desktop` for the desktop app's `claude web --stdio`, else undefined. */
-export function settingsProfileForArgs(args: string[]): string | undefined {
-  let i = 0
-  while (i < args.length && args[i]!.startsWith('-')) {
-    i += ROOT_VALUE_FLAGS.has(args[i]!) ? 2 : 1
-  }
-  if (args[i] !== 'web') return undefined
-  const rest = args.slice(i + 1)
-  const separator = rest.indexOf('--')
-  return (separator === -1 ? rest : rest.slice(0, separator)).includes('--stdio') ? 'desktop' : 'web'
+/**
+ * `desktop` for the desktop app's `claude web --stdio`, else `web`. Root
+ * options have no `--stdio`, so any one before `--` belongs to `web`.
+ */
+export function webSettingsProfile(argv: string[]): 'web' | 'desktop' {
+  const separator = argv.indexOf('--')
+  return (separator === -1 ? argv : argv.slice(0, separator)).includes('--stdio') ? 'desktop' : 'web'
 }
 
 /** <config dir>/<profile>, or undefined when the shared files are in use. */

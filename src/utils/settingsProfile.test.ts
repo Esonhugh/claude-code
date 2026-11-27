@@ -2,28 +2,19 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { settingsProfileForArgs } from './settingsProfile.js'
+import { webSettingsProfile } from './settingsProfile.js'
 
 if (!process.env.SETTINGS_PROFILE_CHILD) {
-  describe('settingsProfileForArgs', () => {
-    test('claude web and the desktop sidecar', () => {
-      expect(settingsProfileForArgs(['web'])).toBe('web')
-      expect(settingsProfileForArgs(['web', '--port', '0', '--no-open'])).toBe('web')
-      expect(settingsProfileForArgs(['web', '--stdio'])).toBe('desktop')
+  describe('webSettingsProfile', () => {
+    test('the desktop sidecar runs claude web --stdio', () => {
+      expect(webSettingsProfile(['claude', 'web'])).toBe('web')
+      expect(webSettingsProfile(['claude', '--model', 'opus', 'web', '--port', '0'])).toBe('web')
+      expect(webSettingsProfile(['claude', 'web', '--stdio'])).toBe('desktop')
+      expect(webSettingsProfile(['claude', '--settings', 'x.json', 'web', '--stdio'])).toBe('desktop')
     })
 
-    test('root flags web forwards may come first', () => {
-      expect(settingsProfileForArgs(['--settings', 'x.json', 'web'])).toBe('web')
-      expect(settingsProfileForArgs(['--plugin-dir', 'web', 'web', '--stdio'])).toBe('desktop')
-      expect(settingsProfileForArgs(['--debug', '--setting-sources=user', 'web'])).toBe('web')
-    })
-
-    test('anything else keeps the shared files', () => {
-      expect(settingsProfileForArgs([])).toBeUndefined()
-      expect(settingsProfileForArgs(['-p', 'hello web'])).toBeUndefined()
-      expect(settingsProfileForArgs(['mcp', 'web'])).toBeUndefined()
-      expect(settingsProfileForArgs(['--settings', 'web'])).toBeUndefined()
-      expect(settingsProfileForArgs(['web', '--', '--stdio'])).toBe('web')
+    test('--stdio after -- is not an option', () => {
+      expect(webSettingsProfile(['claude', 'web', '--', '--stdio'])).toBe('web')
     })
   })
 
