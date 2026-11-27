@@ -33,6 +33,17 @@ export function logDaemon(message: string): void {
   }
 }
 
+/**
+ * Session arguments for a worker's first start. A fork copies its parent's
+ * conversation once; a respawn resumes the fork's own session.
+ */
+export function spawnSessionArgs(request: Pick<SpawnRequest, 'sessionId' | 'resume' | 'forkFrom'>): string[] {
+  if (request.forkFrom !== undefined) {
+    return ['--resume', request.forkFrom, '--fork-session', '--session-id', request.sessionId]
+  }
+  return request.resume ? ['--resume', request.sessionId] : ['--session-id', request.sessionId]
+}
+
 function saveJob(job: JobRecord): void {
   job.updatedAt = new Date().toISOString()
   const dir = getJobDir(job.id)
@@ -170,13 +181,15 @@ export async function runSupervisor(): Promise<void> {
       cwd: request.cwd,
       args: request.flags,
       state: 'running',
+      ...(request.forkFrom !== undefined && { forkParentSessionId: request.forkFrom }),
       createdAt: now,
       updatedAt: now,
     }
-    const sessionArgs = request.resume
-      ? ['--resume', request.sessionId]
-      : ['--session-id', request.sessionId]
-    await spawnWorker(job, [...sessionArgs, ...request.flags, ...(request.prompt ? [request.prompt] : [])], request.env)
+    await spawnWorker(
+      job,
+      [...spawnSessionArgs(request), ...request.flags, ...(request.prompt ? [request.prompt] : [])],
+      request.env,
+    )
     return { ok: true, job }
   }
 

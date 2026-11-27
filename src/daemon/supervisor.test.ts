@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { join } from 'path'
 import { readFrames, writeFrame } from './protocol.js'
+import { spawnSessionArgs } from './supervisor.js'
 
 // The supervisor ends with process.exit, so it runs in a child process.
 test('supervisor idle-exits after a watched worker ends', async () => {
@@ -57,3 +58,15 @@ test('supervisor idle-exits after a watched worker ends', async () => {
   expect(log).toContain('[supervisor] exit')
   expect(code).toBe(0)
 }, 20_000)
+
+test('a fork starts as a copy of its parent; other spawns keep their session arguments', () => {
+  expect(spawnSessionArgs({ sessionId: 'new-id', resume: false, forkFrom: 'parent-id' })).toEqual([
+    '--resume',
+    'parent-id',
+    '--fork-session',
+    '--session-id',
+    'new-id',
+  ])
+  expect(spawnSessionArgs({ sessionId: 'old-id', resume: true })).toEqual(['--resume', 'old-id'])
+  expect(spawnSessionArgs({ sessionId: 'new-id', resume: false })).toEqual(['--session-id', 'new-id'])
+})
