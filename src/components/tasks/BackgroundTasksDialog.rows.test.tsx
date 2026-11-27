@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
@@ -21,7 +22,9 @@ const { render } = await import('../../ink.js')
 const { AppStateProvider, getDefaultAppState, useAppState } = await import('../../state/AppState.js')
 const { KeybindingSetup } = await import('../../keybindings/KeybindingProviderSetup.js')
 const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
-const { addSessionCronTask, getSessionCronTasks, removeSessionCronTasks } = await import('../../bootstrap/state.js')
+const { addSessionCronTask, getSessionCronTasks, getSessionId, removeSessionCronTasks } = await import(
+  '../../bootstrap/state.js'
+)
 const { getAgentTranscriptPath } = await import('../../utils/sessionStorage.js')
 const { persistForkedSkillScope } = await import('../../utils/forkedSkillScope.js')
 
@@ -136,7 +139,17 @@ afterEach(() => {
   unmount?.()
   unmount = undefined
   rmSync(join(configDir, 'projects'), { recursive: true, force: true })
+  rmSync(join(configDir, 'jobs'), { recursive: true, force: true })
 })
+
+function writeJob(id: string, fields: Record<string, unknown>) {
+  const dir = join(configDir, 'jobs', id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'state.json'),
+    JSON.stringify({ id, sessionId: `s-${id}`, name: '', intent: '', cwd: '/', args: [], createdAt: '', updatedAt: '', ...fields }),
+  )
+}
 
 test('Enter on a completed agent reopens it, like 2.1.329', async () => {
   const dialog = await open({ tasks: { 'done-agent': doneAgent } })
@@ -253,4 +266,56 @@ test('x asks before stopping a scheduled task or the goal, and stops only that o
   expect(state.goalStatus.active).toBe(false)
   expect(getSessionCronTasks().map(task => task.id)).toEqual(['cron2'])
   expect(dialog.appended.map(message => (message as { content?: unknown }).content)).toContain('Goal cleared: GOAL_COND cheese')
+})
+
+test('forks of this session are listed last, and x asks before stopping only that fork', async () => {
+  const sock = `/tmp/fork-host-${process.pid}.sock`
+  const requests: unknown[] = []
+  const host = createServer(socket => {
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      requests.push(JSON.parse(String(chunk)))
+      socket.write(`${JSON.stringify({ ok: true })}\n`)
+    })
+  })
+  await new Promise<void>(resolve => host.listen(sock, resolve))
+  try {
+    writeJob('fork1', { name: 'parent ⑂ FORK_LIVE', state: 'running', ptySock: sock, forkParentSessionId: getSessionId() })
+    writeJob('fork2', { name: 'FORK_DONE', state: 'exited', forkParentSessionId: getSessionId() })
+    writeJob('fork3', { name: 'FORK_ELSEWHERE', state: 'running', forkParentSessionId: 'another-session' })
+    writeJob('plain', { name: 'PLAIN_BG', state: 'running' })
+    const dialog = await open({ tasks: {} })
+    const screen = dialog.screen()
+    expect(screen).toMatch(/Earlier in this session \(\d+\)\s+Forks\s+[⏺●] FORK_LIVE\s+working\s+• FORK_DONE\s+exited/)
+    expect(screen).not.toContain('FORK_ELSEWHERE')
+    expect(screen).not.toContain('PLAIN_BG')
+
+    await dialog.press('\x1b[B')
+    expect(dialog.screen()).toContain('x to stop')
+    await dialog.press('x')
+    expect(dialog.screen()).toMatch(/Stop this fork\?\s+FORK_LIVE\s+❯ No, keep running\s+Yes, stop/)
+    await dialog.press('\r')
+    expect(requests).toEqual([])
+    await dialog.press('x')
+    await dialog.press('\x1b[B')
+    await dialog.press('\r')
+    expect(requests).toEqual([{ type: 'stop' }])
+    expect(dialog.appended.map(message => (message as { content?: unknown }).content)).toEqual([
+      'Stopped fork: FORK_LIVE',
+    ])
+  } finally {
+    host.close()
+  }
+})
+
+test('a fork that cannot be stopped says so', async () => {
+  writeJob('fork1', { name: 'FORK_LOST', state: 'running', forkParentSessionId: getSessionId() })
+  const dialog = await open({ tasks: {} })
+  await dialog.press('\x1b[B')
+  await dialog.press('x')
+  await dialog.press('\x1b[B')
+  await dialog.press('\r')
+  expect(dialog.appended.map(message => (message as { content?: unknown }).content)).toEqual([
+    "Couldn't stop fork: FORK_LOST",
+  ])
 })
