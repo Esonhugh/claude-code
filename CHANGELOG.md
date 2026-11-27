@@ -12,6 +12,25 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - Mods：validate 不再读取其他插件的 contract，停止 workflow 不再另起一轮（对齐官方版本）
+
+### 变更内容
+
+#### 修复
+
+- 不在 session 内运行的 `claude plugin validate` 不再读取其他已安装插件的类型 contract：其他插件的 state 键一律列为 `not checked`，也不再因其他插件的 contract 读不了而给出警告，与官方 2.1.329 一致（#1408）。
+- 在 agent 面板按 `x` 或在 `/workflows` 里停止运行中的 workflow 时，不再输出 `Dynamic workflow … stopped` 并开始新一轮；模型在用户下一条消息里收到 `Task "…" was stopped by the user.` 通知和恢复方式，与官方 2.1.329 一致（#1408）。
+
+#### 文档
+
+- `docs/features/mods.md` 说明独立运行的 validate 不检查其他插件的 contract，并记录未对齐的一项：官方 validate 会对 `.ts`、`.tsx`、`.mts` hooks 做 TypeScript 检查（如 TS7006），本地不做，可自行运行 `tsc -p`（#1408）。
+- `docs/features/workflows.md` 更新停止 workflow 后的行为（#1408）。
+
+### 测试覆盖
+
+- `src/cli/handlers/plugins.validate.test.ts`：独立运行时其他插件已声明、未声明的 state 键都列为 not checked，contract 缺失时不警告（#1408）。
+- `src/tasks/LocalWorkflowTask/LocalWorkflowTask.stop.test.ts`、`src/tools/WorkflowTool/workflowNotifications.test.ts`：停止通知的原文、重复停止、已暂停和没有 tool call 的 workflow，以及 SDK `stopped` 事件只发一次（#1408）。
+
 ## 2026-11-27 - Hooks：terminalSequence 和未信任文件夹的 agent hook 日志对齐官方
 
 ### 变更内容
