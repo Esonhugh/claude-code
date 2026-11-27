@@ -226,14 +226,12 @@ export function withSubagentHandbackReport(result: HandbackResult, text: string,
 }
 
 /**
- * The text a parent reads for an agent result: a delivered hand-back is
- * framed, anything else is plain. With hand-back provenance off every result
- * is plain, as official 2.1.329's `Jue()` leaves it.
+ * The text a parent reads for a background agent result: its blocks joined
+ * plain, harness notes first, as official 2.1.329's notification does. Only
+ * the foreground tool_result and a peer's hand-back are framed.
  */
-export function subagentResultText(result: SubagentHandback & { handback?: SubagentHandbackOutcome }): string {
-  return (result.handback === 'send' || result.handback === 'flagged') && isHandbackProvenanceEnabled()
-    ? frameSubagentHandback(result.content, result)
-    : result.content.map(block => block.text).join('\n')
+export function subagentResultText(result: SubagentHandback): string {
+  return result.content.map(block => block.text).join('\n')
 }
 
 const LINE_START = '(?:^|[\\r\\n\\v\\f\\u0085\\u2028\\u2029\\u001c-\\u001e])'
