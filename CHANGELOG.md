@@ -27,15 +27,15 @@
 
 #### 修复
 
-- 安装一个在该 scope 已启用、安装记录和文件都在、依赖也已启用的插件时，不再重新安装和重写记录，返回 `Plugin "<id>" is already installed (scope: <scope>)`；原本是作为依赖自动安装的，只改为手动安装并注明 `marked as manually installed`。直接从 marketplace 目录读取的插件附带读取目录，以及目录版本与记录版本不同时更新记录的命令（#1521）。
+- 安装一个在该 scope 已启用、安装记录和文件都在的插件时，不再重新安装和重写记录，返回 `Plugin "<id>" is already installed (scope: <scope>)`；原本是作为依赖自动安装的，只改为手动安装并注明 `marked as manually installed`。直接从 marketplace 目录读取的插件附带读取目录，以及目录版本与记录版本不同时更新记录的命令。缺少的依赖这时会补装，输出末尾附 `(+ N dependency: …)`，装不上的附 `— N dependency still unresolved: …`，所属 marketplace 没添加时再问 `Is the "<市场>" marketplace added?`；依赖已安装但未启用时仍完整重装（#1521）。
 - 在指定的 marketplace 里找不到插件时，提示本地副本可能过期，并给出 `marketplace update` 命令（#1521）。
 
 ### 测试覆盖
 
 - `src/utils/plugins/validatePlugin.test.ts` 覆盖 marketplace 条目 `plugin.json` 损坏、缺字段和不存在三种情况。
-- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示。
+- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示，以及已安装插件补装缺少的依赖、依赖不在任何 marketplace 时的提示、依赖被禁用时完整重装。
 - `src/cli/handlers/plugins.list.test.ts` 覆盖 `plugin list` 文本与 JSON 输出、找不到插件时的提示和 `marketplace remove` 的输出。
-- 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败。
+- 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败；补装依赖的改动之后，`src/services/plugins`、`src/utils/plugins` 和 `src/cli/handlers/plugins*` 下 51 个测试文件 306 项通过，失败的 5 项（`commandSource`、`managedPlugins`、`refresh`）在 dev `f877d82e` 上同样失败。
 
 ## 2026-11-26 - Mods 跟进官方新版：生命周期与主题宿主、加载与校验报错、hook 的 next 写法、热重载通知、$.store 新位置
 
