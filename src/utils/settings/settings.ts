@@ -30,6 +30,7 @@ import { safeParseJSON } from '../json.js'
 import { logError } from '../log.js'
 import { withLockSync } from '../lockfile.js'
 import { getPlatform } from '../platform.js'
+import { getSettingsProfileDir, seedSettingsProfileFile } from '../settingsProfile.js'
 import { clone, jsonStringify } from '../slowOperations.js'
 import { profileCheckpoint } from '../startupProfiler.js'
 import {
@@ -324,15 +325,28 @@ function getUserSettingsFilePath(): string {
   return 'settings.json'
 }
 
+/**
+ * Under a settings profile, the user settings.json the terminal CLI reads.
+ * Still guarded like a settings file: a write to it lands in every CLI session.
+ */
+export function getSharedUserSettingsFilePath(): string | undefined {
+  if (!getSettingsProfileDir()) return undefined
+  return join(getSettingsRootPathForSource('userSettings'), getUserSettingsFilePath())
+}
+
 export function getSettingsFilePathForSource(
   source: SettingSource,
 ): string | undefined {
   switch (source) {
-    case 'userSettings':
-      return join(
-        getSettingsRootPathForSource(source),
-        getUserSettingsFilePath(),
-      )
+    case 'userSettings': {
+      const shared = join(getSettingsRootPathForSource(source), getUserSettingsFilePath())
+      // The root stays the config dir, so relative paths in the copy resolve as before.
+      const profileDir = getSettingsProfileDir()
+      if (!profileDir) return shared
+      const path = join(profileDir, getUserSettingsFilePath())
+      seedSettingsProfileFile(path, shared)
+      return path
+    }
     case 'projectSettings':
     case 'localSettings': {
       return join(

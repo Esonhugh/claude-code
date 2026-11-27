@@ -113,7 +113,7 @@ CLAUDE_DESKTOP_SIDECAR=../built-claude bun run start
 - **外部链接交给系统浏览器。** 跳到应用以外的 http(s) 地址、打开新窗口都在系统浏览器里打开；只有应用页面能申请剪贴板、通知等权限。
 - **意外退出。** claude 进程意外退出时，应用弹出 `claude stopped unexpectedly (<退出码或信号>)` 对话框，附上最后 20 行日志，然后退出。
 - **环境变量。** 从 Dock 或桌面菜单打开的应用拿不到登录 shell 的 `PATH` 和 export，会话里的 Bash 和 API key 设置要用到它们，所以应用启动时用 `$SHELL -ilc` 读一次登录 shell 的环境（10 秒超时，失败时用应用自己的环境）。Windows 不做这一步。
-- **配置目录相同。** 应用里的 claude 和命令行一样使用 claude 配置目录（默认 `~/.claude`），会话记录、项目（`~/.claude/web/projects.sqlite`）和上传文件（`~/.claude/web/uploads/`）与浏览器里的 `claude web` 是同一份。
+- **配置目录相同，设置文件分开。** 应用里的 claude 和命令行一样使用 claude 配置目录（默认 `~/.claude`），会话记录、项目（`~/.claude/web/projects.sqlite`）和上传文件（`~/.claude/web/uploads/`）与浏览器里的 `claude web` 是同一份。settings.json 和 `.claude.json` 用 `~/.claude/desktop/` 下自己的一份，首次启动时从命令行那份复制，规则见 [Web UI 的设置文件](web-ui.md#设置文件)。
 - **外观保存在应用自己的目录。** 网页设置里的外观通过 `window.claudeDesktop.setTheme(mode)` 告诉应用（只接受 `system`、`light`、`dark`），存进 Electron userData 目录的 `appearance.json`；文件缺失或损坏时按 `system`。
 
 ## 实际输出

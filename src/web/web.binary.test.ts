@@ -1920,8 +1920,8 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       expect(await tip.textContent()).toMatch(/\d/)
       await close()
 
-      // Hooks: read-only like the TUI's /hooks; a hook added to settings.json by hand is listed.
-      const userSettings = join(home, '.claude', 'settings.json')
+      // Hooks: read-only like the TUI's /hooks; a hook added to web's settings.json by hand is listed.
+      const userSettings = join(home, '.claude', 'web', 'settings.json')
       const before = readJson(userSettings)
       writeFileSync(
         userSettings,
@@ -3551,7 +3551,7 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
   })
 
   const globalConfig = () =>
-    JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8')) as { primaryApiKey?: string }
+    JSON.parse(readFileSync(join(home, '.claude', 'web', '.claude.json'), 'utf8')) as { primaryApiKey?: string }
 
   it('sets an API key and base URL from the Auth submenu, uses them, then signs out', async () => {
     const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
@@ -3610,11 +3610,13 @@ describe.skipIf(!binary || process.platform === 'darwin')('claude web account (b
       )
       await page.keyboard.press('Escape')
 
-      // The TUI's stores: settings `env` and the global config key (no keychain on Linux).
-      const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')) as {
+      // The TUI's stores, in web's own copies: settings `env` and the global config key (no keychain on Linux).
+      const settings = JSON.parse(readFileSync(join(home, '.claude', 'web', 'settings.json'), 'utf8')) as {
         env?: Record<string, string>
       }
       expect(settings.env?.ANTHROPIC_BASE_URL).toBe(base)
+      const sharedSettings = join(home, '.claude', 'settings.json')
+      if (existsSync(sharedSettings)) expect(readFileSync(sharedSettings, 'utf8')).not.toContain(base)
       expect(globalConfig().primaryApiKey).toBe(FAKE_KEY)
       expect((await Promise.all(responses)).join('\n')).not.toContain(FAKE_KEY)
       expect(await page.content()).not.toContain(FAKE_KEY)

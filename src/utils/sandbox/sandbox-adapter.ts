@@ -70,6 +70,7 @@ import {
   getSettingsFilePathForSource,
   getSettingsForSource,
   getSettingsRootPathForSource,
+  getSharedUserSettingsFilePath,
   updateSettingsForSource,
 } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
@@ -533,6 +534,8 @@ export function convertToSandboxRuntimeConfig(
     getSettingsFilePathForSource(source),
   ).filter((p): p is string => p !== undefined)
   denyWrite.push(...settingsPaths)
+  const sharedUserSettings = getSharedUserSettingsFilePath()
+  if (sharedUserSettings) denyWrite.push(sharedUserSettings)
   denyWrite.push(getManagedSettingsDropInDir())
 
   // Also block settings files in the current working directory if it differs from original
