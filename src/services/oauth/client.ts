@@ -20,6 +20,7 @@ import {
 import type { AccountInfo } from '../../utils/config.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isFirstPartyAnthropicSession } from '../../utils/model/providers.js'
 import { getOauthProfileFromOauthToken } from './getOauthProfile.js'
 import type {
   BillingType,
@@ -482,7 +483,8 @@ export async function populateOAuthAccountInfoIfNeeded(): Promise<boolean> {
       config.oauthAccount.accountCreatedAt !== undefined &&
       config.oauthAccount.subscriptionCreatedAt !== undefined) ||
     !isClaudeAISubscriber() ||
-    !hasProfileScope()
+    !hasProfileScope() ||
+    !isFirstPartyAnthropicSession()
   ) {
     return false
   }

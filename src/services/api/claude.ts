@@ -26,6 +26,7 @@ import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isFirstPartyAnthropicSession,
 } from 'src/utils/model/providers.js'
 import {
   getAttributionHeader,
@@ -660,6 +661,11 @@ export function getAPIMetadata() {
     }
   }
 
+  // A gateway or cloud provider gets only the session: the device id is
+  // permanent and the account is Anthropic's, so neither belongs there.
+  if (!isFirstPartyAnthropicSession()) {
+    return { user_id: jsonStringify({ ...extra, session_id: getSessionId() }) }
+  }
   return {
     user_id: jsonStringify({
       ...extra,
