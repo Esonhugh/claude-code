@@ -315,7 +315,6 @@ import {
   getAgentTranscriptPath,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
-import feedbackCommand, { feedbackDisabledReason } from '../commands/feedback/index.js'
 import { isAnalyticsDisabled } from '../services/analytics/config.js'
 import {
   backgroundAll,
@@ -5416,13 +5415,11 @@ function runHeadlessStreaming(
             sendControlResponseSuccess(message, {})
           }
         } else if (message.request.subtype === 'submit_feedback') {
-          // A host-side /feedback upload is not built here; say why instead
-          // of Unsupported so the host can show it.
+          // This build sends no feedback; say so instead of Unsupported so
+          // the host can show it.
           sendControlResponseSuccess(message, {
             feedback_id: null,
-            unavailable_reason: feedbackDisabledReason() ?? (feedbackCommand.isEnabled?.() === false
-              ? '/feedback is disabled in this session'
-              : '/feedback from a host app is not supported by this build; run /feedback in the terminal'),
+            unavailable_reason: 'Feedback is not available in this build',
           })
         } else if (message.request.subtype === 'list_models') {
           sendControlResponseSuccess(message, { models: modelInfos })
