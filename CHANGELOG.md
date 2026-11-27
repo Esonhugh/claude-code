@@ -14,8 +14,6 @@
 
 ## 2026-11-27 - claude reset-identity 不改写其他 profile 里读不了的 .claude.json
 
-## 2026-11-27 - Agent：后台通知里交回的报告不加 hand-back frame
-
 ### 变更内容
 
 #### 修复
@@ -29,6 +27,12 @@
 ### 测试覆盖
 
 - `src/utils/saveGlobalConfigFile.test.ts`：当前 profile、共用文件和另一个 profile 的 `.claude.json` 各自写入并备份到自己的 `backups/`；另一个 profile 的文件解析不了或读不了时返回 false，文件和各 `backups/` 都不变（#1528）。
+
+## 2026-11-27 - Agent：后台通知里交回的报告不加 hand-back frame
+
+### 变更内容
+
+#### 修复
 
 - 后台子代理用 SubagentHandback 交回报告后，完成通知和等子任务时的通知里，结果和官方一样是原文，不再加 `[Subagent hand-back]` frame、不再逐行缩进；`SECURITY WARNING` 这类审查提示是结果的第一行。前台结果和续跑报告的 frame 不变（#1537）。
 
