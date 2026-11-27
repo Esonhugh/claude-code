@@ -37,6 +37,63 @@
 - `src/cli/handlers/plugins.list.test.ts` 覆盖 `plugin list` 文本与 JSON 输出、找不到插件时的提示和 `marketplace remove` 的输出。
 - 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败；补装依赖的改动之后，`src/services/plugins`、`src/utils/plugins` 和 `src/cli/handlers/plugins*` 下 51 个测试文件 306 项通过，失败的 5 项（`commandSource`、`managedPlugins`、`refresh`）在 dev `f877d82e` 上同样失败。
 
+## 2026-11-27 - Agent 结果按官方 hand-back 格式交回，前台 agent 的 SDK 通知带报告，Workflow 详情面板适配全屏 modal
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 父 agent 读到的普通 Agent 结果改为与官方 2.1.329 一样的单块 hand-back 格式：harness note 缩进放在上方，下面是 `[Subagent hand-back]` frame 和逐行缩进的报告，agentId/usage trailer 在同一块里。空报告显示 `(Subagent completed but returned no output.)`。门控是 `tengu_melodic_wolf`，默认开启；设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 时所有 Agent 结果都是原文，包括 SubagentHandback 交回的报告和后台通知里的结果（#1520）。
+
+#### 新功能
+
+- 前台 agent 的结果上方加 `<tools-used-before-summary>` 提示，列出子 agent 用过、父 agent 还没见过的工具，嵌套 agent 用过的也算。workflow 的 `agent()` 和脚本内部调用不加（#1520）。
+
+#### 修复
+
+- 轮数上限提示和 auto mode 审查警告改为 frame 上方的 harness note，不再混进报告正文。没交付报告的 hand-back 只显示提示（#1520）。
+- 前台 agent 的 SDK `task_notification` 改在报告确定后发出，summary 是父 agent 读到的报告，出错时是错误信息；`task_updated` 仍立即发出（#1520）。
+- Workflow 详情面板在全屏 modal 里按 modal 的宽高排版，分隔线交给 modal 画，去掉 Dialog 多出的空行，不再折行，按键提示也不再被挤出屏幕（#1520）。
+
+### 测试覆盖
+
+- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：单块格式、tools-used 过滤与跳过、嵌套 note、workflow 调用、空报告、withheld、门控关闭（含 SubagentHandback 交回的报告）（#1520）。
+- `src/tools/AgentTool/agentReport.foreground.test.ts`、`AgentTool.receipt292.test.ts`、`runAgent.handback.test.ts`：前台通知的时机和 summary，trailer 位置（#1520）。
+- `src/utils/subagentHandback.test.ts`：门控关闭时 SubagentHandback 交回的报告读作原文，警告在第一行（#1520）。
+- `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
+- 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 114 个测试文件逐个运行（292 项通过），与 dev `f877d82e` 基线（同一批文件中已有的 113 个，283 项通过）相比没有新增失败。
+
+## 2026-11-27 - 非 first-party 会话不再向 Anthropic 发起信息采集和配置拉取
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 用网关（非官方 `ANTHROPIC_BASE_URL`）、Bedrock / Vertex / Foundry 或 OpenAI 模式时，不再加载 claude.ai MCP connectors，不再拉取 Grove、referral passes、OAuth 账号信息、fast mode 状态和官方 MCP registry，也不再用网关的 API key 查 Anthropic 账号资料。用 claude.ai 账号登录、同时通过代理设了 `ANTHROPIC_BASE_URL` 的会话也按网关处理（#1526、#1527）。
+- 这类会话的模型请求里，`metadata.user_id` 只带 `session_id` 和 `CLAUDE_CODE_EXTRA_METADATA` 的字段，不再带 device id 和账号 id；靠 device id 区分用户的网关需要改用别的字段（#1527）。
+- 打开 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 后，1P 事件只在 first-party 会话里、带这个会话自己的 Anthropic 凭据发送，不再匿名发送或在 401 后去掉凭据重发；OpenAI 模式下也保持关闭。凭据暂时不可用时事件先存盘，退避重试，失败 8 次后丢弃（#1524、#1525）。
+
+#### 修复
+
+- 非 first-party 会话里 `/feedback` 和问卷不再上传对话记录（#1527）。
+
+### 测试覆盖
+
+- `src/services/analytics/firstPartyEventLoggingExporter.test.ts`：没有 Anthropic 凭据时不发送；带凭据时只发往 `api.anthropic.com`；401 后不去掉凭据重发；非 Anthropic provider 打开遥测开关后分析仍关闭（#1525）。
+- `src/services/api/claude-metadata.test.ts`、`src/services/oauth/getOauthProfile.test.ts`、`src/services/mcp/officialRegistry.test.ts`：first-party 会话保留 device id 和账号 id、照常查账号资料；网关、OpenAI、Bedrock、Vertex 下只带 `session_id` 和额外 metadata、不把 API key 发给 Anthropic、不拉 registry（#1527）。
+
+## 2026-11-27 - Bash：Read allow 规则下的选项值不再被报为 deny
+
+### 变更内容
+
+#### 修复
+
+- 允许读取某个目录后（例如选了“本会话允许读取 <dir>”），`grep -rn X --exclude-dir=<dir>/node_modules <dir>` 这类 `--opt=<路径>` 不再被误拒为 `Option value '<dir>/...' was blocked by a deny rule.`；真正匹配 Read deny 规则的选项值仍然拒绝（#1531、#1530）。
+
+### 测试覆盖
+
+- `src/tools/BashTool/bashPermissionHardening.test.ts`：Read allow 规则覆盖的选项值不再返回 deny。
+
 ## 2026-11-27 - claude web 与桌面应用使用各自的 settings.json 和 .claude.json
 
 ### 变更内容

@@ -230,6 +230,8 @@ export type ToolUseContext = {
   hookAskFloor?: true
   /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
   modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
+  /** Agent call made by a workflow; its report goes back to the workflow, not a model. */
+  workflowAgentCall?: true
   /** Workflow script runtime: official framing for the spawned subagent's system prompt. */
   workflowAgentSystemPrompt?: { replace: string } | { append: string }
   /** Workflow script runtime: per-spawn tool policy (agent() opts.disallowedTools / bashCommandClamp). */

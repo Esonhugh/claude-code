@@ -57,13 +57,31 @@ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1 claude
 | 设置了 `DO_NOT_TRACK=1` | 通用的「不追踪」约定，效果同上 |
 | 设置了 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | 只允许必要流量 |
 | 使用 Bedrock / Vertex / Foundry | 数据不该绕到 Anthropic |
+| 使用 OpenAI 模式（ChatGPT 账号或 OpenAI API key） | 同上 |
 | `ANTHROPIC_BASE_URL` 指向非官方网关 | 同上 |
 
-反馈、记忆和压缩后的满意度问卷也跟随同一个开关（其中 Bedrock / Vertex / Foundry 不影响问卷）；`CLAUDE_FORCE_DISPLAY_SURVEY` 不能绕过它，问卷未启用时也不会上传对话记录。
+打开后，事件只用这个会话自己的 Anthropic 凭据（OAuth token 或 API key）发往 `https://api.anthropic.com/api/event_logging/batch`，不再匿名发送。凭据暂时不能用时（还没信任工作目录、OAuth token 过期或缺 `user:profile` scope），这批事件先存到 `~/.claude/telemetry/`，按退避重试，凭据可用后补发；连续失败 8 次就丢弃。
+
+反馈、记忆和压缩后的满意度问卷也跟随同一个开关（其中 Bedrock / Vertex / Foundry 不影响问卷，但这些会话不会上传对话记录）；`CLAUDE_FORCE_DISPLAY_SURVEY` 不能绕过它，问卷未启用时也不会上传对话记录。
 
 内置 Mods 归档里的 `telemetry` Mod（向 Anthropic 发送插件分析数据）始终不加载，设了这个变量也一样。
 
 **项目里的 `.claude/settings.json` 不能替你打开遥测**：写在项目设置 `env` 里的 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY` 和 OTel 导出配置会被忽略，防止克隆一个仓库就把你的数据发出去。
+
+## 用网关或其他 provider 时
+
+只有 provider 是 Anthropic、`ANTHROPIC_BASE_URL` 未设置或指向官方地址时，才算 first-party 会话。用网关、Bedrock / Vertex / Foundry 或 OpenAI 模式时，下面这些只对 Anthropic 账号有意义的请求都不发出，和遥测开关无关：
+
+| 请求 | 不发出后的表现 |
+| --- | --- |
+| 用 API key 查 Anthropic 账号资料（`/api/oauth/profile`） | 网关的 API key 不会发到 `api.anthropic.com` |
+| claude.ai MCP connectors | 不加载，用 claude.ai 账号登录、又通过代理设了 `ANTHROPIC_BASE_URL` 时也一样 |
+| 补全 OAuth 账号信息、Grove 设置和通知、referral passes | 跳过 |
+| fast mode 状态 | 只用本地缓存的状态 |
+| 官方 MCP registry | 不拉取，只影响分析里“是否官方 MCP”的标记 |
+| `/feedback` 和问卷的对话记录上传 | 直接失败，不上传 |
+
+模型请求里的 `metadata.user_id` 也只保留 `session_id` 和 `CLAUDE_CODE_EXTRA_METADATA` 里的字段，不再带 device id 和 Anthropic 账号 id。网关如果靠 device id 区分用户，需要改用别的字段。
 
 ## 发到自己的监控系统（OTel）
 

@@ -5,7 +5,10 @@ import { Dialog } from '../../components/design-system/Dialog.js'
 import { defaultDynamicWorkflowName } from '../../tools/WorkflowTool/saveDynamicWorkflow.js'
 import { SaveDynamicWorkflowDialog } from './SaveDynamicWorkflowDialog.js'
 import { useRegisterOverlay } from '../../context/overlayContext.js'
+import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js'
+import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
+import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import instances from '../../ink/instances.js'
 import {
   workflowPhaseTerminalAgentCount,
@@ -135,6 +138,16 @@ function SplitPanel({ leftNodes, rightNodes, leftTitle, rightTitle, leftWidth, r
 }
 
 // ─── Main Component ─────────────────────────────────────────
+/**
+ * Dialog's keys without its layout: Esc goes back, Ctrl-C/D exit. Dialog puts
+ * a blank row above its content, which official's panel does not have.
+ */
+function DetailKeys({ onCancel }: { onCancel: () => void }): null {
+  useExitOnCtrlCDWithKeybindings()
+  useKeybinding('confirm:no', onCancel, { context: 'Confirmation' })
+  return null
+}
+
 export function WorkflowDetailDialog({
   workflow,
   onBack,
@@ -161,7 +174,9 @@ export function WorkflowDetailDialog({
   const [selectedAgent, setSelectedAgent] = useState(0)
   const [detailScroll, setDetailScroll] = useState(0)
   const [agentPane, setAgentPane] = useState<AgentPane>('left')
-  const { rows: termRows, columns: termCols } = useTerminalSize()
+  // In FullscreenLayout's modal slot the dialog gets the modal's inner size, not the terminal's.
+  const { rows: termRows, columns: termCols } = useModalOrTerminalSize(useTerminalSize())
+  const insideModal = useIsInsideModal()
 
   const prevLayoutKeyRef = useRef('')
 
@@ -175,7 +190,9 @@ export function WorkflowDetailDialog({
   const canControlCurrentAgent = isRunning && currentAgentStatus === 'running'
 
   // Layout — in agent detail mode, left pane is wider for agent names
-  const availableRows = Math.max(8, termRows - 14)
+  // In the modal the panel fills it as official 2.1.329 does: title, description, two blanks,
+  // hints and the panel's two borders, with one row spare.
+  const availableRows = Math.max(8, insideModal ? termRows - 8 : termRows - 14)
   const PHASE_LEFT_W = 22
   const AGENT_LEFT_W = Math.min(40, Math.max(28, Math.floor(termCols * 0.25)))
   const leftW = level === 'agent' ? AGENT_LEFT_W : PHASE_LEFT_W
@@ -423,24 +440,24 @@ export function WorkflowDetailDialog({
 
   return (
     <Box flexDirection="column" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
-      <Dialog title={null} hideBorder hideInputGuide onCancel={goBack} color="text">
-        <Box flexDirection="column" overflowY="hidden">
-          <Text dimColor wrap="truncate-end">{'─'.repeat(termCols - 4)}</Text>
-          <Text bold color="suggestion" wrap="truncate-end">{' '}{workflowTitle(workflow)}</Text>
-          <Box>
-            <Text dimColor wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}{statsText}</Text>
-          </Box>
-          <Text>{' '}</Text>
-          <SplitPanel
-            leftNodes={leftNodes} rightNodes={rightNodes}
-            leftTitle={leftTitle} rightTitle={rightTitle}
-            leftWidth={leftW} rightWidth={rightW}
-            rows={availableRows}
-            focusPane={level === 'agent' ? agentPane : undefined}
-          />
-          <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
+      <DetailKeys onCancel={goBack} />
+      <Box flexDirection="column" overflowY="hidden">
+        {!insideModal && <Text dimColor wrap="truncate-end">{'─'.repeat(termCols - 4)}</Text>}
+        <Text bold color="suggestion" wrap="truncate-end">{' '}{workflowTitle(workflow)}</Text>
+        <Box>
+          <Text dimColor wrap="truncate-end">{' '}{workflowDescription(workflow)}{'  '}{statsText}</Text>
         </Box>
-      </Dialog>
+        <Text>{' '}</Text>
+        <SplitPanel
+          leftNodes={leftNodes} rightNodes={rightNodes}
+          leftTitle={leftTitle} rightTitle={rightTitle}
+          leftWidth={leftW} rightWidth={rightW}
+          rows={availableRows}
+          focusPane={level === 'agent' ? agentPane : undefined}
+        />
+        <Text>{' '}</Text>
+        <Text dimColor italic wrap="truncate-end">{' '}{hints.join(' · ')}</Text>
+      </Box>
     </Box>
   )
 }

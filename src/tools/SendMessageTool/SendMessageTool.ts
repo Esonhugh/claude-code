@@ -48,8 +48,7 @@ import {
 } from '../../utils/teammateMailbox.js'
 import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
-import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { frameSubagentHandback, displaySubagentHandback, isHandbackProvenanceEnabled, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
 import { AgentStoppedByUserError, cancelledAgentMessage } from '../../utils/agentCancellation.js'
 import { bindSubagentRecipient, resolveSubagentRecipient, type SendMessagePin } from '../../utils/sendMessagePins.js'
 import { escapeClosingTag, escapeXmlAttr } from '../../utils/xml.js'
@@ -817,7 +816,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       const { display: _display, ...modelData } = data as SendMessageToolOutput & { display?: string }
       if ('inlineHandback' in modelData && modelData.inlineHandback) {
         const { inlineHandback, ...rest } = modelData
-        const framed = process.env.CLAUDE_CODE_HANDBACK_PROVENANCE === undefined || isEnvTruthy(process.env.CLAUDE_CODE_HANDBACK_PROVENANCE)
+        const framed = isHandbackProvenanceEnabled()
         return {
           tool_use_id: toolUseID,
           type: 'tool_result' as const,

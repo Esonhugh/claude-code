@@ -1,6 +1,9 @@
 import type { Message } from '../../types/message.js'
 import type { QueuedCommand } from '../../types/textInputTypes.js'
+import { HANDBACK_FRAME, isHandbackProvenanceEnabled } from '../../utils/subagentHandback.js'
+import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from '../AgentTool/constants.js'
 import { POLL_TOOL_NAME } from '../REPLTool/constants.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 
 /** Official `pA`, `Lnr` and `uh`: the tools-used tag, the names it shows as is, and the stand-in for others. */
 export const TOOLS_USED_TAG = 'tools-used-before-summary'
@@ -50,14 +53,26 @@ function manifestNames(shown: Set<string>, text: string): void {
   for (const match of text.matchAll(TOOLS_USED_LINE)) if (match.index === at) addLineNames(shown, match[1]!)
 }
 
+/** Official `N(text, undefined, "frame")`: the tools-used lines among the notes above a hand-back frame. */
+function frameNames(shown: Set<string>, text: string): void {
+  const frame = `\n${text}`.indexOf(`\n${HANDBACK_FRAME}\n`)
+  if (frame === -1) return
+  for (const match of text.matchAll(TOOLS_USED_LINE)) if (match.index < frame) addLineNames(shown, match[1]!)
+}
+
+const FRAMED_TOOLS = new Set([AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, SEND_MESSAGE_TOOL_NAME])
+
 /**
  * Official `xO` as `yNt` calls it: the tool names the messages already show
  * the model, from their tool calls and the tools-used lines of earlier
- * deliveries (a `poll_events` attachment's, a Poll result's).
+ * deliveries (a `poll_events` attachment's, a Poll result's) and of framed
+ * Agent and SendMessage results.
  */
 function namesShown(messages: readonly Message[]): Set<string> {
   const shown = new Set<string>()
   const polls = new Set<string>()
+  const framed = new Set<string>()
+  const provenance = isHandbackProvenanceEnabled()
   for (const message of messages) {
     if (message.type === 'attachment') {
       if (message.attachment.type === 'poll_events') addLineNames(shown, (message.attachment.toolsUsed ?? []).join(','))
@@ -72,14 +87,15 @@ function namesShown(messages: readonly Message[]): Set<string> {
         if (name === '') continue
         shown.add(readableToolName(name))
         if (block.type === 'tool_use' && name === POLL_TOOL_NAME) polls.add(block.id)
-      } else if (message.type === 'user' && block.type === 'tool_result' && polls.has(block.tool_use_id)) {
+        if (block.type === 'tool_use' && provenance && FRAMED_TOOLS.has(name)) framed.add(block.id)
+      } else if (message.type === 'user' && block.type === 'tool_result' && (polls.has(block.tool_use_id) || framed.has(block.tool_use_id))) {
         const texts =
           typeof block.content === 'string'
             ? [block.content]
             : Array.isArray(block.content)
               ? block.content.flatMap(part => (part.type === 'text' ? [part.text] : []))
               : []
-        for (const text of texts) manifestNames(shown, text)
+        for (const text of texts) (polls.has(block.tool_use_id) ? manifestNames : frameNames)(shown, text)
       }
     }
   }
@@ -97,4 +113,17 @@ export function toolsUsedForDelivery(commands: readonly QueuedCommand[], message
   if (used.size === 0) return []
   const shown = namesShown(messages.filter(message => !((message.type === 'user' || message.type === 'assistant') && message.isVirtual === true)))
   return [...used].filter(name => name === UNREADABLE_TOOL_NAME || !shown.has(name)).sort()
+}
+
+/**
+ * Official `COt` as `gYo` calls it (2.1.322 chunk-6yy7c9r1.js): the tools a
+ * finished subagent used that the parent's messages do not show yet, as a
+ * tools-used line. They join the latch either way.
+ */
+export function subagentToolsUsedLine(agentMessages: readonly Message[], parentMessages: readonly Message[]): string | undefined {
+  const names = [...namesShown(agentMessages)]
+  recordToolsUsed(names)
+  const shown = namesShown(parentMessages.filter(message => !((message.type === 'user' || message.type === 'assistant') && message.isVirtual === true)))
+  const unseen = names.filter(name => name === UNREADABLE_TOOL_NAME || !shown.has(name)).sort()
+  return unseen.length === 0 ? undefined : `<${TOOLS_USED_TAG}>${unseen.join(', ')}</${TOOLS_USED_TAG}>`
 }
