@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - 新增 /fork：复制对话到后台会话，/tasks 增加 Forks 分组
+
+### 变更内容
+
+#### 新增
+
+- 新增 `/fork [prompt]`：把当前对话复制成一个新的后台会话，前台会话不退出；带的一句话是副本的第一件事，不带就停在输入框。副本名为 `原会话名 ⑂ 这句话`，沿用权限模式和模型，在 git 仓库里会被提示先建自己的 worktree。还没发过消息时提示 `Nothing to fork yet. Send a message first.`，safe / bare 模式下拒绝（#1412）。
+- `/tasks` 最下面新增 Forks 分组，列出从这个会话复制出去的后台会话，打开期间每 2 秒刷新；按 `x` 先确认 `Stop this fork?`，只停选中的那个，并留下 `Stopped fork: …` 或 `Couldn't stop fork: …`（#1412）。
+
+#### 变更
+
+- `/branch` 不再带 `/fork` 别名（#1412）。
+
+### 测试覆盖
+
+- `src/commands/fork/fork.test.ts`：副本命名、空对话拒绝；`src/daemon/supervisor.test.ts`：fork 以 `--resume <父会话> --fork-session --session-id <新 id>` 启动，其他启动参数不变；`src/components/tasks/forkItems.test.ts`、`BackgroundTasksDialog.rows.test.tsx`：只列本会话的副本、在跑的排前、取 ⑂ 后的名字、`x` 取消不停止、确认后只停选中的副本、停不掉时提示（#1412）。
+
 ## 2026-11-27 - Hooks：terminalSequence 和未信任文件夹的 agent hook 日志对齐官方
 
 ### 变更内容

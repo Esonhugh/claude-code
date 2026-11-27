@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import figures from 'figures'
 import React, {
   type ReactNode,
+  useCallback,
   useEffect,
   useEffectEvent,
   useMemo,
@@ -98,6 +99,9 @@ import { getRemoteTaskControl } from '../../remote/remoteTaskControl.js'
 import { RemoteTasksDialog } from './RemoteTasksDialog.js'
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js'
+import { type JobRecord, readJobRecords, stopJob } from '../../daemon/protocol.js'
+import { forkRows } from './forkItems.js'
+import { BLACK_CIRCLE } from '../../constants/figures.js'
 import { BackgroundTask as BackgroundTaskComponent } from './BackgroundTask.js'
 import { DreamDetailDialog } from './DreamDetailDialog.js'
 import { InProcessTeammateDetailDialog } from './InProcessTeammateDetailDialog.js'
@@ -263,9 +267,9 @@ type TaskListItem =
 // Rows that are not tasks: what official 2.1.329 lists beside them.
 type StoppableItem = {
   id: string
-  type: 'scheduled' | 'goal'
+  type: 'scheduled' | 'goal' | 'fork'
   label: string
-  status: 'running'
+  status: 'running' | 'completed'
   when: string
 }
 type HistoryItem =
@@ -291,7 +295,10 @@ const GOAL_ITEM_ID = '__goal__'
 const STOP_TITLES = {
   scheduled: 'Stop this scheduled task?',
   goal: 'Stop the goal?',
+  fork: 'Stop this fork?',
 }
+
+const FORK_POLL_MS = 2000
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const WorkflowDetailDialog = (
@@ -359,6 +366,18 @@ function LocalBackgroundTasksDialog({
   const [recordedAgents, setRecordedAgents] = useState<RecordedSubagent[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [unopenable, setUnopenable] = useState<ReadonlySet<string>>(new Set())
+  const [forkJobs, setForkJobs] = useState<JobRecord[]>([])
+  const refreshForks = useCallback(async () => {
+    const jobs = await readJobRecords().catch(() => undefined)
+    if (jobs) setForkJobs(jobs)
+  }, [])
+  // Like 2.1.329: the Forks group is reread every 2s while the dialog is open.
+  useEffect(() => {
+    if (scope === 'terminal') return
+    void refreshForks()
+    const timer = setInterval(() => void refreshForks(), FORK_POLL_MS)
+    return () => clearInterval(timer)
+  }, [scope, refreshForks])
   useEffect(() => {
     if (scope === 'terminal') return
     let isOpen = true
@@ -390,6 +409,7 @@ function LocalBackgroundTasksDialog({
     scheduledItems,
     goalItems,
     historyItems,
+    forkItems,
     allSelectableItems,
   } = useMemo(() => {
     // Filter to only show running/pending background tasks, matching the status bar count.
@@ -463,6 +483,9 @@ function LocalBackgroundTasksDialog({
             },
           ]
         : []
+    const forks: StoppableItem[] = extras
+      ? forkRows(forkJobs, getSessionId()).map(row => ({ ...row, type: 'fork' }))
+      : []
     // An agent with a row above, or still running, is not history yet.
     const listed = new Set(allItems.map(item => item.id))
     const earlier = recordedAgents.filter(
@@ -493,6 +516,7 @@ function LocalBackgroundTasksDialog({
       scheduledItems: scheduled,
       goalItems: goal,
       historyItems: history,
+      forkItems: forks,
       bashTasks: bash,
       terminalTasks: terminals,
       remoteSessions: remote,
@@ -519,9 +543,10 @@ function LocalBackgroundTasksDialog({
         ...dreamTasks,
         ...scripts,
         ...history,
+        ...forks,
       ] as ListItem[],
     }
-  }, [typedTasks, foregroundedTaskId, scope, cronTasks, goalStatus, recordedAgents, historyOpen])
+  }, [typedTasks, foregroundedTaskId, scope, cronTasks, goalStatus, recordedAgents, historyOpen, forkJobs])
 
   const currentSelection = allSelectableItems[selectedIndex] ?? null
 
@@ -550,7 +575,8 @@ function LocalBackgroundTasksDialog({
           } else if (
             current.type !== 'local_script' && // A script has no detail view; its row is all there is.
             current.type !== 'scheduled' &&
-            current.type !== 'goal'
+            current.type !== 'goal' &&
+            current.type !== 'fork'
           ) {
             setViewState({ mode: 'detail', itemId: current.id })
           }
@@ -578,7 +604,11 @@ function LocalBackgroundTasksDialog({
 
     if (e.key === 'x') {
       e.preventDefault()
-      if (currentSelection.type === 'scheduled' || currentSelection.type === 'goal') {
+      if (
+        currentSelection.type === 'scheduled' ||
+        currentSelection.type === 'goal' ||
+        (currentSelection.type === 'fork' && currentSelection.status === 'running')
+      ) {
         setViewState({ mode: 'confirmStop', itemId: currentSelection.id })
       } else if (
         currentSelection.type === 'local_bash' &&
@@ -679,6 +709,18 @@ function LocalBackgroundTasksDialog({
 
   function stopItem(item: StoppableItem): void {
     const notice = (text: string) => createSystemMessage(text, 'notice')
+    if (item.type === 'fork') {
+      const job = forkJobs.find(candidate => candidate.id === item.id)
+      void (job ? stopJob(job) : Promise.resolve(false))
+        .then(stopped => {
+          toolUseContext.setMessages?.(prev => [
+            ...prev,
+            notice(`${stopped ? 'Stopped fork' : "Couldn't stop fork"}: ${truncate(item.label, 60, true)}`),
+          ])
+        })
+        .then(refreshForks)
+      return
+    }
     if (item.type === 'scheduled') {
       if (cronTasks.find(task => task.id === item.id)?.kind === 'loop') {
         cancelLoopWakeups()
@@ -791,7 +833,7 @@ function LocalBackgroundTasksDialog({
     // Like 2.1.329: scheduled tasks and the goal have no detail view to come back from.
     if (
       skippedListOnMount.current &&
-      allSelectableItems.length - scheduledItems.length - goalItems.length <= 1
+      allSelectableItems.length - scheduledItems.length - goalItems.length - forkItems.length <= 1
     ) {
       onDone('Background tasks dialog dismissed', { display: 'system' })
     } else {
@@ -802,7 +844,7 @@ function LocalBackgroundTasksDialog({
 
   if (viewState.mode === 'confirmStop') {
     const item = allSelectableItems.find(i => i.id === viewState.itemId)
-    if (item?.type !== 'scheduled' && item?.type !== 'goal') return null
+    if (item?.type !== 'scheduled' && item?.type !== 'goal' && item?.type !== 'fork') return null
     const backToList = () => setViewState({ mode: 'list' })
     return (
       <Dialog title={STOP_TITLES[item.type]} onCancel={backToList} color="background">
@@ -1030,7 +1072,8 @@ function LocalBackgroundTasksDialog({
         : []
       : currentSelection?.type !== 'local_script' &&
           currentSelection?.type !== 'scheduled' &&
-          currentSelection?.type !== 'goal'
+          currentSelection?.type !== 'goal' &&
+          currentSelection?.type !== 'fork'
         ? [<KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />]
         : []),
     ...(currentSelection?.type === 'in_process_teammate' && isViewableTeammate(currentSelection.task)
@@ -1052,6 +1095,7 @@ function LocalBackgroundTasksDialog({
       currentSelection?.type === 'local_script' ||
       currentSelection?.type === 'scheduled' ||
       currentSelection?.type === 'goal' ||
+      currentSelection?.type === 'fork' ||
       currentSelection?.type === 'remote_agent') &&
     currentSelection.status === 'running'
       ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />]
@@ -1352,6 +1396,18 @@ function LocalBackgroundTasksDialog({
                 />
               </Box>
             )}
+
+            {forkItems.length > 0 && (
+              <Box
+                flexDirection="column"
+                marginTop={allSelectableItems[0] === forkItems[0] ? 0 : 1}
+              >
+                <Text dimColor bold>
+                  {'  '}Forks
+                </Text>
+                <StoppableRows items={forkItems} currentSelectionId={currentSelection?.id} />
+              </Box>
+            )}
           </Box>
         )}
       </Dialog>
@@ -1493,6 +1549,12 @@ function Row({
   )
 }
 
+function stoppableIcon(item: StoppableItem): string {
+  if (item.type !== 'fork') return figures.circle
+  // 2.1.329 marks a settled fork with U+2022, not figures.bullet (●).
+  return item.status === 'running' ? BLACK_CIRCLE : '\u2022'
+}
+
 function StoppableRows({
   items,
   currentSelectionId,
@@ -1507,7 +1569,7 @@ function StoppableRows({
         <Row
           key={item.id}
           isSelected={item.id === currentSelectionId}
-          icon={figures.circle}
+          icon={stoppableIcon(item)}
           label={item.label}
           labelWidth={labelWidth}
           meta={item.when}
