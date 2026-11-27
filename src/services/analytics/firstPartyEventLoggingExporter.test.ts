@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test'
 import { ExportResultCode, type ExportResult } from '@opentelemetry/core'
 import type { ReadableLogRecord } from '@opentelemetry/sdk-logs'
 import axios, { AxiosError, type AxiosResponse } from 'axios'
+import { existsSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -75,6 +76,42 @@ test('a 401 is not retried without the credential', async () => {
   spies.push(post)
   expect((await exportOnce()).code).toBe(ExportResultCode.FAILED)
   expect(post).toHaveBeenCalledTimes(1)
+})
+
+function subscriberExport(tokens: { scopes: string[]; expiresAt: number }) {
+  spies.push(
+    spyOn(auth, 'isClaudeAISubscriber').mockReturnValue(true),
+    spyOn(auth, 'getClaudeAIOAuthTokens').mockReturnValue({ accessToken: 'fixture-only', refreshToken: null, ...tokens }),
+  )
+  const post = spyOn(axios, 'post')
+  spies.push(post)
+  const schedule = mock(() => () => {})
+  const exporter = new FirstPartyEventLoggingExporter({ schedule })
+  return {
+    post,
+    schedule,
+    exporter,
+    result: new Promise<ExportResult>(resolve => void exporter.export([record], resolve)),
+  }
+}
+
+test('a token without user:profile drops events without writing them to disk', async () => {
+  const { post, schedule, exporter, result } = subscriberExport({ scopes: ['user:inference'], expiresAt: Date.now() + 3_600_000 })
+  const { code, error } = await result
+  expect(code).toBe(ExportResultCode.FAILED)
+  expect(error?.message).toBe('Dropped 1 events (1P event logging: OAuth token lacks user:profile scope)')
+  expect(post).not.toHaveBeenCalled()
+  expect(schedule).not.toHaveBeenCalled()
+  expect(await exporter.getQueuedEventCount()).toBe(0)
+  expect(existsSync(join(dir, 'telemetry'))).toBe(false)
+})
+
+test('an expired token still queues events for the backoff retry', async () => {
+  const { post, schedule, exporter, result } = subscriberExport({ scopes: ['user:inference', 'user:profile'], expiresAt: 1 })
+  expect((await result).code).toBe(ExportResultCode.FAILED)
+  expect(post).not.toHaveBeenCalled()
+  expect(schedule).toHaveBeenCalledTimes(1)
+  expect(await exporter.getQueuedEventCount()).toBe(1)
 })
 
 test('analytics stay off for a non-Anthropic provider even when opted in', () => {
