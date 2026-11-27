@@ -35,7 +35,7 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 6 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 7 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -219,5 +219,36 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
     expect(auto()['cycb@mk']).toBe(true)
     loader.clearPluginCache()
     expect((await loader.loadAllPlugins()).errors).toEqual([])
+  })
+
+  test('installing a plugin already in place fetches only its missing dependencies; a disabled one reinstalls it', async () => {
+    const loader = await import('../../utils/plugins/pluginLoader.js')
+    const settings = await import('../../utils/settings/settings.js')
+    const inPlace = (name: string) => ` \u2014 it loads in place from ${join(market, name)}, so edits there take effect at the next session start or /reload-plugins`
+    // As official 2.1.329 `OBs`/`xPt`: a dependency that is not installed is
+    // installed beside the plugin, which is left as it is.
+    expect((await ops.uninstallPluginOp('cycb@mk', 'user')).success).toBe(true)
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('cyca@mk', 'user')).message).toBe(
+      `Plugin "cyca@mk" is already installed (scope: user)${inPlace('cyca')} (+ 1 dependency: cycb)`,
+    )
+    expect(enabled()['cycb@mk']).toBe(true)
+    expect(auto()['cycb@mk']).toBe(true)
+
+    // One no marketplace lists stays unresolved.
+    settings.updateSettingsForSource('userSettings', { enabledPlugins: { ...enabled(), 'ghost@mk': true } })
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('ghost@mk', 'user')).message).toBe(
+      `Plugin "ghost@mk" is already installed (scope: user)${inPlace('ghost')} \u2014 1 dependency still unresolved: nope@mk.`,
+    )
+
+    // A dependency that is installed but disabled takes the full install.
+    expect((await ops.installPluginOp('child@mk', 'user')).success).toBe(true)
+    settings.updateSettingsForSource('userSettings', { enabledPlugins: { ...enabled(), 'base@mk': false } })
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('child@mk', 'user')).message).toBe(
+      'Successfully installed plugin: child@mk (scope: user) (+ 1 dependency: base)',
+    )
+    expect(enabled()['base@mk']).toBe(true)
   })
 }

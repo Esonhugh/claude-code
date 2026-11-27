@@ -18,7 +18,7 @@ import {
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
-import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
+import type { LoadedPlugin, PluginError, PluginManifest } from '../../types/plugin.js'
 import { isENOENT, toError } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { logError } from '../../utils/log.js'
@@ -30,9 +30,10 @@ import {
   findOrphanedAutoDependencies,
   findReverseDependents,
   findTransitiveReverseDependents,
+  formatDependencyCountSuffix,
   formatReverseDependentsSuffix,
+  formatUnresolvedDependencySuffix,
   getEnabledPluginIdsForScope,
-  qualifyDependency,
   resolveEnableClosure,
 } from '../../utils/plugins/dependencyResolver.js'
 import {
@@ -46,6 +47,7 @@ import {
   getMarketplace,
   getPluginById,
   loadKnownMarketplacesConfig,
+  loadKnownMarketplacesConfigSafe,
 } from '../../utils/plugins/marketplaceManager.js'
 import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { getPluginIdsForDataCleanup } from '../../utils/plugins/pluginFolderCollision.js'
@@ -56,6 +58,7 @@ import {
 } from '../../utils/plugins/pluginIdentifier.js'
 import {
   formatResolutionError,
+  installMissingDependencies,
   installResolvedPlugin,
   validatePathWithinBase,
 } from '../../utils/plugins/pluginInstallationHelpers.js'
@@ -361,16 +364,20 @@ type CommandSourceConfirmation = {
   ) => Promise<boolean>
 }
 
+type DependencyError = Extract<PluginError, { type: 'dependency-unsatisfied' }>
+
 /**
- * The installation that leaves installing `pluginId` at `scope` nothing to
- * do: the scope's settings enable it, its record there points at files that
- * exist, and every dependency it declares is enabled at that scope too.
+ * Official 2.1.329 `OBs`: the installation that leaves installing `pluginId`
+ * at `scope` nothing to do but fetch missing dependencies. The scope's
+ * settings enable it, its record there points at files that exist, and the
+ * load reports no dependency of it that is anything but not installed.
+ * Returns the record and those dependency errors.
  */
 async function findInstallationAtScope(
   pluginId: string,
   entry: PluginMarketplaceEntry,
   scope: InstallableScope,
-): Promise<PluginInstallationEntry | undefined> {
+): Promise<{ record: PluginInstallationEntry; dependencyErrors: DependencyError[] } | undefined> {
   const enabled = getEnabledPluginIdsForScope(scopeToSettingSource(scope))
   if (!enabled.has(pluginId)) return undefined
   const projectPath = scope === 'user' ? undefined : getOriginalCwd()
@@ -378,12 +385,28 @@ async function findInstallationAtScope(
     inst => inst.scope === scope && inst.projectPath === projectPath,
   )
   if (!record || !getFsImplementation().existsSync(record.installPath)) return undefined
-  const manifest = await readManifest(record.installPath, entry)
-  if (!manifest) return undefined
-  const dependencies = [...(entry.dependencies ?? []), ...(manifest.dependencies ?? [])]
-  return dependencies.every(dep => enabled.has(qualifyDependency(dep, pluginId)))
-    ? record
+  if (!(await readManifest(record.installPath, entry))) return undefined
+  const dependencyErrors = (await loadAllPluginsCacheOnly()).errors.filter(
+    (error): error is DependencyError =>
+      error.type === 'dependency-unsatisfied' && error.source === pluginId,
+  )
+  return dependencyErrors.every(error => error.reason === 'not-found')
+    ? { record, dependencyErrors }
     : undefined
+}
+
+/** Official 2.1.329 `xPt`: install the missing dependencies, and say what was installed and what is still missing. */
+async function installMissingDependenciesNote(errors: readonly DependencyError[]): Promise<string> {
+  if (errors.length === 0) return ''
+  const missing = errors.map(error => error.dependency)
+  const installed = await installMissingDependencies(errors)
+  const unresolved = missing.filter(dep => !installed.includes(dep))
+  const known = unresolved.length > 0 ? await loadKnownMarketplacesConfigSafe() : {}
+  const marketplaceMissing = unresolved.filter(dep => {
+    const marketplace = parsePluginIdentifier(dep).marketplace
+    return marketplace === undefined || !known[marketplace]
+  })
+  return `${formatDependencyCountSuffix(installed)}${formatUnresolvedDependencySuffix(unresolved, marketplaceMissing)}`
 }
 
 async function readManifest(
@@ -485,9 +508,10 @@ export async function installPluginOp(
   if (current) {
     const projectPath = scope === 'user' ? undefined : getOriginalCwd()
     const madeManual = markPluginInstallationManual(pluginId, scope, projectPath)
+    const dependencies = await installMissingDependenciesNote(current.dependencyErrors)
     return {
       success: true,
-      message: `Plugin "${pluginId}" is already installed (scope: ${scope})${madeManual ? ' \u2014 marked as manually installed' : ''}${await inPlaceNote(pluginId, entry, scope, current.version)}`,
+      message: `Plugin "${pluginId}" is already installed (scope: ${scope})${madeManual ? ' \u2014 marked as manually installed' : ''}${await inPlaceNote(pluginId, entry, scope, current.record.version)}${dependencies}`,
       pluginId,
       pluginName: entry.name,
       scope,

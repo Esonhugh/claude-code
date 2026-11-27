@@ -306,6 +306,31 @@ export function formatDependencyCountSuffix(installedDeps: string[]): string {
 }
 
 /**
+ * Official 2.1.329 `o0i`: the " — N dependencies still unresolved: …" suffix,
+ * asking for the marketplace of the first one whose marketplace is not added.
+ * Returns empty string when `unresolved` is empty.
+ */
+export function formatUnresolvedDependencySuffix(
+  unresolved: readonly string[],
+  marketplaceMissing: readonly string[],
+): string {
+  if (unresolved.length === 0) return ''
+  const n = unresolved.length
+  const marketplace = marketplaceMissing
+    .map(id => parsePluginIdentifier(id).marketplace)
+    .find(name => name !== undefined)
+  const hint =
+    marketplace !== undefined
+      ? ` Is the "${marketplace}" marketplace added?`
+      : marketplaceMissing.length > 0
+        ? " Add the dependency's marketplace, then re-run install."
+        : ''
+  const listed = unresolved.slice(0, MAX_LISTED_DEPENDENCIES).join(', ')
+  const names = n <= MAX_LISTED_DEPENDENCIES ? `${listed}.` : `${listed} and ${n - MAX_LISTED_DEPENDENCIES} more.`
+  return ` \u2014 ${n} ${n === 1 ? 'dependency' : 'dependencies'} still unresolved: ${names}${hint}`
+}
+
+/**
  * Every enabled plugin that stops loading when `pluginId` goes away, as
  * plugin IDs, dependents of dependents first.
  */
