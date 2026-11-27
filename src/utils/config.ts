@@ -871,10 +871,9 @@ export function saveGlobalConfig(
 /**
  * saveGlobalConfig for any of getAllGlobalClaudeFiles(), such as another
  * settings profile's: the same lock, backup and 0600 write, without this
- * process's cache. Backups go where that profile keeps them. The file must
- * exist and parse, since an unreadable one would be replaced with the
- * defaults. False when the write was refused (see saveGlobalConfig); throws
- * when the file can't be locked or written.
+ * process's cache. Backups go where that profile keeps them. False when the
+ * file can't be read or doesn't parse, which leaves it as it is (see
+ * saveGlobalConfig); throws when the file can't be locked or written.
  */
 export function saveGlobalConfigFile(
   file: string,
@@ -885,7 +884,12 @@ export function saveGlobalConfigFile(
     file === getSharedGlobalClaudeFile()
       ? join(getClaudeConfigHomeDir(), 'backups')
       : join(dirname(file), 'backups')
-  saveConfigWithLock(file, createDefaultGlobalConfig, updater, backupDir)
+  try {
+    saveConfigWithLock(file, createDefaultGlobalConfig, updater, backupDir)
+  } catch (error) {
+    if (error instanceof ConfigUnreadableError) return false
+    throw error
+  }
   return true
 }
 
@@ -1248,10 +1252,19 @@ function saveConfigWithLock<A extends object>(
     // Re-read the current config to get latest state. If the file is
     // momentarily corrupted (concurrent writes, kill-during-write), this
     // returns defaults -- we must not write those back over good config.
-    const currentConfig =
-      file === getGlobalClaudeFile()
-        ? (getConfigForSave() as A | undefined)
-        : getConfig(file, createDefault)
+    // Another profile's file has no cache to fall back on, so a read that
+    // fails or doesn't parse stops the save.
+    let currentConfig: A | undefined
+    if (file === getGlobalClaudeFile()) {
+      currentConfig = getConfigForSave() as A | undefined
+    } else {
+      try {
+        currentConfig = getConfig(file, createDefault, true)
+        if (lastConfigReadError !== undefined) currentConfig = undefined
+      } catch (error) {
+        if (!(error instanceof ConfigParseError)) throw error
+      }
+    }
     if (!currentConfig) {
       throw new ConfigUnreadableError(`${file} could not be read`)
     }
