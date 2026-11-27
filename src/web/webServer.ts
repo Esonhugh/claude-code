@@ -166,6 +166,11 @@ const openBodySchema = lazySchema(() =>
   z.object({ path: z.string().max(4096).optional(), reveal: z.boolean().optional() }),
 )
 
+// A model alias or id, up to 128 characters. It reaches the session as one `--model` argv entry or one
+// env value, never through a shell, so gateway ids with spaces or any script ("Opus 5.5") pass.
+// Not allowed: a leading `-` (read as a flag), edge whitespace, control and format characters.
+const MODEL = /^[^\s\p{C}-](?:[^\p{C}\p{Zl}\p{Zp}]{0,126}[^\s\p{C}])?$/u
+
 const createSessionBodySchema = lazySchema(() =>
   z.object({
     cwd: z.string().optional(),
@@ -176,10 +181,7 @@ const createSessionBodySchema = lazySchema(() =>
     trust: z.boolean().optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
     // A model alias or id; passed to `--model` as one argv entry.
-    model: z
-      .string()
-      .regex(/^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/)
-      .optional(),
+    model: z.string().regex(MODEL).optional(),
     // An effort level, passed to `--effort` (a resumed session keeps the one the page showed).
     effort: z.string().regex(EFFORT).optional(),
   }),
@@ -193,8 +195,6 @@ const promptHistoryBodySchema = lazySchema(() =>
     text: z.string().trim().min(1).max(100_000),
   }),
 )
-
-const MODEL = /^[A-Za-z0-9][\w.:[\]/@-]{0,127}$/
 
 const projectFieldsSchema = lazySchema(() =>
   z.object({
