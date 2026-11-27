@@ -1165,7 +1165,7 @@ export async function marketplaceRemoveHandler(
 ): Promise<void> {
   if (options.cowork) setUseCoworkPlugins(true)
   try {
-    await removeMarketplaceSource(name)
+    const { removedPluginIds } = await removeMarketplaceSource(name)
     clearAllCaches()
 
     logEvent('tengu_marketplace_removed', {
@@ -1173,7 +1173,19 @@ export async function marketplaceRemoveHandler(
         name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
 
-    cliOk(`${figures.tick} Successfully removed marketplace: ${name}`)
+    // As official 2.1.329: name the plugins the removal uninstalled.
+    const uninstalled =
+      removedPluginIds.length > 0
+        ? [
+            `Also uninstalled ${removedPluginIds.length} ${plural(removedPluginIds.length, 'plugin')} from this marketplace:`,
+            ...removedPluginIds.map(id => `  ${id}`),
+            'The removal also deletes their saved options, secrets and data where it can.',
+            'To use a plugin again, add the marketplace back and reinstall the plugin.',
+          ]
+        : []
+    cliOk(
+      [`${figures.tick} Successfully removed marketplace: ${name}`, ...uninstalled].join('\n'),
+    )
   } catch (error) {
     handleMarketplaceError(error, 'remove marketplace')
   }
