@@ -132,8 +132,8 @@ if (process.env[childFlag] !== '1') {
     expect(text).toStartWith('[Subagent hand-back] The text below is the final report of a subagent')
     expect(text).toContain('The report follows:\n  REPORT-ALPHA\nagentId: ')
     expect(JSON.stringify(block)).not.toContain('UNSENT TEXT')
-    // A background run notifies with the same framed report, once.
-    expect(subagentResultText(result).split('[Subagent hand-back]')).toHaveLength(2)
+    // A background run notifies with the report plain, as official 2.1.329 does.
+    expect(subagentResultText(result)).toBe('REPORT-ALPHA')
   })
 
   test('auto mode without a hand-back: the last text is withheld', async () => {

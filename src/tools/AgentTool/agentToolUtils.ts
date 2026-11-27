@@ -1126,8 +1126,8 @@ export function backgroundHandoffReview({
 
 /**
  * The notification text for a finished background run once agent.report
- * answered: a hand-back's warning is a note above its frame, a plain
- * result's a paragraph above it.
+ * answered: a hand-back's warning is its first line, a plain result's a
+ * paragraph above it.
  */
 export function reportedAgentMessage(result: AgentToolResult, answer: { text: string; warning?: string }, prefix?: string): string {
   const plain = result.handback === undefined
