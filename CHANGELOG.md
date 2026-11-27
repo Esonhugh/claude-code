@@ -12,6 +12,22 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - claude reset-identity 不改写其他 profile 里读不了的 .claude.json
+
+### 变更内容
+
+#### 修复
+
+- `claude reset-identity` 处理另一个 profile（如当前是 `web` 时的共用文件或 `desktop`）的 `.claude.json` 时，加锁后重读失败或解析不了，就不再用默认值改写它，命令报告这个文件没有改动并以非零状态退出（#1528）。
+
+#### 文档
+
+- `docs/features/telemetry.md` 说明自定义 profile（如 `CLAUDE_CODE_SETTINGS_PROFILE=foo`）只有是当前 profile 时才会被 `claude reset-identity` 处理（#1528）。
+
+### 测试覆盖
+
+- `src/utils/saveGlobalConfigFile.test.ts`：当前 profile、共用文件和另一个 profile 的 `.claude.json` 各自写入并备份到自己的 `backups/`；另一个 profile 的文件解析不了或读不了时返回 false，文件和各 `backups/` 都不变（#1528）。
+
 ## 2026-11-27 - Agent：后台通知里交回的报告不加 hand-back frame
 
 ### 变更内容
