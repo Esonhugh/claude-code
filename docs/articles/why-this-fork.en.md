@@ -18,7 +18,7 @@
 
 **Long-running autonomous work.** Agent Teams, Dynamic Workflow, `/goal`, Monitor, scheduled tasks, an interactive Terminal tool and background sessions let Claude split work, run it in parallel, and keep going until a goal is met.
 
-**Private by default.** No telemetry is sent to Anthropic by default and `/feedback` is hidden; project settings cannot turn telemetry on for you.
+**Private by default.** No telemetry is sent to Anthropic by default, and `/feedback` and the in-session surveys are removed; project settings cannot turn telemetry on for you.
 
 ## Install
 

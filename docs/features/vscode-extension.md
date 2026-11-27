@@ -64,7 +64,7 @@ r5 background_tasks    success  {}
 | `/memory`、`/skills`、`/hooks`、`/permissions` | `get_memory_dialog`、`get_skills_dialog`、`get_hooks_listing`、`list_permission_rules` |
 | `/sandbox` | `get_sandbox_dialog` 读取沙箱状态，插件通过 `claude edit-sandbox-settings --json` 写回设置（检查与官方 2.1.311 一致） |
 | diff 与后台任务 | `get_workspace_diff`、`get_task_output`（任务结束后仍可读输出末尾 8 KiB）、`background_tasks` |
-| 回答评分、反馈 | `message_rated`、`submit_feedback`（返回 `unavailable_reason`，不从插件上传反馈；请在终端用 `/feedback`） |
+| 回答评分、反馈 | `message_rated`、`submit_feedback`（返回 `unavailable_reason`：本 fork 已删除反馈上传，`/feedback` 也不存在） |
 | 其他 | `set_prompt_suggestions_paused`、`mcp_status`、`--thinking-display` 参数 |
 
 通用的 SDK 控制请求（`initialize`、`set_model`、`read_file` 等）见 [agent-sdk.md](agent-sdk.md)。
