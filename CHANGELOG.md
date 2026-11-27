@@ -36,7 +36,7 @@
 - `src/tools/AgentTool/agentReport.foreground.test.ts`、`AgentTool.receipt292.test.ts`、`runAgent.handback.test.ts`：前台通知的时机和 summary，trailer 位置（#1520）。
 - `src/utils/subagentHandback.test.ts`：门控关闭时 SubagentHandback 交回的报告读作原文，警告在第一行（#1520）。
 - `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
-- 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 112 个测试文件逐个运行，与 dev 基线相比没有新增失败。
+- 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 114 个测试文件逐个运行（292 项通过），与 dev `f877d82e` 基线（同一批文件中已有的 113 个，283 项通过）相比没有新增失败。
 
 ## 2026-11-27 - claude web 与桌面应用使用各自的 settings.json 和 .claude.json
 
