@@ -124,7 +124,7 @@ const listAgentsCmd = feature('UDS_INBOX')
       require('./commands/peers/index.js') as typeof import('./commands/peers/index.js')
     ).default
   : null
-const forkCmd = feature('FORK_SUBAGENT')
+const forkCmd = feature('BG_SESSIONS')
   ? (
       require('./commands/fork/index.js') as typeof import('./commands/fork/index.js')
     ).default

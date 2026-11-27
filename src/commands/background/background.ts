@@ -9,7 +9,7 @@ import { flushSessionStorage } from '../../utils/sessionStorage.js'
 import type { Message } from '../../types/message.js'
 
 /** The first prompt names the background session, like a fresh `--bg` one. */
-function firstPrompt(messages: Message[]): string | undefined {
+export function firstPrompt(messages: Message[]): string | undefined {
   for (const message of messages) {
     if (!isHumanTurn(message)) continue
     const content = message.message.content
