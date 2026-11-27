@@ -12,6 +12,37 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - 非 first-party 会话不再向 Anthropic 发起信息采集和配置拉取
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 用网关（非官方 `ANTHROPIC_BASE_URL`）、Bedrock / Vertex / Foundry 或 OpenAI 模式时，不再加载 claude.ai MCP connectors，不再拉取 Grove、referral passes、OAuth 账号信息、fast mode 状态和官方 MCP registry，也不再用网关的 API key 查 Anthropic 账号资料。用 claude.ai 账号登录、同时通过代理设了 `ANTHROPIC_BASE_URL` 的会话也按网关处理（#1526、#1527）。
+- 这类会话的模型请求里，`metadata.user_id` 只带 `session_id` 和 `CLAUDE_CODE_EXTRA_METADATA` 的字段，不再带 device id 和账号 id；靠 device id 区分用户的网关需要改用别的字段（#1527）。
+- 打开 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 后，1P 事件只在 first-party 会话里、带这个会话自己的 Anthropic 凭据发送，不再匿名发送或在 401 后去掉凭据重发；OpenAI 模式下也保持关闭。凭据暂时不可用时事件先存盘，退避重试，失败 8 次后丢弃（#1524、#1525）。
+
+#### 修复
+
+- 非 first-party 会话里 `/feedback` 和问卷不再上传对话记录（#1527）。
+
+### 测试覆盖
+
+- `src/services/analytics/firstPartyEventLoggingExporter.test.ts`：没有 Anthropic 凭据时不发送；带凭据时只发往 `api.anthropic.com`；401 后不去掉凭据重发；非 Anthropic provider 打开遥测开关后分析仍关闭（#1525）。
+- `src/services/api/claude-metadata.test.ts`、`src/services/oauth/getOauthProfile.test.ts`、`src/services/mcp/officialRegistry.test.ts`：first-party 会话保留 device id 和账号 id、照常查账号资料；网关、OpenAI、Bedrock、Vertex 下只带 `session_id` 和额外 metadata、不把 API key 发给 Anthropic、不拉 registry（#1527）。
+
+## 2026-11-27 - Bash：Read allow 规则下的选项值不再被报为 deny
+
+### 变更内容
+
+#### 修复
+
+- 允许读取某个目录后（例如选了“本会话允许读取 <dir>”），`grep -rn X --exclude-dir=<dir>/node_modules <dir>` 这类 `--opt=<路径>` 不再被误拒为 `Option value '<dir>/...' was blocked by a deny rule.`；真正匹配 Read deny 规则的选项值仍然拒绝（#1531、#1530）。
+
+### 测试覆盖
+
+- `src/tools/BashTool/bashPermissionHardening.test.ts`：Read allow 规则覆盖的选项值不再返回 deny。
+
 ## 2026-11-27 - claude web 与桌面应用使用各自的 settings.json 和 .claude.json
 
 ### 变更内容
