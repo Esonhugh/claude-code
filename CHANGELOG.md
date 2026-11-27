@@ -25,6 +25,20 @@
 - `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：provenance 开启时，交回的报告在后台通知里是原文，审查提示在第一行，worktree 提示以空行隔开放在最前；agent.report 改写后的报告也一样（#1537）。
 - `src/utils/subagentHandback.test.ts`、`src/tools/AgentTool/runAgent.handback.test.ts`：provenance 开或关，交回的报告读出来都是原文（#1537）。
 
+## 2026-11-27 - 新增 claude reset-identity：退出登录后换一个 device id
+
+### 变更内容
+
+#### 新增
+
+- 新增 `claude reset-identity`：退出登录后清除共用 `.claude.json` 和 `claude web`、桌面应用各自 `.claude.json` 里的 `userID`、`firstStartTime`、`claudeCodeFirstTokenDate`，并删除 `~/.claude/telemetry/` 里还没发出的 `1p_failed_events.*`，下次启动生成新的 device id；`--dry-run` 只列出内容，`-y` 跳过确认（#1528）。
+- 还有 Claude 账号登录、`/login` 保存的 API key，或任一 `.claude.json` 里有 `oauthAccount`、`primaryApiKey` 时拒绝执行，并给出对应 profile 的退出命令；设了 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CODE_OAUTH_TOKEN` 时只警告（#1528）。
+- 读不了的 `.claude.json` 不改写，任一文件写入失败时以非零状态退出、不显示成功；`backups/` 里的旧备份不删除，输出里会提示（#1528）。
+
+### 测试覆盖
+
+- `src/cli/handlers/resetIdentity.test.ts`：重置后保留其他配置；web、desktop profile 一起重置；profile 里有登录信息时拒绝；写入被拒和 profile 无法解析时退出 1、不显示成功；`--dry-run`、重复运行和环境变量凭据警告（#1528）。
+
 ## 2026-11-27 - 删除 /feedback 和会话中的问卷
 
 ### 变更内容

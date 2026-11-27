@@ -87,6 +87,32 @@ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1 claude
 | `permission_mode` | 当时的权限模式，如 `default`、`auto` |
 | `classifier_verdict` | [自动模式](auto-mode.md) 分类器的结论：`allow`、`block`、`unavailable`、`no_verdict` |
 
+## 换一个 device id（`claude reset-identity`）
+
+device id（`userID`）在第一次启动时生成，之后每个模型请求和遥测事件都带着它。以前开过 Anthropic 遥测或用过官方版本，想让这台电脑以后不再被认成同一台设备，可以退出登录后运行：
+
+```bash
+claude reset-identity --dry-run   # 只列出会重置的内容，不改任何东西
+claude reset-identity             # 确认后重置；加 -y 跳过确认
+```
+
+会重置的内容：
+
+| 内容 | 位置 |
+| --- | --- |
+| `userID`（device id）、`firstStartTime`（首次运行时间）、`claudeCodeFirstTokenDate`（账号首次用 Claude Code 的日期） | 共用的 `.claude.json`，以及 `claude web` 和桌面应用各自的 `<配置目录>/web/.claude.json`、`<配置目录>/desktop/.claude.json`（存在才处理） |
+| 还没发出的遥测事件 `1p_failed_events.*` | `<配置目录>/telemetry/`；这些文件只有同一会话 id 的进程会重发，其他会话不会读，所以会一直留在磁盘上 |
+
+下次启动时生成新的 device id；已经在运行的会话要重启后才换。每个文件只写一次，和平时保存配置一样加锁、备份，权限 `0600`，其他配置项不动。
+
+不会处理的内容：
+
+- 登录信息：只要还有 Claude 账号登录、`/login` 保存的 API key，或任一 `.claude.json` 里还有账号信息（`oauthAccount`、`primaryApiKey`），命令就拒绝执行，并给出对应的退出命令，例如 `claude web` 用的是 `CLAUDE_CODE_SETTINGS_PROFILE=web claude auth logout`。登录状态下换 id，账号会把新旧 id 关联起来。`--dry-run` 不受限制，会同时提示需要先退出。
+- 环境变量里的凭据：设了 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN` 或 `CLAUDE_CODE_OAUTH_TOKEN` 时只给出警告，不拒绝。用它们发出的请求仍然能识别你，跟 device id 无关。
+- 配置备份：各 `backups/` 目录里的旧备份不删除，可能还有旧 id，需要的话自己删。
+
+读不了或解析不了的 `.claude.json` 不会被改写（改写会把它换成默认值），某个文件写入失败时也一样：命令列出失败的文件，以非零状态退出，不显示重置成功。修好后再运行一次即可，已经重置的部分不会重复处理。
+
 ## 设置
 
 | 配置项 | 写法 | 说明 |
