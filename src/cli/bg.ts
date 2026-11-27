@@ -91,6 +91,8 @@ export async function spawnBackgroundSession(options: {
   flags: string[]
   prompt?: string
   sessionId?: string
+  /** Start a new session that copies this one's conversation; the parent keeps running. */
+  forkFrom?: string
   name?: string
   origin: string
   announce?: boolean
@@ -104,7 +106,8 @@ export async function spawnBackgroundSession(options: {
     env: childEnv(),
     sessionId: options.sessionId ?? randomUUID(),
     name: options.name,
-    resume: options.sessionId !== undefined,
+    resume: options.sessionId !== undefined && options.forkFrom === undefined,
+    ...(options.forkFrom !== undefined && { forkFrom: options.forkFrom }),
   })
   if (!response.ok) throw new Error(response.error ?? 'The background service refused the request.')
   return response.job!

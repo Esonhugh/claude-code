@@ -27,6 +27,8 @@ export type JobRecord = {
   ptySock?: string
   /** Set by a worker started with --worktree once it has created the worktree. */
   worktree?: JobWorktree
+  /** The session a `/fork` copied this one from; `/tasks` lists it there under Forks. */
+  forkParentSessionId?: string
   exitCode?: number | null
   createdAt: string
   updatedAt: string
@@ -50,6 +52,8 @@ export type SpawnRequest = {
   sessionId: string
   /** Continue an existing conversation instead of starting `sessionId` fresh. */
   resume: boolean
+  /** Start `sessionId` as a copy of this session's conversation (`/fork`). */
+  forkFrom?: string
 }
 
 export type DaemonRequest =
