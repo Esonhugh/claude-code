@@ -6,6 +6,7 @@ import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { Message } from '../../types/message.js'
 import { AbortError } from '../../utils/errors.js'
 import { createFileStateCacheWithSizeLimit } from '../../utils/fileStateCache.js'
+import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import {
   beginSubagentHandback,
   deliverSubagentHandback,
@@ -156,8 +157,10 @@ const call = (context: TestContext, description: string) =>
   )
 
 // A hand-back run is reported, its own verdict as the review; the answer replaces the report under the frame.
+// SDK hosts get the report the parent reads as the summary, as official 2.1.329 sends a foreground agent's.
 {
   script = 'handback'
+  drainSdkEvents()
   hook = async (input, next) => {
     const below = await next(input)
     reviews.push(below)
@@ -171,6 +174,10 @@ const call = (context: TestContext, description: string) =>
   assert.equal(result.data.status, 'completed')
   assert.match(JSON.stringify(result.data), /REPORT-BETA/)
   assert.doesNotMatch(JSON.stringify(result.data), /REPORT-ALPHA/)
+  const notices = drainSdkEvents().filter(event => event.subtype === 'task_notification') as { status: string; summary: string }[]
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0]?.status, 'completed')
+  assert.equal(notices[0]?.summary, 'REPORT-BETA')
 }
 
 // Interrupting the parent stops the foreground run, which is reported stopped and leaves no task running.

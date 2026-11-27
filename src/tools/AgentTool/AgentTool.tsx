@@ -73,7 +73,7 @@ import {
   isSyntheticMessage,
   normalizeMessages,
 } from '../../utils/messages.js'
-import { subagentResultText } from '../../utils/subagentHandback.js'
+import { frameSubagentHandback, isHandbackProvenanceEnabled } from '../../utils/subagentHandback.js'
 import {
   getAgentDefinitionModel,
   getAgentModel,
@@ -121,6 +121,8 @@ import {
   type AgentReportTarget,
   agentToolResultSchema,
   applyAgentReport,
+  withSubagentToolsUsed,
+  agentResultReport,
   backgroundHandoffReview,
   emitTaskProgress,
   extractPartialResult,
@@ -1715,6 +1717,8 @@ export const AgentTool = buildTool({
           // Track if an error occurred during iteration
           let syncAgentError: Error | undefined
           let wasAborted = false
+          // A completed foreground run's SDK notification waits for its report.
+          let notifyForegroundEnd: ((report?: string) => void) | undefined
           // A workflow's agent() raises no agent.report.
           const reportTarget: AgentReportTarget | undefined = workflowFraming ? undefined : {
             agent: selectedAgent,
@@ -2310,8 +2314,9 @@ export const AgentTool = buildTool({
                     ? 'stopped'
                     : 'completed'
                 // Like official 2.1.329, a foreground agent's end also arrives
-                // as task_updated; the summary is its description, or the error
-                // it failed on, and output_file names its transcript.
+                // as task_updated. The notification's summary is the report the
+                // parent reads (or the error it failed on, or the description
+                // when there is none), and output_file names its transcript.
                 enqueueSdkEvent({
                   type: 'system',
                   subtype: 'task_updated',
@@ -2322,22 +2327,25 @@ export const AgentTool = buildTool({
                     ...(syncAgentError && { error: syncAgentError.message }),
                   },
                 })
-                enqueueSdkEvent({
+                const endTime = Date.now()
+                const notify = (report?: string) => enqueueSdkEvent({
                   type: 'system',
                   subtype: 'task_notification',
                   task_id: foregroundTaskId,
                   tool_use_id: toolUseContext.toolUseId,
                   status,
                   output_file: getTaskOutputPath(foregroundTaskId),
-                  summary: syncAgentError?.message ?? description,
+                  summary: syncAgentError?.message ?? (report || description),
                   ...(status === 'completed' && {
                     usage: {
                       total_tokens: progress.tokenCount,
                       tool_uses: progress.toolUseCount,
-                      duration_ms: Date.now() - agentStartTime,
+                      duration_ms: endTime - agentStartTime,
                     },
                   }),
                 })
+                if (status === 'completed') notifyForegroundEnd = notify
+                else notify()
               }
             }
 
@@ -2359,6 +2367,7 @@ export const AgentTool = buildTool({
             }
           }
 
+          try {
           // Re-throw abort errors
           // TODO: Find a cleaner way to express this
           const lastMessage = agentMessages.findLast(
@@ -2428,7 +2437,9 @@ export const AgentTool = buildTool({
             totalToolUseCount: agentResult.totalToolUseCount,
           }))
           const answer = await reportAgentEnd(toolUseContext.modsSnapshot, reportTarget, syncAgentId, syncAgentError ? 'failed' : 'completed', report)
-          const reported = applyAgentReport(agentResult, report, answer)
+          const reported = withSubagentToolsUsed(applyAgentReport(agentResult, report, answer), agentMessages, toolUseContext)
+          notifyForegroundEnd?.(agentResultReport(reported))
+          notifyForegroundEnd = undefined
 
           return {
             data: {
@@ -2438,6 +2449,10 @@ export const AgentTool = buildTool({
               ...worktreeResult,
               canContinueAgent: canContinueAgent(toolUseContext.options.tools),
             },
+          }
+          } finally {
+            // The result could not be built: consumers still learn the run ended.
+            notifyForegroundEnd?.()
           }
         }),
       )
@@ -2606,9 +2621,7 @@ The agent is now running and will receive instructions via mailbox. Its messages
       // Some models read that as "nothing to act on" and end their turn
       // immediately. Say so explicitly so the parent has something to react to.
       const contentOrMarker =
-        data.handback === 'send' || data.handback === 'flagged'
-          ? [{ type: 'text' as const, text: subagentResultText(data) }]
-          : data.content.length > 0
+        data.content.length > 0
           ? data.content
           : [
               {
@@ -2616,6 +2629,11 @@ The agent is now running and will receive instructions via mailbox. Its messages
                 text: '(Subagent completed but returned no output.)',
               },
             ]
+      // As official 2.1.322: every finished run reads as a hand-back, the
+      // harness notes above the frame and the report indented under it.
+      const framed = isHandbackProvenanceEnabled()
+        ? [{ type: 'text' as const, text: frameSubagentHandback(contentOrMarker, data.content.length > 0 ? data : undefined) }]
+        : undefined
       // One-shot built-ins (Explore, Plan) are never continued via SendMessage
       // — the agentId hint and <usage> block are dead weight (~135 chars ×
       // 34M Explore runs/week ≈ 1-2 Gtok/week). Telemetry doesn't parse this
@@ -2629,22 +2647,25 @@ The agent is now running and will receive instructions via mailbox. Its messages
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: contentOrMarker,
+          content: framed ?? contentOrMarker,
+        }
+      }
+      const trailer = `agentId: ${data.agentId}${data.canContinueAgent === false ? '' : ` (use ${SEND_MESSAGE_TOOL_NAME} with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent)`}${worktreeInfoText}
+<usage>subagent_tokens: ${data.totalTokens}
+tool_uses: ${data.totalToolUseCount}
+duration_ms: ${data.totalDurationMs}</usage>`
+      // A framed report and its trailer are one text block.
+      if (framed) {
+        return {
+          tool_use_id: toolUseID,
+          type: 'tool_result',
+          content: [{ type: 'text', text: `${framed[0]!.text}\n${trailer}` }],
         }
       }
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: [
-          ...contentOrMarker,
-          {
-            type: 'text',
-            text: `agentId: ${data.agentId}${data.canContinueAgent === false ? '' : ` (use ${SEND_MESSAGE_TOOL_NAME} with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent)`}${worktreeInfoText}
-<usage>subagent_tokens: ${data.totalTokens}
-tool_uses: ${data.totalToolUseCount}
-duration_ms: ${data.totalDurationMs}</usage>`,
-          },
-        ],
+        content: [...contentOrMarker, { type: 'text', text: trailer }],
       }
     }
     data satisfies never
