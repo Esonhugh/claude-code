@@ -5,6 +5,7 @@ import {
   findTransitiveReverseDependents,
   formatDependencyCountSuffix,
   formatOrphanedDependenciesNote,
+  formatUnresolvedDependencySuffix,
   resolveEnableClosure,
 } from './dependencyResolver.js'
 
@@ -32,6 +33,22 @@ test('the install suffix names the dependencies that were installed', () => {
   expect(
     formatDependencyCountSuffix(['a@m', 'b@m', 'c@m', 'd@m', 'e@m', 'f@m']),
   ).toBe(' (+ 6 dependencies: a, b, c, d, e, \u2026)')
+})
+
+test('the unresolved suffix lists what is still missing and asks for a missing marketplace', () => {
+  expect(formatUnresolvedDependencySuffix([], [])).toBe('')
+  expect(formatUnresolvedDependencySuffix(['nope@mk'], [])).toBe(
+    ' \u2014 1 dependency still unresolved: nope@mk.',
+  )
+  expect(formatUnresolvedDependencySuffix(['a@mk', 'x@far'], ['x@far'])).toBe(
+    ' \u2014 2 dependencies still unresolved: a@mk, x@far. Is the "far" marketplace added?',
+  )
+  expect(formatUnresolvedDependencySuffix(['x'], ['x'])).toBe(
+    " \u2014 1 dependency still unresolved: x. Add the dependency's marketplace, then re-run install.",
+  )
+  expect(
+    formatUnresolvedDependencySuffix(['a@m', 'b@m', 'c@m', 'd@m', 'e@m', 'f@m', 'g@m'], []),
+  ).toBe(' \u2014 7 dependencies still unresolved: a@m, b@m, c@m, d@m, e@m and 2 more.')
 })
 
 test('transitive reverse dependents list every enabled plugin that needs the target', () => {
