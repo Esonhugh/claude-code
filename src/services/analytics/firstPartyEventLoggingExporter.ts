@@ -58,6 +58,10 @@ type FirstPartyEventLoggingPayload = {
   events: FirstPartyEventLoggingEvent[]
 }
 
+// Thrown when retrying can't help within the session: the batch is dropped
+// instead of queued to disk for backoff.
+class EventsDroppedError extends Error {}
+
 /**
  * Exporter for 1st-party event logging to /api/event_logging/batch.
  *
@@ -254,10 +258,11 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       )
     }
 
-    const failedEvents = await this.sendEventsInBatches(events)
+    const { failed: failedEvents, dropped } =
+      await this.sendEventsInBatches(events)
     if (failedEvents.length === 0) {
       await this.deleteFile(filePath)
-      if (isAnt()) {
+      if (isAnt() && dropped === 0) {
         logForDebugging('1P event logging: previous batch retry succeeded')
       }
     } else {
@@ -335,7 +340,17 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       }
 
       // Send events
-      const failedEvents = await this.sendEventsInBatches(events)
+      const { failed: failedEvents, dropped } =
+        await this.sendEventsInBatches(events)
+      if (dropped > 0) {
+        resultCallback({
+          code: ExportResultCode.FAILED,
+          error: new Error(
+            `Dropped ${dropped} events (${this.lastExportErrorContext})`,
+          ),
+        })
+        return
+      }
       this.attempts++
 
       if (failedEvents.length > 0) {
@@ -375,7 +390,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
 
   private async sendEventsInBatches(
     events: FirstPartyEventLoggingEvent[],
-  ): Promise<FirstPartyEventLoggingEvent[]> {
+  ): Promise<{ failed: FirstPartyEventLoggingEvent[]; dropped: number }> {
     // Chunk events into batches
     const batches: FirstPartyEventLoggingEvent[][] = []
     for (let i = 0; i < events.length; i += this.maxBatchSize) {
@@ -391,8 +406,10 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     // Send each batch with delay between them. On first failure, assume the
     // endpoint is down and short-circuit: queue the failed batch plus all
     // remaining unsent batches without POSTing them. The backoff retry will
-    // probe again with a single batch next tick.
+    // probe again with a single batch next tick. An EventsDroppedError drops
+    // them instead.
     const failedBatchEvents: FirstPartyEventLoggingEvent[] = []
+    let dropped = 0
     let lastErrorContext: string | undefined
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i]!
@@ -401,7 +418,8 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       } catch (error) {
         lastErrorContext = getAxiosErrorContext(error)
         for (let j = i; j < batches.length; j++) {
-          failedBatchEvents.push(...batches[j]!)
+          if (error instanceof EventsDroppedError) dropped += batches[j]!.length
+          else failedBatchEvents.push(...batches[j]!)
         }
         if (isAnt()) {
           const skipped = batches.length - 1 - i
@@ -417,11 +435,11 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       }
     }
 
-    if (failedBatchEvents.length > 0 && lastErrorContext) {
+    if ((failedBatchEvents.length > 0 || dropped > 0) && lastErrorContext) {
       this.lastExportErrorContext = lastErrorContext
     }
 
-    return failedBatchEvents
+    return { failed: failedBatchEvents, dropped }
   }
 
   private async queueFailedEvents(
@@ -493,10 +511,12 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
         )
       }
 
-      const failedEvents = await this.sendEventsInBatches(events)
-      this.attempts++
-
+      const { failed: failedEvents, dropped } =
+        await this.sendEventsInBatches(events)
       this.isRetrying = false
+      // Dropped events are already off disk; nothing to back off for
+      if (dropped > 0) continue
+      this.attempts++
 
       if (failedEvents.length > 0) {
         // Write failures back to disk
@@ -549,12 +569,15 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     // Only a first-party session with its own Anthropic OAuth token or API key
     // sends events, never an unauthenticated one. Throwing queues the batch to
     // disk; the backoff retry sends it once the credential is usable (trust
-    // accepted, token refreshed) or drops it after maxAttempts.
+    // accepted, token refreshed) or drops it after maxAttempts. A token without
+    // user:profile only changes with a new login, so its batches are dropped.
     let authUnavailable = hasTrust ? undefined : 'trust not established'
+    let missingScope = false
     if (!authUnavailable && isClaudeAISubscriber()) {
       const tokens = getClaudeAIOAuthTokens()
       if (!hasProfileScope()) {
         authUnavailable = 'OAuth token lacks user:profile scope'
+        missingScope = true
       } else if (tokens && isOAuthTokenExpired(tokens.expiresAt)) {
         authUnavailable = 'OAuth token expired'
       }
@@ -568,7 +591,8 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
           `1P event logging: ${authResult.error}, not sending`,
         )
       }
-      throw new Error(`1P event logging: ${authResult.error}`)
+      const message = `1P event logging: ${authResult.error}`
+      throw missingScope ? new EventsDroppedError(message) : new Error(message)
     }
 
     const response = await axios.post(this.endpoint, payload, {

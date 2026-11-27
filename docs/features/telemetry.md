@@ -58,7 +58,7 @@ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1 claude
 | 使用 OpenAI 模式（ChatGPT 账号或 OpenAI API key） | 同上 |
 | `ANTHROPIC_BASE_URL` 指向非官方网关 | 同上 |
 
-打开后，事件只用这个会话自己的 Anthropic 凭据（OAuth token 或 API key）发往 `https://api.anthropic.com/api/event_logging/batch`，不再匿名发送。凭据暂时不能用时（还没信任工作目录、OAuth token 过期或缺 `user:profile` scope），这批事件先存到 `~/.claude/telemetry/`，按退避重试，凭据可用后补发；连续失败 8 次就丢弃。
+打开后，事件只用这个会话自己的 Anthropic 凭据（OAuth token 或 API key）发往 `https://api.anthropic.com/api/event_logging/batch`，不再匿名发送。凭据暂时不能用时（还没信任工作目录、OAuth token 过期），这批事件先存到 `~/.claude/telemetry/`，按退避重试，凭据可用后补发；连续失败 8 次就丢弃。OAuth token 缺 `user:profile` scope 时（例如通过 `CLAUDE_CODE_OAUTH_TOKEN` 传入的 token 只有 `user:inference`），只有重新登录才会变，事件直接丢弃，不写盘也不重试。
 
 内置 Mods 归档里的 `telemetry` Mod（向 Anthropic 发送插件分析数据）始终不加载，设了这个变量也一样。
 

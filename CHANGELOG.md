@@ -25,6 +25,18 @@
 
 - `src/commands/immediate.test.ts`：去掉 `/feedback` 后其余命令仍在运行中立即打开；删除随命令一起移除的 `src/commands/feedback/index.test.ts` 和 `submitTranscriptShare.test.ts`（#1533）。
 
+## 2026-11-27 - 1P 事件：OAuth token 缺 user:profile scope 时直接丢弃，不再反复写盘
+
+### 变更内容
+
+#### 修复
+
+- 打开 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1`、OAuth token 缺 `user:profile` scope 时（例如 `CLAUDE_CODE_OAUTH_TOKEN` 传入的 token），1P 事件直接丢弃，不再存到 `~/.claude/telemetry/` 退避重试。原来失败 8 次后计数清零，只要还有新事件，就大约每 70 秒写一次盘，一直持续到会话结束。还没信任工作目录、OAuth token 过期时仍先存盘、退避重试。
+
+### 测试覆盖
+
+- `src/services/analytics/firstPartyEventLoggingExporter.test.ts`：缺 `user:profile` 时导出返回失败，不发请求、不写 `telemetry/` 目录、不安排重试；token 过期时仍写入队列并安排一次重试。
+
 ## 2026-11-27 - 插件命令对齐官方：validate 检查 marketplace 条目、重复安装保留记录、plugin list 显示读取目录和覆盖提示
 
 ### 变更内容
