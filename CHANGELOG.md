@@ -18,7 +18,7 @@
 
 #### 需要用户处理的行为变化
 
-- 父 agent 读到的普通 Agent 结果改为与官方 2.1.329 一样的单块 hand-back 格式：harness note 缩进放在上方，下面是 `[Subagent hand-back]` frame 和逐行缩进的报告，agentId/usage trailer 在同一块里。空报告显示 `(Subagent completed but returned no output.)`。门控是 `tengu_melodic_wolf`，默认开启；设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 恢复原来的两块原文（#1520）。
+- 父 agent 读到的普通 Agent 结果改为与官方 2.1.329 一样的单块 hand-back 格式：harness note 缩进放在上方，下面是 `[Subagent hand-back]` frame 和逐行缩进的报告，agentId/usage trailer 在同一块里。空报告显示 `(Subagent completed but returned no output.)`。门控是 `tengu_melodic_wolf`，默认开启；设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 时所有 Agent 结果都是原文，包括 SubagentHandback 交回的报告和后台通知里的结果（#1520）。
 
 #### 新功能
 
@@ -32,8 +32,9 @@
 
 ### 测试覆盖
 
-- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：单块格式、tools-used 过滤与跳过、嵌套 note、workflow 调用、空报告、withheld、门控关闭（#1520）。
+- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：单块格式、tools-used 过滤与跳过、嵌套 note、workflow 调用、空报告、withheld、门控关闭（含 SubagentHandback 交回的报告）（#1520）。
 - `src/tools/AgentTool/agentReport.foreground.test.ts`、`AgentTool.receipt292.test.ts`、`runAgent.handback.test.ts`：前台通知的时机和 summary，trailer 位置（#1520）。
+- `src/utils/subagentHandback.test.ts`：门控关闭时 SubagentHandback 交回的报告读作原文，警告在第一行（#1520）。
 - `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
 - 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 112 个测试文件逐个运行，与 dev 基线相比没有新增失败。
 
