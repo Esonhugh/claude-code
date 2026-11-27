@@ -71,6 +71,14 @@ async function main(): Promise<void> {
     process.env.CLAUDE_CODE_SIMPLE = '1'
   }
 
+  // `claude web` / the desktop app: pick the settings profile before anything
+  // reads settings.json or .claude.json. An explicit value (even empty) wins.
+  const { SETTINGS_PROFILE_ENV, settingsProfileForArgs } = await import('../utils/settingsProfile.js')
+  if (process.env[SETTINGS_PROFILE_ENV] === undefined) {
+    const profile = settingsProfileForArgs(args)
+    if (profile) process.env[SETTINGS_PROFILE_ENV] = profile
+  }
+
   // No special flags detected, load and run the full CLI
   const { startCapturingEarlyInput } = await import('../utils/earlyInput.js')
   startCapturingEarlyInput()
