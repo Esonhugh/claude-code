@@ -153,6 +153,12 @@ import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { createCombinedAbortSignal } from './combinedAbortSignal.js'
 import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
+import {
+  emitHookTerminalSequence,
+  sanitizeTerminalSequence,
+  TERMINAL_SEQUENCE_REJECTED,
+  writeHookTerminalSequence,
+} from './hooks/terminalSequence.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
 import { SUMMARY_TAG, TASK_NOTIFICATION_TAG } from '../constants/xml.js'
 import {
@@ -424,6 +430,8 @@ export type ElicitationResponse = ElicitResult
 export interface HookResult {
   message?: HookResultMessage
   systemMessage?: string
+  /** Already sanitized for this terminal. */
+  terminalSequence?: string
   blockingError?: HookBlockingError
   outcome: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled'
   preventContinuation?: boolean
@@ -621,7 +629,6 @@ export function parseHookOutput(stdout: string): {
       return result
     }
     // For command hooks, include the schema hint in the error message.
-    // Official 2.1.329 also lists terminalSequence, which this build ignores.
     const errorMessage = `${result.validationError}\n\nExpected schema:\n${jsonStringify(
       {
         continue: 'boolean (optional)',
@@ -630,6 +637,7 @@ export function parseHookOutput(stdout: string): {
         decision: '"approve" | "block" (optional)',
         reason: 'string (optional)',
         systemMessage: 'string (optional)',
+        terminalSequence: 'string (optional)',
         hookSpecificOutput: {
           'for PreToolUse': {
             hookEventName: '"PreToolUse"',
@@ -796,6 +804,12 @@ function processHookJSONOutput({
   // Handle systemMessage field
   if (json.systemMessage) {
     result.systemMessage = json.systemMessage
+  }
+
+  if (json.terminalSequence) {
+    const sequence = sanitizeTerminalSequence(json.terminalSequence)
+    if (sequence !== null) result.terminalSequence = sequence
+    else logForDebugging(`Hook ${hookName} (${hookEvent}) ${TERMINAL_SEQUENCE_REJECTED}`)
   }
 
   // Handle PreToolUse specific
@@ -3644,6 +3658,8 @@ async function* executeHooks({
       }
     }
 
+    if (result.terminalSequence) writeHookTerminalSequence(result.terminalSequence)
+
     // Collect additional context from hooks
     if (result.additionalContext) {
       logForDebugging(
@@ -4002,6 +4018,7 @@ async function executeHooksOutsideREPL({
           const blocked =
             isSyncHookJSONOutput(json) && json.decision === 'block'
 
+          if (isSyncHookJSONOutput(json)) emitHookTerminalSequence(json.terminalSequence, hookName)
           logForDebugging(`${hookName} [callback] completed successfully`)
 
           return {
@@ -4113,6 +4130,7 @@ async function executeHooksOutsideREPL({
               { level: 'verbose' },
             )
           }
+          if (httpJson && isSyncHookJSONOutput(httpJson)) emitHookTerminalSequence(httpJson.terminalSequence, hookName)
           const jsonBlocked =
             httpJson &&
             !isAsyncHookJSONOutput(httpJson) &&
@@ -4214,6 +4232,7 @@ async function executeHooksOutsideREPL({
             { level: 'verbose' },
           )
         }
+        if (json && isSyncHookJSONOutput(json)) emitHookTerminalSequence(json.terminalSequence, hookName)
 
         // Blocked if exit code 2 or JSON decision: 'block'
         const jsonBlocked =

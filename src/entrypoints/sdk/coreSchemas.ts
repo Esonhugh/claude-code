@@ -1282,6 +1282,12 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
     stopReason: z.string().optional(),
     decision: z.enum(['approve', 'block']).optional(),
     systemMessage: z.string().optional(),
+    terminalSequence: z
+      .string()
+      .optional()
+      .describe(
+        'A terminal escape sequence (e.g. OSC 9 / OSC 777 desktop-notification) for Claude Code to emit on your behalf. Only notification/title OSCs (0, 1, 2, 9, 99, 777) and BEL are permitted; anything else is dropped.',
+      ),
     reason: z.string().optional(),
     hookSpecificOutput: z
       .union([
