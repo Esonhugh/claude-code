@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - Agent：后台通知里交回的报告不加 hand-back frame
+
+### 变更内容
+
+#### 修复
+
+- 后台子代理用 SubagentHandback 交回报告后，完成通知和等子任务时的通知里，结果和官方一样是原文，不再加 `[Subagent hand-back]` frame、不再逐行缩进；`SECURITY WARNING` 这类审查提示是结果的第一行。前台结果和续跑报告的 frame 不变（#1537）。
+
+### 测试覆盖
+
+- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：provenance 开启时，交回的报告在后台通知里是原文，审查提示在第一行，worktree 提示以空行隔开放在最前；agent.report 改写后的报告也一样（#1537）。
+- `src/utils/subagentHandback.test.ts`、`src/tools/AgentTool/runAgent.handback.test.ts`：provenance 开或关，交回的报告读出来都是原文（#1537）。
+
 ## 2026-11-27 - 删除 /feedback 和会话中的问卷
 
 ### 变更内容

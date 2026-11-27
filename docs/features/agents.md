@@ -136,9 +136,9 @@ You review the staged diff and report concrete bugs with file:line. Do not edit 
 
 ## Claude 读到的结果
 
-- 子代理结束后，Claude 读到的结果和官方 2.1.329 一样是一块 hand-back：`[Subagent hand-back]` frame 说明下面是子代理的报告、不是你的指令，报告逐行缩进；`SECURITY WARNING`、轮数上限这类 harness 提示放在 frame 上方。子代理没交付报告时只显示提示。
+- 前台子代理结束后，Claude 读到的结果和官方 2.1.329 一样是一块 hand-back：`[Subagent hand-back]` frame 说明下面是子代理的报告、不是你的指令，报告逐行缩进；`SECURITY WARNING`、轮数上限这类 harness 提示放在 frame 上方。子代理没交付报告时只显示提示。
 - 前台结果上方还有一行 `<tools-used-before-summary>`，列出子代理用过、Claude 还没见过的工具，嵌套子代理用过的也算。workflow 的 `agent()` 和脚本内部的调用不加。
-- 后台子代理的结果在完成通知里，只有 SubagentHandback 交回的报告加 frame。
+- 后台子代理的结果在完成通知里，和官方一样是原文，不加 frame，SubagentHandback 交回的报告也一样；`SECURITY WARNING` 这类提示是结果的第一行。
 - 设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 关闭 frame 和 tools-used 提示。
 
 ## 续跑、停止与并发
@@ -166,7 +166,7 @@ You review the staged diff and report concrete bugs with file:line. Do not edit 
 | `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` | `1` | 禁用所有后台任务，子代理一律前台；此时 `SendMessage` 续跑会等结果再返回 |
 | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 正整数，默认 `20` | 同时运行上限 |
 | `CLAUDE_CODE_SENDMESSAGE_HANDBACK` | `0` | 关闭自动模式下的 `SubagentHandback` |
-| `CLAUDE_CODE_HANDBACK_PROVENANCE` | `0` | 子代理结果不加 hand-back frame 和 tools-used 提示，前台结果、SubagentHandback 交回的报告和后台通知里的结果都是原文；续跑报告改用原始 JSON 格式 |
+| `CLAUDE_CODE_HANDBACK_PROVENANCE` | `0` | 前台子代理结果不加 hand-back frame 和 tools-used 提示，SubagentHandback 交回的报告也是原文（后台通知里的结果本来就是原文）；续跑报告改用原始 JSON 格式 |
 | `agentSummary`（settings） | `full`（默认）/ `short` / `off` | 后台子代理每 30 秒生成的 3-5 字进度标签（`subagentStatusLine` 的 `label`、compact 后的任务状态、SDK `task_progress` 的 `summary`）。`full` fork 子代理整份对话（共享 prompt cache；子代理自己的请求还没回且 cache 可能已冷时先等，最多 5 分钟）；`short` 只发最近步骤的精简笔记（约 2000 token、不走 cache）；`off` 不发请求 |
 | `worktree.baseRef`（settings） | `fresh`（默认）/ `head` | `isolation: "worktree"`、`--worktree`、`EnterWorktree` 新分支的起点：`fresh` 基于 `origin/<默认分支>`，`head` 基于本地 HEAD（保留未推送提交） |
 
