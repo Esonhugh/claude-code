@@ -33,7 +33,7 @@
 ### 测试覆盖
 
 - `src/utils/plugins/validatePlugin.test.ts` 覆盖 marketplace 条目 `plugin.json` 损坏、缺字段和不存在三种情况。
-- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示，以及已安装插件补装缺少的依赖、依赖不在任何 marketplace 时的提示、依赖被禁用时完整重装。
+- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示，以及已安装插件补装缺少的依赖（含 project 范围）、marketplace 没有列出这个依赖时的 `still unresolved` 输出、依赖所属 marketplace 未添加时的提示、依赖被禁用时完整重装；`src/utils/plugins/dependencyResolver.test.ts` 覆盖 `still unresolved` 后缀的单复数、`and N more.` 和两种 marketplace 提示。
 - `src/cli/handlers/plugins.list.test.ts` 覆盖 `plugin list` 文本与 JSON 输出、找不到插件时的提示和 `marketplace remove` 的输出。
 - 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败；补装依赖的改动之后，`src/services/plugins`、`src/utils/plugins` 和 `src/cli/handlers/plugins*` 下 51 个测试文件 306 项通过，失败的 5 项（`commandSource`、`managedPlugins`、`refresh`）在 dev `f877d82e` 上同样失败。
 
