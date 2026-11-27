@@ -976,13 +976,14 @@ function checkOptionValueReadDeny(
   for (const arg of args) {
     const value = /^--?[A-Za-z][\w-]*=(.+)$/.exec(arg)?.[1]
     if (!value) continue
-    const { resolvedPath, decisionReason } = validatePath(
+    const { allowed, resolvedPath, decisionReason } = validatePath(
       value,
       cwd,
       toolPermissionContext,
       'read',
     )
-    if (decisionReason?.type === 'rule') {
+    // A matching Read allow rule also reports type 'rule', with allowed set.
+    if (!allowed && decisionReason?.type === 'rule') {
       return {
         behavior: 'deny',
         message: `Option value '${resolvedPath}' was blocked by a deny rule.`,

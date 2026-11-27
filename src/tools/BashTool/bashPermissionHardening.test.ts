@@ -335,6 +335,15 @@ if (process.env[childFlag] !== '1') {
     await expectBehavior('git log --format=%H -1', 'default', rules, 'allow')
   })
 
+  test('an option value under a Read allow rule is not reported as denied', async () => {
+    const result = await decide(
+      'grep -rn X --exclude-dir=/opt/shared/node_modules /opt/shared',
+      'default',
+      { allow: ['Read(//opt/shared/**)'] },
+    )
+    expect(result.behavior).not.toBe('deny')
+  })
+
   test('over-long commands and dangling operators always ask', async () => {
     const allow = { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }
     await expectBehavior('echo ' + 'a'.repeat(10001), 'default', allow, 'ask')
