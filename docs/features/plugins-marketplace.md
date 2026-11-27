@@ -116,6 +116,7 @@ team-tools/
 ```
 
 - **安装**：`claude plugin install child@mk` 会沿 `dependencies` 逐层把依赖一起装上并启用，成功信息末尾列出依赖名（最多列 5 个），例如 `(+ 1 dependency: base)`。marketplace 条目里写的依赖和 `plugin.json` 里写的都会读。找不到的依赖不会让安装失败，只在成功信息后附一条警告；其他 marketplace 的插件要在根 marketplace 的 `allowCrossMarketplaceDependenciesOn` 里列出才会自动装。作为依赖装进来的插件在 `installed_plugins.json` 里记为 `auto: true`，之后再用名字单独安装它，就改回手动安装。
+- **重复安装**：插件在该范围已启用、安装记录和文件都在时，`claude plugin install` 不重新安装，也不改写记录，输出 `Plugin "child@mk" is already installed (scope: user)`；原本作为依赖自动装上的，后面加 ` — marked as manually installed`。直接从本地目录 marketplace 读取的插件再附一句 ` — it loads in place from <目录>, so edits there take effect at the next session start or /reload-plugins`；目录里 `plugin.json` 的版本和记录不同时，还会给出更新记录版本的 `claude plugin update` 命令。缺少的依赖这时会补装，输出末尾同样列出 `(+ 1 dependency: base)`；补装不上的写成 ` — 1 dependency still unresolved: nope@mk.`，依赖所属的 marketplace 还没添加时再问 `Is the "<市场>" marketplace added?`。依赖已经安装但被停用时，按首次安装的流程重装一遍，依赖会重新启用。
 - **停用**：还有已启用的插件依赖它时，`claude plugin disable base@mk` 会拒绝并退出码为 1，设置不变：`base is still required by child. Disable that plugin first, or disable everything together: claude plugin disable child@mk && claude plugin disable base@mk`。`/plugin` 的 Installed 页同样拒绝。`disable --all` 不受影响。
 - **启用**：`claude plugin enable child@mk` 会连带启用已安装但被停用的依赖，输出 `(also enabled 1 dependency: base)`；依赖没有安装时启用失败。
 - **卸载与清理**：卸载后如果有自动安装的依赖不再被需要，会提示 ``1 auto-installed dependency no longer needed: lone. Run `claude plugin prune` to remove.``。`claude plugin prune`（别名 `autoremove`）列出并移除这些插件；`claude plugin uninstall <插件> --prune` 在卸载时一起清理。
@@ -187,6 +188,23 @@ claude plugin tag ./standup --push      # 创建后推到 origin
 - 不检查插件是否已安装。还原后，以后装在这个 ID 下的插件都能读到这些值；插件存在自己数据目录里的文件不会被移动。
 - 没有搁置项时输出 `No options or secrets are set aside for <插件 ID>.`，退出码为 0，不改写设置文件。
 
+**列出已安装的插件：`claude plugin list`。** 直接从本地目录 marketplace 读取的插件多一行 `Read from: <目录>`，版本取该目录 `plugin.json` 里的版本。user 设置里停用、但 project 或 local 设置又启用的插件仍会加载，多一行 `Note: Disabled in ~/.claude/settings.json but still loads — project settings enable it, which overrides your user setting`。`--json` 的每一项另有 `readFromFolder`、`folderVersion`、`notes`、`projectEnabled` 字段。
+
+**找不到插件时：** `claude plugin install nope@mk` 在 `mk` 里找不到插件时提示 ``Plugin "nope" not found in marketplace "mk". Your local copy may be out of date — try `claude plugin marketplace update mk`.``。
+
+**删除 marketplace：`claude plugin marketplace remove <名字>`。** 从这个 marketplace 装的插件会一起卸载，输出逐个列出：
+
+```text
+✔ Successfully removed marketplace: mk
+Also uninstalled 2 plugins from this marketplace:
+  base@mk
+  child@mk
+The removal also deletes their saved options, secrets and data where it can.
+To use a plugin again, add the marketplace back and reinstall the plugin.
+```
+
+**校验 marketplace：`claude plugin validate <marketplace 目录>`。** 除了 `marketplace.json`，还会校验每个本地条目（`source` 以 `./` 开头）的 `plugin.json`，这些结果的路径前缀为 `plugins[i] plugin.json → `；任何一个条目的 `plugin.json` 有错误，整体校验就失败。缺少描述的警告路径写作 `description`。
+
 
 ## 临时试用，不安装
 
@@ -228,7 +246,6 @@ claude --plugin-url https://example.com/my-plugin.zip   # 下载 zip，只对本
 
 - `--plugin-url` 只接受 `http` / `https`；写成 `ftp://…` 等其他协议时这个插件不会加载，启动时也没有提示；官方 2.1.303 同样不提示。
 - 在 `/plugin` 里安装插件后，要关闭菜单才生效，安装结果只显示 `✓ Installed <name>.`；官方 2.1.329 在菜单里就地启用并显示 `Plugin is now active.`。
-- 对一个作为依赖自动装上的插件再次 `claude plugin install`，`auto` 标记会清除，但输出仍是 `Successfully installed`；官方 2.1.329 输出 `already installed … — marked as manually installed`。
 - `claude plugin details` 显示的是插件加载器实际加载的内容。和官方 2.1.329 不同：manifest 写了 `skills` 时只加载写出的路径，不再加载默认的 `skills/` 目录；插件根目录下的 `SKILL.md` 不算作 skill。
 
 ## 说明

@@ -12,6 +12,31 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - 插件命令对齐官方：validate 检查 marketplace 条目、重复安装保留记录、plugin list 显示读取目录和覆盖提示
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 对 marketplace 运行 `claude plugin validate` 时，各本地条目（`source` 以 `./` 开头）的 `plugin.json` 也会校验，结果的路径前缀为 `plugins[i] plugin.json → `；条目的 `plugin.json` 有错时整体校验失败。缺少描述的 warning 路径由 `metadata.description` 改为 `description`（#1521）。
+
+#### 新功能
+
+- `claude plugin list` 对直接从 marketplace 目录读取的插件显示 `Read from: <目录>`，版本取该目录 `plugin.json` 里的版本；user 设置禁用、但其他设置来源又启用的插件显示 `Note: Disabled in ~/.claude/settings.json but still loads — ...`。`--json` 增加 `readFromFolder`、`folderVersion`、`notes`、`projectEnabled` 字段（#1521）。
+- `claude plugin marketplace remove` 列出随之卸载的插件，并说明重新使用的方法（#1521）。
+
+#### 修复
+
+- 安装一个在该 scope 已启用、安装记录和文件都在的插件时，不再重新安装和重写记录，返回 `Plugin "<id>" is already installed (scope: <scope>)`；原本是作为依赖自动安装的，只改为手动安装并注明 `marked as manually installed`。直接从 marketplace 目录读取的插件附带读取目录，以及目录版本与记录版本不同时更新记录的命令。缺少的依赖这时会补装，输出末尾附 `(+ N dependency: …)`，装不上的附 `— N dependency still unresolved: …`，所属 marketplace 没添加时再问 `Is the "<市场>" marketplace added?`；依赖已安装但未启用时仍完整重装（#1521）。
+- 在指定的 marketplace 里找不到插件时，提示本地副本可能过期，并给出 `marketplace update` 命令（#1521）。
+
+### 测试覆盖
+
+- `src/utils/plugins/validatePlugin.test.ts` 覆盖 marketplace 条目 `plugin.json` 损坏、缺字段和不存在三种情况。
+- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示，以及已安装插件补装缺少的依赖、依赖不在任何 marketplace 时的提示、依赖被禁用时完整重装。
+- `src/cli/handlers/plugins.list.test.ts` 覆盖 `plugin list` 文本与 JSON 输出、找不到插件时的提示和 `marketplace remove` 的输出。
+- 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败；补装依赖的改动之后，`src/services/plugins`、`src/utils/plugins` 和 `src/cli/handlers/plugins*` 下 51 个测试文件 306 项通过，失败的 5 项（`commandSource`、`managedPlugins`、`refresh`）在 dev `f877d82e` 上同样失败。
+
 ## 2026-11-27 - Agent 结果按官方 hand-back 格式交回，前台 agent 的 SDK 通知带报告，Workflow 详情面板适配全屏 modal
 
 ### 变更内容
