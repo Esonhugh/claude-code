@@ -39,7 +39,6 @@ describe('hook JSON validation messages (official 2.1.329)', () => {
     )
   })
 
-  // The official hint also lists terminalSequence, which this build does not act on.
   test('the schema hint lists what each event may return', () => {
     const { validationError } = parseHookOutput('{"continue":"yes"}')
     expect(validationError?.split('\n\nExpected schema:\n')[1]).toBe(
@@ -51,6 +50,7 @@ describe('hook JSON validation messages (official 2.1.329)', () => {
           decision: '"approve" | "block" (optional)',
           reason: 'string (optional)',
           systemMessage: 'string (optional)',
+          terminalSequence: 'string (optional)',
           hookSpecificOutput: {
             'for PreToolUse': {
               hookEventName: '"PreToolUse"',

@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,6 +27,8 @@ if (process.env[childFlag] !== '1') {
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test' } as MacroGlobals
   const { setCwdState, setIsInteractive, setOriginalCwd, setSessionTrustAccepted } = await import('../../bootstrap/state.js')
   const { enableConfigs, resetTrustDialogAcceptedCacheForTesting } = await import('../../utils/config.js')
+  const debug = await import('../../utils/debug.js')
+  const { getGlobalClaudeFile } = await import('../../utils/env.js')
   const { agentFrontmatterHooksAllowed } = await import('./runAgent.js')
 
   setOriginalCwd(process.cwd())
@@ -35,9 +37,9 @@ if (process.env[childFlag] !== '1') {
   setIsInteractive(false)
   enableConfigs()
 
-  const agent = (source: string) =>
+  const agent = (source: string, agentType = 'probe') =>
     ({
-      agentType: 'probe',
+      agentType,
       whenToUse: 'probe',
       source,
       baseDir: source === 'projectSettings' ? join(process.cwd(), '.claude', 'agents') : undefined,
@@ -47,6 +49,20 @@ if (process.env[childFlag] !== '1') {
 
   test('a project agent in an untrusted folder does not get its frontmatter hooks registered', () => {
     expect(agentFrontmatterHooksAllowed(agent('projectSettings'))).toBe(false)
+  })
+
+  // Official 2.1.329 `v3e`/`gfr`: the skip log says how to trust the folder.
+  test('the skip log says how to trust the folder', () => {
+    const logs: string[] = []
+    const log = spyOn(debug, 'logForDebugging').mockImplementation(message => { logs.push(message) })
+    try {
+      agentFrontmatterHooksAllowed(agent('projectSettings', 'pro\u202ebe\nx'))
+    } finally {
+      log.mockRestore()
+    }
+    expect(logs).toEqual([
+      `Skipping frontmatter hooks for agent 'pro be x': the folder its definition file came from is not trusted (source: projectSettings). Run Claude Code in that folder once and accept the trust dialog, or set projects[${JSON.stringify(process.cwd())}].hasTrustDialogAccepted: true in ${getGlobalClaudeFile()}.`,
+    ])
   })
 
   test('user, --agents, managed and plugin agents keep their frontmatter hooks', () => {

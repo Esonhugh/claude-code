@@ -38,6 +38,16 @@ test('a blocked switch shows nothing a terminal would act on or hide (official 2
   )
 })
 
+// Official then repairs graphemes a terminal would misjudge (Bun.ant.CellSegmenter,
+// internal Bun only); its portable half leaves text cleaned this way unchanged.
+test('a blocked switch keeps graphemes whole once the reason is cleaned', () => {
+  const reason = (text: string) => describeBlockedModelSwitch('sonnet', text).split(' hook: ')[1]
+  expect(reason('नमस्ते का')).toBe('नमस्ते का')
+  expect(reason('ok 👍🏽 👨‍👩‍👧 🇺🇸 x')).toBe('ok 👍🏽 👨‍👩‍👧 🇺🇸 x')
+  expect(reason('❤\uFE0F 1\uFE0F\u20E3')).toBe('❤ 1\u20E3')
+  expect(reason('a\u061Cb\u2800c')).toBe('a\uFFFDb\u2800c')
+})
+
 test('PostModelSwitch additionalContext cannot close its system reminder', async () => {
   const contexts = await getPostModelSwitchContext(
     { from: 'a', to: 'b' } as never,

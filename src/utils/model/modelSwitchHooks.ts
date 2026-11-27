@@ -54,8 +54,11 @@ export async function checkModelSwitch(
 const HIDDEN = /\p{Default_Ignorable_Code_Point}|\p{Cf}/u
 
 // A hook's own words as official 2.1.329 shows them: one line of at most 2000
-// characters, with nothing a terminal would act on or hide. Official also
-// repairs graphemes whose width a terminal would misjudge; that is not here.
+// characters, with nothing a terminal would act on or hide. Official then
+// repairs graphemes whose width a terminal would misjudge; that step needs
+// Bun.ant.CellSegmenter from Anthropic's internal Bun build, so it is not here.
+// Its portable half (Bun.stringWidth per grapheme) never fires on text this
+// function has already cleaned.
 function showHookText(text: string): string {
   const whole = text.trimEnd()
   let kept = whole.slice(0, 2000)
