@@ -1239,6 +1239,12 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
     case 'control_response':
       return reduceControlResponse(state, raw)
 
+    // A request the session withdrew (or one its restarted process no longer has): its dialog goes.
+    case 'control_cancel_request': {
+      const requestId = str(raw.request_id)
+      return requestId ? removeApproval(state, requestId) : state
+    }
+
     case 'rate_limit_event': {
       const info = isObj(raw.rate_limit_info) ? raw.rate_limit_info : {}
       const type = str(info.rateLimitType) ?? 'unknown'

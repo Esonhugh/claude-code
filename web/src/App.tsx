@@ -913,7 +913,6 @@ export function App() {
   }
   const connectProject = async (p: Project) => {
     try {
-      const wasRunning = !!p.coordinator_session_id && (await listRunning().catch(() => [])).some(r => r.id === p.coordinator_session_id)
       const created = await openCoordinator(p.id)
       const id = created.session_id
       setProjects(list => list.map(x => (x.id === p.id ? { ...x, coordinator_session_id: id, running: true } : x)))
@@ -931,10 +930,8 @@ export function App() {
         dispatch({ type: 'mode', id, mode: 'elsewhere' })
         return
       }
-      // A coordinator just started again begins at auto; the context window it last had goes back to it.
-      const contextWindow = wasRunning ? undefined : stateRef.current.chats[id]?.contextWindow
+      // A coordinator started again gets the context window it last had from the server, with its model and effort.
       await attach(id)
-      if (typeof contextWindow === 'number') changeContextWindow(id, contextWindow)
     } catch (err) {
       setProjectId(undefined)
       dispatch({ type: 'view', id: null })
@@ -1050,8 +1047,8 @@ export function App() {
         if (picks.effort) changeEffort(id, picks.effort)
         if (picks.mode && !owner) changeMode(id, picks.mode)
       }
-      // A new process starts at auto; a running one keeps its own unless a pick was made.
-      const contextWindow = running ? picks?.contextWindow : current.contextWindow
+      // A new process starts at auto (a coordinator's starts at its project's); a running one keeps its own unless a pick was made.
+      const contextWindow = running ? picks?.contextWindow : owner ? undefined : current.contextWindow
       if (contextWindow !== undefined && (running || contextWindow !== null)) changeContextWindow(id, contextWindow)
       return true
     } catch (err) {

@@ -327,7 +327,9 @@ export class SessionManager {
     permissionMode,
     model,
     effort,
+    autoCompactWindow,
     resume,
+    sessionId,
     sessionKey,
     channels,
     coordinator,
@@ -336,16 +338,19 @@ export class SessionManager {
     permissionMode?: string
     model?: string
     effort?: string
+    autoCompactWindow?: number
     /** Transcript id to continue; reuses a running session with that id. */
     resume?: string
+    /** Id for a new session without a transcript (`--session-id`); reuses a running session with that id. */
+    sessionId?: string
     sessionKey?: string
     /** `--channels` entries for the new session's process. */
     channels?: string[]
     /** Prompt flags and environment of a project's coordinator. */
     coordinator?: CoordinatorOptions
   }): SessionInfo {
-    if (resume) {
-      const running = this.sessions.get(resume)
+    if (resume || sessionId) {
+      const running = this.sessions.get((resume ?? sessionId)!)
       if (running) return running
     }
     if (sessionKey) {
@@ -360,13 +365,14 @@ export class SessionManager {
       )
     }
 
-    const id = resume ?? randomUUID()
+    const id = resume ?? sessionId ?? randomUUID()
     const spawnOptions: SpawnSessionOptions = {
       sessionId: id,
       cwd,
       permissionMode,
       ...(model && { model }),
       ...(effort && { effort }),
+      ...(autoCompactWindow && { autoCompactWindow }),
       ...(resume && { resume: true }),
       ...(channels?.length && { channels }),
       ...coordinator,
@@ -405,7 +411,7 @@ export class SessionManager {
    */
   restart(
     id: string,
-    options: Pick<SpawnSessionOptions, 'permissionMode' | 'model' | 'effort'> & { coordinator: CoordinatorOptions },
+    options: Pick<SpawnSessionOptions, 'permissionMode' | 'model' | 'effort' | 'autoCompactWindow'> & { coordinator: CoordinatorOptions },
   ): 'restarted' | 'pending' | undefined {
     const session = this.sessions.get(id)
     if (!session || session.status === 'stopping') return undefined
@@ -417,6 +423,7 @@ export class SessionManager {
       ...(options.permissionMode && { permissionMode: options.permissionMode }),
       ...(options.model && { model: options.model }),
       ...(options.effort && { effort: options.effort }),
+      ...(options.autoCompactWindow && { autoCompactWindow: options.autoCompactWindow }),
       ...options.coordinator,
       ...((session.spawnOptions.resume || session.ran) && { resume: true }),
     }
@@ -448,6 +455,13 @@ export class SessionManager {
     session.exited = closed(child)
     session.spawnOptions = options
     session.busy = false
+    // The old process's permission requests die with it: the page takes their dialogs down, the tasks they blocked unblock.
+    for (const requestId of session.asks.keys()) {
+      const line = JSON.stringify({ type: 'control_cancel_request', request_id: requestId })
+      this.observer?.line?.(session.id, line, 'child')
+      if (session.socket) session.socket.send(line + '\n')
+      else session.pending.push(line)
+    }
     session.asks.clear()
     this.wire(session, child)
     this.write(session.id, queued.join('\n'))

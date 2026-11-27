@@ -28,7 +28,7 @@ const TOKEN = 'web-test-token'
 // Stands in for `claude -p` stream-json: a user message is answered with a
 // result naming the text and the child's cwd. With session state events on,
 // the turn is bracketed by running/idle, and a "hold" turn never ends.
-// "dispatch" starts worker a1 and finishes it; "start" starts worker a2,
+// "dispatch" starts worker a1 and finishes it; "ask" leaves a1's permission request open; "start" starts worker a2,
 // which is killed with the child, as `claude -p` does; control requests succeed,
 // and a message to a task is queued (one starting with RESUME resumes it, one
 // starting with INJECT goes to a teammate's next turn and names its transcript).
@@ -60,6 +60,9 @@ process.stdin.on('data', chunk => {
       if (text === 'start') {
         worker = 'a2'
         out({ type: 'system', subtype: 'task_started', task_id: 'a2', description: 'Worker two', prompt: 'go on', task_type: 'local_agent', spawn_depth: 1 })
+      }
+      if (text === 'ask') {
+        out({ type: 'control_request', request_id: 'ask-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {}, agent_id: 'a1' } })
       }
       if (text === 'dispatch') {
         out({ type: 'system', subtype: 'task_started', task_id: 'a1', description: 'Worker one', prompt: 'do it', task_type: 'local_agent', spawn_depth: 1 })
@@ -854,10 +857,14 @@ describe('claude web server', () => {
     const listed = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as { coordinator_session_id: string; running: boolean }[]
     expect(listed[0]).toMatchObject({ coordinator_session_id: first.session_id, running: true })
 
-    // Stopped before it wrote a transcript: a fresh coordinator replaces it.
+    // Stopped before it wrote a transcript: a fresh coordinator under the same id, so a page
+    // attached to it reconnects; two opens at once get one process.
     await fetch(`${r.base}/api/sessions/${first.session_id}`, { method: 'DELETE', headers })
-    const second = await open()
-    expect(second.session_id).not.toBe(first.session_id)
+    const [second, third] = await Promise.all([open(), open()])
+    expect(second).toMatchObject({ session_id: first.session_id, fresh: true })
+    expect(third!.session_id).toBe(first.session_id)
+    expect(r.spawned).toHaveLength(2)
+    expect(r.spawned[1]).toMatchObject({ sessionId: first.session_id })
     expect(r.spawned[1]!.resume).toBeUndefined()
 
     // Archiving stops it.
@@ -1060,16 +1067,29 @@ describe('claude web server', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(((await (await api('/tasks/a1/transcript?after=0')).json()) as { messages: { message: { content: string } }[] }).messages.map(m => m.message.content)).toEqual(['also this', 'RESUME first', 'then this'])
 
-    // The coordinator's model and effort are kept once it accepts them, and a restart keeps them.
+    // The coordinator's model, effort and context window are kept once it accepts them, and a restart keeps them.
     send({ type: 'control_request', request_id: 'web-model-1', request: { subtype: 'set_model', model: 'Opus 5.5' } })
     send({ type: 'control_request', request_id: 'web-effort-1', request: { subtype: 'apply_flag_settings', settings: { effortLevel: 'high' } } })
+    send({ type: 'control_request', request_id: 'web-effort-2', request: { subtype: 'apply_flag_settings', settings: { autoCompactWindow: 300000 } } })
     await waitFor(async () => {
       const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
-      return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high'
+      return p!.coordinator_model === 'Opus 5.5' && p!.coordinator_effort === 'high' && p!.coordinator_context_window === 300000
     })
+    // A permission request still open when it restarts goes with the old process: the page is told to take it down.
+    send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'ask' }] } })
+    await waitFor(() => lines.some(l => l.type === 'control_request' && l.request_id === 'ask-1'))
+    await waitFor(async () => ((await (await api('/tasks')).json()) as { state: string }[])[0]?.state === 'blocked')
     await api('', { method: 'PATCH', body: JSON.stringify({ instructions: 'NEW' }) })
     await waitFor(() => r.spawned.length === 2)
-    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', appendSystemPrompt: 'NEW' })
+    expect(r.spawned[1]).toMatchObject({ resume: true, model: 'Opus 5.5', effort: 'high', autoCompactWindow: 300000, appendSystemPrompt: 'NEW' })
+    await waitFor(() => lines.some(l => l.type === 'control_cancel_request' && l.request_id === 'ask-1'))
+    expect(((await (await api('/tasks')).json()) as { state: string }[])[0]?.state).not.toBe('blocked')
+    // A model switch resets the effort to the new model's own, as the session does.
+    send({ type: 'control_request', request_id: 'web-model-2', request: { subtype: 'set_model', model: 'opus' } })
+    await waitFor(async () => {
+      const [p] = (await (await fetch(`${r.base}/api/projects`, { headers })).json()) as Record<string, unknown>[]
+      return p!.coordinator_model === 'opus' && p!.coordinator_effort === null
+    })
 
     // Stopping the coordinator stops what was still running.
     send({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'hold' }] } })
@@ -1077,7 +1097,8 @@ describe('claude web server', () => {
     await fetch(`${r.base}/api/sessions/${sessionId}`, { method: 'DELETE', headers })
     // Reopened, it starts on the model and effort it had.
     const reopened = await fetch(`${r.base}/api/projects/${id}/coordinator`, { method: 'POST', headers })
-    expect(r.spawned.at(-1)).toMatchObject({ model: 'Opus 5.5', effort: 'high' })
+    expect(r.spawned.at(-1)).toMatchObject({ model: 'opus', autoCompactWindow: 300000 })
+    expect(r.spawned.at(-1)!.effort).toBeUndefined()
 
     // A worker killed because the server stops can be continued after the restart.
     const next = (await reopened.json()) as { session_id: string }

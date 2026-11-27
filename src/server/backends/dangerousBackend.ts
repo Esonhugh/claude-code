@@ -8,6 +8,8 @@ export type SpawnSessionOptions = {
   model?: string
   /** `--effort` (low, medium, high, xhigh, max). */
   effort?: string
+  /** The context window it starts with; it can still change it (`apply_flag_settings`). */
+  autoCompactWindow?: number
   /** Continue this existing transcript (its id becomes the session id). */
   resume?: boolean
   /** `plugin:<name>@<marketplace>` entries passed as `--channels`. */
@@ -57,6 +59,7 @@ export class DangerousBackend {
     permissionMode,
     model,
     effort,
+    autoCompactWindow,
     resume,
     channels,
     systemPrompt,
@@ -72,7 +75,7 @@ export class DangerousBackend {
     if (this.options.fileCheckpointing) env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = '1'
     if (this.options.emitSessionState) env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = '1'
     if (this.options.mcpAppsHost) env.CLAUDE_CODE_MCP_APPS_HOST = '1'
-    return spawn(
+    const child = spawn(
       command,
       [
         ...entry,
@@ -105,5 +108,17 @@ export class DangerousBackend {
       ],
       { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] },
     )
+    // No flag sets it, and CLAUDE_CODE_AUTO_COMPACT_WINDOW would win over later changes: the first line on stdin
+    // applies it. The page ignores the response, whose id is not one of its own.
+    if (autoCompactWindow) {
+      child.stdin?.write(
+        JSON.stringify({
+          type: 'control_request',
+          request_id: 'server-context-window',
+          request: { subtype: 'apply_flag_settings', settings: { autoCompactWindow } },
+        }) + '\n',
+      )
+    }
+    return child
   }
 }
