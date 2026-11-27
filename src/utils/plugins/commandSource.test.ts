@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { lstat, mkdir, mkdtemp, readFile, readlink, writeFile } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
+import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { commandSourceConsentKey, installFromCommand } from './commandSource.js'
@@ -7,7 +8,8 @@ import { copyDir } from './pluginLoader.js'
 import type { CommandPluginSource } from './schemas.js'
 
 async function producer(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'command-source-'))
+  // Links point at the real path; macOS tmpdir is a symlink to /private.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'command-source-')))
   await mkdir(join(dir, '.claude-plugin'))
   await writeFile(join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'made' }))
   await mkdir(join(dir, 'skills'))
@@ -60,7 +62,7 @@ describe('command plugin source', () => {
     ['printed two lines', 'printf "/a\\n/b\\n"', /exactly one absolute path/],
     ['printed a relative path', 'echo relative/dir', /not an absolute path/],
     ['failed', 'echo boom >&2; exit 3', /failed.*boom/],
-    ['printed a directory without plugin content', 'echo /proc/self/fd', /no plugin content/],
+    ['printed a directory without plugin content', `echo ${mkdtempSync(join(tmpdir(), 'command-empty-'))}`, /no plugin content/],
     ['printed the working directory', `echo ${process.cwd()}`, /working directory or one of its parents/],
   ])('rejects a command that %s', async (_name, command, message) => {
     await expect(install({ source: 'command', command }, await target())).rejects.toThrow(message)

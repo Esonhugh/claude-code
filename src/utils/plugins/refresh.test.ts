@@ -6,6 +6,7 @@ import {
   readFileSync,
   mkdtempSync,
   mkdirSync,
+  realpathSync,
   writeFileSync,
   rmSync,
 } from "node:fs";
@@ -128,7 +129,8 @@ if (process.env[childProcessEnv] === "install-update") {
 
 if (!process.env[childProcessEnv]) {
   test("real local install v1 → update v2 → cache-only reload", async () => {
-    const root = mkdtempSync(join(tmpdir(), "plugin-refresh-install-"));
+    // The loader reports real paths; macOS tmpdir is a symlink to /private.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "plugin-refresh-install-")));
     try {
       const child = Bun.spawn(
         [process.execPath, "test", "--timeout", "30000", import.meta.path],
