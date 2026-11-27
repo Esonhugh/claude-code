@@ -4,12 +4,16 @@ import { getOauthConfig, OAUTH_BETA_HEADER } from 'src/constants/oauth.js'
 import type { OAuthProfileResponse } from 'src/services/oauth/types.js'
 import { getAnthropicApiKey } from 'src/utils/auth.js'
 import { getGlobalConfig } from 'src/utils/config.js'
+import { isFirstPartyAnthropicSession } from 'src/utils/model/providers.js'
 import { logError } from 'src/utils/log.js'
 import { getClaudeCodeUserAgent } from 'src/utils/userAgent.js'
 export async function getOauthProfileFromApiKey(): Promise<
   OAuthProfileResponse | undefined
 > {
-  // Assumes interactive session
+  // Assumes interactive session. A gateway's API key must not reach Anthropic.
+  if (!isFirstPartyAnthropicSession()) {
+    return
+  }
   const config = getGlobalConfig()
   const accountUuid = config.oauthAccount?.accountUuid
   const apiKey = getAnthropicApiKey()
