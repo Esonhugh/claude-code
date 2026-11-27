@@ -8,6 +8,7 @@ import {
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logError } from '../../utils/log.js'
+import { isFirstPartyAnthropicSession } from '../../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getOAuthHeaders, prepareApiRequest } from '../../utils/teleport/api.js'
 import type {
@@ -70,6 +71,7 @@ export async function fetchReferralRedemptions(
  */
 function shouldCheckForPasses(): boolean {
   return !!(
+    isFirstPartyAnthropicSession() &&
     getOauthAccountInfo()?.organizationUuid &&
     isClaudeAISubscriber() &&
     getSubscriptionType() === 'max'

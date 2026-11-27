@@ -29,7 +29,7 @@ import {
 } from './model/model.js'
 import {
   getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
+  isFirstPartyAnthropicSession,
 } from './model/providers.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import {
@@ -476,7 +476,7 @@ export async function prefetchFastModeStatus(): Promise<void> {
     return
   }
 
-  if (!isFastModeEnabled() || getAPIProvider() === 'openai') {
+  if (!isFastModeEnabled() || !isFirstPartyAnthropicSession()) {
     return
   }
 
@@ -492,12 +492,6 @@ export async function prefetchFastModeStatus(): Promise<void> {
   // API key auth is unaffected.
   const apiKey = getAnthropicApiKey()
   const hasUsableOAuth = canFetchWithOAuth()
-  // An API key for a custom ANTHROPIC_BASE_URL belongs to that gateway and
-  // must not be sent to api.anthropic.com.
-  if (!hasUsableOAuth && !isFirstPartyAnthropicBaseUrl()) {
-    resolveFastModeStatusFromCache()
-    return
-  }
   if (!hasUsableOAuth && !apiKey) {
     const isAnt = getIsAnt()
     const cachedEnabled = getGlobalConfig().penguinModeOrgEnabled === true
