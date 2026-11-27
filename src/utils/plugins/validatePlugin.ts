@@ -642,64 +642,75 @@ export async function validateMarketplaceManifest(
           })
         }
       })
-
-      // Version-mismatch check: for local-source entries that declare a
-      // version, compare against the plugin's own plugin.json. At install
-      // time, calculatePluginVersion (pluginVersioning.ts) prefers the
-      // manifest version and silently ignores the entry version — so a
-      // stale entry.version is invisible user confusion (marketplace UI
-      // shows one version, /status shows another after install).
-      // Only local sources: remote sources would need cloning to check.
-      const manifestDir = path.dirname(absolutePath)
-      const marketplaceRoot =
-        path.basename(manifestDir) === '.claude-plugin'
-          ? path.dirname(manifestDir)
-          : manifestDir
-      for (const [i, entry] of marketplace.plugins.entries()) {
-        if (
-          !entry.version ||
-          typeof entry.source !== 'string' ||
-          !entry.source.startsWith('./')
-        ) {
-          continue
-        }
-        const pluginJsonPath = path.join(
-          marketplaceRoot,
-          entry.source,
-          '.claude-plugin',
-          'plugin.json',
-        )
-        let manifestVersion: string | undefined
-        try {
-          const raw = await readFile(pluginJsonPath, { encoding: 'utf-8' })
-          const parsed = jsonParse(stripBOM(raw)) as { version?: unknown }
-          if (typeof parsed.version === 'string') {
-            manifestVersion = parsed.version
-          }
-        } catch {
-          // Missing/unreadable plugin.json is someone else's error to report
-          continue
-        }
-        if (manifestVersion && manifestVersion !== entry.version) {
-          warnings.push({
-            path: `plugins[${i}].version`,
-            message:
-              `Entry declares version "${entry.version}" but ${entry.source}/.claude-plugin/plugin.json says "${manifestVersion}". ` +
-              `At install time, plugin.json wins (calculatePluginVersion precedence) — the entry version is silently ignored. ` +
-              `Update this entry to "${manifestVersion}" to match.`,
-          })
-        }
-      }
     }
 
     // Warn if no description in metadata
     if (!marketplace.metadata?.description && !marketplace.description) {
       warnings.push({
-        path: 'metadata.description',
+        path: 'description',
         message:
           'No marketplace description provided. Adding a description helps users understand what this marketplace offers',
       })
     }
+  }
+
+  // As official 2.1.329, each local entry's plugin.json is validated too, its
+  // findings under `plugins[i] plugin.json → `. Entries are parsed one by one,
+  // so a schema error elsewhere does not hide them.
+  const manifestDir = path.dirname(absolutePath)
+  const marketplaceRoot =
+    path.basename(manifestDir) === '.claude-plugin'
+      ? path.dirname(manifestDir)
+      : manifestDir
+  const rawPlugins = parsed && typeof parsed === 'object' && Array.isArray((parsed as { plugins?: unknown }).plugins)
+    ? (parsed as { plugins: unknown[] }).plugins
+    : []
+  for (const [i, raw] of rawPlugins.entries()) {
+    const parsedEntry = PluginMarketplaceEntrySchema().safeParse(raw)
+    if (!parsedEntry.success) continue
+    const entry = parsedEntry.data
+    if (typeof entry.source !== 'string' || !entry.source.startsWith('./')) continue
+    const pluginDir = path.join(marketplaceRoot, entry.source)
+    if (!within(marketplaceRoot, pluginDir)) continue
+    const pluginJsonPath = path.join(pluginDir, '.claude-plugin', 'plugin.json')
+    const relative = path.relative(marketplaceRoot, pluginJsonPath)
+    const prefix = `plugins[${i}] plugin.json → `
+    let manifestText: string
+    try {
+      manifestText = await readFile(pluginJsonPath, { encoding: 'utf-8' })
+    } catch (error) {
+      const code = getErrnoCode(error)
+      // No plugin.json: the entry describes the plugin itself.
+      if (code === 'ENOENT') continue
+      errors.push(code === 'ENOTDIR'
+        ? { path: `${prefix}file`, code, message: `A path component of ${relative} is not a directory, so the file cannot be read. The entry will fail to load at install time.` }
+        : { path: `${prefix}file`, message: `Failed to read ${relative}: ${errorMessage(error)}` })
+      continue
+    }
+    // Version-mismatch check: at install time calculatePluginVersion
+    // (pluginVersioning.ts) prefers the manifest version and silently ignores
+    // the entry's, so a stale entry.version is invisible user confusion.
+    if (entry.version) {
+      let manifestVersion: string | undefined
+      try {
+        const manifest = jsonParse(stripBOM(manifestText)) as { version?: unknown }
+        if (typeof manifest.version === 'string') manifestVersion = manifest.version
+      } catch (error) {
+        warnings.push({ path: `plugins[${i}].source`, message: `Could not parse ${relative} for version cross-check: ${errorMessage(error)}` })
+      }
+      if (manifestVersion && manifestVersion !== entry.version) {
+        warnings.push({
+          path: `plugins[${i}].version`,
+          message:
+            `Entry declares version "${entry.version}" but ${relative} says "${manifestVersion}". ` +
+            `At install time, plugin.json wins (calculatePluginVersion precedence) — the entry version is silently ignored. ` +
+            `Update this entry to "${manifestVersion}" to match.`,
+        })
+      }
+    }
+    const plugin = await validatePluginManifest(pluginJsonPath)
+    for (const error of plugin.errors) errors.push({ ...error, path: prefix + error.path })
+    for (const warning of plugin.warnings) warnings.push({ ...warning, path: prefix + warning.path })
   }
 
   return {

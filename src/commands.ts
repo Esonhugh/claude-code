@@ -7,7 +7,6 @@ import btw from './commands/btw/index.js'
 import goal, { goalNonInteractive } from './commands/goal.js'
 import goodClaude from './commands/good-claude/index.js'
 import issue from './commands/issue/index.js'
-import feedback from './commands/feedback/index.js'
 import cd from './commands/cd/index.js'
 import clear from './commands/clear/index.js'
 import color, { colorNonInteractive } from './commands/color/index.js'
@@ -357,7 +356,6 @@ const COMMANDS = memoize((): Command[] => [
   tag,
   theme,
   tui,
-  feedback,
   ultrareview,
   rewind,
   securityReview,
@@ -692,7 +690,6 @@ const REMOTE_SAFE_COMMAND_LIST: readonly Command[] = [
   usage, // Show usage info
   copy, // Copy last message
   btw, // Quick note
-  feedback, // Send feedback
   plan, // Plan mode toggle
   keybindings, // Keybinding management
   statusline, // Status line toggle

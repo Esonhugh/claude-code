@@ -660,19 +660,6 @@ const externalTips: Tip[] = [
     cooldownSessions: 3,
     isRelevant: async () => shouldShowOverageCreditUpsell(),
   },
-  // @ts-ignore - recovered code
-  {
-    id: 'feedback-command',
-    content: async () => 'Use /feedback to help us improve!',
-    cooldownSessions: 15,
-    async isRelevant() {
-      if (isAnt()) {
-        return false
-      }
-      const config = getGlobalConfig()
-      return config.numStartups > 5
-    },
-  },
 ]
 // @ts-ignore - recovered code
 const internalOnlyTips: Tip[] =

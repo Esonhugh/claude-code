@@ -1278,6 +1278,27 @@ export function addInstalledPlugin(
 }
 
 /**
+ * Mark an auto-installed dependency as one the user asked for by name.
+ * Returns whether the record changed; the rest of the record is kept.
+ */
+export function markPluginInstallationManual(
+  pluginId: string,
+  scope: PersistableScope,
+  projectPath?: string,
+): boolean {
+  return withRegistryLock(() => {
+    const v2Data = loadInstalledPluginsFromDisk()
+    const entry = v2Data.plugins[pluginId]?.find(
+      inst => inst.scope === scope && inst.projectPath === projectPath,
+    )
+    if (entry?.auto !== true) return false
+    delete entry.auto
+    saveInstalledPluginsV2(v2Data)
+    return true
+  })
+}
+
+/**
  * Remove a plugin from the installed plugins registry
  * This should be called when a plugin is uninstalled.
  *

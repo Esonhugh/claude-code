@@ -563,3 +563,29 @@ describe('plugin name warning', () => {
     expect(result.warnings.find(warning => warning.path === 'name')?.message).toContain(text)
   })
 })
+
+describe('marketplace validation checks each local plugin.json', () => {
+  // As official 2.1.329: each local entry's plugin.json is validated and its findings are prefixed.
+  test('a broken or incomplete plugin.json is reported under its entry', async () => {
+    const root = await pluginRoot()
+    await writeFile(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({
+      name: 'mk',
+      owner: { name: 'o' },
+      plugins: [
+        { name: 'good', source: './good' },
+        { name: 'bad', source: './bad' },
+        { name: 'none', source: './none' },
+      ],
+    }))
+    for (const [dir, body] of [['good', '{"name":"good","version":"1.0.0","description":"d"}'], ['bad', '{bad']] as const) {
+      await mkdir(join(root, dir, '.claude-plugin'), { recursive: true })
+      await writeFile(join(root, dir, '.claude-plugin', 'plugin.json'), body)
+    }
+    await mkdir(join(root, 'none'))
+    const result = await validateMarketplaceManifest(join(root, '.claude-plugin', 'marketplace.json'))
+    expect(result.success).toBe(false)
+    expect(result.errors.map(e => e.path)).toEqual(['plugins[1] plugin.json → json'])
+    expect(result.warnings.map(w => w.path)).toEqual(['description', 'plugins[0] plugin.json → author'])
+    await rm(root, { recursive: true, force: true })
+  })
+})

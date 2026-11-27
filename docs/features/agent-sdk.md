@@ -209,6 +209,7 @@ result success 完成。
 - 后台命令结束时的顺序是 `task_updated` → `task_notification` → `background_tasks_changed`。
 - Workflow 任务的 `task_progress` 带 `workflow_progress`：到目前为止的全部行，每个 `agent()` 调用一行（`type: "workflow_agent"`，含 `state`、`tokens`、`error` 等），每个阶段一行（`type: "workflow_phase"`）；只有 agent 活动变化时不带。workflow 里的 agent 不再各自发 task 事件。workflow 结束时依次发 `task_updated`、`task_notification`、`background_tasks_changed`，出错的 agent 行显示 API 错误原文。
 - 后台子代理完成时，`task_notification` 在 `summary` 就是子代理报告时带 `summary_is_report: true`。子代理通过 SubagentHandback 工具交回结果时，`completed` 通知带 `handback`（`send`、`flagged`、`withheld`）和 `handback_report`（`text`，可选 `warning`、`toolUseId`）。
+- 前台子代理的 `task_notification` 在报告确定后才发出，`summary` 是 Claude 读到的报告，出错时是错误信息；`task_updated` 仍然立即发出。
 
 ### 输入和权限
 

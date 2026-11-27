@@ -84,10 +84,13 @@ import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
+import { subagentToolsUsedLine } from '../PollTool/toolsUsed.js'
 import {
+  isHandbackProvenanceEnabled,
   subagentHandbackReport,
   subagentResultText,
   takeSubagentHandbackResult,
+  withHarnessNote,
   withSubagentHandbackReport,
 } from '../../utils/subagentHandback.js'
 import type { SubagentHandbackOutcome } from '../../utils/subagentHandback.js'
@@ -734,11 +737,11 @@ export function finalizeAgentTool(
   }
 
   const turnLimit = turnLimitFromMessages(agentMessages)
+  let cutoffNote: string | undefined
   if (turnLimit !== undefined) {
     // Same notice as official 2.1.311, so the parent continues the agent
     // instead of taking the partial output as its report.
-    const note = `NOTE: this agent stopped at its ${turnLimit}-turn limit before finishing.${content.length === 0 ? ' It was still calling tools and had produced no report.' : ' The text below is PARTIAL output; treat it as incomplete.'} Send the agent a message (${SEND_MESSAGE_TOOL_NAME}) to let it continue from where it stopped.\n`
-    content = [{ type: 'text', text: note }, ...content]
+    cutoffNote = `NOTE: this agent stopped at its ${turnLimit}-turn limit before finishing.${content.length === 0 ? ' It was still calling tools and had produced no report.' : ' The text below is PARTIAL output; treat it as incomplete.'} Send the agent a message (${SEND_MESSAGE_TOOL_NAME}) to let it continue from where it stopped.\n`
   }
 
   const structuredOutput = structuredOutputFromMessages(agentMessages)
@@ -747,11 +750,13 @@ export function finalizeAgentTool(
     agentId,
     !ONE_SHOT_BUILTIN_AGENT_TYPES.has(agentType),
   )
+  // The cutoff note is the harness's: a note above the report once framed.
+  const own = cutoffNote === undefined ? { content } : withHarnessNote({ content: content as AgentToolResult['content'] }, cutoffNote)
   return {
     agentId,
     agentType,
     // @ts-ignore - recovered code
-    content,
+    ...own,
     ...handback,
     totalDurationMs: Date.now() - startTime,
     totalTokens,
@@ -987,16 +992,34 @@ export async function reportAgentEnd(
 export function applyAgentReport<T extends AgentToolResult>(result: T, report: AgentReport, answer: { text: string; warning?: string } | { consumed: string }): T {
   if ('consumed' in answer) {
     const { handback, handbackToolUseId: _call, harnessNoteCount: _notes, harnessTailCount: _tail, harnessSectionHash: _hash, ...rest } = result
-    // The reason is the mod's, not the agent's: a hand-back shows it as a note, with no report under a frame.
-    return { ...rest, ...(handback !== undefined && { handback: 'withheld' }), content: [{ type: 'text', text: answer.consumed }] } as T
+    // The reason is the mod's, not the agent's: with hand-back enabled a framed result shows it as a note with no report under it.
+    return withHarnessNote({ ...rest, ...(handback !== undefined && { handback: 'withheld' }), content: [] } as unknown as T, answer.consumed)
   }
   if (result.handback !== undefined) {
     const own = subagentHandbackReport({ ...result, handback: result.handback })
     if (answer.text === own.text && answer.warning === own.warning) return result
     return { ...result, ...withSubagentHandbackReport({ ...result, handback: result.handback }, answer.text, answer.warning) }
   }
-  const content = answer.text === report.text ? result.content : [{ type: 'text' as const, text: answer.text }]
-  return { ...result, content: answer.warning ? [{ type: 'text' as const, text: answer.warning }, ...content] : content }
+  // A rewritten report replaces the run's text and the harness notes over it.
+  const { harnessNoteCount: _notes, harnessTailCount: _tail, harnessSectionHash: _hash, ...rest } = result
+  const reported = answer.text === report.text ? result : { ...rest, content: [{ type: 'text' as const, text: answer.text }] } as T
+  return answer.warning ? withHarnessNote(reported, answer.warning) : reported
+}
+
+/** The report a finished run's result carries, without the harness's notes on it. */
+export function agentResultReport(result: Pick<AgentToolResult, 'content' | 'harnessNoteCount' | 'harnessTailCount'>): string {
+  return result.content.slice(result.harnessNoteCount ?? 0, result.content.length - (result.harnessTailCount ?? 0)).map(block => block.text).join('\n')
+}
+
+/**
+ * Official `gYo` (2.1.322): a foreground run's plain report gets a note naming
+ * the tools the subagent used that the parent has not seen yet. A script or
+ * workflow reading the result gets the bare report.
+ */
+export function withSubagentToolsUsed<T extends AgentToolResult>(result: T, agentMessages: MessageType[], toolUseContext: Pick<ToolUseContext, 'messages' | 'innerCall' | 'workflowAgentCall'>): T {
+  if (result.handback !== undefined || result.content.length <= (result.harnessNoteCount ?? 0) || toolUseContext.innerCall === true || toolUseContext.workflowAgentCall === true || !isHandbackProvenanceEnabled()) return result
+  const line = subagentToolsUsedLine(agentMessages, toolUseContext.messages)
+  return line === undefined ? result : withHarnessNote(result, `${line}\n`)
 }
 
 /** Runs `fn` on a snapshot of the mods now loaded, as a report can outlive the turn that started its run. */

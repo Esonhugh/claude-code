@@ -58,6 +58,10 @@ type FirstPartyEventLoggingPayload = {
   events: FirstPartyEventLoggingEvent[]
 }
 
+// Thrown when retrying can't help within the session: the batch is dropped
+// instead of queued to disk for backoff.
+class EventsDroppedError extends Error {}
+
 /**
  * Exporter for 1st-party event logging to /api/event_logging/batch.
  *
@@ -77,7 +81,6 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
   private readonly endpoint: string
   private readonly timeout: number
   private readonly maxBatchSize: number
-  private readonly skipAuth: boolean
   private readonly batchDelayMs: number
   private readonly baseBackoffDelayMs: number
   private readonly maxBackoffDelayMs: number
@@ -98,13 +101,10 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     options: {
       timeout?: number
       maxBatchSize?: number
-      skipAuth?: boolean
       batchDelayMs?: number
       baseBackoffDelayMs?: number
       maxBackoffDelayMs?: number
       maxAttempts?: number
-      path?: string
-      baseUrl?: string
       // Injected killswitch probe. Checked per-POST so that disabling the
       // firstParty sink also stops backoff retries (not just new emits).
       // Passed in rather than imported to avoid a cycle with firstPartyEventLogger.ts.
@@ -112,19 +112,17 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       schedule?: (fn: () => Promise<void>, delayMs: number) => () => void
     } = {},
   ) {
-    // Default: prod, except when ANTHROPIC_BASE_URL is explicitly staging.
-    // Overridable via tengu_1p_event_batch_config.baseUrl.
+    // Prod, except when ANTHROPIC_BASE_URL is explicitly staging. Remote
+    // config can't move it: the request carries the Anthropic credential.
     const baseUrl =
-      options.baseUrl ||
-      (process.env.ANTHROPIC_BASE_URL === 'https://api-staging.anthropic.com'
+      process.env.ANTHROPIC_BASE_URL === 'https://api-staging.anthropic.com'
         ? 'https://api-staging.anthropic.com'
-        : 'https://api.anthropic.com')
+        : 'https://api.anthropic.com'
 
-    this.endpoint = `${baseUrl}${options.path || '/api/event_logging/batch'}`
+    this.endpoint = `${baseUrl}/api/event_logging/batch`
 
     this.timeout = options.timeout || 10000
     this.maxBatchSize = options.maxBatchSize || 200
-    this.skipAuth = options.skipAuth ?? false
     this.batchDelayMs = options.batchDelayMs || 100
     this.baseBackoffDelayMs = options.baseBackoffDelayMs || 500
     this.maxBackoffDelayMs = options.maxBackoffDelayMs || 30000
@@ -260,10 +258,11 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       )
     }
 
-    const failedEvents = await this.sendEventsInBatches(events)
+    const { failed: failedEvents, dropped } =
+      await this.sendEventsInBatches(events)
     if (failedEvents.length === 0) {
       await this.deleteFile(filePath)
-      if (isAnt()) {
+      if (isAnt() && dropped === 0) {
         logForDebugging('1P event logging: previous batch retry succeeded')
       }
     } else {
@@ -341,7 +340,17 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       }
 
       // Send events
-      const failedEvents = await this.sendEventsInBatches(events)
+      const { failed: failedEvents, dropped } =
+        await this.sendEventsInBatches(events)
+      if (dropped > 0) {
+        resultCallback({
+          code: ExportResultCode.FAILED,
+          error: new Error(
+            `Dropped ${dropped} events (${this.lastExportErrorContext})`,
+          ),
+        })
+        return
+      }
       this.attempts++
 
       if (failedEvents.length > 0) {
@@ -381,7 +390,7 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
 
   private async sendEventsInBatches(
     events: FirstPartyEventLoggingEvent[],
-  ): Promise<FirstPartyEventLoggingEvent[]> {
+  ): Promise<{ failed: FirstPartyEventLoggingEvent[]; dropped: number }> {
     // Chunk events into batches
     const batches: FirstPartyEventLoggingEvent[][] = []
     for (let i = 0; i < events.length; i += this.maxBatchSize) {
@@ -397,8 +406,10 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
     // Send each batch with delay between them. On first failure, assume the
     // endpoint is down and short-circuit: queue the failed batch plus all
     // remaining unsent batches without POSTing them. The backoff retry will
-    // probe again with a single batch next tick.
+    // probe again with a single batch next tick. An EventsDroppedError drops
+    // them instead.
     const failedBatchEvents: FirstPartyEventLoggingEvent[] = []
+    let dropped = 0
     let lastErrorContext: string | undefined
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i]!
@@ -407,7 +418,8 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       } catch (error) {
         lastErrorContext = getAxiosErrorContext(error)
         for (let j = i; j < batches.length; j++) {
-          failedBatchEvents.push(...batches[j]!)
+          if (error instanceof EventsDroppedError) dropped += batches[j]!.length
+          else failedBatchEvents.push(...batches[j]!)
         }
         if (isAnt()) {
           const skipped = batches.length - 1 - i
@@ -423,11 +435,11 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       }
     }
 
-    if (failedBatchEvents.length > 0 && lastErrorContext) {
+    if ((failedBatchEvents.length > 0 || dropped > 0) && lastErrorContext) {
       this.lastExportErrorContext = lastErrorContext
     }
 
-    return failedBatchEvents
+    return { failed: failedBatchEvents, dropped }
   }
 
   private async queueFailedEvents(
@@ -499,10 +511,12 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
         )
       }
 
-      const failedEvents = await this.sendEventsInBatches(events)
-      this.attempts++
-
+      const { failed: failedEvents, dropped } =
+        await this.sendEventsInBatches(events)
       this.isRetrying = false
+      // Dropped events are already off disk; nothing to back off for
+      if (dropped > 0) continue
+      this.attempts++
 
       if (failedEvents.length > 0) {
         // Write failures back to disk
@@ -544,87 +558,54 @@ export class FirstPartyEventLoggingExporter implements LogRecordExporter {
       'x-service-name': 'claude-code',
     }
 
-    // Skip auth if trust hasn't been established yet
-    // This prevents executing apiKeyHelper commands before the trust dialog
-    // Non-interactive sessions implicitly have workspace trust
+    // No credential before trust: apiKeyHelper must not run before the trust
+    // dialog. Non-interactive sessions implicitly have workspace trust.
     const hasTrust =
       checkHasTrustDialogAccepted() || getIsNonInteractiveSession()
     if (isAnt() && !hasTrust) {
       logForDebugging('1P event logging: Trust not accepted')
     }
 
-    // Skip auth when the OAuth token is expired or lacks user:profile
-    // scope (service key sessions). Falls through to unauthenticated send.
-    let shouldSkipAuth = this.skipAuth || !hasTrust
-    if (!shouldSkipAuth && isClaudeAISubscriber()) {
+    // Only a first-party session with its own Anthropic OAuth token or API key
+    // sends events, never an unauthenticated one. Throwing queues the batch to
+    // disk; the backoff retry sends it once the credential is usable (trust
+    // accepted, token refreshed) or drops it after maxAttempts. A token without
+    // user:profile only changes with a new login, so its batches are dropped.
+    let authUnavailable = hasTrust ? undefined : 'trust not established'
+    let missingScope = false
+    if (!authUnavailable && isClaudeAISubscriber()) {
       const tokens = getClaudeAIOAuthTokens()
       if (!hasProfileScope()) {
-        shouldSkipAuth = true
+        authUnavailable = 'OAuth token lacks user:profile scope'
+        missingScope = true
       } else if (tokens && isOAuthTokenExpired(tokens.expiresAt)) {
-        shouldSkipAuth = true
-        if (isAnt()) {
-          logForDebugging(
-            '1P event logging: OAuth token expired, skipping auth to avoid 401',
-          )
-        }
+        authUnavailable = 'OAuth token expired'
       }
     }
-
-    // Try with auth headers first (unless trust not established or token is known to be expired)
-    const authResult = shouldSkipAuth
-      ? { headers: {}, error: 'trust not established or Oauth token expired' }
+    const authResult = authUnavailable
+      ? { headers: {}, error: authUnavailable }
       : getAuthHeaders()
-    const useAuth = !authResult.error
-
-    if (!useAuth && isAnt()) {
-      logForDebugging(
-        `1P event logging: auth not available, sending without auth`,
-      )
-    }
-
-    const headers = useAuth
-      ? { ...baseHeaders, ...authResult.headers }
-      : baseHeaders
-
-    try {
-      const response = await axios.post(this.endpoint, payload, {
-        timeout: this.timeout,
-        headers,
-      })
-      this.logSuccess(payload.events.length, useAuth, response.data)
-      return
-    } catch (error) {
-      // Handle 401 by retrying without auth
-      if (
-        useAuth &&
-        axios.isAxiosError(error) &&
-        error.response?.status === 401
-      ) {
-        if (isAnt()) {
-          logForDebugging(
-            '1P event logging: 401 auth error, retrying without auth',
-          )
-        }
-        const response = await axios.post(this.endpoint, payload, {
-          timeout: this.timeout,
-          headers: baseHeaders,
-        })
-        this.logSuccess(payload.events.length, false, response.data)
-        return
+    if (authResult.error) {
+      if (isAnt()) {
+        logForDebugging(
+          `1P event logging: ${authResult.error}, not sending`,
+        )
       }
-
-      throw error
+      const message = `1P event logging: ${authResult.error}`
+      throw missingScope ? new EventsDroppedError(message) : new Error(message)
     }
+
+    const response = await axios.post(this.endpoint, payload, {
+      timeout: this.timeout,
+      headers: { ...baseHeaders, ...authResult.headers },
+    })
+    this.logSuccess(payload.events.length, response.data)
   }
 
-  private logSuccess(
-    eventCount: number,
-    withAuth: boolean,
-    responseData: unknown,
-  ): void {
+  private logSuccess(eventCount: number, responseData: unknown): void {
     if (isAnt()) {
       logForDebugging(
-        `1P event logging: ${eventCount} events exported successfully${withAuth ? ' (with auth)' : ' (without auth)'}`,
+        `1P event logging: ${eventCount} events exported successfully`,
       )
       logForDebugging(`API Response: ${jsonStringify(responseData, null, 2)}`)
     }

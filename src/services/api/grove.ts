@@ -8,6 +8,7 @@ import {
 import { getOauthAccountInfo, isConsumerSubscriber } from 'src/utils/auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { gracefulShutdown } from 'src/utils/gracefulShutdown.js'
+import { isFirstPartyAnthropicSession } from 'src/utils/model/providers.js'
 import { isEssentialTrafficOnly } from 'src/utils/privacyLevel.js'
 import { writeToStderr } from 'src/utils/process.js'
 import { getOauthConfig } from '../../constants/oauth.js'
@@ -53,7 +54,7 @@ export type ApiResult<T> = { success: true; data: T } | { success: false }
 export const getGroveSettings = memoize(
   async (): Promise<ApiResult<AccountSettings>> => {
     // Grove is a notification feature; during an outage, skipping it is correct.
-    if (isEssentialTrafficOnly()) {
+    if (isEssentialTrafficOnly() || !isFirstPartyAnthropicSession()) {
       return { success: false }
     }
     try {
@@ -233,7 +234,7 @@ async function fetchAndStoreGroveConfig(accountId: string): Promise<void> {
 export const getGroveNoticeConfig = memoize(
   async (): Promise<ApiResult<GroveConfig>> => {
     // Grove is a notification feature; during an outage, skipping it is correct.
-    if (isEssentialTrafficOnly()) {
+    if (isEssentialTrafficOnly() || !isFirstPartyAnthropicSession()) {
       return { success: false }
     }
     try {

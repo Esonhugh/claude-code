@@ -2,7 +2,12 @@ import { join } from 'path'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { logError } from '../log.js'
-import type { SettingSource } from '../settings/constants.js'
+import {
+  getEnabledSettingSources,
+  getSettingSourceName,
+  SETTING_SOURCES,
+  type SettingSource,
+} from '../settings/constants.js'
 import {
   getInitialSettings,
   getSettingsForSource,
@@ -159,6 +164,36 @@ export function getPluginEditableScopes(): Map<string, ExtendedPluginScope> {
   )
 
   return result
+}
+
+/**
+ * Plugins user settings turn off that a later settings source turns back on,
+ * each with the source whose setting wins.
+ */
+export function getIneffectiveUserDisables(): Map<string, SettingSource> {
+  const sources = getEnabledSettingSources()
+  const userPlugins = getSettingsForSource('userSettings')?.enabledPlugins
+  const result = new Map<string, SettingSource>()
+  if (!sources.includes('userSettings') || !userPlugins) return result
+  const later = SETTING_SOURCES.filter(
+    source => source !== 'userSettings' && sources.includes(source),
+  )
+  for (const [pluginId, value] of Object.entries(userPlugins)) {
+    if (value !== false) continue
+    let overriddenBy: SettingSource | undefined
+    for (const source of later) {
+      const setting = getSettingsForSource(source)?.enabledPlugins?.[pluginId]
+      if (setting === undefined) continue
+      overriddenBy = setting === false ? undefined : source
+    }
+    if (overriddenBy) result.set(pluginId, overriddenBy)
+  }
+  return result
+}
+
+/** Official 2.1.329's note for a plugin whose user-settings disable is overridden. */
+export function formatIneffectiveDisableNote(overriddenBy: SettingSource): string {
+  return `Disabled in ~/.claude/settings.json but still loads \u2014 ${getSettingSourceName(overriddenBy)} settings enable it, which overrides your user setting`
 }
 
 /**

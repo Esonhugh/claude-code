@@ -3,14 +3,13 @@ import { BLACK_CIRCLE, BULLET_OPERATOR } from '../constants/figures.js'
 import { Box, Text } from '../ink.js'
 import type { SkillUpdate } from '../utils/hooks/skillImprovement.js'
 import { normalizeFullWidthDigits } from '../utils/stringUtils.js'
-import { isValidResponseInput } from './FeedbackSurvey/FeedbackSurveyView.js'
-import type { FeedbackSurveyResponse } from './FeedbackSurvey/utils.js'
+import type { SkillImprovementSurveyResponse } from '../hooks/useSkillImprovementSurvey.js'
 
 type Props = {
   isOpen: boolean
   skillName: string
   updates: SkillUpdate[]
-  handleSelect: (selected: FeedbackSurveyResponse) => void
+  handleSelect: (selected: SkillImprovementSurveyResponse) => void
   inputValue: string
   setInputValue: (value: string) => void
 }
@@ -28,7 +27,7 @@ export function SkillImprovementSurvey({
   }
 
   // Hide the survey if the user is typing anything other than a survey response
-  if (inputValue && !isValidResponseInput(inputValue)) {
+  if (inputValue && !isValidInput(inputValue)) {
     return null
   }
 
@@ -46,7 +45,7 @@ export function SkillImprovementSurvey({
 type ViewProps = {
   skillName: string
   updates: SkillUpdate[]
-  onSelect: (option: FeedbackSurveyResponse) => void
+  onSelect: (option: SkillImprovementSurveyResponse) => void
   inputValue: string
   setInputValue: (value: string) => void
 }
