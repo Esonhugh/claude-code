@@ -34,7 +34,7 @@ beforeEach(() => {
     theme: 'dark',
   }))
   mkdirSync(join(config, 'telemetry'), { recursive: true })
-  writeFileSync(join(config, 'telemetry', '1p_failed_events.s.b.json'), '[]')
+  writeFileSync(join(config, 'telemetry', '1p_failed_events.s.b.json'), '{}\n{}\n')
   writeFileSync(join(config, 'telemetry', 'unrelated.json'), '{}')
 })
 
@@ -81,11 +81,22 @@ test('resets the device id, dates and queued telemetry, and keeps everything els
   expect(existsSync(join(config, 'telemetry', 'unrelated.json'))).toBe(true)
 })
 
-test('a dry run lists the items and changes nothing', async () => {
+test('a dry run prints each value and file, and changes nothing', async () => {
   const result = await run({ dryRun: true })
   expect(result.code).toBe('exit 0')
-  expect(result.out).toContain('userID')
-  expect(result.out).toContain('1p_failed_events.s.b.json')
+  expect(result.out).toContain('userID = old-device')
+  expect(result.out).toContain('claudeCodeFirstTokenDate = 2026-01-02T00:00:00.000Z')
+  expect(result.out).toContain('1p_failed_events.s.b.json (2 event(s), 6 bytes;')
+  expect(result.out).not.toContain('Log out before resetting')
+  expect(getGlobalConfig().userID).toBe('old-device')
+})
+
+test('a dry run while logged in still prints the plan and says to log out', async () => {
+  stored = { claudeAiOauth: { accessToken: 'fixture' } }
+  const result = await run({ dryRun: true })
+  expect(result.code).toBe('exit 0')
+  expect(result.out).toContain('userID = old-device')
+  expect(result.out).toContain('Log out before resetting: this computer still has a Claude account login')
   expect(getGlobalConfig().userID).toBe('old-device')
 })
 

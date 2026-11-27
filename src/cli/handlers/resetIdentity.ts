@@ -6,7 +6,7 @@
  */
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handler intentionally exits */
 
-import { readdir, rm } from 'fs/promises'
+import { readdir, readFile, rm } from 'fs/promises'
 import { join } from 'path'
 import { createInterface } from 'readline/promises'
 import { getApiKeyFromConfigOrMacOSKeychain } from '../../utils/auth.js'
@@ -24,8 +24,8 @@ const CONFIG_KEYS = {
 type ConfigKey = keyof typeof CONFIG_KEYS
 
 type Item =
-  | { kind: 'config-key'; key: ConfigKey }
-  | { kind: 'file'; path: string }
+  | { kind: 'config-key'; key: ConfigKey; detail: string }
+  | { kind: 'file'; path: string; detail: string }
 
 type ResetIdentityOptions = {
   dryRun?: boolean
@@ -51,14 +51,27 @@ function loggedInReasons(): string[] {
   return reasons
 }
 
-async function telemetryFiles(): Promise<string[]> {
+async function telemetryFiles(): Promise<{ path: string; detail: string }[]> {
   const dir = join(getClaudeConfigHomeDir(), 'telemetry')
+  let names: string[]
   try {
-    const names = await readdir(dir)
-    return names.filter(name => name.startsWith('1p_failed_events.')).map(name => join(dir, name))
+    names = await readdir(dir)
   } catch {
     return []
   }
+  const files = names.filter(name => name.startsWith('1p_failed_events.')).map(name => join(dir, name))
+  return Promise.all(
+    files.map(async path => {
+      try {
+        // One event per line, as the 1P exporter writes them.
+        const text = await readFile(path, 'utf8')
+        const events = text.split('\n').filter(line => line.trim()).length
+        return { path, detail: `${events} event(s), ${Buffer.byteLength(text)} bytes` }
+      } catch (error) {
+        return { path, detail: `unreadable: ${errorMessage(error)}` }
+      }
+    }),
+  )
 }
 
 async function items(): Promise<Item[]> {
@@ -72,15 +85,15 @@ async function items(): Promise<Item[]> {
       : config[key] !== undefined,
   )
   return [
-    ...keys.map(key => ({ kind: 'config-key' as const, key })),
-    ...(await telemetryFiles()).map(path => ({ kind: 'file' as const, path })),
+    ...keys.map(key => ({ kind: 'config-key' as const, key, detail: String(config[key]) })),
+    ...(await telemetryFiles()).map(file => ({ kind: 'file' as const, ...file })),
   ]
 }
 
 function describe(item: Item): string {
   return item.kind === 'config-key'
-    ? `config: ${item.key} (${CONFIG_KEYS[item.key]})`
-    : `file:   ${item.path} (unsent telemetry with the old device id)`
+    ? `config: ${item.key} = ${item.detail} (${CONFIG_KEYS[item.key]})`
+    : `file:   ${item.path} (${item.detail}; unsent telemetry with the old device id)`
 }
 
 async function remove(item: Item): Promise<string | null> {
@@ -112,11 +125,10 @@ async function confirm(question: string): Promise<boolean> {
 
 export async function resetIdentityHandler(options: ResetIdentityOptions): Promise<never> {
   const reasons = loggedInReasons()
-  if (reasons.length > 0) {
-    exitWith(
-      `Log out first (claude auth logout or /logout): this computer still has ${reasons.join(', ')}, which would link the new device id to the old one.`,
-      1,
-    )
+  const loggedIn = `this computer still has ${reasons.join(', ')}, which would link the new device id to the old one`
+  // A dry run changes nothing, so it shows the plan even while logged in.
+  if (reasons.length > 0 && !options.dryRun) {
+    exitWith(`Log out first (claude auth logout or /logout): ${loggedIn}.`, 1)
   }
 
   const plan = await items()
@@ -128,6 +140,7 @@ export async function resetIdentityHandler(options: ResetIdentityOptions): Promi
   for (const item of plan) out(`  ${describe(item)}`)
   out('\nA new device id is created the next time Claude Code starts. Sessions already running keep the old one until they restart.')
   if (options.dryRun) {
+    if (reasons.length > 0) out(`Log out before resetting: ${loggedIn}.`)
     out(`Dry run: ${plan.length} item(s) would be reset.`)
     process.exit(0)
   }
