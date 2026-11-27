@@ -35,7 +35,7 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 7 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -63,6 +63,9 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
     cycb: ['cyca'],
     lone: undefined,
     two: ['base', 'lone'],
+    far: ['x@absent'],
+    proj: ['projdep'],
+    projdep: undefined,
   }
   for (const [name, dependencies] of Object.entries(names)) {
     mkdirSync(join(market, name, '.claude-plugin'), { recursive: true })
@@ -250,5 +253,28 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
       'Successfully installed plugin: child@mk (scope: user) (+ 1 dependency: base)',
     )
     expect(enabled()['base@mk']).toBe(true)
+  })
+
+  test('an already-installed plugin asks for a missing marketplace and fills dependencies at its own scope', async () => {
+    const loader = await import('../../utils/plugins/pluginLoader.js')
+    const inPlace = (name: string, scope = '') => ` \u2014 it loads in place from ${join(market, name)}, so edits there take effect at the next session start or /reload-plugins${scope}`
+    expect((await ops.installPluginOp('far@mk', 'user')).success).toBe(true)
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('far@mk', 'user')).message).toBe(
+      `Plugin "far@mk" is already installed (scope: user)${inPlace('far')} \u2014 1 dependency still unresolved: x@absent. Is the "absent" marketplace added?`,
+    )
+
+    const project = () => JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf-8')).enabledPlugins
+    expect((await ops.installPluginOp('proj@mk', 'project')).message).toBe(
+      'Successfully installed plugin: proj@mk (scope: project) (+ 1 dependency: projdep)',
+    )
+    expect((await ops.uninstallPluginOp('projdep@mk', 'project')).success).toBe(true)
+    expect(project()['projdep@mk']).toBeUndefined()
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('proj@mk', 'project')).message).toBe(
+      `Plugin "proj@mk" is already installed (scope: project)${inPlace('proj')} (+ 1 dependency: projdep)`,
+    )
+    expect(project()['projdep@mk']).toBe(true)
+    expect(enabled()['projdep@mk']).toBeUndefined()
   })
 }
