@@ -32,11 +32,13 @@ import {
   findTransitiveReverseDependents,
   formatReverseDependentsSuffix,
   getEnabledPluginIdsForScope,
+  qualifyDependency,
   resolveEnableClosure,
 } from '../../utils/plugins/dependencyResolver.js'
 import {
   loadInstalledPluginsFromDisk,
   loadInstalledPluginsV2,
+  markPluginInstallationManual,
   removePluginInstallation,
   updateInstallationPathOnDisk,
 } from '../../utils/plugins/installedPluginsManager.js'
@@ -63,6 +65,7 @@ import {
   getVersionedCachePath,
   getVersionedZipCachePath,
   loadAllPlugins,
+  getPluginReadFromFolder,
   loadAllPluginsCacheOnly,
   loadPluginManifest,
 } from '../../utils/plugins/pluginLoader.js'
@@ -71,6 +74,7 @@ import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
 import type {
   CommandPluginSource,
+  PluginInstallationEntry,
   PluginMarketplaceEntry,
   PluginScope,
 } from '../../utils/plugins/schemas.js'
@@ -357,6 +361,65 @@ type CommandSourceConfirmation = {
   ) => Promise<boolean>
 }
 
+/**
+ * The installation that leaves installing `pluginId` at `scope` nothing to
+ * do: the scope's settings enable it, its record there points at files that
+ * exist, and every dependency it declares is enabled at that scope too.
+ */
+async function findInstallationAtScope(
+  pluginId: string,
+  entry: PluginMarketplaceEntry,
+  scope: InstallableScope,
+): Promise<PluginInstallationEntry | undefined> {
+  const enabled = getEnabledPluginIdsForScope(scopeToSettingSource(scope))
+  if (!enabled.has(pluginId)) return undefined
+  const projectPath = scope === 'user' ? undefined : getOriginalCwd()
+  const record = loadInstalledPluginsFromDisk().plugins[pluginId]?.find(
+    inst => inst.scope === scope && inst.projectPath === projectPath,
+  )
+  if (!record || !getFsImplementation().existsSync(record.installPath)) return undefined
+  const manifest = await readManifest(record.installPath, entry)
+  if (!manifest) return undefined
+  const dependencies = [...(entry.dependencies ?? []), ...(manifest.dependencies ?? [])]
+  return dependencies.every(dep => enabled.has(qualifyDependency(dep, pluginId)))
+    ? record
+    : undefined
+}
+
+async function readManifest(
+  pluginPath: string,
+  entry: PluginMarketplaceEntry,
+): Promise<PluginManifest | undefined> {
+  try {
+    return await loadPluginManifest(
+      join(pluginPath, '.claude-plugin', 'plugin.json'),
+      entry.name,
+      typeof entry.source === 'string' ? entry.source : 'marketplace',
+    )
+  } catch {
+    return undefined
+  }
+}
+
+/** Official 2.1.329's suffix for an already-installed plugin read in place from its marketplace folder. */
+async function inPlaceNote(
+  pluginId: string,
+  entry: PluginMarketplaceEntry,
+  scope: InstallableScope,
+  installedVersion: string | undefined,
+): Promise<string> {
+  const folder = await getPluginReadFromFolder(pluginId)
+  if (folder === undefined) return ''
+  const folderVersion = (await readManifest(folder, entry))?.version
+  const update = pluginCliCommand('update', pluginId)
+  const command = update && (scope === 'user' ? update : `${update} --scope ${scope}`)
+  const rerecord =
+    command && folderVersion !== undefined && installedVersion !== undefined && folderVersion !== installedVersion
+      ? `; \`${command}\` re-records its version, ${installedVersion} to ${folderVersion}`
+      : ''
+  return ` \u2014 it loads in place from ${folder}, so edits there take effect at the next session start or /reload-plugins${rerecord}`
+}
+
 export async function installPluginOp(
   plugin: string,
   scope: InstallableScope = 'user',
@@ -402,14 +465,34 @@ export async function installPluginOp(
     const location = marketplaceName
       ? `marketplace "${marketplaceName}"`
       : 'any configured marketplace'
+    // As official 2.1.329: a named marketplace's copy may predate the plugin.
+    const update = marketplaceName && pluginCliCommand('marketplace update', marketplaceName)
+    const stale = marketplaceName
+      ? `. Your local copy may be out of date${update ? ` \u2014 try \`${update}\`` : ' \u2014 update it from /plugin > Marketplaces'}.`
+      : ''
     return {
       success: false,
-      message: `Plugin "${pluginName}" not found in ${location}`,
+      message: `Plugin "${pluginName}" not found in ${location}${stale}`,
     }
   }
 
   const entry = foundPlugin
   const pluginId = `${entry.name}@${foundMarketplace}`
+
+  // As official 2.1.329: a plugin already in place at this scope is left as
+  // it is, apart from an auto-installed one becoming a manual install.
+  const current = await findInstallationAtScope(pluginId, entry, scope)
+  if (current) {
+    const projectPath = scope === 'user' ? undefined : getOriginalCwd()
+    const madeManual = markPluginInstallationManual(pluginId, scope, projectPath)
+    return {
+      success: true,
+      message: `Plugin "${pluginId}" is already installed (scope: ${scope})${madeManual ? ' \u2014 marked as manually installed' : ''}${await inPlaceNote(pluginId, entry, scope, current.version)}`,
+      pluginId,
+      pluginName: entry.name,
+      scope,
+    }
+  }
 
   let commandSourceReviewed = false
   if (isCommandPluginSource(entry.source) && confirmCommandSource) {

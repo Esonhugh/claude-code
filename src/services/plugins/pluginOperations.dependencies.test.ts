@@ -177,8 +177,23 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
   })
 
   test('installing an auto-installed dependency by name makes it a manual install', async () => {
-    expect((await ops.installPluginOp('base@mk', 'user')).success).toBe(true)
+    const record = () => {
+      installed.clearInstalledPluginsCache()
+      const { auto: _auto, ...rest } = installed.loadInstalledPluginsFromDisk().plugins['base@mk']![0]!
+      return rest
+    }
+    const before = record()
+    const inPlace = ` \u2014 it loads in place from ${join(market, 'base')}, so edits there take effect at the next session start or /reload-plugins`
+    // As official 2.1.329: an install at a scope that already has it keeps the record.
+    expect(await ops.installPluginOp('base@mk', 'user')).toMatchObject({
+      success: true,
+      message: `Plugin "base@mk" is already installed (scope: user) \u2014 marked as manually installed${inPlace}`,
+    })
     expect(auto()['base@mk']).toBe(false)
+    expect((await ops.installPluginOp('base@mk', 'user')).message).toBe(
+      `Plugin "base@mk" is already installed (scope: user)${inPlace}`,
+    )
+    expect(record()).toEqual(before)
     expect((await ops.uninstallPluginOp('child@mk', 'user')).message).toBe(
       'Successfully uninstalled plugin: child (scope: user)',
     )
