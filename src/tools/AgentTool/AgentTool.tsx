@@ -607,7 +607,11 @@ export const AgentTool = buildTool({
     const parentMessage = assistantMessage as AssistantMessage | undefined
     const startTime = Date.now()
     description = normalizeAgentDescription(description)
-    let model = isCoordinatorMode() ? undefined : modelParam
+    // Like official 2.1.329: a coordinator's worker takes the model it asks for, unless the session forces inheritance.
+    let model =
+      isCoordinatorMode() && isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL)
+        ? undefined
+        : modelParam
     // result.subagent_stats counts the model's own Agent calls, not workflow agents.
     const requestedBackground = run_in_background
     const countsInSubagentStats = toolUseContext.workflowAgentSystemPrompt === undefined

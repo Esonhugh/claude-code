@@ -3,13 +3,14 @@ import { expect, test } from 'bun:test'
 const modules = {
   bootstrap: new URL('../bootstrap/state.ts', import.meta.url).href,
   coordinator: new URL('./coordinatorMode.ts', import.meta.url).href,
+  worker: new URL('./workerAgent.ts', import.meta.url).href,
 }
 
 // feature('COORDINATOR_MODE') is a build-time flag, so run in a child with it on.
 const source = `
 import assert from 'node:assert/strict'
 const m=JSON.parse(process.env.COORD_MODULES)
-const boot=await import(m.bootstrap),{isCoordinatorMode,matchSessionMode}=await import(m.coordinator)
+const boot=await import(m.bootstrap),{isCoordinatorMode,matchSessionMode,getCoordinatorUserContext}=await import(m.coordinator),{getWorkerSystemPrompt}=await import(m.worker)
 const reset=(interactive,env)=>{boot.setIsInteractive(interactive);delete process.env.CLAUDE_CODE_COORDINATOR_MODE;delete process.env.CLAUDE_CODE_REMOTE;Object.assign(process.env,env)}
 reset(false,{});assert.equal(isCoordinatorMode(),false)
 reset(false,{CLAUDE_CODE_COORDINATOR_MODE:'1'});assert.equal(isCoordinatorMode(),true)
@@ -18,6 +19,9 @@ reset(true,{CLAUDE_CODE_COORDINATOR_MODE:'1',CLAUDE_CODE_REMOTE:'1'});assert.equ
 reset(true,{});assert.equal(matchSessionMode('coordinator'),undefined);assert.equal(process.env.CLAUDE_CODE_COORDINATOR_MODE,undefined)
 reset(false,{});assert.equal(matchSessionMode('coordinator'),'Entered coordinator mode to match resumed session.');assert.equal(isCoordinatorMode(),true)
 reset(false,{CLAUDE_CODE_COORDINATOR_MODE:'1'});assert.equal(matchSessionMode('normal'),'Exited coordinator mode to match resumed session.');assert.equal(isCoordinatorMode(),false)
+// Workers are told about the Agent tool only when they may nest below themselves.
+reset(false,{CLAUDE_CODE_COORDINATOR_MODE:'1'});assert.match(getCoordinatorUserContext([]).workerToolsContext,/tools: Agent, Bash, /);assert.match(getWorkerSystemPrompt(),/you may use it to fan out/)
+process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH='1';assert.match(getCoordinatorUserContext([]).workerToolsContext,/tools: Bash, /);assert.doesNotMatch(getWorkerSystemPrompt(),/fan out/)
 `
 
 test('coordinator mode runs only in headless or remote sessions, like official', async () => {
@@ -67,4 +71,30 @@ test('coordinator adds brief tools under CLAUDE_CODE_BRIEF and named extras from
       else process.env[key] = value
     }
   }
+})
+
+test('coordinator prompt tells it to leave the worker model alone when the session forces inheritance', async () => {
+  const { getCoordinatorSystemPrompt } = await import('./coordinatorMode.js')
+  const saved = process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+  try {
+    delete process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+    expect(getCoordinatorSystemPrompt([])).toContain('- Omit the model parameter so workers inherit the session model')
+    process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL = '1'
+    const forced = getCoordinatorSystemPrompt([])
+    expect(forced).toContain('- The model parameter is ignored on this session. Do not set it.')
+    expect(forced).not.toContain('Omit the model parameter')
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL
+    else process.env.CLAUDE_CODE_COORDINATOR_FORCE_WORKER_INHERIT_MODEL = saved
+  }
+})
+
+test('coordinator prompt has official\'s approved-action section and no worker capabilities paragraph', async () => {
+  const { getCoordinatorSystemPrompt } = await import('./coordinatorMode.js')
+  const prompt = getCoordinatorSystemPrompt([])
+  expect(prompt).toContain('use `worker`. Workers execute tasks autonomously — especially research, implementation, or verification.\n\n## 4. Task Workflow')
+  expect(prompt).not.toContain('Workers have access to standard tools')
+  expect(prompt).toContain('without evidence"\n\n### Executing user-approved actions\n\n')
+  expect(prompt).toContain('Do NOT `SendMessage` the approval back to the preparing worker.')
+  expect(prompt).toContain('the exact one-liner to run themselves.\n\n## 6. Example Session')
 })

@@ -13,7 +13,7 @@ import { createModsRuntime } from '../../services/mods/runtime.js'
 import { ModAuthoringPromptDismissedError } from '../../services/mods/session.js'
 import type { Command } from '../../types/command.js'
 import { AbortError } from '../errors.js'
-import { processSlashCommand } from './processSlashCommand.js'
+import { coordinatorUnavailableCommandText, processSlashCommand } from './processSlashCommand.js'
 
 const promptCommand: Command = {
   type: 'prompt',
@@ -379,3 +379,28 @@ assert.match(
   JSON.stringify(malformed.messages),
   /<local-command-stderr>Shell command failed for pattern/,
 )
+
+// Official 2.1.329 refuses user-only skills and MCP prompts in coordinator mode.
+const notHidden = () => false
+const skill = { ...promptCommand, name: 'deploy', description: 'Ship it', hooks: undefined } as Command & { type: 'prompt' }
+assert.equal(coordinatorUnavailableCommandText(skill, [skill], notHidden), undefined)
+const userOnly = { ...skill, disableModelInvocation: true }
+const userOnlyText = coordinatorUnavailableCommandText(userOnly, [userOnly], notHidden)!
+assert.match(userOnlyText, /^Skill "\/deploy" is user-invocable only \(disable-model-invocation\) and cannot run in coordinator mode/)
+assert.match(userOnlyText, /\nDescription: Ship it\n/)
+assert.match(userOnlyText, /Tell the user that the \/deploy command is unavailable in coordinator mode\./)
+assert.doesNotMatch(userOnlyText, /subcommands/)
+const settingsHidden = coordinatorUnavailableCommandText(skill, [skill], command => command.name === 'deploy')!
+assert.match(settingsHidden, /user-invocable only \(disabled for model invocation in settings\)/)
+const mcpPrompt = { ...skill, name: 'mcp__srv__review', isMcp: true }
+const mcpText = coordinatorUnavailableCommandText(mcpPrompt, [mcpPrompt], notHidden)!
+assert.match(mcpText, /^"\/mcp__srv__review" is an MCP prompt and cannot run in coordinator mode/)
+assert.match(mcpText, /\nDescription: Ship it\n/)
+assert.equal(coordinatorUnavailableCommandText({ ...mcpPrompt, loadedFrom: 'mcp' }, [], notHidden), undefined)
+const status = { ...skill, name: 'deploy-status' }
+const rollback = { ...skill, name: 'deploy-rollback', disableModelInvocation: true }
+const withSubcommands = { ...userOnly, subcommands: { status: 'deploy-status', rollback: 'deploy-rollback', gone: 'missing' } }
+const subText = coordinatorUnavailableCommandText(withSubcommands, [withSubcommands, status, rollback], notHidden)!
+assert.match(subText, /Note: the subcommands "\/deploy status" route to their own dedicated commands/)
+assert.doesNotMatch(subText, /rollback|gone/)
+assert.match(subText, /Tell the user that \/deploy itself \(beyond the subcommands above\) is unavailable/)

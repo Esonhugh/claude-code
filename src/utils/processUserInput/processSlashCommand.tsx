@@ -58,6 +58,7 @@ import {
   type CommandResultDisplay,
 } from '../../types/command.js'
 import { getAgentContext } from '../agentContext.js'
+import { SKILL_TOOL_NAME } from '../../tools/SkillTool/constants.js'
 import {
   createAttachmentMessage,
   getAttachmentMessages,
@@ -114,7 +115,7 @@ import type {
   ProcessUserInputBaseResult,
   ProcessUserInputContext,
 } from './processUserInput.js'
-import { getSkillOverride } from '../skillOverrides.js'
+import { getSkillOverride, isSkillHiddenFromModel } from '../skillOverrides.js'
 import { isAnt } from 'src/utils/userType.js'
 import {
   runModCommand,
@@ -1422,6 +1423,47 @@ export async function processPromptSlashCommand(
   }
 }
 
+/**
+ * What a coordinator is told about a command its workers can't run through the
+ * Skill tool (official 2.1.329): a user-only skill or an MCP prompt.
+ * Undefined for a skill it can hand to a worker.
+ */
+export function coordinatorUnavailableCommandText(
+  command: PromptCommand & CommandBase,
+  commands: Command[],
+  hiddenFromModel = isSkillHiddenFromModel,
+): string | undefined {
+  const mcpPrompt = command.isMcp === true && command.loadedFrom !== 'mcp'
+  if (!command.disableModelInvocation && !mcpPrompt && !hiddenFromModel(command)) return undefined
+  const lines = [
+    mcpPrompt
+      ? `"/${command.name}" is an MCP prompt and cannot run in coordinator mode: the coordinator does not load prompt content, and workers cannot invoke MCP prompts via the ${SKILL_TOOL_NAME} tool.`
+      : `Skill "/${command.name}" is user-invocable only (${command.disableModelInvocation ? 'disable-model-invocation' : 'disabled for model invocation in settings'}) and cannot run in coordinator mode: the coordinator does not load skill content, and workers cannot invoke it via the ${SKILL_TOOL_NAME} tool.`,
+  ]
+  if (command.description && command.loadedFrom !== 'mcp') lines.push(`Description: ${command.description}`)
+  const subcommands = Object.entries(command.subcommands ?? {})
+    .filter(([, targetName]) => {
+      const target = findCommand(targetName, commands)
+      return (
+        target !== undefined &&
+        isCommandEnabled(target) &&
+        !target.disableModelInvocation &&
+        !hiddenFromModel(target) &&
+        !(target.isMcp === true && target.loadedFrom !== 'mcp')
+      )
+    })
+    .map(([token]) => token)
+  if (subcommands.length > 0) {
+    lines.push(
+      `Note: the subcommands ${subcommands.map(token => `"/${command.name} ${token}"`).join(', ')} route to their own dedicated commands and DO still work when the user types them directly in the terminal (remote-control clients gate some commands separately).`,
+    )
+  }
+  lines.push(
+    ` Do not instruct workers to invoke this via the ${SKILL_TOOL_NAME} tool \u2014 it will be refused. Tell the user that ${subcommands.length > 0 ? `/${command.name} itself (beyond the subcommands above) is` : `the /${command.name} command is`} unavailable in coordinator mode. If \u2014 and only if \u2014 the underlying task is achievable with the tools workers actually hold, you may brief a worker to do that work directly; do not promise this otherwise.`,
+  )
+  return lines.join('\n')
+}
+
 async function getMessagesForPromptSlashCommand(
   command: CommandBase & PromptCommand,
   args: string,
@@ -1447,13 +1489,27 @@ async function getMessagesForPromptSlashCommand(
     !context.options.isSkillPreload
   ) {
     const metadata = formatCommandLoadingMetadata(command, args)
+    const mcpSkill = command.loadedFrom === 'mcp'
+    // Like official 2.1.329: workers can't run these through the Skill tool
+    // either, so the coordinator is told they are unavailable here.
+    const unavailable = coordinatorUnavailableCommandText(command, context.options.commands)
+    if (unavailable) {
+      return {
+        messages: [
+          createUserMessage({ content: metadata, uuid }),
+          createUserMessage({ content: [{ type: 'text', text: unavailable }], isMeta: true }),
+        ],
+        shouldQuery: true,
+        command,
+      }
+    }
     const parts: string[] = [
       `Skill "/${command.name}" is available for workers.`,
     ]
-    if (command.description) {
+    if (command.description && !mcpSkill) {
       parts.push(`Description: ${command.description}`)
     }
-    if (command.whenToUse) {
+    if (command.whenToUse && !mcpSkill) {
       parts.push(`When to use: ${command.whenToUse}`)
     }
     const skillAllowedTools = getCommandAllowedTools(command)
