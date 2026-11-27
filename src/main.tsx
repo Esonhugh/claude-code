@@ -7018,6 +7018,18 @@ async function run(): Promise<CommanderCommand> {
       await purgeProjectHandler(path, opts)
     })
 
+  program
+    .command('reset-identity')
+    .description(
+      'Rotate the device id and delete unsent telemetry on this computer (run after logging out)',
+    )
+    .option('--dry-run', 'List what would be reset without changing anything')
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .action(async (opts: { dryRun?: boolean; yes?: boolean }) => {
+      const { resetIdentityHandler } = await import('./cli/handlers/resetIdentity.js')
+      await resetIdentityHandler(opts)
+    })
+
   bgUsage(
     program
       .command('respawn [id]')
