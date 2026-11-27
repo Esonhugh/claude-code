@@ -60,7 +60,7 @@ CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1 claude
 | 使用 OpenAI 模式（ChatGPT 账号或 OpenAI API key） | 同上 |
 | `ANTHROPIC_BASE_URL` 指向非官方网关 | 同上 |
 
-打开后，事件只用这个会话自己的 Anthropic 凭据（OAuth token 或 API key）发往 `https://api.anthropic.com/api/event_logging/batch`，不再匿名发送。凭据暂时不能用时（还没信任工作目录、OAuth token 过期或缺 `user:profile` scope），这批事件先存到 `~/.claude/telemetry/`，按退避重试，凭据可用后补发；连续失败 8 次就丢弃。
+打开后，事件只用这个会话自己的 Anthropic 凭据（OAuth token 或 API key）发往 `https://api.anthropic.com/api/event_logging/batch`，不再匿名发送。凭据暂时不能用时（还没信任工作目录、OAuth token 过期），这批事件先存到 `~/.claude/telemetry/`，按退避重试，凭据可用后补发；连续失败 8 次就丢弃。OAuth token 缺 `user:profile` scope 时（例如通过 `CLAUDE_CODE_OAUTH_TOKEN` 传入的 token 只有 `user:inference`），只有重新登录才会变，事件直接丢弃，不写盘也不重试。
 
 反馈、记忆和压缩后的满意度问卷也跟随同一个开关（其中 Bedrock / Vertex / Foundry 不影响问卷，但这些会话不会上传对话记录）；`CLAUDE_FORCE_DISPLAY_SURVEY` 不能绕过它，问卷未启用时也不会上传对话记录。
 
