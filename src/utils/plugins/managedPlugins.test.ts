@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getInPlacePluginSource } from './managedPlugins.js'
@@ -8,7 +8,7 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, {recursive:true,force:true}))) })
 
 test('managed Mods require an absolute policy directory, relative catalog source, and in-place containment', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'managed-mod-source-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'managed-mod-source-')))
   roots.push(root)
   const market = join(root,'market'); const plugin = join(market,'plugins','guard')
   await mkdir(join(market,'.claude-plugin'),{recursive:true}); await mkdir(plugin,{recursive:true})
@@ -33,7 +33,7 @@ test('managed Mods require an absolute policy directory, relative catalog source
 })
 
 test('an in-place catalog saved with a UTF-8 BOM is read', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'managed-mod-bom-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'managed-mod-bom-')))
   roots.push(root)
   const market = join(root,'market'); const plugin = join(market,'plugins','guard')
   await mkdir(join(market,'.claude-plugin'),{recursive:true}); await mkdir(plugin,{recursive:true})
