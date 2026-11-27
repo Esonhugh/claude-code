@@ -56,6 +56,7 @@ import { peerHoldReason } from '../utils/peerProtocol.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
 import * as React from 'react'
 import {
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -71,7 +72,8 @@ import {
   startPreventSleep,
   stopPreventSleep,
 } from '../services/preventSleep.js'
-import { useTerminalNotification } from '../ink/useTerminalNotification.js'
+import { TerminalWriteContext, useTerminalNotification } from '../ink/useTerminalNotification.js'
+import { registerHookTerminalWriter } from '../utils/hooks/terminalSequence.js'
 import { hasCursorUpViewportYankBug } from '../ink/terminal.js'
 import {
   createFileStateCacheWithSizeLimit,
@@ -1228,6 +1230,12 @@ export function REPL({
 
   const store = useAppStateStore()
   const terminal = useTerminalNotification()
+  const terminalWriter = useContext(TerminalWriteContext)
+  // Hooks' terminalSequence output goes to the terminal while this screen is up.
+  useEffect(() => {
+    if (!terminalWriter) return
+    return registerHookTerminalWriter(data => terminalWriter.write(data))
+  }, [terminalWriter])
   const mainLoopModel = useMainLoopModel()
 
   // Note: standaloneAgentContext is initialized in main.tsx (via initialState) or

@@ -12,6 +12,24 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - Hooks：terminalSequence 和未信任文件夹的 agent hook 日志对齐官方
+
+### 变更内容
+
+#### 新增
+
+- hook 的 JSON 输出支持 `terminalSequence`：交互界面里把它写到终端，用来改标题或发桌面通知。只接受 OSC 0、1、2、9、99、777 和单独的 BEL，最多 4096 字节，OSC 9 的内容不能以数字开头（`9;4` 进度条除外）；不符合时整段丢弃并记 debug 日志。`-p` 和 SDK 下丢弃。`Expected schema` 提示块加上 `terminalSequence: "string (optional)"`，和官方 2.1.329 一致（#1472）。
+
+#### 修复
+
+- 未信任文件夹里跳过项目 agent 的 frontmatter hook 时，debug 日志补上官方的后半句：在该文件夹运行一次 Claude Code 并接受信任框，或在全局配置里把这个项目的 `hasTrustDialogAccepted` 设为 `true`（#1472）。
+
+### 测试覆盖
+
+- `src/utils/hooks/terminalSequence.test.ts`：允许的 OSC 和 BEL 按终端重建（kitty、tmux），内容里的控制字符去掉，OSC 9 进度条放行、其他数字开头拒绝，超长、未结束、夹带其他转义、不在白名单的序列整段拒绝，写入只交给最后注册的界面（#1472）。
+- `src/utils/hooks.sourceScope.test.ts`：对话中和对话外的 hook 返回的 `terminalSequence` 被写出，被拒的只记日志；`src/utils/hooks.validation.test.ts`：提示块含 `terminalSequence`（#1472）。
+- `src/tools/AgentTool/runAgent.frontmatterHooksTrust.test.ts`：跳过日志带上如何信任文件夹，名字里的控制字符换成空格；`src/utils/model/modelSwitchHooks.test.ts`：阻断原因里的字素清理后保持完整（#1472）。
+
 ## 2026-11-27 - claude reset-identity 不改写其他 profile 里读不了的 .claude.json
 
 ### 变更内容

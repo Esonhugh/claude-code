@@ -494,6 +494,17 @@ function fixture() {
       )
     },
   )
+  dependencies['./hooks/terminalSequence.js'] = evaluate(
+    './hooks/terminalSequence.ts',
+    (name) => {
+      if (name === 'buffer') return require('node:buffer')
+      if (name.endsWith('debug.js')) return dependencies['./debug.js']
+      if (name.endsWith('termio/ansi.js')) return require('../ink/termio/ansi.js')
+      if (name.endsWith('termio/osc.js')) return require('../ink/termio/osc.js')
+      if (name.endsWith('env.js')) return { env: { terminal: 'xterm' } }
+      throw new Error(`Unexpected terminal sequence dependency: ${name}`)
+    },
+  )
   const hooks = evaluate(
     './hooks.ts',
     (name) =>
@@ -531,6 +542,7 @@ function fixture() {
   }
   return {
     hooks,
+    terminal: dependencies['./hooks/terminalSequence.js'] as typeof import('./hooks/terminalSequence.js'),
     snapshot,
     settings,
     registered,
@@ -2189,6 +2201,43 @@ describe('model switch hooks', () => {
     ).toEqual(['now on model-b'])
     expect(f.calls[0]?.input.hook_event_name).toBe('PostModelSwitch')
   })
+})
+
+// Official 2.1.329 `boe`/`X5e`: an allowed terminalSequence reaches the terminal, anything else only the debug log.
+test('a hook in a turn writes its terminalSequence to the terminal', async () => {
+  const f = fixture()
+  const written: string[] = []
+  const unregister = f.terminal.registerHookTerminalWriter(data => written.push(data))
+  try {
+    f.add('userSettings', 'UserPromptSubmit', 'notify')
+    f.add('userSettings', 'UserPromptSubmit', 'clipboard')
+    f.commands.set('notify', { terminalSequence: '\x1b]777;notify;Claude;done\x1b\\\x07' })
+    f.commands.set('clipboard', { terminalSequence: '\x1b]52;c;aGk=\x07' })
+    await collect(f.hooks.executeUserPromptSubmitHooks('hello', 'default', f.context))
+  } finally {
+    unregister()
+  }
+  expect(written).toEqual(['\x1b]777;notify;Claude;done\x07\x07'])
+  expect(f.logs).toContain('Hook UserPromptSubmit (UserPromptSubmit) returned a terminalSequence that was rejected by the allowlist (only OSC 0/1/2/9/99/777 and BEL are permitted, and OSC 9 bodies may not begin with a digit unless in the 9;4 progress form)')
+})
+
+test('a hook outside a turn writes its terminalSequence right away', async () => {
+  const f = fixture()
+  const written: string[] = []
+  const unregister = f.terminal.registerHookTerminalWriter(data => written.push(data))
+  try {
+    f.addHook('userSettings', 'DirectoryAdded', { type: 'command', command: 'title' }, 'slash_command')
+    f.addHook('userSettings', 'DirectoryAdded', { type: 'command', command: 'cwd' }, 'slash_command')
+    f.commands.set('title', { terminalSequence: '\x1b]2;indexing\x07' })
+    f.commands.set('cwd', { terminalSequence: '\x1b]7;file:///etc\x07' })
+    await f.hooks.executeDirectoryAddedHooks('/work/extra', 'slash_command')
+  } finally {
+    unregister()
+  }
+  expect(written).toEqual(['\x1b]2;indexing\x07'])
+  expect(f.logs.filter(log => log.includes('was rejected by the allowlist'))).toEqual([
+    'Hook DirectoryAdded:slash_command returned a terminalSequence that was rejected by the allowlist (only OSC 0/1/2/9/99/777 and BEL are permitted, and OSC 9 bodies may not begin with a digit unless in the 9;4 progress form)',
+  ])
 })
 
 test('DirectoryAdded hooks receive the directory and match on source', async () => {

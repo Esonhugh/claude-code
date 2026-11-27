@@ -62,6 +62,8 @@ import type {
 } from '../../types/message.js'
 import { createAttachmentMessage, getDeferredToolsDeltaAttachment } from '../../utils/attachments.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
+import { getProjectPathForConfig } from '../../utils/config.js'
+import { getGlobalClaudeFile } from '../../utils/env.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -454,7 +456,7 @@ export function agentFrontmatterHooksAllowed(
     return true
   }
   logForDebugging(
-    `Skipping frontmatter hooks for agent '${agentDefinition.agentType}': the folder its definition file came from is not trusted (source: ${agentDefinition.source})`,
+    `Skipping frontmatter hooks for agent '${agentDefinition.agentType.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, ' ')}': the folder its definition file came from is not trusted (source: ${agentDefinition.source}). Run Claude Code in that folder once and accept the trust dialog, or set projects[${JSON.stringify(getProjectPathForConfig())}].hasTrustDialogAccepted: true in ${getGlobalClaudeFile()}.`,
     { level: 'error' },
   )
   return false
