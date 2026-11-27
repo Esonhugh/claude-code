@@ -46,3 +46,12 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
     return false
   }
 }
+
+/**
+ * The session talks to Anthropic's own API: the first-party provider and a
+ * first-party base URL. Data collection and server-delivered config that only
+ * apply to Anthropic accounts check this before calling Anthropic.
+ */
+export function isFirstPartyAnthropicSession(): boolean {
+  return getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+}

@@ -9,7 +9,7 @@ import { getClaudeAIOAuthTokens } from 'src/utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isSafeMode } from 'src/utils/envUtils.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import { isFirstPartyAnthropicSession } from 'src/utils/model/providers.js'
 import { clearMcpAuthCache } from './client.js'
 import { normalizeNameForMCP } from './normalization.js'
 import type { ScopedMcpServerConfig } from './types.js'
@@ -45,8 +45,8 @@ export const fetchClaudeAIMcpConfigsIfEligible = memoize(
         return {}
       }
 
-      if (getAPIProvider() === 'openai') {
-        logForDebugging('[claudeai-mcp] Disabled for OpenAI provider')
+      if (!isFirstPartyAnthropicSession()) {
+        logForDebugging('[claudeai-mcp] Disabled outside a first-party Anthropic session')
         return {}
       }
 

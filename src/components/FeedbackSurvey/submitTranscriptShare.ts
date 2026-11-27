@@ -7,6 +7,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { getAuthHeaders, getUserAgent } from '../../utils/http.js'
 import { normalizeMessagesForAPI } from '../../utils/messages.js'
+import { isFirstPartyAnthropicSession } from '../../utils/model/providers.js'
 import {
   extractAgentIdsFromMessages,
   getTranscriptPath,
@@ -32,7 +33,7 @@ export async function submitTranscriptShare(
   trigger: TranscriptShareTrigger,
   appearanceId: string,
 ): Promise<TranscriptShareResult> {
-  if (isFeedbackSurveyDisabled()) {
+  if (isFeedbackSurveyDisabled() || !isFirstPartyAnthropicSession()) {
     return { success: false }
   }
   try {
