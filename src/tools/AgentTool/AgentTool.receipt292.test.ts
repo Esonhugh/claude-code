@@ -42,6 +42,7 @@ test('async and completed receipts drop the SendMessage hint when the agent cann
   const done = (canContinueAgent: boolean) => (AgentTool.mapToolResultToToolResultBlockParam({status: 'completed' as const, prompt: 'p',
     agentId: 'owned-agent', agentType: 'general-purpose', content: [{type: 'text', text: 'ok'}], totalToolUseCount: 1, totalDurationMs: 2,
     totalTokens: 3, usage: {} as never, canContinueAgent} as never, 't').content as {text: string}[]).at(-1)!.text
-  expect(done(true)).toStartWith("agentId: owned-agent (use SendMessage with to: 'owned-agent', summary: '<5-10 word recap>' to continue this agent)\n<usage>")
-  expect(done(false)).toStartWith('agentId: owned-agent\n<usage>')
+  // The framed report and its trailer share one block.
+  expect(done(true)).toContain("\n  ok\nagentId: owned-agent (use SendMessage with to: 'owned-agent', summary: '<5-10 word recap>' to continue this agent)\n<usage>")
+  expect(done(false)).toContain('\n  ok\nagentId: owned-agent\n<usage>')
 })

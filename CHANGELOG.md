@@ -12,6 +12,32 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-11-27 - Agent 结果按官方 hand-back 格式交回，前台 agent 的 SDK 通知带报告，Workflow 详情面板适配全屏 modal
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 父 agent 读到的普通 Agent 结果改为与官方 2.1.329 一样的单块 hand-back 格式：harness note 缩进放在上方，下面是 `[Subagent hand-back]` frame 和逐行缩进的报告，agentId/usage trailer 在同一块里。空报告显示 `(Subagent completed but returned no output.)`。门控是 `tengu_melodic_wolf`，默认开启；设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 时所有 Agent 结果都是原文，包括 SubagentHandback 交回的报告和后台通知里的结果（#1520）。
+
+#### 新功能
+
+- 前台 agent 的结果上方加 `<tools-used-before-summary>` 提示，列出子 agent 用过、父 agent 还没见过的工具，嵌套 agent 用过的也算。workflow 的 `agent()` 和脚本内部调用不加（#1520）。
+
+#### 修复
+
+- 轮数上限提示和 auto mode 审查警告改为 frame 上方的 harness note，不再混进报告正文。没交付报告的 hand-back 只显示提示（#1520）。
+- 前台 agent 的 SDK `task_notification` 改在报告确定后发出，summary 是父 agent 读到的报告，出错时是错误信息；`task_updated` 仍立即发出（#1520）。
+- Workflow 详情面板在全屏 modal 里按 modal 的宽高排版，分隔线交给 modal 画，去掉 Dialog 多出的空行，不再折行，按键提示也不再被挤出屏幕（#1520）。
+
+### 测试覆盖
+
+- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：单块格式、tools-used 过滤与跳过、嵌套 note、workflow 调用、空报告、withheld、门控关闭（含 SubagentHandback 交回的报告）（#1520）。
+- `src/tools/AgentTool/agentReport.foreground.test.ts`、`AgentTool.receipt292.test.ts`、`runAgent.handback.test.ts`：前台通知的时机和 summary，trailer 位置（#1520）。
+- `src/utils/subagentHandback.test.ts`：门控关闭时 SubagentHandback 交回的报告读作原文，警告在第一行（#1520）。
+- `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
+- 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 114 个测试文件逐个运行（292 项通过），与 dev `f877d82e` 基线（同一批文件中已有的 113 个，283 项通过）相比没有新增失败。
+
 ## 2026-11-27 - 非 first-party 会话不再向 Anthropic 发起信息采集和配置拉取
 
 ### 变更内容
