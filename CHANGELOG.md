@@ -25,6 +25,57 @@
 
 - `src/commands/immediate.test.ts`：去掉 `/feedback` 后其余命令仍在运行中立即打开；删除随命令一起移除的 `src/commands/feedback/index.test.ts` 和 `submitTranscriptShare.test.ts`（#1533）。
 
+## 2026-11-27 - 插件命令对齐官方：validate 检查 marketplace 条目、重复安装保留记录、plugin list 显示读取目录和覆盖提示
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 对 marketplace 运行 `claude plugin validate` 时，各本地条目（`source` 以 `./` 开头）的 `plugin.json` 也会校验，结果的路径前缀为 `plugins[i] plugin.json → `；条目的 `plugin.json` 有错时整体校验失败。缺少描述的 warning 路径由 `metadata.description` 改为 `description`（#1521）。
+
+#### 新功能
+
+- `claude plugin list` 对直接从 marketplace 目录读取的插件显示 `Read from: <目录>`，版本取该目录 `plugin.json` 里的版本；user 设置禁用、但其他设置来源又启用的插件显示 `Note: Disabled in ~/.claude/settings.json but still loads — ...`。`--json` 增加 `readFromFolder`、`folderVersion`、`notes`、`projectEnabled` 字段（#1521）。
+- `claude plugin marketplace remove` 列出随之卸载的插件，并说明重新使用的方法（#1521）。
+
+#### 修复
+
+- 安装一个在该 scope 已启用、安装记录和文件都在的插件时，不再重新安装和重写记录，返回 `Plugin "<id>" is already installed (scope: <scope>)`；原本是作为依赖自动安装的，只改为手动安装并注明 `marked as manually installed`。直接从 marketplace 目录读取的插件附带读取目录，以及目录版本与记录版本不同时更新记录的命令。缺少的依赖这时会补装，输出末尾附 `(+ N dependency: …)`，装不上的附 `— N dependency still unresolved: …`，所属 marketplace 没添加时再问 `Is the "<市场>" marketplace added?`；依赖已安装但未启用时仍完整重装（#1521）。
+- 在指定的 marketplace 里找不到插件时，提示本地副本可能过期，并给出 `marketplace update` 命令（#1521）。
+
+### 测试覆盖
+
+- `src/utils/plugins/validatePlugin.test.ts` 覆盖 marketplace 条目 `plugin.json` 损坏、缺字段和不存在三种情况。
+- `src/services/plugins/pluginOperations.dependencies.test.ts` 覆盖重复安装去掉 auto 标记、不改记录和读取目录提示，以及已安装插件补装缺少的依赖（含 project 范围）、marketplace 没有列出这个依赖时的 `still unresolved` 输出、依赖所属 marketplace 未添加时的提示、依赖被禁用时完整重装；`src/utils/plugins/dependencyResolver.test.ts` 覆盖 `still unresolved` 后缀的单复数、`and N more.` 和两种 marketplace 提示。
+- `src/cli/handlers/plugins.list.test.ts` 覆盖 `plugin list` 文本与 JSON 输出、找不到插件时的提示和 `marketplace remove` 的输出。
+- 66 个插件相关测试文件与 origin/dev 对比运行，没有新增失败；补装依赖的改动之后，`src/services/plugins`、`src/utils/plugins` 和 `src/cli/handlers/plugins*` 下 51 个测试文件 306 项通过，失败的 5 项（`commandSource`、`managedPlugins`、`refresh`）在 dev `f877d82e` 上同样失败。
+
+## 2026-11-27 - Agent 结果按官方 hand-back 格式交回，前台 agent 的 SDK 通知带报告，Workflow 详情面板适配全屏 modal
+
+### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 父 agent 读到的普通 Agent 结果改为与官方 2.1.329 一样的单块 hand-back 格式：harness note 缩进放在上方，下面是 `[Subagent hand-back]` frame 和逐行缩进的报告，agentId/usage trailer 在同一块里。空报告显示 `(Subagent completed but returned no output.)`。门控是 `tengu_melodic_wolf`，默认开启；设 `CLAUDE_CODE_HANDBACK_PROVENANCE=0` 时所有 Agent 结果都是原文，包括 SubagentHandback 交回的报告和后台通知里的结果（#1520）。
+
+#### 新功能
+
+- 前台 agent 的结果上方加 `<tools-used-before-summary>` 提示，列出子 agent 用过、父 agent 还没见过的工具，嵌套 agent 用过的也算。workflow 的 `agent()` 和脚本内部调用不加（#1520）。
+
+#### 修复
+
+- 轮数上限提示和 auto mode 审查警告改为 frame 上方的 harness note，不再混进报告正文。没交付报告的 hand-back 只显示提示（#1520）。
+- 前台 agent 的 SDK `task_notification` 改在报告确定后发出，summary 是父 agent 读到的报告，出错时是错误信息；`task_updated` 仍立即发出（#1520）。
+- Workflow 详情面板在全屏 modal 里按 modal 的宽高排版，分隔线交给 modal 画，去掉 Dialog 多出的空行，不再折行，按键提示也不再被挤出屏幕（#1520）。
+
+### 测试覆盖
+
+- `src/tools/AgentTool/AgentTool.handbackFrame.test.ts`：单块格式、tools-used 过滤与跳过、嵌套 note、workflow 调用、空报告、withheld、门控关闭（含 SubagentHandback 交回的报告）（#1520）。
+- `src/tools/AgentTool/agentReport.foreground.test.ts`、`AgentTool.receipt292.test.ts`、`runAgent.handback.test.ts`：前台通知的时机和 summary，trailer 位置（#1520）。
+- `src/utils/subagentHandback.test.ts`：门控关闭时 SubagentHandback 交回的报告读作原文，警告在第一行（#1520）。
+- `src/components/tasks/WorkflowDetailDialog.layout.test.tsx`：80/120/180 列下独立与 modal 两种布局的宽度、行序和高度（#1520）。
+- 对照：haiku headless 下 6 个场景（前台、后台、嵌套、workflow、Explore、SendMessage 续跑）与官方 2.1.329 各跑 3 到 4 轮，最终版本的结果和 tool_result 结构一致；Agent 相关的 114 个测试文件逐个运行（292 项通过），与 dev `f877d82e` 基线（同一批文件中已有的 113 个，283 项通过）相比没有新增失败。
+
 ## 2026-11-27 - 非 first-party 会话不再向 Anthropic 发起信息采集和配置拉取
 
 ### 变更内容

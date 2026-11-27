@@ -35,7 +35,7 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 6 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 8 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -63,6 +63,9 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
     cycb: ['cyca'],
     lone: undefined,
     two: ['base', 'lone'],
+    far: ['x@absent'],
+    proj: ['projdep'],
+    projdep: undefined,
   }
   for (const [name, dependencies] of Object.entries(names)) {
     mkdirSync(join(market, name, '.claude-plugin'), { recursive: true })
@@ -177,8 +180,23 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
   })
 
   test('installing an auto-installed dependency by name makes it a manual install', async () => {
-    expect((await ops.installPluginOp('base@mk', 'user')).success).toBe(true)
+    const record = () => {
+      installed.clearInstalledPluginsCache()
+      const { auto: _auto, ...rest } = installed.loadInstalledPluginsFromDisk().plugins['base@mk']![0]!
+      return rest
+    }
+    const before = record()
+    const inPlace = ` \u2014 it loads in place from ${join(market, 'base')}, so edits there take effect at the next session start or /reload-plugins`
+    // As official 2.1.329: an install at a scope that already has it keeps the record.
+    expect(await ops.installPluginOp('base@mk', 'user')).toMatchObject({
+      success: true,
+      message: `Plugin "base@mk" is already installed (scope: user) \u2014 marked as manually installed${inPlace}`,
+    })
     expect(auto()['base@mk']).toBe(false)
+    expect((await ops.installPluginOp('base@mk', 'user')).message).toBe(
+      `Plugin "base@mk" is already installed (scope: user)${inPlace}`,
+    )
+    expect(record()).toEqual(before)
     expect((await ops.uninstallPluginOp('child@mk', 'user')).message).toBe(
       'Successfully uninstalled plugin: child (scope: user)',
     )
@@ -204,5 +222,59 @@ if (!process.env.PLUGIN_OPS_DEPENDENCIES_TEST_CHILD) {
     expect(auto()['cycb@mk']).toBe(true)
     loader.clearPluginCache()
     expect((await loader.loadAllPlugins()).errors).toEqual([])
+  })
+
+  test('installing a plugin already in place fetches only its missing dependencies; a disabled one reinstalls it', async () => {
+    const loader = await import('../../utils/plugins/pluginLoader.js')
+    const settings = await import('../../utils/settings/settings.js')
+    const inPlace = (name: string) => ` \u2014 it loads in place from ${join(market, name)}, so edits there take effect at the next session start or /reload-plugins`
+    // As official 2.1.329 `OBs`/`xPt`: a dependency that is not installed is
+    // installed beside the plugin, which is left as it is.
+    expect((await ops.uninstallPluginOp('cycb@mk', 'user')).success).toBe(true)
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('cyca@mk', 'user')).message).toBe(
+      `Plugin "cyca@mk" is already installed (scope: user)${inPlace('cyca')} (+ 1 dependency: cycb)`,
+    )
+    expect(enabled()['cycb@mk']).toBe(true)
+    expect(auto()['cycb@mk']).toBe(true)
+
+    // One no marketplace lists stays unresolved.
+    settings.updateSettingsForSource('userSettings', { enabledPlugins: { ...enabled(), 'ghost@mk': true } })
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('ghost@mk', 'user')).message).toBe(
+      `Plugin "ghost@mk" is already installed (scope: user)${inPlace('ghost')} \u2014 1 dependency still unresolved: nope@mk.`,
+    )
+
+    // A dependency that is installed but disabled takes the full install.
+    expect((await ops.installPluginOp('child@mk', 'user')).success).toBe(true)
+    settings.updateSettingsForSource('userSettings', { enabledPlugins: { ...enabled(), 'base@mk': false } })
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('child@mk', 'user')).message).toBe(
+      'Successfully installed plugin: child@mk (scope: user) (+ 1 dependency: base)',
+    )
+    expect(enabled()['base@mk']).toBe(true)
+  })
+
+  test('an already-installed plugin asks for a missing marketplace and fills dependencies at its own scope', async () => {
+    const loader = await import('../../utils/plugins/pluginLoader.js')
+    const inPlace = (name: string, scope = '') => ` \u2014 it loads in place from ${join(market, name)}, so edits there take effect at the next session start or /reload-plugins${scope}`
+    expect((await ops.installPluginOp('far@mk', 'user')).success).toBe(true)
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('far@mk', 'user')).message).toBe(
+      `Plugin "far@mk" is already installed (scope: user)${inPlace('far')} \u2014 1 dependency still unresolved: x@absent. Is the "absent" marketplace added?`,
+    )
+
+    const project = () => JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf-8')).enabledPlugins
+    expect((await ops.installPluginOp('proj@mk', 'project')).message).toBe(
+      'Successfully installed plugin: proj@mk (scope: project) (+ 1 dependency: projdep)',
+    )
+    expect((await ops.uninstallPluginOp('projdep@mk', 'project')).success).toBe(true)
+    expect(project()['projdep@mk']).toBeUndefined()
+    loader.clearPluginCache()
+    expect((await ops.installPluginOp('proj@mk', 'project')).message).toBe(
+      `Plugin "proj@mk" is already installed (scope: project)${inPlace('proj')} (+ 1 dependency: projdep)`,
+    )
+    expect(project()['projdep@mk']).toBe(true)
+    expect(enabled()['projdep@mk']).toBeUndefined()
   })
 }

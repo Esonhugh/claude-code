@@ -18,7 +18,7 @@ import {
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
-import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
+import type { LoadedPlugin, PluginError, PluginManifest } from '../../types/plugin.js'
 import { isENOENT, toError } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { logError } from '../../utils/log.js'
@@ -30,13 +30,16 @@ import {
   findOrphanedAutoDependencies,
   findReverseDependents,
   findTransitiveReverseDependents,
+  formatDependencyCountSuffix,
   formatReverseDependentsSuffix,
+  formatUnresolvedDependencySuffix,
   getEnabledPluginIdsForScope,
   resolveEnableClosure,
 } from '../../utils/plugins/dependencyResolver.js'
 import {
   loadInstalledPluginsFromDisk,
   loadInstalledPluginsV2,
+  markPluginInstallationManual,
   removePluginInstallation,
   updateInstallationPathOnDisk,
 } from '../../utils/plugins/installedPluginsManager.js'
@@ -44,6 +47,7 @@ import {
   getMarketplace,
   getPluginById,
   loadKnownMarketplacesConfig,
+  loadKnownMarketplacesConfigSafe,
 } from '../../utils/plugins/marketplaceManager.js'
 import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { getPluginIdsForDataCleanup } from '../../utils/plugins/pluginFolderCollision.js'
@@ -54,6 +58,7 @@ import {
 } from '../../utils/plugins/pluginIdentifier.js'
 import {
   formatResolutionError,
+  installMissingDependencies,
   installResolvedPlugin,
   validatePathWithinBase,
 } from '../../utils/plugins/pluginInstallationHelpers.js'
@@ -63,6 +68,7 @@ import {
   getVersionedCachePath,
   getVersionedZipCachePath,
   loadAllPlugins,
+  getPluginReadFromFolder,
   loadAllPluginsCacheOnly,
   loadPluginManifest,
 } from '../../utils/plugins/pluginLoader.js'
@@ -71,6 +77,7 @@ import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.
 import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
 import type {
   CommandPluginSource,
+  PluginInstallationEntry,
   PluginMarketplaceEntry,
   PluginScope,
 } from '../../utils/plugins/schemas.js'
@@ -357,6 +364,85 @@ type CommandSourceConfirmation = {
   ) => Promise<boolean>
 }
 
+type DependencyError = Extract<PluginError, { type: 'dependency-unsatisfied' }>
+
+/**
+ * Official 2.1.329 `OBs`: the installation that leaves installing `pluginId`
+ * at `scope` nothing to do but fetch missing dependencies. The scope's
+ * settings enable it, its record there points at files that exist, and the
+ * load reports no dependency of it that is anything but not installed.
+ * Returns the record and those dependency errors.
+ */
+async function findInstallationAtScope(
+  pluginId: string,
+  entry: PluginMarketplaceEntry,
+  scope: InstallableScope,
+): Promise<{ record: PluginInstallationEntry; dependencyErrors: DependencyError[] } | undefined> {
+  const enabled = getEnabledPluginIdsForScope(scopeToSettingSource(scope))
+  if (!enabled.has(pluginId)) return undefined
+  const projectPath = scope === 'user' ? undefined : getOriginalCwd()
+  const record = loadInstalledPluginsFromDisk().plugins[pluginId]?.find(
+    inst => inst.scope === scope && inst.projectPath === projectPath,
+  )
+  if (!record || !getFsImplementation().existsSync(record.installPath)) return undefined
+  if (!(await readManifest(record.installPath, entry))) return undefined
+  const dependencyErrors = (await loadAllPluginsCacheOnly()).errors.filter(
+    (error): error is DependencyError =>
+      error.type === 'dependency-unsatisfied' && error.source === pluginId,
+  )
+  return dependencyErrors.every(error => error.reason === 'not-found')
+    ? { record, dependencyErrors }
+    : undefined
+}
+
+/** Official 2.1.329 `xPt`: install the missing dependencies, and say what was installed and what is still missing. */
+async function installMissingDependenciesNote(errors: readonly DependencyError[]): Promise<string> {
+  if (errors.length === 0) return ''
+  const missing = errors.map(error => error.dependency)
+  const installed = await installMissingDependencies(errors)
+  const unresolved = missing.filter(dep => !installed.includes(dep))
+  const known = unresolved.length > 0 ? await loadKnownMarketplacesConfigSafe() : {}
+  const marketplaceMissing = unresolved.filter(dep => {
+    const marketplace = parsePluginIdentifier(dep).marketplace
+    return marketplace === undefined || !known[marketplace]
+  })
+  return `${formatDependencyCountSuffix(installed)}${formatUnresolvedDependencySuffix(unresolved, marketplaceMissing)}`
+}
+
+async function readManifest(
+  pluginPath: string,
+  entry: PluginMarketplaceEntry,
+): Promise<PluginManifest | undefined> {
+  try {
+    return await loadPluginManifest(
+      join(pluginPath, '.claude-plugin', 'plugin.json'),
+      entry.name,
+      typeof entry.source === 'string' ? entry.source : 'marketplace',
+    )
+  } catch {
+    return undefined
+  }
+}
+
+/** Official 2.1.329's suffix for an already-installed plugin read in place from its marketplace folder. */
+async function inPlaceNote(
+  pluginId: string,
+  entry: PluginMarketplaceEntry,
+  scope: InstallableScope,
+  installedVersion: string | undefined,
+): Promise<string> {
+  const folder = await getPluginReadFromFolder(pluginId)
+  if (folder === undefined) return ''
+  const folderVersion = (await readManifest(folder, entry))?.version
+  const update = pluginCliCommand('update', pluginId)
+  const command = update && (scope === 'user' ? update : `${update} --scope ${scope}`)
+  const rerecord =
+    command && folderVersion !== undefined && installedVersion !== undefined && folderVersion !== installedVersion
+      ? `; \`${command}\` re-records its version, ${installedVersion} to ${folderVersion}`
+      : ''
+  return ` \u2014 it loads in place from ${folder}, so edits there take effect at the next session start or /reload-plugins${rerecord}`
+}
+
 export async function installPluginOp(
   plugin: string,
   scope: InstallableScope = 'user',
@@ -402,14 +488,35 @@ export async function installPluginOp(
     const location = marketplaceName
       ? `marketplace "${marketplaceName}"`
       : 'any configured marketplace'
+    // As official 2.1.329: a named marketplace's copy may predate the plugin.
+    const update = marketplaceName && pluginCliCommand('marketplace update', marketplaceName)
+    const stale = marketplaceName
+      ? `. Your local copy may be out of date${update ? ` \u2014 try \`${update}\`` : ' \u2014 update it from /plugin > Marketplaces'}.`
+      : ''
     return {
       success: false,
-      message: `Plugin "${pluginName}" not found in ${location}`,
+      message: `Plugin "${pluginName}" not found in ${location}${stale}`,
     }
   }
 
   const entry = foundPlugin
   const pluginId = `${entry.name}@${foundMarketplace}`
+
+  // As official 2.1.329: a plugin already in place at this scope is left as
+  // it is, apart from an auto-installed one becoming a manual install.
+  const current = await findInstallationAtScope(pluginId, entry, scope)
+  if (current) {
+    const projectPath = scope === 'user' ? undefined : getOriginalCwd()
+    const madeManual = markPluginInstallationManual(pluginId, scope, projectPath)
+    const dependencies = await installMissingDependenciesNote(current.dependencyErrors)
+    return {
+      success: true,
+      message: `Plugin "${pluginId}" is already installed (scope: ${scope})${madeManual ? ' \u2014 marked as manually installed' : ''}${await inPlaceNote(pluginId, entry, scope, current.record.version)}${dependencies}`,
+      pluginId,
+      pluginName: entry.name,
+      scope,
+    }
+  }
 
   let commandSourceReviewed = false
   if (isCommandPluginSource(entry.source) && confirmCommandSource) {

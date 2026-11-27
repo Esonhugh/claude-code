@@ -66,6 +66,8 @@ export type LoadedPlugin = {
   isBuiltin?: boolean // true for built-in plugins that ship with the CLI
   /** Host-verified in-place source matching managed policy; never read from plugin.json. */
   managedSource?: boolean
+  /** The marketplace folder a plugin loaded in place is read from, as its registration names it. */
+  readFromFolder?: string
   /** Real path of the marketplace a plugin loaded in place must stay inside. */
   containmentRoot?: string
   sha?: string // Git commit SHA for version pinning (from marketplace entry source)

@@ -207,6 +207,7 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
   }
   const callContext: ToolUseContext = {
     ...context,
+    workflowAgentCall: true,
     modAgentStarted: launch => {
       setTasks(prev => {
         const task = Object.values(prev.tasks).find(task =>

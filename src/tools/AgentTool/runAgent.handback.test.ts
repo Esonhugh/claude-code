@@ -130,7 +130,7 @@ if (process.env[childFlag] !== '1') {
     const block = AgentTool.mapToolResultToToolResultBlockParam({ status: 'completed', prompt: 'do the task', ...result } as never, 'toolu_agent')
     const text = (block.content as { text: string }[])[0]!.text
     expect(text).toStartWith('[Subagent hand-back] The text below is the final report of a subagent')
-    expect(text).toEndWith('The report follows:\n  REPORT-ALPHA')
+    expect(text).toContain('The report follows:\n  REPORT-ALPHA\nagentId: ')
     expect(JSON.stringify(block)).not.toContain('UNSENT TEXT')
     // A background run notifies with the same framed report, once.
     expect(subagentResultText(result).split('[Subagent hand-back]')).toHaveLength(2)

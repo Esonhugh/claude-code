@@ -1210,6 +1210,25 @@ export async function cachePlugin(
  */
 
 /**
+ * The marketplace folder an installed plugin is read from in place, as the
+ * loader would pick it; undefined for a plugin read from the cache.
+ */
+export async function getPluginReadFromFolder(pluginId: string): Promise<string | undefined> {
+  const marketplaceName = parsePluginIdentifier(pluginId).marketplace
+  if (!marketplaceName) return undefined
+  try {
+    const knownMarketplaces = await loadKnownMarketplacesConfig()
+    const inPlace = await getInPlacePluginSource(
+      pluginId, getSettingsForSource('policySettings'), knownMarketplaces[marketplaceName],
+      getTrustedExtraKnownMarketplaces()?.[marketplaceName]?.source,
+    )
+    return inPlace?.folder
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Loads and validates a plugin manifest from a JSON file.
  *
  * The manifest provides metadata about the plugin including name, version,
@@ -2181,7 +2200,10 @@ async function loadPluginsFromMarketplaces({
           inPlace.entry, pluginId, enabledValue === true || Array.isArray(enabledValue), errors, inPlace.path, contractOnly,
           undefined, inPlace.root,
         )
-        if (plugin) plugin.managedSource = inPlace.managedSource
+        if (plugin) {
+          plugin.managedSource = inPlace.managedSource
+          plugin.readFromFolder = inPlace.folder
+        }
         return plugin
       }
 

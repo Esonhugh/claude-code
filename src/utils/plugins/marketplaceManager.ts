@@ -2043,7 +2043,9 @@ export async function addMarketplaceSource(
  * @param name - The marketplace name to remove
  * @throws If marketplace with given name is not found
  */
-export async function removeMarketplaceSource(name: string): Promise<void> {
+export async function removeMarketplaceSource(
+  name: string,
+): Promise<{ removedPluginIds: string[] }> {
   const config = await loadKnownMarketplacesConfig()
 
   if (!config[name]) {
@@ -2156,6 +2158,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
   }
 
   logForDebugging(`Removed marketplace source: ${name}`)
+  return { removedPluginIds }
 }
 
 /**
