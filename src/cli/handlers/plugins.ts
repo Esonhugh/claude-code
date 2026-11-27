@@ -64,7 +64,10 @@ import {
   redactOptionValues,
   unsetPluginOptions,
 } from '../../utils/plugins/pluginConfigure.js'
-import { updateSettingsForSource } from '../../utils/settings/settings.js'
+import {
+  getSettingsForSource,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import {
   clearPluginOptionsCache,
@@ -83,6 +86,7 @@ import {
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
 import {
+  getPluginReadFromFolder,
   loadAllPlugins,
   loadAllPluginsCacheOnly,
   loadPluginsForContractValidation,
@@ -665,9 +669,11 @@ export async function pluginListHandler(options: {
   logEvent('tengu_plugin_list_command', {})
 
   const installedData = loadInstalledPluginsV2()
-  const { getPluginEditableScopes } = await import(
-    '../../utils/plugins/pluginStartupCheck.js'
-  )
+  const {
+    formatIneffectiveDisableNote,
+    getIneffectiveUserDisables,
+    getPluginEditableScopes,
+  } = await import('../../utils/plugins/pluginStartupCheck.js')
   const enabledPlugins = getPluginEditableScopes()
 
   const pluginIds = Object.keys(installedData.plugins)
@@ -693,22 +699,47 @@ export async function pluginListHandler(options: {
   const inlineLoadErrors = loadErrors.filter(
     e => e.source.endsWith('@inline') || e.source.startsWith('inline['),
   )
+  // Create a map of plugin source to loaded plugin for quick lookup
+  const loadedPluginMap = new Map(allLoadedPlugins.map(p => [p.source, p]))
+
+  // As official 2.1.329: the folder a plugin is read from in place, and a
+  // note for a user-settings disable that another source overrides.
+  const readFromFolders = new Map<string, string | undefined>()
+  for (const pluginId of pluginIds) {
+    const loaded = loadedPluginMap.get(pluginId)
+    readFromFolders.set(
+      pluginId,
+      loaded ? loaded.readFromFolder : await getPluginReadFromFolder(pluginId),
+    )
+  }
+  const loadedEnabledIds = new Set(loadedEnabled.map(p => p.source))
+  const pluginNotes = new Map<string, string[]>()
+  for (const [pluginId, overriddenBy] of getIneffectiveUserDisables()) {
+    if (loadedEnabledIds.has(pluginId)) {
+      pluginNotes.set(pluginId, [formatIneffectiveDisableNote(overriddenBy)])
+    }
+  }
+  const folderVersion = (pluginId: string) =>
+    readFromFolders.get(pluginId) === undefined
+      ? undefined
+      : loadedPluginMap.get(pluginId)?.manifest.version
 
   if (options.json) {
-    // Create a map of plugin source to loaded plugin for quick lookup
-    const loadedPluginMap = new Map(allLoadedPlugins.map(p => [p.source, p]))
-
     const plugins: Array<{
       id: string
       version: string
       scope: string
       enabled: boolean
       installPath: string
+      readFromFolder?: string
+      folderVersion?: string
       installedAt?: string
       lastUpdated?: string
       projectPath?: string
       mcpServers?: Record<string, unknown>
       errors?: string[]
+      notes?: string[]
+      projectEnabled?: boolean
     }> = []
 
     for (const pluginId of pluginIds.sort()) {
@@ -745,11 +776,18 @@ export async function pluginListHandler(options: {
           scope: installation.scope,
           enabled: enabledPlugins.has(pluginId),
           installPath: installation.installPath,
+          readFromFolder: readFromFolders.get(pluginId),
+          folderVersion: folderVersion(pluginId),
           installedAt: installation.installedAt,
           lastUpdated: installation.lastUpdated,
           projectPath: installation.projectPath,
           mcpServers,
           errors: pluginErrors.length > 0 ? pluginErrors : undefined,
+          notes: pluginNotes.get(pluginId),
+          projectEnabled:
+            getSettingsForSource('projectSettings')?.enabledPlugins?.[
+              pluginId
+            ] === true,
         })
       }
     }
@@ -899,13 +937,19 @@ export async function pluginListHandler(options: {
           : isEnabled
             ? `${figures.tick} enabled`
             : `${figures.cross} disabled`
-      const version = installation.version || 'unknown'
+      const readFromFolder = readFromFolders.get(pluginId)
+      const version =
+        folderVersion(pluginId) || installation.version || 'unknown'
       const scope = installation.scope
 
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${pluginId}`)
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Version: ${version}`)
+      if (readFromFolder !== undefined) {
+        // biome-ignore lint/suspicious/noConsole:: intentional console output
+        console.log(`    Read from: ${readFromFolder}`)
+      }
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Scope: ${scope}`)
       // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -913,6 +957,10 @@ export async function pluginListHandler(options: {
       for (const error of pluginErrors) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    Error: ${getPluginErrorMessage(error)}`)
+      }
+      for (const note of pluginNotes.get(pluginId) ?? []) {
+        // biome-ignore lint/suspicious/noConsole:: intentional console output
+        console.log(`    Note: ${note}`)
       }
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('')

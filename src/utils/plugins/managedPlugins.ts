@@ -74,7 +74,9 @@ export async function getInPlacePluginSource(
   if (child==='..' || child.startsWith(`..${sep}`) || isAbsolute(child) || !(await stat(path)).isDirectory()) return undefined
   const managedSource=policy?.enabledPlugins?.[pluginId]===true && policySource?.source==='directory' &&
     sameDirectory(source.path,location) && sameDirectory(source.path,policySource.path)
-  return {entry,path,source,managedSource,root}
+  // The folder as the registration names it, for `plugin list` and install to report.
+  const folder=join(location,entry.source)
+  return {entry,path,source,managedSource,root,folder}
 }
 
 /**
