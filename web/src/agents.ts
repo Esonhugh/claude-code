@@ -42,6 +42,9 @@ export type AgentTask = {
   subagentType?: string
   workflowName?: string
   toolUseId?: string
+  parentTaskId?: string | null
+  runId?: string
+  previousRuns?: string[]
   depth: number
   background?: boolean
   /** A teammate waiting for its next message (`task_updated` `is_idle`). */
@@ -137,6 +140,13 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
   if (!isObj(raw) || raw.type !== 'system') return tasks
   const id = str(raw.task_id)
   const existing = id ? tasks[id] : undefined
+  const runId = str(raw.run_id)
+  const currentRun = existing?.runId
+  const newRun = runId !== undefined && currentRun !== undefined && runId !== currentRun
+  // Fork-produced run ids sort by their padded start time. Also remember superseded opaque SDK ids.
+  const sortableRun = /^[a-z0-9]{9}-[a-f0-9]{8}$/
+  if (newRun && (existing?.previousRuns?.includes(runId) ||
+    (sortableRun.test(runId) && sortableRun.test(currentRun) && runId < currentRun))) return tasks
   const put = (patch: Partial<AgentTask>): Tasks => {
     if (!id) return tasks
     const base: AgentTask = existing ?? {
@@ -147,7 +157,10 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
       depth: 0,
       seq: Object.keys(tasks).length,
     }
-    return { ...tasks, [id]: settleWorkflow({ ...base, ...withoutUndefined(patch) }) }
+    return { ...tasks, [id]: settleWorkflow({ ...base,
+      ...(newRun && { parentTaskId: undefined, previousRuns: [...(base.previousRuns ?? []), currentRun] }),
+      ...(runId && { runId }),
+      ...withoutUndefined(patch) }) }
   }
   switch (raw.subtype) {
     case 'task_started':
@@ -156,11 +169,12 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
         description: str(raw.description) ?? '',
         title: str(raw.description),
         // A resumed task starts a new run.
-        status: 'running',
+        status: runId && runId === currentRun && existing && isFinished(existing) ? existing.status : 'running',
         subagentType: str(raw.subagent_type),
         workflowName: str(raw.workflow_name),
         toolUseId: str(raw.tool_use_id),
         depth: num(raw.spawn_depth) ?? 0,
+        parentTaskId: raw.parent_task_id === null ? null : str(raw.parent_task_id),
         background: raw.is_backgrounded === true ? true : undefined,
         error: undefined,
       })
@@ -192,6 +206,7 @@ export function reduceTasks(tasks: Tasks, raw: unknown): Tasks {
     }
     case 'task_notification':
       return put({
+        parentTaskId: raw.parent_task_id === null ? null : str(raw.parent_task_id),
         // A parked agent (waiting on its own background work) has not ended.
         status: raw.waiting === true ? undefined : str(raw.status),
         summary: str(raw.summary),

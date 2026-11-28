@@ -19,6 +19,7 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
   let killed = false
   let wasNotified = false
   let toolUseId: string | undefined
+  let parentTaskId: AgentId | undefined
   let description: string | undefined
   updateTaskState(taskId, setAppState, task => {
     if (task.status !== 'running' || !isLocalShellTask(task)) {
@@ -27,6 +28,7 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
     killed = true
     wasNotified = task.notified
     toolUseId = task.toolUseId
+    parentTaskId = task.agentId
     description = task.description
 
     try {
@@ -58,6 +60,7 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
   if (killed && !wasNotified) {
     emitTaskTerminatedSdk(taskId, 'stopped', {
       toolUseId,
+      parentTaskId,
       summary: description,
     })
   }

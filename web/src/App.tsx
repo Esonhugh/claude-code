@@ -53,6 +53,7 @@ import {
   controlRequest,
   currentTodos,
   MOD_ANSWERS,
+  mergeTaskNotes,
   type ModelOption,
   type ModPane,
   type PromptDecoration,
@@ -434,7 +435,7 @@ export function App() {
   const agentNotes = useMemo(
     () =>
       notesByItem(
-        (chat?.taskNotes ?? []).filter(note => {
+        mergeTaskNotes(chat?.taskNotes ?? []).filter(note => {
           const task = tasks?.[note.taskId]
           return task !== undefined && (canChat(task) || task.type === 'local_bash' || task.type === 'local_workflow') && task.depth <= 1
         }),

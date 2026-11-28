@@ -116,7 +116,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
     const existing = prev.tasks[task.id]
     // The launching agent's own task; absent for the main thread or a
     // launcher without a task of its own (official parent_task_id).
-    const owner = task.type === 'local_agent' ? task.ownerAgentId : undefined
+    const owner = task.type === 'local_agent' ? task.ownerAgentId : task.type === 'local_bash' ? task.agentId : undefined
     parentTaskId = owner && prev.tasks[owner] ? owner : undefined
     // A new task, or a finished one being resumed, opens a new run.
     if (!existing || isTerminalTaskStatus(existing.status)) startTaskRun(task.id)

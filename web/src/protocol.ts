@@ -2,7 +2,7 @@
 // model the chat renders. Unknown message types are ignored, so newer engine
 // messages never break the page.
 
-import { isFinished, reduceTasks, type Tasks } from './agents'
+import { reduceTasks, type Tasks } from './agents'
 import type { SlashCommand } from './commands'
 import type { MessageKey } from './i18n'
 
@@ -214,6 +214,7 @@ export type ChatState = {
   taskNotes: TaskNote[]
   /** The ending lines already counted for `taskNotes` (see addNote). */
   noteKeys: string[]
+  taskStarts: Record<string, TaskStartScope>
   /** A `/recap` is on its way; its output becomes a `※` line. */
   recapPending?: { away?: number }
   /** When the first message of this chat was sent (ms). */
@@ -320,6 +321,7 @@ export const initialState: ChatState = {
   rateLimits: {},
   taskNotes: [],
   noteKeys: [],
+  taskStarts: {},
   queued: [],
   mods: initialMods,
 }
@@ -836,37 +838,109 @@ export function channelMessage(text: string, id: string): Extract<Item, { kind: 
 }
 
 /** A task ended; `n` counts its endings (a resumed task can end again), `durationMs` is that run's own time. */
-export type TaskNote = { taskId: string; status: string; afterId?: string; n: number; durationMs?: number }
+export type TaskNote = {
+  taskId: string
+  status: string
+  afterId?: string
+  n: number
+  durationMs?: number
+  toolUseId?: string
+  runId?: string
+  /** Undefined is unknown; null is an explicitly direct worker. */
+  parentTaskId?: string | null
+  /** A matching legacy local_agent start omitted depth and named its launching tool. */
+  legacyProjectToolId?: string
+  /** An XML report actually read in this transcript, including explicit fallback to the coordinator. */
+  inTranscript?: true
+  /** The producer explicitly sent an owned task's report to the main thread. */
+  notificationToMain?: true
+}
 
-/**
- * Adds the `n`th ending of a task once. The live stream and the transcript
- * (where the coordinator read each ending as a `<task-notification>`) each
- * count a task's endings in order, so a reload that loads the transcript and
- * then gets the task lines replayed shows each ending once, where it happened.
- * `key` names the line itself, so the same line seen twice counts once.
- */
+type TaskStartScope = Pick<TaskNote, 'parentTaskId' | 'legacyProjectToolId'>
+const taskRunKey = (taskId: string, runId: string) => JSON.stringify([taskId, runId])
+
+/** Match by run identity when available; legacy XML needs corroborating evidence. */
+export function sameTaskEnding(a: TaskNote, b: TaskNote, strict = false): boolean {
+  if (a.taskId !== b.taskId) return false
+  if (a.runId && b.runId) return a.runId === b.runId
+  const status = (s: string) => s === 'killed' ? 'stopped' : s
+  if (status(a.status) !== status(b.status)) return false
+  if (strict && (!a.toolUseId || a.toolUseId !== b.toolUseId)) return false
+  if (a.toolUseId && b.toolUseId && a.toolUseId !== b.toolUseId) return false
+  if (a.durationMs !== undefined && b.durationMs !== undefined) return a.durationMs === b.durationMs
+  return strict || a.n === b.n
+}
+
+/** Preserve the ordinary chat's transcript-first replay behavior, using each copy at most once. */
+export function mergeTaskNotes(notes: TaskNote[]): TaskNote[] {
+  const out: TaskNote[] = []
+  const paired = new Set<TaskNote>()
+  for (const note of notes) {
+    const i = out.findIndex(old => !paired.has(old) && old.inTranscript !== note.inTranscript && sameTaskEnding(old, note))
+    if (i < 0) out.push(note)
+    else {
+      const old = out[i]!
+      const log = note.inTranscript ? note : old
+      const live = note.inTranscript ? old : note
+      const merged = { ...live, ...log, n: old.n }
+      out[i] = merged
+      paired.add(merged)
+    }
+  }
+  return out
+}
+
+/** Keep transcript records and SDK endings separate until the destination is known. */
 function addNote(state: ChatState, source: 'sys' | 'log', key: string, note: Omit<TaskNote, 'n' | 'afterId'>): Partial<ChatState> {
   const prefix = `${source}\n${note.taskId}\n`
   if (state.noteKeys.includes(prefix + key)) return {}
   const n = state.noteKeys.filter(k => k.startsWith(prefix)).length + 1
-  const noteKeys = [...state.noteKeys, prefix + key]
-  // A resumed session replays only the endings since it restarted, so its count
-  // starts over; the duration both sides carry tells the same ending apart.
-  const same = (x: TaskNote) => x.durationMs !== undefined && note.durationMs !== undefined ? x.durationMs === note.durationMs : x.n === n
-  if (state.taskNotes.some(x => x.taskId === note.taskId && same(x))) return { noteKeys }
-  return { noteKeys, taskNotes: [...state.taskNotes, { ...note, n, afterId: state.items.at(-1)?.id }] }
+  return {
+    noteKeys: [...state.noteKeys, prefix + key],
+    taskNotes: [...state.taskNotes, { ...note, n, afterId: state.items.at(-1)?.id }],
+  }
 }
 
-function noteEnded(state: ChatState, tasks: Tasks, raw: Json): Partial<ChatState> {
-  const task = typeof raw.task_id === 'string' ? tasks[raw.task_id] : undefined
-  if (raw.subtype !== 'task_notification' || !task || !isFinished(task)) return {}
+function noteStarted(state: ChatState, raw: Json): Partial<ChatState> {
+  const taskId = str(raw.task_id)
+  const runId = str(raw.run_id)
+  if (!taskId || !runId) return {}
+  const parentTaskId = str(raw.parent_task_id)
+  const tool = str(raw.tool_use_id)
+  const scope: TaskStartScope = parentTaskId ? { parentTaskId }
+    : raw.task_type !== 'local_agent' ? {}
+    : raw.parent_task_id === null || raw.spawn_depth === 1 ? { parentTaskId: null }
+    : raw.spawn_depth === undefined && tool ? { legacyProjectToolId: tool }
+    : {}
+  return {
+    taskStarts: { ...state.taskStarts, [taskRunKey(taskId, runId)]: scope },
+    taskNotes: state.taskNotes.map(note => note.taskId === taskId && note.runId === runId && note.parentTaskId === undefined
+      ? { ...note, ...scope } : note),
+  }
+}
+
+function noteEnded(state: ChatState, raw: Json): Partial<ChatState> {
+  const taskId = str(raw.task_id)
+  const status = str(raw.status)
+  if (!taskId || raw.waiting === true || !status || !['completed', 'failed', 'stopped', 'killed'].includes(status)) return {}
   const duration = isObj(raw.usage) ? raw.usage.duration_ms : undefined
-  return addNote(state, 'sys', str(raw.uuid) ?? task.status, { taskId: task.id, status: task.status, ...(typeof duration === 'number' && duration > 0 && { durationMs: duration }) })
+  const runId = str(raw.run_id)
+  const toolUseId = str(raw.tool_use_id)
+  const parent = raw.parent_task_id === null ? null : str(raw.parent_task_id)
+  const scope = parent !== undefined ? { parentTaskId: parent }
+    : runId ? state.taskStarts[taskRunKey(taskId, runId)] : undefined
+  return addNote(state, 'sys', runId ?? str(raw.uuid) ?? status, {
+    taskId, status, ...scope,
+    ...(runId && { runId }),
+    ...(toolUseId && { toolUseId }),
+    ...(raw.notification_to_main === true && { notificationToMain: true }),
+    ...(typeof duration === 'number' && duration > 0 && { durationMs: duration }),
+  })
 }
 
 const NOTIFICATION = /^<task-notification>[\s\S]*<\/task-notification>$/
 
-/** A `<task-notification>` the coordinator read, as its transcript holds it. */
+/** A `<task-notification>` this transcript's owner read, including notifications rerouted to main. */
 function noteFromLog(state: ChatState, text: string, uuid: string): Partial<ChatState> | undefined {
   if (!NOTIFICATION.test(text.trim())) return undefined
   const tag = (name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(text)?.[1]?.trim()
@@ -874,7 +948,14 @@ function noteFromLog(state: ChatState, text: string, uuid: string): Partial<Chat
   const status = tag('status')
   if (!taskId || !status || tag('summary')?.endsWith('is waiting on its own background work')) return {}
   const duration = Number(tag('duration_ms'))
-  return addNote(state, 'log', uuid, { taskId, status, ...(Number.isFinite(duration) && duration > 0 && { durationMs: duration }) })
+  const toolUseId = tag('tool-use-id')
+  const runId = tag('run-id')
+  return addNote(state, 'log', runId || uuid, {
+    taskId, status, inTranscript: true,
+    ...(runId && { runId }),
+    ...(toolUseId && { toolUseId }),
+    ...(Number.isFinite(duration) && duration > 0 && { durationMs: duration }),
+  })
 }
 
 export function reduce(state: ChatState, raw: unknown): ChatState {
@@ -956,7 +1037,9 @@ export function reduce(state: ChatState, raw: unknown): ChatState {
       }
       if (raw.subtype !== 'init') {
         const tasks = reduceTasks(state.tasks, raw)
-        return tasks === state.tasks ? state : { ...state, tasks, ...noteEnded(state, tasks, raw) }
+        const notes = raw.subtype === 'task_started' ? noteStarted(state, raw)
+          : raw.subtype === 'task_notification' ? noteEnded(state, raw) : undefined
+        return tasks === state.tasks && !notes ? state : { ...state, tasks, ...notes }
       }
       return {
         ...state,

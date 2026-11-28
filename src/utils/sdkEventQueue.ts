@@ -85,6 +85,9 @@ type TaskNotificationSdkEvent = {
   task_id: string
   run_id?: string
   tool_use_id?: string
+  parent_task_id?: string | null
+  /** An owned task explicitly delivered its report to the main thread. */
+  notification_to_main?: true
   status: 'completed' | 'failed' | 'stopped'
   output_file: string
   summary: string
@@ -202,7 +205,7 @@ export function enqueueSdkEvent(event: SdkEvent | SubagentSdkMessage): void {
   if (queue.length >= MAX_QUEUE_SIZE) {
     queue.shift()
   }
-  if (event.type === 'system' && 'task_id' in event && runIds.has(event.task_id)) {
+  if (event.type === 'system' && 'task_id' in event && !('run_id' in event && event.run_id) && runIds.has(event.task_id)) {
     event = { ...event, run_id: runIds.get(event.task_id) }
   }
   // Named for the session it happened in, which /clear may leave before the drain.
@@ -294,7 +297,10 @@ export function emitTaskTerminatedSdk(
   taskId: string,
   status: 'completed' | 'failed' | 'stopped',
   opts?: {
+    runId?: string
     toolUseId?: string
+    parentTaskId?: string | null
+    notificationToMain?: boolean
     summary?: string
     outputFile?: string
     usage?: { total_tokens: number; tool_uses: number; duration_ms: number }
@@ -310,7 +316,10 @@ export function emitTaskTerminatedSdk(
     type: 'system',
     subtype: 'task_notification',
     task_id: taskId,
+    ...(opts?.runId && { run_id: opts.runId }),
     tool_use_id: opts?.toolUseId,
+    ...(opts?.parentTaskId !== undefined && { parent_task_id: opts.parentTaskId }),
+    ...(opts?.notificationToMain && { notification_to_main: true }),
     status,
     output_file: opts?.outputFile ?? '',
     summary: opts?.summary ?? '',
