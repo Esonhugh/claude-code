@@ -213,18 +213,26 @@ function getChatGPTAccountDisplay(): Utilization['openai_account'] {
   }
 }
 
+function chatGPTResetTime(seconds: unknown): string | null {
+  // The backend window and spend-control schemas use signed 32-bit epoch seconds.
+  if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds <= 0 || seconds > 0x7fffffff) {
+    return null
+  }
+  return new Date(seconds * 1000).toISOString()
+}
+
 function mapChatGPTWindow(
   window: ChatGPTRateLimitWindow | null | undefined,
 ): RateLimit | null {
-  if (!window || window.used_percent === undefined || window.used_percent === null) {
-    return null
-  }
+  if (!window) return null
+  const utilization = typeof window.used_percent === 'number' && Number.isFinite(window.used_percent)
+    ? window.used_percent : null
+  const resets_at = chatGPTResetTime(window.reset_at)
+  if (utilization === null && resets_at === null) return null
 
   return {
-    utilization: window.used_percent,
-    resets_at: window.reset_at
-      ? new Date(window.reset_at * 1000).toISOString()
-      : null,
+    utilization,
+    resets_at,
     window_minutes:
       typeof window.limit_window_seconds === 'number'
         ? Math.round(window.limit_window_seconds / 60)
@@ -241,8 +249,9 @@ function mapChatGPTMonthlyCreditLimit(
     limit: limit.limit,
     used: limit.used,
     remaining: limit.remaining ?? null,
-    utilization: limit.used_percent ?? null,
-    resets_at: limit.reset_at ? new Date(limit.reset_at * 1000).toISOString() : null,
+    utilization: typeof limit.used_percent === 'number' && Number.isFinite(limit.used_percent)
+      ? limit.used_percent : null,
+    resets_at: chatGPTResetTime(limit.reset_at),
   }
 }
 
@@ -293,7 +302,7 @@ function buildChatGPTLimits(
     }
   }
 
-  if (monthlyCreditLimit && monthlyCreditLimit.utilization !== null) {
+  if (monthlyCreditLimit && (monthlyCreditLimit.utilization !== null || monthlyCreditLimit.resets_at !== null)) {
     limits.push({
       title: 'Monthly credit limit',
       limit: {

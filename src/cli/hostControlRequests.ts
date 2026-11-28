@@ -5,6 +5,7 @@ import { feature } from 'bun:bundle'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import stripAnsi from 'strip-ansi'
+import { z } from 'zod'
 import {
   getModelUsage,
   getOriginalCwd,
@@ -158,10 +159,34 @@ export function chatGPTRateLimits(utilization: Utilization) {
   }
 }
 
+const claudeUsageReset = z.iso.datetime({ offset: true })
+
 function claudeRateLimits(utilization: Utilization) {
+  const standardWindow = (
+    legacy: RateLimit | null | undefined,
+    kind: 'session' | 'weekly_all',
+    group: 'session' | 'weekly',
+  ) => {
+    const legacyUsage = typeof legacy?.utilization === 'number' && Number.isFinite(legacy.utilization)
+      ? legacy.utilization : null
+    const legacyReset = claudeUsageReset.safeParse(legacy?.resets_at).data ?? null
+    if (legacyUsage !== null && legacyReset !== null) {
+      return { utilization: legacyUsage, resets_at: legacyReset }
+    }
+    const rows = Array.isArray(utilization.limits) ? utilization.limits.filter(row => row?.kind === kind) : []
+    // A second row with the same kind makes the fallback ambiguous, even if only one row otherwise matches.
+    const row = rows.length === 1 ? rows[0] : undefined
+    const fallback = row?.group === group && !Object.values(row.scope ?? {}).some(value => value != null)
+      ? row : undefined
+    const percent = fallback?.percent
+    const reportedUsage = legacyUsage ?? (typeof percent === 'number' && Number.isFinite(percent) ? percent : null)
+    const resets_at = legacyReset ?? claudeUsageReset.safeParse(fallback?.resets_at).data ?? null
+    return legacy || reportedUsage !== null || resets_at !== null
+      ? { utilization: reportedUsage, resets_at } : null
+  }
   return {
-    five_hour: window(utilization.five_hour),
-    seven_day: window(utilization.seven_day),
+    five_hour: standardWindow(utilization.five_hour, 'session', 'session'),
+    seven_day: standardWindow(utilization.seven_day, 'weekly_all', 'weekly'),
     seven_day_oauth_apps: window(utilization.seven_day_oauth_apps),
     seven_day_opus: window(utilization.seven_day_opus),
     seven_day_sonnet: window(utilization.seven_day_sonnet),
@@ -169,6 +194,7 @@ function claudeRateLimits(utilization: Utilization) {
       ? {
           model_scoped: getModelScopedUsageLimits(utilization.limits).map(row => ({
             display_name: row.title,
+            model_name: row.modelName,
             utilization: row.limit.utilization,
             resets_at: row.limit.resets_at,
           })),
@@ -176,6 +202,17 @@ function claudeRateLimits(utilization: Utilization) {
       : {}),
     extra_usage: utilization.extra_usage ?? null,
   }
+}
+
+function chatGPTCreditSummary(credits: Utilization['credits']) {
+  if (credits?.unlimited === true) return { unlimited: true as const }
+  const reported = credits?.balance
+  const balance = typeof reported === 'string' ? reported.trim() : reported
+  if (typeof balance === 'number' ? Number.isFinite(balance) && balance >= 0
+      : typeof balance === 'string' && /^\d+(?:\.\d+)?$/.test(balance)) {
+    return { balance }
+  }
+  return undefined
 }
 
 export async function buildUsageResponse() {
@@ -188,8 +225,16 @@ export async function buildUsageResponse() {
     })
     utilization = null
   }
-  const isChatGPT = utilization?.source === 'chatgpt'
+  const source = utilization?.source
+  const isChatGPT = source === 'chatgpt'
+  const credits = isChatGPT ? chatGPTCreditSummary(utilization.credits) : undefined
+  const resetCount = isChatGPT ? utilization.rate_limit_reset_credits?.available_count : undefined
   return {
+    ...(source && { source }),
+    ...(credits && { credits }),
+    ...(typeof resetCount === 'number' && Number.isSafeInteger(resetCount) && resetCount >= 0 && {
+      rate_limit_reset_credits: { available_count: resetCount },
+    }),
     session: {
       total_cost_usd: getTotalCostUSD(),
       total_api_duration_ms: getTotalAPIDuration(),

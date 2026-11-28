@@ -1073,3 +1073,39 @@ test('fetchUtilization maps ChatGPT Codex usage when OpenAI ChatGPT auth is acti
     }
   }
 })
+
+
+test('malformed ChatGPT reset fields do not discard window usage or the account snapshot', async () => {
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  const auth = { accessToken: 'fixture', isChatGPT: true }
+  authModule.getOpenAIAuthInfo.cache.set(undefined, auth)
+  authModule.getChatGPTOAuthInfo.cache.set(undefined, auth)
+  const originalGet = axios.get
+  axios.get = (async () => ({ data: {
+    rate_limit: {
+      primary_window: { used_percent: 0, limit_window_seconds: 18000, reset_at: 'bad' },
+      secondary_window: { limit_window_seconds: 604800, reset_at: 1783688408 },
+    },
+    additional_rate_limits: [{ limit_name: 'Review', rate_limit: {
+      primary_window: { used_percent: 2, reset_at: 1783688408000 },
+      secondary_window: { used_percent: 3, reset_at: '1783688408' },
+    } }],
+    spend_control: { individual_limit: { limit: '2', used: '0', used_percent: 0, reset_at: 1e20 } },
+    credits: { balance: '0', unlimited: false },
+    rate_limit_reset_credits: { available_count: 0 },
+  } })) as typeof axios.get
+  try {
+    const actual = await fetchUtilization()
+    assert.deepEqual(actual?.chatgpt_limits?.map(({ limit }) => [limit.utilization, limit.resets_at]), [
+      [0, null], [null, '2026-07-10T13:00:08.000Z'], [2, null], [3, null], [0, null],
+    ])
+    assert.equal(actual?.credits?.balance, '0')
+    assert.equal(actual?.rate_limit_reset_credits?.available_count, 0)
+  } finally {
+    axios.get = originalGet
+    authModule.getOpenAIAuthInfo.cache.clear?.()
+    authModule.getChatGPTOAuthInfo.cache.clear?.()
+    if (originalOpenAI === undefined) delete process.env.CLAUDE_CODE_USE_OPENAI
+    else process.env.CLAUDE_CODE_USE_OPENAI = originalOpenAI
+  }
+})

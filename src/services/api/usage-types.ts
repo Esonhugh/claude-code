@@ -24,6 +24,7 @@ export type UsageLimit = {
   title: string
   limit: RateLimit
   extraSubtext?: string
+  modelName?: string
 }
 
 // One row of the usage endpoint's `limits[]`: the server classifies a row by

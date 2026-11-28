@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
+import * as usage from '../services/api/usage.js'
 import type { AccountBackend, AccountStatus, AuthProvider, WebSettings } from './account.js'
 import { isValidBaseUrl } from './account.js'
 import { setOauthTokenFromFd } from '../bootstrap/state.js'
@@ -110,7 +111,7 @@ afterEach(async () => {
   await Promise.all(stops.splice(0).map(stop => stop()))
 })
 
-async function start(allowLocalNetwork = false) {
+async function start(allowLocalNetwork = false, getUsage?: AccountBackend['usage']) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'web-account-')))
   const fake = fakeBackend()
   const manager = new SessionManager({ spawn: () => { throw new Error('no sessions here') } })
@@ -124,7 +125,7 @@ async function start(allowLocalNetwork = false) {
       uploadsDir: join(dir, 'uploads'),
       configDir: dir,
       allowLocalNetwork,
-      account: fake.backend,
+      account: getUsage ? { ...fake.backend, usage: getUsage } : fake.backend,
     },
     manager,
     new Map(),
@@ -207,6 +208,26 @@ describe('account endpoints', () => {
     const res = await call('/api/account/api-key', 'POST', { provider: 'anthropic', key: 'sk-ant-"; rm -rf /' })
     expect(res.status).toBe(400)
     expect(state.stored.anthropic).toBeUndefined()
+  })
+
+  it('serves the shared, read-only usage snapshot with optional ChatGPT fields', async () => {
+    const fetchUsage = spyOn(usage, 'fetchUtilization').mockResolvedValue({
+      source: 'chatgpt',
+      credits: { unlimited: true },
+      rate_limit_reset_credits: { available_count: 0 },
+    })
+    try {
+      const { call } = await start(false, localAccountBackend().usage)
+      const response = await call('/api/usage')
+      expect(response.status).toBe(200)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(await response.json()).toMatchObject({
+        source: 'chatgpt', credits: { unlimited: true }, rate_limit_reset_credits: { available_count: 0 },
+      })
+      expect(fetchUsage).toHaveBeenCalledTimes(1)
+    } finally {
+      fetchUsage.mockRestore()
+    }
   })
 
   it('requires the session cookie', async () => {

@@ -321,6 +321,8 @@ if (process.env[childFlag] !== '1') {
     const utilization = spyOn(usage, 'fetchUtilization').mockResolvedValue({
       source: 'chatgpt',
       plan_type: 'plus',
+      credits: { balance: '0' },
+      rate_limit_reset_credits: { available_count: 2 },
       five_hour: null,
       seven_day: { utilization: 12, resets_at: '2026-10-24T20:00:00.000Z', window_minutes: 300 },
       seven_day_sonnet: { utilization: 40, resets_at: '2026-10-30T00:00:00.000Z', window_minutes: 10080 },
@@ -329,7 +331,10 @@ if (process.env[childFlag] !== '1') {
     try {
       const [res] = await run([{ subtype: 'get_usage' }])
       expect(res.response).toMatchObject({
+        source: 'chatgpt',
         subscription_type: 'plus',
+        credits: { balance: '0' },
+        rate_limit_reset_credits: { available_count: 2 },
         rate_limits_available: true,
         rate_limits: {
           five_hour: { utilization: 12, resets_at: '2026-10-24T20:00:00.000Z' },
