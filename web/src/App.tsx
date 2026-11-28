@@ -74,6 +74,7 @@ import { agentInputs, messageTarget, notesByItem, taskNoteText } from './project
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { nativeCommand, type SlashCommand, withPageCommands } from './commands'
+import type { TmuxSelection } from './tmux'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
@@ -202,6 +203,11 @@ export function App() {
   })
   const [dragging, setDragging] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('status')
+  const [tmuxSelection, setTmuxSelection] = useState<TmuxSelection>()
+  const selectSideTab = useCallback((tab: SideTab) => {
+    setTmuxSelection(undefined)
+    setSideTab(tab)
+  }, [])
   const [sheetOpen, setSheetOpen] = useState(false)
   const [agentsView, setAgentsView] = useState<AgentsView>({ kind: 'tree' })
   const [workflowId, setWorkflowId] = useState<string>()
@@ -342,12 +348,12 @@ export function App() {
             cwd: chatCwd,
             showFiles: () => {
               setPreview(undefined)
-              setSideTab('files')
+              selectSideTab('files')
               if (isNarrow(760)) setSheetOpen(true)
             },
           }
         : {},
-    [view, openFile, chatCwd, t],
+    [view, openFile, chatCwd, selectSideTab, t],
   )
   const webPreviewValue = useMemo(() => {
     const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
@@ -415,20 +421,21 @@ export function App() {
         const task = tasks?.[taskId]
         if (task?.type === 'local_workflow') {
           setWorkflowId(taskId)
-          setSideTab('workflow')
+          selectSideTab('workflow')
         } else {
-          setSideTab('agents')
+          selectSideTab('agents')
           setAgentsView({ kind: 'task', id: taskId })
         }
         if (isNarrow(760)) setSheetOpen(true)
       },
     }
-  }, [tasks, agentNames])
+  }, [tasks, agentNames, selectSideTab])
   useEffect(() => {
     setAgentsView({ kind: 'tree' })
     setWorkflowId(undefined)
+    setTmuxSelection(undefined)
     setSheetOpen(false)
-  }, [view])
+  }, [view, inProject])
   const items = chat?.items
   // An agent the main conversation started that handed back its report or ended, under the turn it ended in.
   const agentNotes = useMemo(
@@ -1112,7 +1119,7 @@ export function App() {
     }
     if ('panel' in native) {
       setPreview(undefined)
-      setSideTab(native.panel)
+      selectSideTab(native.panel)
       if (isNarrow(760)) setSheetOpen(true)
       return true
     }
@@ -1437,7 +1444,7 @@ export function App() {
 
   const openStatus = () => {
     setPreview(undefined)
-    setSideTab('status')
+    selectSideTab('status')
     if (isNarrow(760)) setSheetOpen(true)
   }
   // Page shortcuts: Ctrl+K search, Ctrl+Shift+O new session, Ctrl+. Status, ? help.
@@ -1838,8 +1845,15 @@ export function App() {
             }
           : undefined,
       control,
+      openTmux: view && !inProject
+        ? (toolUseId: string) => {
+            setPreview(undefined)
+            setTmuxSelection({ sessionId: view, toolUseId })
+            if (isNarrow(760)) setSheetOpen(true)
+          }
+        : undefined,
     }),
-    [decisions, canRewind, view, rewindTarget, rewindPoints, control],
+    [decisions, canRewind, inProject, view, rewindTarget, rewindPoints, control],
   )
 
   const withChat = (node: ReactNode) => (
@@ -2351,7 +2365,7 @@ export function App() {
           t={t}
           open={sheetOpen}
           tab={sideTab}
-          setTab={setSideTab}
+          setTab={selectSideTab}
           sessionId={view}
           chat={chat}
           title={chatTitle}
@@ -2379,6 +2393,8 @@ export function App() {
             signedOut,
           }}
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
+          tmuxSelection={tmuxSelection}
+          onCloseTmux={() => setTmuxSelection(undefined)}
           onClose={() => setSheetOpen(false)}
         />
       )}

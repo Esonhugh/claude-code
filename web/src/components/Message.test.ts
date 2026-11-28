@@ -141,6 +141,40 @@ describe('handback report', () => {
   })
 })
 
+describe('chat Tmux cards', () => {
+  it('keeps Tmux visible and compact without changing Bash, Skill, or conversations without a detail pane', async () => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { ChatContext, Message } = await import('./Message')
+    const blocks: Extract<Block, { kind: 'tool' }>[] = [
+      { kind: 'tool', id: 'bash1', name: 'Bash', input: '{"command":"bun test"}', result: 'bash result' },
+      { kind: 'tool', id: 'skill1', name: 'Skill', input: '{"skill":"review"}', result: 'skill result' },
+      { kind: 'tool', id: 'tmux1', name: 'Tmux', input: '{"action":"send-keys","target":"pane-a"}', result: '{"accepted":true,"custom":"not inline"}' },
+      { kind: 'tool', id: 'tmux2', name: 'Tmux', input: '{"action":"send-keys","target":"pane-a","text":"ls -la\\nsecond line","enter":true}', result: '{"accepted":true}' },
+    ]
+    const render = (visible: boolean) => renderToStaticMarkup(react.createElement(
+      ChatContext.Provider,
+      { value: visible ? { openTmux: () => {} } : {} },
+      react.createElement(Message, {
+        item: { kind: 'assistant', id: 'a1', streamed: false, blocks },
+        t: ((key: string) => key) as never, streaming: false,
+      }),
+    ))
+    const html = render(true)
+    expect(html).toMatch(/<\/details><button[^>]*class="toolcard tmux-card"[^>]*aria-controls="chat-details"/)
+    expect(html).toContain('>send-keys · pane-a</span>')
+    expect(html).toContain('>send-keys · pane-a · ls -la · Enter</span>')
+    expect(html).not.toContain('second line')
+    expect(html).toContain('tmuxInputSent')
+    expect(html).not.toContain('not inline')
+    expect(html).toContain('bash result')
+    expect(html).toContain('skill result')
+    expect(render(false)).not.toContain('tmux-card')
+    expect(render(false)).toContain('not inline')
+  })
+})
+
 describe('local command output', () => {
   const render = async (item: Item) => {
     const react = await import('react')
