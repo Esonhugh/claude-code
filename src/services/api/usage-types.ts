@@ -1,3 +1,7 @@
+import { z } from 'zod'
+
+export const usageResetTimestamp = z.iso.datetime({ offset: true })
+
 export type OpenAIActivityStats = {
   lifetime_tokens?: number | null
   peak_daily_tokens?: number | null

@@ -82,6 +82,32 @@ describe('PlanLimits', () => {
     expect(chatgpt).toContain('ChatGPT credit balance')
   })
 
+  it('does not display invalid resets from snapshots without a source', () => {
+    const account: Account = { kind: 'apikey', provider: 'openai', keys: [], oauth: [] }
+    const usage: Usage = { rate_limits: {
+      seven_day_oauth_apps: { utilization: null, resets_at: '2026-02-30T15:58:17Z' },
+      seven_day_opus: { utilization: 0, resets_at: '7' },
+      seven_day_sonnet: { utilization: null, resets_at: '2028-02-29T15:58:17.123456+05:30' },
+      model_scoped: [
+        { display_name: 'Current week (Opus)', model_name: 'Opus', utilization: 41, resets_at: '2027-02-29T15:58:17Z' },
+        { display_name: 'Current week (Opus)', model_name: 'OPUS', utilization: 0, resets_at: firstReset },
+        { display_name: 'Current week (Fable)', model_name: 'Fable', utilization: 15, resets_at: '7' },
+      ],
+    } }
+    const html = render(usage, 'en', account)
+    expect(html).not.toContain('Current week (OAuth apps)')
+    expect(html).not.toContain('41%')
+    expect(html).toContain('This week · Opus</b><span class="mono">0%</span>')
+    expect(html).toContain('This week · Sonnet</b></div><small>Resets ')
+    expect(html).toContain('This week · Fable</b><span class="mono">15%</span>')
+    expect(html.match(/Resets /g)).toHaveLength(2)
+    expect(html).not.toContain('pay as you go')
+    delete usage.rate_limits!.model_scoped
+    const legacy = render(usage, 'en', account)
+    expect(legacy).toContain('This week · Opus</b><span class="mono">0%</span>')
+    expect(legacy.match(/Resets /g)).toHaveLength(1)
+  })
+
   it('shows reported ChatGPT balances and vouchers independently of limits or global account state', () => {
     const usage: Usage = {
       source: 'chatgpt', credits: { balance: '0' }, rate_limit_reset_credits: { available_count: 0 },

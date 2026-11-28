@@ -120,3 +120,31 @@ test('Claude standard rows fill missing fields without replacing valid legacy va
     fetch.mockRestore()
   }
 })
+
+
+test('Claude legacy and scoped windows drop invalid resets without dropping their readings', async () => {
+  const validReset = '2028-02-29T15:58:17.123456+05:30'
+  const fetch = spyOn(usage, 'fetchUtilization').mockResolvedValue({
+    source: 'claude',
+    seven_day_oauth_apps: { utilization: null, resets_at: '2026-02-30T15:58:17Z' },
+    seven_day_opus: { utilization: 0, resets_at: '7' },
+    seven_day_sonnet: { utilization: null, resets_at: validReset },
+    limits: [
+      { kind: 'weekly_scoped', percent: 11, resets_at: '7', scope: { model: { display_name: 'Fable' } } },
+      { kind: 'weekly_scoped', percent: 12, resets_at: validReset, scope: { model: { display_name: 'Fable 5' } } },
+    ],
+  })
+  try {
+    expect((await buildUsageResponse()).rate_limits).toMatchObject({
+      seven_day_oauth_apps: { utilization: null, resets_at: null },
+      seven_day_opus: { utilization: 0, resets_at: null },
+      seven_day_sonnet: { utilization: null, resets_at: validReset },
+      model_scoped: [
+        { model_name: 'Fable', utilization: 11, resets_at: null },
+        { model_name: 'Fable 5', utilization: 12, resets_at: validReset },
+      ],
+    })
+  } finally {
+    fetch.mockRestore()
+  }
+})

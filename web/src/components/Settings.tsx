@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { usageResetTimestamp } from '../../../src/services/api/usage-types'
 import type { Account, FeatureKey, Usage, UsageWindow, WebSettings } from '../api'
 import { type Lang, LANGS } from '../i18n'
 import type { ModelOption } from '../protocol'
@@ -73,9 +74,9 @@ export function fmtTokens(n: number): string {
 }
 
 function resetTime(lang: Lang, iso?: string | null): string | undefined {
-  if (typeof iso !== 'string' || !iso) return undefined
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime())) return undefined
+  const { data } = usageResetTimestamp.safeParse(iso)
+  if (data === undefined) return undefined
+  const at = new Date(data)
   const sameDay = at.toDateString() === new Date().toDateString()
   return new Intl.DateTimeFormat(lang, {
     ...(sameDay ? {} : { month: 'short', day: 'numeric', weekday: 'short' }),

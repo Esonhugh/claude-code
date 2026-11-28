@@ -5,7 +5,6 @@ import { feature } from 'bun:bundle'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import stripAnsi from 'strip-ansi'
-import { z } from 'zod'
 import {
   getModelUsage,
   getOriginalCwd,
@@ -35,6 +34,7 @@ import {
   type RateLimit,
   type Utilization,
 } from '../services/api/usage.js'
+import { usageResetTimestamp } from '../services/api/usage-types.js'
 import { isAutoDreamEnabled } from '../services/autoDream/config.js'
 import { readLastConsolidatedAt } from '../services/autoDream/consolidationLock.js'
 import { estimateSkillFrontmatterTokens } from '../skills/loadSkillsDir.js'
@@ -135,7 +135,10 @@ export async function buildStatusResponse(appState: AppState) {
 }
 
 const window = (limit: RateLimit | null | undefined) =>
-  limit ? { utilization: limit.utilization, resets_at: limit.resets_at } : null
+  limit ? {
+    utilization: limit.utilization,
+    resets_at: usageResetTimestamp.safeParse(limit.resets_at).data ?? null,
+  } : null
 
 // ChatGPT reports its windows as primary/secondary; dev maps them onto
 // seven_day/seven_day_sonnet for the Usage tab, so place them by length.
@@ -159,8 +162,6 @@ export function chatGPTRateLimits(utilization: Utilization) {
   }
 }
 
-const claudeUsageReset = z.iso.datetime({ offset: true })
-
 function claudeRateLimits(utilization: Utilization) {
   const standardWindow = (
     legacy: RateLimit | null | undefined,
@@ -169,7 +170,7 @@ function claudeRateLimits(utilization: Utilization) {
   ) => {
     const legacyUsage = typeof legacy?.utilization === 'number' && Number.isFinite(legacy.utilization)
       ? legacy.utilization : null
-    const legacyReset = claudeUsageReset.safeParse(legacy?.resets_at).data ?? null
+    const legacyReset = usageResetTimestamp.safeParse(legacy?.resets_at).data ?? null
     if (legacyUsage !== null && legacyReset !== null) {
       return { utilization: legacyUsage, resets_at: legacyReset }
     }
@@ -180,7 +181,7 @@ function claudeRateLimits(utilization: Utilization) {
       ? row : undefined
     const percent = fallback?.percent
     const reportedUsage = legacyUsage ?? (typeof percent === 'number' && Number.isFinite(percent) ? percent : null)
-    const resets_at = legacyReset ?? claudeUsageReset.safeParse(fallback?.resets_at).data ?? null
+    const resets_at = legacyReset ?? usageResetTimestamp.safeParse(fallback?.resets_at).data ?? null
     return legacy || reportedUsage !== null || resets_at !== null
       ? { utilization: reportedUsage, resets_at } : null
   }
@@ -196,7 +197,7 @@ function claudeRateLimits(utilization: Utilization) {
             display_name: row.title,
             model_name: row.modelName,
             utilization: row.limit.utilization,
-            resets_at: row.limit.resets_at,
+            resets_at: usageResetTimestamp.safeParse(row.limit.resets_at).data ?? null,
           })),
         }
       : {}),
