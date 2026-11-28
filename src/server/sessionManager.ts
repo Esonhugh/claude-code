@@ -333,6 +333,7 @@ export class SessionManager {
     sessionKey,
     channels,
     coordinator,
+    onCreated,
   }: {
     cwd: string
     permissionMode?: string
@@ -348,6 +349,8 @@ export class SessionManager {
     channels?: string[]
     /** Prompt flags and environment of a project's coordinator. */
     coordinator?: CoordinatorOptions
+    /** Called with the new manager entry, never when an existing session is reused. */
+    onCreated?: (session: SessionInfo) => void
   }): SessionInfo {
     if (resume || sessionId) {
       const running = this.sessions.get((resume ?? sessionId)!)
@@ -401,6 +404,7 @@ export class SessionManager {
       `session ${id} created in ${cwd}${permissionMode ? ` (permission mode ${permissionMode})` : ''}`,
     )
     this.startIdleTimer(session)
+    onCreated?.(session)
     return session
   }
 
@@ -548,12 +552,12 @@ export class SessionManager {
 
   canAttach(id: string): boolean {
     const session = this.sessions.get(id)
-    return !!session && !session.socket
+    return !!session && session.status !== 'stopping' && !session.socket
   }
 
   attach(id: string, socket: SessionSocket): boolean {
     const session = this.sessions.get(id)
-    if (!session || session.socket) return false
+    if (!session || session.status === 'stopping' || session.socket) return false
     clearTimeout(session.idleTimer)
     session.socket = socket
     session.status = 'running'
@@ -591,6 +595,7 @@ export class SessionManager {
     const session = this.sessions.get(id)
     if (!session || session.socket !== socket) return
     session.socket = null
+    if (session.status === 'stopping') return
     session.status = 'detached'
     this.logger?.info(`session ${id} detached`)
     this.startIdleTimer(session)

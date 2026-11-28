@@ -12,6 +12,8 @@ import {
   taskNoteText,
   withApprovals,
   workerItems,
+  finishCoordinatorOpen,
+  workspaceTreeScope,
 } from './projects'
 import { type Approval, type Item, initialState, reduce } from './protocol'
 
@@ -214,4 +216,72 @@ describe('project tasks', () => {
     expect(workerItems(state.items, 'Do alpha').map(i => i.kind)).toEqual(['assistant', 'user'])
     expect(workerItems(state.items, 'Other').map(i => i.kind)).toEqual(['user', 'assistant', 'user'])
   })
+})
+
+
+it('does not commit delayed coordinator success or error after navigation supersedes it', async () => {
+  for (const outcome of ['success', 'error'] as const) {
+    const opening = Promise.withResolvers<string>()
+    const projectA = {}
+    let current = projectA
+    let view: string | null = null
+    let project: string | undefined = 'a'
+    let notice: unknown
+    const attached: string[] = []
+    const run = finishCoordinatorOpen(() => current === projectA, {
+      open: () => opening.promise,
+      select: id => { view = id },
+      prepare: async () => {},
+      attach: async id => { attached.push(id) },
+      fail: err => { view = null; notice = err },
+    })
+    current = {}
+    if (outcome === 'success') {
+      project = 'b'
+      opening.resolve('coordinator-a')
+    } else {
+      project = undefined
+      view = 'ordinary-chat'
+      opening.reject(new Error('old coordinator failed'))
+    }
+    await run
+    expect(notice).toBeUndefined()
+    expect(attached).toEqual([])
+    expect(workspaceTreeScope(project, view)).toEqual(outcome === 'success'
+      ? { kind: 'project', id: 'b' }
+      : { kind: 'session', id: 'ordinary-chat' })
+  }
+})
+
+it('drops late preparation and retains the explicitly selected coordinator on current attachment failure', async () => {
+  const preparing = Promise.withResolvers<void>()
+  const selected = Promise.withResolvers<void>()
+  let current = true
+  let view: string | null = null
+  const attached: string[] = []
+  const errors: unknown[] = []
+  const fail = (err: unknown) => { errors.push(err) }
+  const a = finishCoordinatorOpen(() => current, {
+    open: async () => 'coordinator-a',
+    select: id => { view = id; selected.resolve() },
+    prepare: () => preparing.promise,
+    attach: async id => { attached.push(id) },
+    fail,
+  })
+  await selected.promise
+  current = false
+  view = 'cold-chat'
+  preparing.resolve()
+  await a
+  expect(attached).toEqual([])
+  expect(workspaceTreeScope(undefined, view)).toEqual({ kind: 'session', id: 'cold-chat' })
+  await finishCoordinatorOpen(() => true, {
+    open: async () => 'cold-coordinator',
+    select: id => { view = id },
+    prepare: async () => {},
+    attach: async () => { throw new Error('disconnected') },
+    fail,
+  })
+  expect(errors).toHaveLength(1)
+  expect(workspaceTreeScope('b', view)).toEqual({ kind: 'session', id: 'cold-coordinator' })
 })

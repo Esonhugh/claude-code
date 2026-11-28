@@ -8,11 +8,13 @@ import type { SessionChat } from '../store'
 import { type AgentInput, type AgentPick, AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
 import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
+import { DetailTabs, useCompactDetailPanel } from './DetailTabs'
 import { ModsTab } from './Mods'
 import { modelName } from './Message'
 import { compactHint, formatElapsed, modeOf, type T } from './ui'
+import { WorkspaceFiles } from './WorkspaceFiles'
 
-export type SideTab = 'status' | 'files' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg' | 'mods'
+export type SideTab = 'status' | 'files' | 'workspace' | 'agents' | 'workflow' | 'terminals' | 'monitor' | 'bg' | 'mods'
 
 const runningCount = (tasks: AgentTask[]) => tasks.filter(task => !isFinished(task)).length
 
@@ -504,15 +506,42 @@ function FilesPane({
   )
 }
 
-/**
- * The right column: Status, Files and Agents always; Workflow, Terminals,
- * Monitor and Background Tasks once the session has used them (or one is open).
- */
+/** The right column on desktop and the existing bottom sheet on a phone. */
+export function DetailPanel({ t, open, onClose, children }: { t: T; open: boolean; onClose: () => void; children: ReactNode }) {
+  return (
+    <aside className={`side${open ? ' open' : ''}`} aria-label={t('panel')}>
+      <div className="sheet-head">
+        <span>{t('panel')}</span>
+        <button className="btn" type="button" onClick={onClose}>{t('close')}</button>
+      </div>
+      {children}
+    </aside>
+  )
+}
+
+/** A selected project has its own root only before a coordinator session is selected. */
+export function ProjectWorkspacePanel({ projectId, t, open, onClose }: { projectId: string; t: T; open: boolean; onClose: () => void }) {
+  const compact = useCompactDetailPanel()
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <DetailPanel t={t} open={open} onClose={onClose}>
+      <div className="pane">
+        <details onToggle={event => setExpanded(event.currentTarget.open)}>
+          <summary data-workspace-summary>{t('workspaceFilesTab')}</summary>
+          <WorkspaceFiles scope={{ kind: 'project', id: projectId }} active={expanded && (!compact || open)} t={t} />
+        </details>
+      </div>
+    </DetailPanel>
+  )
+}
+
+/** Status, Files and Agents always, Workspace when supported, runtime tabs as used. */
 export function SidePanel({
   t,
   open,
-  tab,
+  tab: requestedTab,
   setTab,
+  workspaceTreeSupported,
   sessionId,
   chat,
   title,
@@ -540,6 +569,7 @@ export function SidePanel({
   open: boolean
   tab: SideTab
   setTab: (tab: SideTab) => void
+  workspaceTreeSupported?: boolean
   sessionId: string
   chat: SessionChat
   title: string
@@ -568,6 +598,8 @@ export function SidePanel({
   canvasMod?: string
   onClose: () => void
 }) {
+  const compact = useCompactDetailPanel()
+  const tab = requestedTab === 'workspace' && !workspaceTreeSupported ? 'status' : requestedTab
   const files = useMemo(() => sessionFiles(chat.items).length, [chat.items])
   const agents = Object.keys(agentTasks(chat.tasks)).length
   const bg = useBackground(sessionId, chat.tasks, ['terminals', 'monitor', 'bg'].includes(tab), onRequest)
@@ -577,6 +609,7 @@ export function SidePanel({
     [
       { id: 'status', label: 'Status' },
       { id: 'files', label: 'Files', count: files },
+      { id: 'workspace', label: t('workspaceFilesTab') },
       { id: 'agents', label: 'Agents', count: agents },
       { id: 'workflow', label: 'Workflow' },
       { id: 'terminals', label: 'Terminals', count: terminals.length },
@@ -586,36 +619,25 @@ export function SidePanel({
     ] satisfies { id: SideTab; label: string; count?: number }[]
   ).filter(
     x =>
-      ['status', 'files', 'agents', tab].includes(x.id) ||
-      used.includes(x.id as Pane) ||
-      (x.id === 'mods' && (chat.mods.panes.length > 0 || Object.keys(chat.mods.status).length > 0)),
+      x.id === 'workspace' ? workspaceTreeSupported : (
+        ['status', 'files', 'agents', tab].includes(x.id) ||
+        used.includes(x.id as Pane) ||
+        (x.id === 'mods' && (chat.mods.panes.length > 0 || Object.keys(chat.mods.status).length > 0))
+      ),
   )
   return (
-    <aside className={`side${open ? ' open' : ''}`} aria-label={t('sidebarLabel')}>
-      <div className="sheet-head">
-        <span>{t('panel')}</span>
-        <button className="btn" type="button" onClick={onClose}>
-          {t('close')}
-        </button>
-      </div>
-      <div className="tabs" role="tablist">
-        {tabs.map(x => (
-          <button
-            role="tab"
-            type="button"
-            key={x.id}
-            aria-selected={tab === x.id}
-            onClick={() => {
-              setTab(x.id)
-              if (x.id === 'agents') setAgentsView({ kind: 'tree' })
-            }}
-          >
-            {x.label}
-            {!!x.count && <span className="count">{x.count}</span>}
-          </button>
-        ))}
-      </div>
-      <div className="pane" role="tabpanel">
+    <DetailPanel t={t} open={open} onClose={onClose}>
+      <DetailTabs
+        panelId="chat-details"
+        label={t('panel')}
+        tabs={tabs}
+        selected={tab}
+        onSelect={id => {
+          setTab(id)
+          if (id === 'agents') setAgentsView({ kind: 'tree' })
+        }}
+      />
+      <div className="pane" id="chat-details" role="tabpanel" aria-labelledby={`chat-details-${tab}`} tabIndex={0}>
         {tab === 'status' && (
           <StatusPane
             t={t}
@@ -631,6 +653,14 @@ export function SidePanel({
           />
         )}
         {tab === 'files' && <FilesPane t={t} chat={chat} current={currentFile} onOpen={onOpenFile} />}
+        {workspaceTreeSupported && (
+          <WorkspaceFiles
+            scope={{ kind: 'session', id: sessionId }}
+            sessionMode={chat.mode}
+            active={tab === 'workspace' && (!compact || open)}
+            t={t}
+          />
+        )}
         {tab === 'agents' && (
           <AgentsTab
             sessionId={sessionId}
@@ -681,6 +711,6 @@ export function SidePanel({
           <BackgroundPane t={t} tasks={chat.tasks} groups={bg.groups} details={bg.details} onStop={onStopTask} />
         )}
       </div>
-    </aside>
+    </DetailPanel>
   )
 }

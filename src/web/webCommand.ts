@@ -25,6 +25,7 @@ import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { webSessionArgs } from './sessionArgs.js'
 import { createWebSecrets, readWebState, writeWebState } from './auth.js'
 import { lanInterfaceAddresses, resolveBindHost } from './network.js'
+import { webWorkspaceOptions } from './projectTree.js'
 import {
   parsePreviewOrigin,
   startWebServer,
@@ -171,8 +172,8 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
     )
   }
 
-  const workspace =
-    opts.workspace ?? join(getClaudeConfigHomeDir(), 'web', 'workspace')
+  const workspaceOptions = webWorkspaceOptions(getClaudeConfigHomeDir(), opts.workspace)
+  const { workspace } = workspaceOptions
   mkdirSync(workspace, { recursive: true })
   // The dialogs' project-scope settings (hooks, skills, memory) are the
   // workspace's, where sessions start by default.
@@ -230,7 +231,7 @@ export async function runWebCommand(opts: WebCommandOptions): Promise<void> {
         port: listenPort,
         token,
         cookieKey,
-        workspace,
+        ...workspaceOptions,
         uploadsDir,
         trustedHosts,
         allowLocalNetwork,

@@ -4,7 +4,7 @@
 // the running clock.
 
 import { type AgentTask, formatTokens } from './agents'
-import type { ProjectTask } from './api'
+import type { FileTreeScope, ProjectTask } from './api'
 import type { MessageKey } from './i18n'
 import type { Approval, Item, TaskNote } from './protocol'
 
@@ -147,4 +147,26 @@ export function workerItems(items: Item[], brief: string): Item[] {
   return first !== -1 && items[first]!.kind === 'user' && (items[first] as { text: string }).text.trim() === brief.trim()
     ? items.filter((_, i) => i !== first)
     : items
+}
+
+export function workspaceTreeScope(project: string | undefined, view: string | null): FileTreeScope | undefined {
+  return view ? { kind: 'session', id: view } : project ? { kind: 'project', id: project } : undefined
+}
+
+export async function finishCoordinatorOpen<T>(current: () => boolean, steps: {
+  open: () => Promise<T>
+  select: (opened: T) => void
+  prepare: (opened: T) => Promise<void>
+  attach: (opened: T) => Promise<void>
+  fail: (error: unknown) => void
+}): Promise<void> {
+  try {
+    const opened = await steps.open()
+    if (!current()) return
+    steps.select(opened)
+    await steps.prepare(opened)
+    if (current()) await steps.attach(opened)
+  } catch (err) {
+    if (current()) steps.fail(err)
+  }
 }

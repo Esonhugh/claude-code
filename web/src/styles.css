@@ -218,6 +218,14 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .sess .t, .sess small { grid-column: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .sess .act { grid-column: 2; grid-row: 1 / span 2; font-size: 11px; color: var(--accent); border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 1px 8px; display: none }
 .sess:hover .act, .sess:focus-visible .act { display: inline-block }
+.workspace-files { min-width: 0; font-size: 12.5px }
+.workspace-files ul { list-style: none; margin: 0; padding: 0 0 0 12px }
+.workspace-files > ul { padding-left: 0 }
+.workspace-directory { display: block; width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: start; padding: 3px 4px; border-radius: 4px; overflow-wrap: anywhere }
+.workspace-directory:hover { background: var(--sunken) }
+.workspace-directory span, .workspace-files-note { color: var(--muted) }
+.workspace-file { color: var(--fg); padding: 3px 4px 3px 17px; overflow-wrap: anywhere }
+.workspace-files-note { margin: 3px 0 3px 12px }
 .foot { border-top: 1px solid var(--line); padding: 6px 12px 8px; display: grid; gap: 2px }
 .foot button { border: 0; background: transparent; text-align: left; padding: 7px 8px; border-radius: 6px; display: flex; gap: 10px; align-items: center }
 .foot button:hover { background: var(--sunken) }
@@ -778,6 +786,7 @@ body { margin: 0 }
 .meta > .chip.cwd:hover { border-color: var(--accent) }
 .meta .menu-btn, .meta .panel-btn { padding: 2px 9px }
 .welcome .menu-btn { position: absolute; top: 12px; left: 16px }
+.welcome .panel-btn { left: auto; right: 16px }
 .notice { max-width: var(--col); margin: 0 auto 8px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn) }
 .wl-col .notice { max-width: none; margin: 0 }
 .wl-box > .pop { top: calc(100% + 6px); bottom: auto; z-index: 8 }
@@ -1060,6 +1069,7 @@ body.proj .main, body.proj .side, body.proj .artview, body.proj #panel-btn { dis
 .pv-crumb button { border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--fg); cursor: pointer; white-space: nowrap }
 .pv-crumb span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); min-width: 0 }
 .pv-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line); background: var(--surface); position: relative }
+.pv-tab-pane:not([hidden]) { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0 }
 .pv-side .feed { padding: 16px 24px; gap: 14px }
 .pv-side .composer { background: var(--surface); padding: 6px 24px 12px }
 .pv-drag { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 3 }
