@@ -65,6 +65,7 @@
   "removeAttachment": "移除 {name}",
   "uploadFailed": "上传失败：{error}",
   "preview": "预览",
+  "enlargeImage": "放大图片",
   "openNewTab": "新标签页",
   "htmlSource": "源码",
   "chatImage": "图片 {n}",

@@ -949,6 +949,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .markdown code.long { word-break: break-all }
 .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 }
 .markdown img { max-width: 100%; border-radius: 8px }
+.chat-image-preview { display: block; max-width: 100%; max-height: min(760px, max(0px, calc(100dvh - 128px))); place-self: center; object-fit: contain }
 .table-wrap { overflow-x: auto }
 .markdown table { border-collapse: collapse; font-size: 13px; width: 100% }
 .markdown th, .markdown td { min-width: 6em; border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; font-variant-numeric: tabular-nums }

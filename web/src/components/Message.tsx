@@ -68,7 +68,7 @@ export function modelName(model: string | undefined, models: ModelOption[]): str
 export const FilesContext = createContext<{
   open?: (path: string) => void
   /** Opens a message's image in the artifact view; `target` names it in comments. */
-  openImage?: (src: string, n: number, target: string) => void
+  openImage?: (src: string, n: number, target: string, clickCount: number) => void
   base?: string
   /** Opens the side panel's Files tab. */
   showFiles?: () => void
@@ -762,12 +762,16 @@ function MessageView({
                       key={i}
                       className="bubble-image-open"
                       title={t('preview')}
-                      onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
+                      onClick={e => {
+                        const img = e.currentTarget.querySelector('img')
+                        const plainPointer = img?.complete && img.naturalWidth && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+                        files.openImage?.(src, i + 1, imageTarget(item.text, i), plainPointer ? e.detail : 0)
+                      }}
                     >
-                      <img className="bubble-image" src={src} alt="" />
+                      <img data-chat-image="" className="bubble-image" src={src} alt="" />
                     </button>
                   ) : (
-                    <img key={i} className="bubble-image" src={src} alt="" />
+                    <img key={i} data-chat-image="" className="bubble-image" src={src} alt="" />
                   ),
                 )}
                 <UserText text={String(p.text)} />

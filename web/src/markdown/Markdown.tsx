@@ -313,7 +313,7 @@ function renderImage(
 ): ReactNode {
   const src = safeImageSrc(localFileSrc(url, ctx.filesBase))
   if (!src) return <span key={key}>{alt || url}</span>
-  return <img key={key} src={src} alt={alt ?? ''} loading="lazy" />
+  return <img key={key} data-chat-image="" src={src} alt={alt ?? ''} loading="lazy" />
 }
 
 function renderNode(node: RootContent, ctx: Ctx, key: number): ReactNode {

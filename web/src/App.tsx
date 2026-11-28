@@ -1,5 +1,5 @@
-import { type CSSProperties, type DragEvent, Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import { type CSSProperties, type DragEvent, Fragment, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
@@ -31,6 +31,7 @@ import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
+import { Dialog } from './components/Dialog'
 import { AppDialog, type Motion, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
@@ -99,6 +100,8 @@ const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
 const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 // The Messages API rejects larger inline images; those are uploaded instead.
 const INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+// A pointer click on an upload also has a single-click action (open Artifact).
+const IMAGE_DOUBLE_CLICK_MS = 500
 
 /** Images go inline as image blocks; other files are uploaded and @-mentioned. */
 async function prepareContent(
@@ -195,6 +198,11 @@ export function App() {
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<Canvas>()
+  const [chatImage, setChatImage] = useState<{
+    sessionId: string; src: string; alt: string; opener: HTMLElement; menu?: { x: number; y: number }
+  }>()
+  const imageMenuRef = useRef<HTMLDivElement>(null)
+  const imageClick = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
   const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
   const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
@@ -275,6 +283,40 @@ export function App() {
   const project = projects.find(p => p.id === projectId)
   const inProject = !!project && !!chat && project.coordinator_session_id === state.view
   const view = state.view
+  useLayoutEffect(() => {
+    setChatImage(undefined)
+    return () => clearTimeout(imageClick.current)
+  }, [view, inProject])
+  const imageMenu = chatImage?.menu
+  useLayoutEffect(() => {
+    const el = imageMenuRef.current
+    if (!el || !imageMenu) return
+    el.style.left = `${Math.max(0, Math.min(imageMenu.x, innerWidth - el.offsetWidth - 8))}px`
+    el.style.top = `${Math.max(0, Math.min(imageMenu.y, innerHeight - el.offsetHeight - 8))}px`
+    el.querySelector('button')?.focus({ preventScroll: true })
+    const dismiss = (e: PointerEvent) => {
+      if (!e.composedPath().includes(el)) setChatImage(undefined)
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    return () => document.removeEventListener('pointerdown', dismiss, true)
+  }, [imageMenu])
+
+  const showChatImage = (e: MouseEvent<HTMLDivElement>) => {
+    const img = e.target
+    if (!view || e.defaultPrevented || !(img instanceof HTMLImageElement) || !img.hasAttribute('data-chat-image') || !img.complete || !img.naturalWidth) return
+    const src = img.getAttribute('src')
+    if (!src) return
+    const link = img.closest<HTMLAnchorElement>('a[href]')
+    const rightClick = e.type === 'contextmenu'
+    if (!rightClick && (link || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey)) return
+    e.preventDefault()
+    e.stopPropagation()
+    clearTimeout(imageClick.current)
+    const opener = link ?? img.closest('button') ?? img
+    if (opener === img) img.tabIndex = -1
+    if (!rightClick) opener.focus({ preventScroll: true })
+    setChatImage({ sessionId: view, src, alt: img.alt, opener, menu: rightClick ? { x: e.clientX, y: e.clientY } : undefined })
+  }
   const draftKey = view ?? ''
   const draft = drafts[draftKey] ?? ''
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
@@ -341,9 +383,14 @@ export function App() {
       view
         ? {
             open: openFile,
-            openImage: (src: string, n: number, target: string) => {
-              setPreview({ sessionId: view, path: t('chatImage', { n: String(n) }), image: { src, target } })
-              setSheetOpen(false)
+            openImage: (src: string, n: number, target: string, clickCount: number) => {
+              clearTimeout(imageClick.current)
+              const open = () => {
+                setPreview({ sessionId: view, path: t('chatImage', { n: String(n) }), image: { src, target } })
+                setSheetOpen(false)
+              }
+              if (inProject || clickCount === 0) open()
+              else if (clickCount === 1) imageClick.current = setTimeout(open, IMAGE_DOUBLE_CLICK_MS)
             },
             base: filesBase(view),
             cwd: chatCwd,
@@ -354,7 +401,7 @@ export function App() {
             },
           }
         : {},
-    [view, openFile, chatCwd, selectSideTab, t],
+    [view, openFile, chatCwd, selectSideTab, t, inProject],
   )
   const webPreviewValue = useMemo(() => {
     const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
@@ -2002,6 +2049,8 @@ export function App() {
             className="feed"
             ref={feedRef}
             aria-busy={chat.busy}
+            onDoubleClick={showChatImage}
+            onContextMenu={showChatImage}
             onScroll={e => {
               stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop)
               e.currentTarget.style.overflowAnchor = stickToBottom.current ? 'none' : ''
@@ -2428,6 +2477,34 @@ export function App() {
       {sheetOpen && (
         <div className="scrim" style={{ zIndex: 26 }} aria-hidden="true" onClick={() => setSheetOpen(false)} />
       )}
+      {chatImage && chatImage.sessionId === view && !inProject && (chatImage.menu ? (
+        createPortal(
+          <div className="pop ctxmenu chat-image-menu" ref={imageMenuRef} role="menu" aria-label={t('enlargeImage')}>
+            <button
+              className="mi"
+              type="button"
+              role="menuitem"
+              onKeyDown={e => {
+                if (e.key !== 'Escape' && e.key !== 'Tab') return
+                e.stopPropagation()
+                chatImage.opener.focus({ preventScroll: true })
+                setChatImage(undefined)
+              }}
+              onClick={() => {
+                chatImage.opener.focus({ preventScroll: true })
+                setChatImage({ ...chatImage, menu: undefined })
+              }}
+            >
+              {t('enlargeImage')}
+            </button>
+          </div>,
+          document.body,
+        )
+      ) : (
+        <Dialog t={t} xl title={t('enlargeImage')} onClose={() => setChatImage(undefined)}>
+          <img className="chat-image-preview" src={chatImage.src} alt={chatImage.alt} />
+        </Dialog>
+      ))}
       {dialog && (
         <AppDialog
           kind={dialog}

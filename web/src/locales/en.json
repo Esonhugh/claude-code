@@ -65,6 +65,7 @@
   "removeAttachment": "Remove {name}",
   "uploadFailed": "Upload failed: {error}",
   "preview": "Preview",
+  "enlargeImage": "Enlarge image",
   "openNewTab": "New tab",
   "htmlSource": "Source",
   "chatImage": "Image {n}",
