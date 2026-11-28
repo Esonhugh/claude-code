@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
-import { unwatchFile, watchFile } from 'fs'
+import { unwatchFile, watchFile, type Stats } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import pickBy from 'lodash-es/pickBy.js'
 import { basename, dirname, join, resolve } from 'path'
@@ -750,8 +750,15 @@ export function isPathTrusted(dir: string): boolean {
 /** Persists trust for `dir`, the latch a trust dialog writes for it. */
 export function savePathTrusted(dir: string): void {
   const key = normalizePathForConfigKey(resolve(dir))
-  saveProjectConfig(key, current =>
-    current.hasTrustDialogAccepted ? current : { ...current, hasTrustDialogAccepted: true },
+  saveProjectConfig(
+    key,
+    current => current.hasTrustDialogAccepted ? current : { ...current, hasTrustDialogAccepted: true },
+    (config, stats) => {
+      // Another process may have saved this trust while our watcher still has the old config.
+      globalConfigCache = { config: migrateConfigFields(config), mtime: stats.mtimeMs }
+      globalConfigCacheIsUnread = false
+      lastReadFileStats = { mtime: stats.mtimeMs, size: stats.size }
+    },
   )
 }
 
@@ -1185,6 +1192,7 @@ function saveConfigWithLock<A extends object>(
   createDefault: () => A,
   mergeFn: (current: A) => A,
   backupDir = getConfigBackupDir(),
+  onUnchanged?: (current: A, stats: Stats) => void,
 ): boolean {
   const defaultConfig = createDefault()
   const dir = dirname(file)
@@ -1222,12 +1230,16 @@ function saveConfigWithLock<A extends object>(
 
     // Check for stale write - file changed since we last read it
     // Only check for global config file since lastReadFileStats tracks that specific file
-    if (lastReadFileStats && file === getGlobalClaudeFile()) {
+    let readStats: Stats | undefined
+    if (file === getGlobalClaudeFile() && (lastReadFileStats || onUnchanged)) {
       try {
         const currentStats = fs.statSync(file)
+        readStats = currentStats
         if (
-          currentStats.mtimeMs !== lastReadFileStats.mtime ||
-          currentStats.size !== lastReadFileStats.size
+          lastReadFileStats && (
+            currentStats.mtimeMs !== lastReadFileStats.mtime ||
+            currentStats.size !== lastReadFileStats.size
+          )
         ) {
           logEvent('tengu_config_stale_write', {
             read_mtime: lastReadFileStats.mtime,
@@ -1238,7 +1250,7 @@ function saveConfigWithLock<A extends object>(
         }
       } catch (e) {
         const code = getErrnoCode(e)
-        if (code !== 'ENOENT') {
+        if (lastReadFileStats && code !== 'ENOENT') {
           throw e
         }
         // File doesn't exist yet, no stale check needed
@@ -1251,8 +1263,9 @@ function saveConfigWithLock<A extends object>(
     // Another profile's file has no cache to fall back on, so a read that
     // fails or doesn't parse stops the save.
     let currentConfig: A | undefined
+    let readFromDisk = false
     if (file === getGlobalClaudeFile()) {
-      currentConfig = getConfigForSave() as A | undefined
+      currentConfig = getConfigForSave(onUnchanged ? () => { readFromDisk = true } : undefined) as A | undefined
     } else {
       try {
         currentConfig = getConfig(file, createDefault, true)
@@ -1278,6 +1291,21 @@ function saveConfigWithLock<A extends object>(
 
     // Skip write if no changes (same reference returned)
     if (mergedConfig === currentConfig) {
+      if (onUnchanged && readFromDisk && readStats) {
+        // Use the revision read under the lock, not a recovery snapshot or a newer file.
+        let after: Stats | undefined
+        try {
+          after = fs.statSync(file)
+        } catch {
+          // Without file metadata there is no cache revision to adopt.
+        }
+        if (
+          after && after.dev === readStats.dev && after.ino === readStats.ino &&
+          after.mtimeMs === readStats.mtimeMs && after.ctimeMs === readStats.ctimeMs && after.size === readStats.size
+        ) {
+          onUnchanged(currentConfig, readStats)
+        }
+      }
       return false
     }
 
@@ -1472,6 +1500,7 @@ function getConfig<A>(
   file: string,
   createDefault: () => A,
   throwOnInvalid?: boolean,
+  onDiskRead?: () => void,
 ): A {
   // Log a warning if config is accessed before it's allowed
   if (!configReadingAllowed && process.env.NODE_ENV !== 'test') {
@@ -1493,6 +1522,7 @@ function getConfig<A>(
     try {
       // Strip BOM before parsing - PowerShell 5.x adds BOM to UTF-8 files
       const parsedConfig = jsonParse(stripBOM(fileContent))
+      if (onDiskRead && parsedConfig && typeof parsedConfig === 'object' && !Array.isArray(parsedConfig)) onDiskRead()
       return {
         ...createDefault(),
         ...parsedConfig,
@@ -1651,9 +1681,9 @@ function getConfig<A>(
  * on what this process read earlier, unless the file has changed since (another
  * process wrote it). Without either there is nothing to build on.
  */
-function getConfigForSave(): GlobalConfig | undefined {
+function getConfigForSave(onDiskRead?: () => void): GlobalConfig | undefined {
   const file = getGlobalClaudeFile()
-  const config = getConfig(file, createDefaultGlobalConfig)
+  const config = getConfig(file, createDefaultGlobalConfig, undefined, onDiskRead)
   if (lastConfigReadError === undefined) return config
   if (globalConfigCacheIsUnread || !globalConfigCache.config) return undefined
   try {
@@ -1724,6 +1754,7 @@ export function saveCurrentProjectConfig(
 function saveProjectConfig(
   absolutePath: string,
   updater: (currentConfig: ProjectConfig) => ProjectConfig,
+  onUnchanged?: (config: GlobalConfig, stats: Stats) => void,
 ): boolean {
   if (process.env.NODE_ENV === 'test') {
     const projects = (TEST_GLOBAL_CONFIG_FOR_TESTING.projects ??= {})
@@ -1755,6 +1786,8 @@ function saveProjectConfig(
         }
         return written
       },
+      undefined,
+      onUnchanged,
     )
     if (didWrite && written) {
       writeThroughGlobalConfigCache(written)
