@@ -1,5 +1,7 @@
 import {
+  createContext,
   type CSSProperties,
+  type Dispatch,
   type DragEvent,
   Fragment,
   type KeyboardEvent,
@@ -7,9 +9,12 @@ import {
   type PointerEvent,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react'
@@ -94,6 +99,27 @@ function TaskCard({
   )
 }
 
+type TaskPreview = { id: string; focused: boolean } | null
+type TaskPreviewAction = { type: 'activate' } | { type: 'focus' | 'hover' | 'leave' | 'close'; id: string }
+
+export function taskPreviewReducer(active: TaskPreview, action: TaskPreviewAction): TaskPreview {
+  if (action.type === 'activate') return null
+  if (action.type === 'focus') return active?.id === action.id && active.focused ? active : { id: action.id, focused: true }
+  if (action.type === 'hover') {
+    // A focused preview owns the space until blur, Escape or explicit activation.
+    return active?.focused || active?.id === action.id ? active : { id: action.id, focused: false }
+  }
+  if (active?.id !== action.id || (action.type === 'leave' && active.focused)) return active
+  return null
+}
+
+const TaskPreviewContext = createContext<{ active: TaskPreview; dispatch: Dispatch<TaskPreviewAction> } | null>(null)
+
+function TaskPreviewScope({ children }: { children: ReactNode }) {
+  const [active, dispatch] = useReducer(taskPreviewReducer, null)
+  return <TaskPreviewContext.Provider value={{ active, dispatch }}>{children}</TaskPreviewContext.Provider>
+}
+
 /** A dispatched task in the coordinator's chat: an inline link with a hover card of its state and latest activity. */
 export function TaskLink({
   t,
@@ -119,20 +145,106 @@ export function TaskLink({
   onMenu?: (e: MouseEvent) => void
 }) {
   const state = task.state
+  const previewId = useId()
+  const chipRef = useRef<HTMLButtonElement>(null)
+  const cardRef = useRef<HTMLSpanElement>(null)
+  const leaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const preview = useContext(TaskPreviewContext)
+  const dispatch = preview?.dispatch
+  const previewOpen = preview?.active?.id === previewId
+  useEffect(() => () => {
+    clearTimeout(leaveTimer.current)
+    dispatch?.({ type: 'close', id: previewId })
+  }, [dispatch, previewId])
+
+  useLayoutEffect(() => {
+    if (!previewOpen) return
+    const chip = chipRef.current!
+    const card = cardRef.current!
+    const link = chip.parentElement!
+    const feed = link.closest('.feed')
+    const place = () => {
+      const anchor = link.getBoundingClientRect()
+      const bounds = feed?.getBoundingClientRect()
+      const { clientWidth, clientHeight } = document.documentElement
+      const left = Math.max(0, bounds?.left ?? 0) + 8
+      const right = Math.min(clientWidth, bounds?.right ?? clientWidth) - 8
+      const top = Math.max(0, bounds?.top ?? 0) + 6
+      const bottom = Math.min(clientHeight, bounds?.bottom ?? clientHeight) - 6
+      const above = anchor.top - top - 6
+      const below = bottom - anchor.bottom - 6
+      const space = Math.max(above, below)
+      if (anchor.bottom <= top || anchor.top >= bottom || space < 40) return dispatch?.({ type: 'close', id: previewId })
+      card.style.setProperty('--tl-width', `${right - left}px`)
+      card.style.setProperty('--tl-space', `${space}px`)
+      card.style.left = `${Math.max(left, Math.min(anchor.left, right - card.offsetWidth))}px`
+      // Stay within the feed, flipping below the link near its top edge.
+      card.style.top = above >= below ? '' : `${anchor.bottom + 6}px`
+      card.style.bottom = above >= below ? `${clientHeight - anchor.top + 6}px` : ''
+    }
+    place()
+    const observer = new ResizeObserver(place)
+    observer.observe(card)
+    if (feed) observer.observe(feed)
+    feed?.addEventListener('scroll', place)
+    window.addEventListener('resize', place)
+    return () => {
+      observer.disconnect()
+      feed?.removeEventListener('scroll', place)
+      window.removeEventListener('resize', place)
+    }
+  }, [dispatch, previewId, previewOpen])
+
+  const showPreview = (type: 'hover' | 'focus') => {
+    clearTimeout(leaveTimer.current)
+    dispatch?.({ type, id: previewId })
+  }
+  const closePreview = (activate = false) => {
+    clearTimeout(leaveTimer.current)
+    dispatch?.(activate ? { type: 'activate' } : { type: 'close', id: previewId })
+  }
   return (
-    <span className="tasklink">
+    <span
+      className="tasklink"
+      onPointerEnter={e => { if (e.pointerType !== 'touch') showPreview('hover') }}
+      onPointerLeave={() => {
+        // Give the pointer time to cross the gap between the chip and card.
+        leaveTimer.current = setTimeout(() => dispatch?.({ type: 'leave', id: previewId }), 180)
+      }}
+      onFocus={e => {
+        if (previewOpen || (e.target === chipRef.current && e.target.matches(':focus-visible'))) showPreview('focus')
+      }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) closePreview() }}
+      onKeyDown={e => {
+        if (!previewOpen || e.key !== 'Escape' || e.defaultPrevented) return
+        if (e.target !== chipRef.current && !cardRef.current?.contains(e.target as Node)) return
+        e.preventDefault()
+        e.stopPropagation()
+        if (e.target !== chipRef.current) chipRef.current?.focus({ preventScroll: true })
+        closePreview()
+      }}
+    >
       <span className="g">{sent ? '↗' : '↳'}</span>
       {t(sent ? 'sentTo' : 'handedTo')}
-      <button type="button" className={`tl-chip ${state}`} aria-current={current} data-task={task.id} onClick={onOpen} onContextMenu={onMenu}>
+      <button
+        ref={chipRef}
+        type="button"
+        className={`tl-chip ${state}`}
+        aria-controls={previewId}
+        aria-current={current}
+        data-task={task.id}
+        onClick={() => { closePreview(true); onOpen?.() }}
+        onContextMenu={e => { closePreview(true); onMenu?.(e) }}
+      >
         {state === 'running' ? <span className="spin" aria-hidden="true" /> : <span className={`dot ${state === 'done' ? '' : state}`} />}
         <span className="tt">{starting ? '' : '@'}{task.title}</span>
       </button>
-      <span className="tl-card" role="tooltip">
+      <span ref={cardRef} id={previewId} className="tl-card" role="group" aria-label={t('preview')} hidden={!previewOpen}>
         <span className="tl-row">
           <span className={`pjbadge ${state}`}>{t(`taskState_${state}`)}</span>
           {meta && <span className="mono">{meta}</span>}
         </span>
-        {activity && <span className="tl-act">{activity}</span>}
+        {activity && <span className="tl-act" tabIndex={0} role="region" aria-label={task.title}>{activity}</span>}
       </span>
     </span>
   )
@@ -1086,7 +1198,7 @@ export function ProjectView({
               </button>
             </div>
           )}
-          {feed}
+          <TaskPreviewScope>{feed}</TaskPreviewScope>
           {chat.queued.map(item => (
             <Message key={item.id} item={item} t={t} streaming={false} queued />
           ))}
