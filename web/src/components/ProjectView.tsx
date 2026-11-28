@@ -30,19 +30,23 @@ import {
   taskNoteText,
   type TaskState,
   withApprovals,
+  workspaceTreeScope,
   workerItems,
 } from '../projects'
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
 import { toolMessage } from '../tools'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
+import { DetailTabs, useCompactDetailPanel } from './DetailTabs'
 import { Dialog } from './Dialog'
 import { AgentConversation, joinTurns, Message, modelName, QuoteContext, QuoteOnSelect, replyPrompt, type SentMessage, useUnread } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
 import { mergeSkills, useEnabledSkills } from './StartPage'
 import { followScroll, readStored, type T, writeStored } from './ui'
+import { WorkspaceFiles } from './WorkspaceFiles'
 
 type Show = 'chat' | 'tasks'
+type ProjectTab = 'tasks' | 'workspace'
 
 /** The width of the coordinator column, kept per browser. */
 const WIDTH_KEY = 'claude-web-pv-width'
@@ -375,6 +379,7 @@ export function ProjectView({
   t,
   project,
   chat,
+  workspaceTreeSupported,
   models,
   menuButton,
   signedOut,
@@ -408,6 +413,7 @@ export function ProjectView({
   t: T
   project: Project
   chat: SessionChat
+  workspaceTreeSupported?: boolean
   models: ModelOption[]
   menuButton: ReactNode
   signedOut?: boolean
@@ -448,6 +454,10 @@ export function ProjectView({
   daybreak?: ComposerTools['model']['daybreak']
 }) {
   const [show, setShow] = useState<Show>('chat')
+  const [rightTab, setRightTab] = useState<ProjectTab>('tasks')
+  const compact = useCompactDetailPanel()
+  const workspaceSelected = !!workspaceTreeSupported && rightTab === 'workspace'
+  const tab = workspaceSelected ? 'workspace' : 'tasks'
   const [wide, setWide] = useState(false)
   const [width, setWidth] = useState<number | undefined>(() => readStored<number | undefined>(WIDTH_KEY, undefined))
   const [openId, setOpenId] = useState<string>()
@@ -570,15 +580,15 @@ export function ProjectView({
     const feed = feedRef.current
     if (feed && atBottom.current) feed.scrollTop = feed.scrollHeight
   }, [tasks, chat.tasks])
-  // Esc closes an open task, as the prototype does.
+  // Esc closes the visible open task, as the prototype does.
   useEffect(() => {
-    if (!openId) return
+    if (!openId || workspaceSelected) return
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('.dialog, .ctxmenu')) setOpenId(undefined)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [openId])
+  }, [openId, workspaceSelected])
 
   const say = (text: string) => {
     setFlash(text)
@@ -590,6 +600,7 @@ export function ProjectView({
     setMenu(null)
     setOpenId(id)
     setShow('tasks')
+    setRightTab('tasks')
     setBoard(false)
     setTaskNotice(undefined)
   }
@@ -910,7 +921,7 @@ export function ProjectView({
   const sideList = (
     <>
       <div className="pv-head">
-        {menuButton}
+        {!workspaceSelected && menuButton}
         <div className="pv-crumb">
           <button type="button" onClick={() => setOpenId(undefined)}>
             {t('pvTasks')}
@@ -958,7 +969,7 @@ export function ProjectView({
 
   const taskHead = (task: ProjectTask) => (
     <div className="pv-head">
-      {menuButton}
+      {!workspaceSelected && menuButton}
       <div className="pv-crumb">
         <button type="button" onClick={() => setOpenId(undefined)}>
           {t('pvTasks')}
@@ -1159,7 +1170,7 @@ export function ProjectView({
           />
         </div>
       </div>
-      <aside className="pv-side" aria-label={t('pvTasks')}>
+      <aside className="pv-side" aria-label={t(workspaceTreeSupported ? 'panel' : 'pvTasks')}>
         <div
           className="pv-drag"
           role="separator"
@@ -1170,42 +1181,81 @@ export function ProjectView({
           onPointerDown={drag}
           onKeyDown={dragKey}
         />
-        {open ? (
-          <TaskPane
-            key={open.id}
-            t={t}
-            project={project}
-            task={open}
-            model={modelOf(open)}
-            effort={picks[open.id]?.effort ?? open.effort ?? chatEffort}
-            models={models}
-            head={taskHead(open)}
-            approvals={chat.approvals.filter(a => a.agentId === open.id)}
-            tools={tools}
-            signedOut={signedOut}
-            draft={taskDrafts[open.id] ?? ''}
-            setDraft={v => setTaskDrafts(d => ({ ...d, [open.id]: v }))}
-            files={taskFiles[open.id] ?? []}
-            setFiles={next => setTaskFiles(f => ({ ...f, [open.id]: next }))}
-            notice={taskNotice}
-            followUntil={followUntil}
-            meta={metaOf(open)}
-            pick={picks[open.id] ?? {}}
-            onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
-            daybreak={daybreak}
-            sent={sentTo[open.id] ?? []}
-            dropSent={dropSent}
-            onSend={() => void sendTask(open)}
-            onAnswer={onAnswer}
-            targets={targetsFor(open)}
-            picked={pickedFor(open)}
-            onTarget={x => setTaskTo(to => ({ ...to, [open.id]: x }))}
-            quote={taskQuotes[open.id]}
-            onQuote={setTaskQuote}
+        {workspaceTreeSupported && (
+          <DetailTabs<ProjectTab>
+            panelId="project-details"
+            label={t('panel')}
+            tabs={[{ id: 'tasks', label: t('pvTasks') }, { id: 'workspace', label: t('workspaceFilesTab') }]}
+            selected={tab}
+            onSelect={setRightTab}
           />
-        ) : (
-          sideList
         )}
+        <div
+          id={workspaceTreeSupported ? 'project-details' : undefined}
+          role={workspaceTreeSupported ? 'tabpanel' : undefined}
+          aria-labelledby={workspaceTreeSupported ? `project-details-${tab}` : undefined}
+          tabIndex={workspaceTreeSupported ? 0 : undefined}
+          className="pv-tab-pane"
+        >
+          <div className="pv-tab-pane" hidden={workspaceSelected}>
+            {open ? (
+              <TaskPane
+                key={open.id}
+                t={t}
+                project={project}
+                task={open}
+                model={modelOf(open)}
+                effort={picks[open.id]?.effort ?? open.effort ?? chatEffort}
+                models={models}
+                head={taskHead(open)}
+                approvals={chat.approvals.filter(a => a.agentId === open.id)}
+                tools={tools}
+                signedOut={signedOut}
+                draft={taskDrafts[open.id] ?? ''}
+                setDraft={v => setTaskDrafts(d => ({ ...d, [open.id]: v }))}
+                files={taskFiles[open.id] ?? []}
+                setFiles={next => setTaskFiles(f => ({ ...f, [open.id]: next }))}
+                notice={taskNotice}
+                followUntil={followUntil}
+                meta={metaOf(open)}
+                pick={picks[open.id] ?? {}}
+                onPick={pick => setPicks(p => ({ ...p, [open.id]: pick }))}
+                daybreak={daybreak}
+                sent={sentTo[open.id] ?? []}
+                dropSent={dropSent}
+                onSend={() => void sendTask(open)}
+                onAnswer={onAnswer}
+                targets={targetsFor(open)}
+                picked={pickedFor(open)}
+                onTarget={x => setTaskTo(to => ({ ...to, [open.id]: x }))}
+                quote={taskQuotes[open.id]}
+                onQuote={setTaskQuote}
+              />
+            ) : (
+              sideList
+            )}
+          </div>
+          {workspaceTreeSupported && (
+            <div className="pv-tab-pane" hidden={!workspaceSelected}>
+              {workspaceSelected && (
+                <div className="pv-head">
+                  {menuButton}
+                  <span className="sp" />
+                  {seg}
+                  {wideButton}
+                </div>
+              )}
+              <div className="pane">
+                <WorkspaceFiles
+                  scope={workspaceTreeScope(project.id, uploadTo)}
+                  sessionMode={chat.mode}
+                  active={workspaceSelected && (!compact || show === 'tasks')}
+                  t={t}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       </aside>
       {board && (
         <Dialog t={t} title={t('taskBoardTitle')} xl onClose={() => setBoard(false)}>

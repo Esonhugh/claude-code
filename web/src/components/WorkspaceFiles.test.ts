@@ -3,28 +3,27 @@ import { listWorkspaceTree } from '../api'
 import { WorkspaceFiles } from './WorkspaceFiles'
 import type { T } from './ui'
 
-it('renders a collapsed workspace foldout without directory rows', async () => {
+it('renders no branch while inactive; selecting it mounts only the root', async () => {
   const react = await import('react')
   ;(globalThis as { React?: unknown }).React ??= react
   const { renderToStaticMarkup } = await import('react-dom/server')
-  const markup = renderToStaticMarkup(react.createElement(WorkspaceFiles, { scope: { kind: 'project', id: 'test' }, supported: true, t: (key => key) as T }))
-  expect(markup).toContain('aria-expanded="false"')
-  expect(markup).toContain('sbWorkspaceFiles')
-  expect(markup).not.toContain('workspace-files-body')
-  expect(markup).not.toContain('role="tree"')
+  const render = (active: boolean) => renderToStaticMarkup(react.createElement(WorkspaceFiles, { scope: { kind: 'project', id: 'test' }, active, t: (key => key) as T }))
+  expect(render(false)).toBe('')
+  expect(render(true)).toContain('role="status">loading')
+  expect(render(true)).not.toContain('workspace-directory')
 })
 
-it('does not share a mounted foldout between project selections or unsupported connections', () => {
+it('isolates the cache by project, session and lifecycle, but not by tab activation', () => {
   const t = ((key: string) => key) as T
-  const select = (projectId?: string, supported?: boolean) => WorkspaceFiles({ scope: projectId ? { kind: 'project', id: projectId } : undefined, supported, t })
-  expect(select('project-a', true)?.key).toBe('project:project-a')
-  expect(select('project-b', true)?.key).toBe('project:project-b')
-  expect(select('project-a', false)).toBeNull()
-  expect(select('project-a')).toBeNull()
-  expect(select(undefined, true)).toBeNull()
-  const scope = { kind: 'session' as const, id: 'project-a' }
-  expect(WorkspaceFiles({ scope, supported: true, sessionMode: 'live', t })?.key).toBe('session:project-a:live')
-  expect(WorkspaceFiles({ scope, supported: true, sessionMode: 'readonly', t })?.key).toBe('session:project-a:readonly')
+  const select = (kind: 'project' | 'session', id: string, active: boolean, sessionMode?: string) =>
+    WorkspaceFiles({ scope: { kind, id }, active, sessionMode, t })?.key
+  expect(select('project', 'a', true)).toBe('project:a')
+  expect(select('project', 'b', true)).toBe('project:b')
+  expect(select('session', 'a', true, 'live')).toBe('session:a:live')
+  expect(select('session', 'a', false, 'live')).toBe('session:a:live')
+  expect(select('session', 'a', true, 'readonly')).toBe('session:a:readonly')
+  expect(select('session', 'b', true, 'live')).toBe('session:b:live')
+  expect(WorkspaceFiles({ active: true, t })).toBeNull()
 })
 
 it('requests a project-scoped directory and forwards cancellation', async () => {
@@ -44,12 +43,12 @@ it('requests a project-scoped directory and forwards cancellation', async () => 
 })
 
 
-it('keeps the Composer key intact and gives the sidebar one valid key per locale', async () => {
+it('keeps the Composer key intact and provides the right tab and startup directory copy in all locales', async () => {
   for (const [lang, original] of [['en', 'Workspace files'], ['zh-Hans', '工作区文件'], ['zh-Hant', '工作區檔案']]) {
     const source = await Bun.file(new URL(`../locales/${lang}.json`, import.meta.url)).text()
     const messages = JSON.parse(source) as Record<string, string>
     expect(messages.workspaceFiles).toBe(original)
-    for (const key of ['workspaceFiles', 'sbWorkspaceFiles', 'sbWorkspaceStartupCwd', 'workspaceFilesUnavailable', 'workspaceFilesError', 'workspaceFilesEmpty', 'workspaceFilesTruncated']) {
+    for (const key of ['workspaceFiles', 'workspaceFilesTab', 'workspaceTreeStartupCwd', 'workspaceFilesUnavailable', 'workspaceFilesError', 'workspaceFilesEmpty', 'workspaceFilesTruncated']) {
       expect(source.match(new RegExp(`^  "${key}":`, 'gm'))).toHaveLength(1)
       expect(messages[key]).toBeTruthy()
     }

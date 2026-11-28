@@ -6,7 +6,6 @@ import {
   patchSessionMeta,
   patchProject,
   type Project,
-  type FileTreeScope,
   removeProject,
   type SessionMetaPatch,
   unarchiveProject,
@@ -16,7 +15,6 @@ import type { Lang } from '../i18n'
 import type { SessionEnv } from '../protocol'
 import { groupSidebar, type HistoryEntry } from '../store'
 import { Clawd, readStored, type T, writeStored } from './ui'
-import { WorkspaceFiles } from './WorkspaceFiles'
 
 const COLLAPSED_KEY = 'claude-web-collapsed'
 // Folders after the first few start collapsed until the user opens them.
@@ -87,9 +85,6 @@ export function Sidebar({
   account,
   projects,
   projectId,
-  workspaceTreeSupported,
-  workspaceTreeScope,
-  workspaceTreeSessionMode,
   onProject,
   onNewProject,
   onProjectSettings,
@@ -121,9 +116,6 @@ export function Sidebar({
   projects: SidebarProject[]
   /** The project shown, if any. */
   projectId?: string
-  workspaceTreeSupported?: boolean
-  workspaceTreeScope?: FileTreeScope
-  workspaceTreeSessionMode?: string
   onProject: (project: Project) => void
   onNewProject: () => void
   onProjectSettings: (project: Project) => void
@@ -729,7 +721,6 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <WorkspaceFiles scope={workspaceTreeScope} supported={workspaceTreeSupported} sessionMode={workspaceTreeSessionMode} t={t} />
       <div className="foot">{account}</div>
       {tip &&
         createPortal(

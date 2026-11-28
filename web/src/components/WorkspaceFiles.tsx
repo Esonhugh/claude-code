@@ -63,29 +63,19 @@ function Directory({ name, dir, ...tree }: TreeProps & { name: string; dir: stri
 }
 
 /** Remount on scope or session lifecycle changes, discarding names and pending requests. */
-export function WorkspaceFiles({ scope, supported, sessionMode, t }: { scope?: FileTreeScope; supported?: boolean; sessionMode?: string; t: T }) {
-  if (!supported || !scope) return null
+export function WorkspaceFiles({ scope, active, sessionMode, t }: { scope?: FileTreeScope; active: boolean; sessionMode?: string; t: T }) {
+  if (!scope) return null
   const lifecycle = scope.kind === 'session' ? `:${sessionMode ?? ''}` : ''
-  return <ScopedFiles key={`${scope.kind}:${scope.id}${lifecycle}`} scope={scope} t={t} />
+  return <ScopedFiles key={`${scope.kind}:${scope.id}${lifecycle}`} scope={scope} active={active} t={t} />
 }
 
-function ScopedFiles({ scope, t }: { scope: FileTreeScope; t: T }) {
-  const [open, setOpen] = useState(false)
+function ScopedFiles({ scope, active, t }: { scope: FileTreeScope; active: boolean; t: T }) {
   const [cache] = useState(() => new Map<string, ProjectTree>())
+  if (!active) return null
   return (
-    <section className="workspace-files">
-      <div className="sb-h">
-        <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-          <span className="caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
-          {t('sbWorkspaceFiles')}
-        </button>
-      </div>
-      {open && (
-        <div className="workspace-files-body">
-          {scope.kind === 'session' && <p className="workspace-files-note">{t('sbWorkspaceStartupCwd')}</p>}
-          <Branch scope={scope} cache={cache} t={t} dir="" />
-        </div>
-      )}
-    </section>
+    <div className="workspace-files">
+      {scope.kind === 'session' && <p className="workspace-files-note">{t('workspaceTreeStartupCwd')}</p>}
+      <Branch scope={scope} cache={cache} t={t} dir="" />
+    </div>
   )
 }

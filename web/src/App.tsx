@@ -39,7 +39,7 @@ import { Preview } from './components/Preview'
 import { ProjectDialog } from './components/ProjectDialog'
 import { ProjectView } from './components/ProjectView'
 import { type DialogKind, Sidebar, type SidebarProject } from './components/Sidebar'
-import { SidePanel, type SideTab } from './components/SidePanel'
+import { ProjectWorkspacePanel, SidePanel, type SideTab } from './components/SidePanel'
 import { StartPage } from './components/StartPage'
 import { ColumnDrag, type Columns, columnVars } from './components/ColumnDrag'
 import { FootMenu, followScroll, formatElapsed, readStored, type T, writeStored } from './components/ui'
@@ -275,6 +275,8 @@ export function App() {
   const project = projects.find(p => p.id === projectId)
   const inProject = !!project && !!chat && project.coordinator_session_id === state.view
   const view = state.view
+  const treeScope = info.workspaceTree ? workspaceTreeScope(project?.id, view) : undefined
+  const projectWorkspace = treeScope?.kind === 'project' ? treeScope.id : undefined
   const draftKey = view ?? ''
   const draft = drafts[draftKey] ?? ''
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
@@ -435,7 +437,7 @@ export function App() {
     setAgentsView({ kind: 'tree' })
     setWorkflowId(undefined)
     setSheetOpen(false)
-  }, [view])
+  }, [view, projectWorkspace])
   const items = chat?.items
   // An agent the main conversation started that handed back its report or ended, under the turn it ended in.
   const agentNotes = useMemo(
@@ -549,10 +551,10 @@ export function App() {
     document.title = uiName
   }, [uiName])
   useEffect(() => {
-    document.body.classList.toggle('nosess', !chat)
+    document.body.classList.toggle('nosess', !chat && !projectWorkspace)
     document.body.classList.toggle('art', previewing)
     document.body.classList.toggle('proj', inProject)
-  }, [chat, previewing, inProject])
+  }, [chat, previewing, inProject, projectWorkspace])
 
   useEffect(() => {
     void refreshHistory()
@@ -1473,7 +1475,7 @@ export function App() {
   // The phone's bottom sheet likewise takes focus and returns it to the panel button.
   useEffect(() => {
     if (!sheetOpen) return
-    document.querySelector<HTMLElement>('.side [role=tab][aria-selected=true]')?.focus()
+    document.querySelector<HTMLElement>('.side [role=tab][aria-selected=true], .side [data-workspace-summary]')?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSheetOpen(false)
     }
@@ -1905,6 +1907,22 @@ export function App() {
     </AgentsContext.Provider>
   )
 
+  const panelButton = (
+    <button
+      type="button"
+      className="menu-btn panel-btn"
+      id="panel-btn"
+      aria-label={t('openPanel')}
+      aria-expanded={sheetOpen}
+      onClick={() => {
+        setPreview(undefined)
+        setSheetOpen(true)
+      }}
+    >
+      ▤
+    </button>
+  )
+
   const main = inProject ? null : !chat ? (
     <StartPage
       t={t}
@@ -1929,7 +1947,7 @@ export function App() {
       onStart={() => void startChat()}
       onOpen={entry => void openSession(entry)}
       onViewAll={focusSearch}
-      menuButton={menuButton}
+      menuButton={projectWorkspace ? <>{menuButton}{panelButton}</> : menuButton}
       gate={<LoginGate t={t} api={account} onKeyDialog={setKeyDialog} />}
       signedOut={signedOut}
     />
@@ -1996,19 +2014,7 @@ export function App() {
                 </FootMenu>
               </div>
             )}
-            <button
-              type="button"
-              className="menu-btn panel-btn"
-              id="panel-btn"
-              aria-label={t('openPanel')}
-              aria-expanded={sheetOpen}
-              onClick={() => {
-                setPreview(undefined)
-                setSheetOpen(true)
-              }}
-            >
-              ▤
-            </button>
+            {panelButton}
           </div>
           {team && <TeamBar t={t} team={team} name={teamName(chat.items)} onOpen={agentsValue.open} />}
           <QuoteOnSelect t={t} feed={feedRef} onQuote={quoteInChat} />
@@ -2242,9 +2248,6 @@ export function App() {
         }}
         projects={sidebarProjects}
         projectId={project?.id}
-        workspaceTreeSupported={info.workspaceTree}
-        workspaceTreeScope={workspaceTreeScope(project?.id, view)}
-        workspaceTreeSessionMode={chat?.mode}
         onProject={p => void openProject(p)}
         onNewProject={() => {
           setSidebarOpen(false)
@@ -2346,6 +2349,7 @@ export function App() {
             t={t}
             project={project}
             chat={chat}
+            workspaceTreeSupported={info.workspaceTree}
             models={models}
             menuButton={menuButton}
             signedOut={signedOut}
@@ -2406,6 +2410,7 @@ export function App() {
           open={sheetOpen}
           tab={sideTab}
           setTab={setSideTab}
+          workspaceTreeSupported={info.workspaceTree}
           sessionId={view}
           chat={chat}
           title={chatTitle}
@@ -2435,6 +2440,9 @@ export function App() {
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
           onClose={() => setSheetOpen(false)}
         />
+      )}
+      {projectWorkspace && (
+        <ProjectWorkspacePanel key={projectWorkspace} projectId={projectWorkspace} t={t} open={sheetOpen} onClose={() => setSheetOpen(false)} />
       )}
       {sidebarOpen && <div className="scrim" aria-hidden="true" onClick={() => setSidebarOpen(false)} />}
       {sheetOpen && (
