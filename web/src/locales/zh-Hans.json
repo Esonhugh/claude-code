@@ -10,6 +10,8 @@
   "thinking": "思考过程",
   "toolInput": "输入",
   "toolOutput": "输出",
+  "toolDescription": "描述",
+  "toolArgs": "参数",
   "sessionEnded": "会话已结束。",
   "sessionEndedReason": "会话已结束：{reason}",
   "sessionDisconnected": "与会话的连接已断开，发送消息即可继续。",

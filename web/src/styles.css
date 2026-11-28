@@ -833,6 +833,7 @@ a.btn { text-decoration: none; color: var(--fg); display: inline-block }
 .toolcard > summary { grid-template-columns: auto minmax(0, 1fr) auto auto }
 .toolcard .tbody { padding: 8px 12px; display: grid; gap: 6px; border-top: 1px solid var(--line) }
 .toolcard .tbody .tlabel { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted) }
+.toolcard .tdesc { white-space: pre-wrap; overflow-wrap: anywhere }
 .toolcard .tin { margin: 0; background: var(--sunken); border-radius: 6px; padding: 8px 10px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto }
 .toolcard .tbody .tout { border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere }
 .toolcard.bad { border-color: var(--bad) }

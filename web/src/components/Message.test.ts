@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import type { Block, Item, ModelOption } from '../protocol'
+import { translate } from '../i18n'
+import { type Block, type ChatState, initialState, type Item, type ModelOption, reduce } from '../protocol'
 import { imageTarget, joinTurns, modelName, quotePrompt, relativeTo, splitQuote, stepActions, turnSegments } from './Message'
 
 const models: ModelOption[] = [
@@ -118,6 +119,108 @@ describe('stepActions', () => {
       ),
     ).toEqual(['stepsRead:2', 'stepsSearched:1', 'stepsRanOne:bun test', 'TodoWrite'])
     expect(stepActions([call('Bash', { command: 'a' }), call('Bash', { command: 'b' })], t as never)).toEqual(['stepsRan:2'])
+  })
+})
+
+describe('shell and skill cards', () => {
+  const call = (name: string, input: unknown) => ({
+    type: 'assistant',
+    message: { id: 'a1', content: [{ type: 'tool_use', id: 't1', name, input }] },
+  })
+  const result = (content: string, is_error = false) => ({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content, is_error }] },
+  })
+  const stream = (event: unknown) => ({ type: 'stream_event', event })
+  const render = async (events: unknown[], streaming = false) => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { Message } = await import('./Message')
+    const item = events.reduce<ChatState>(reduce, initialState).items.at(-1)!
+    return renderToStaticMarkup(react.createElement(Message, { item, t: key => translate('en', key), streaming }))
+  }
+
+  it('keeps the Bash command preview and renders description, exact command and output in order', async () => {
+    const command = 'printf first\n  printf second\n'
+    const html = await render([call('Bash', { command, description: '  List <files>  ' }), result('shell stdout')])
+    expect(html).toContain('<details class="toolcard"><summary><span class="tname">Bash</span><span class="tcmd">printf first</span>')
+    expect(html).toContain('<span class="tstat ok">✓</span></summary>')
+    expect(html).toContain(
+      '<div class="tlabel">Description</div><div class="tdesc">List &lt;files&gt;</div>' +
+        `<div class="tlabel">Command</div><pre class="tin"><code>${command}</code></pre>` +
+        '<div class="tlabel">Output</div><pre class="tout">shell stdout</pre>',
+    )
+  })
+
+  it('previews the first non-blank Bash line without changing the expanded command', async () => {
+    const command = '\n \t \n  printf first\n    printf second\n'
+    const html = await render([call('Bash', { command })])
+    const summary = html.slice(html.indexOf('<summary>'), html.indexOf('</summary>'))
+    expect(summary).toContain('printf first')
+    expect(summary).not.toContain('printf second')
+    expect(html).toContain(`<pre class="tin"><code>${command}</code></pre>`)
+  })
+
+  it('omits an absent or blank Bash description but keeps extra input fields and a failed result', async () => {
+    const html = await render([call('Bash', { command: 'false' }), result('old failure', true)])
+    expect(html).toContain('<span class="tcmd">false</span>')
+    expect(html).toContain('<span class="tstat bad">✗</span></summary>')
+    expect(html).toContain('<div class="tlabel">Command</div><pre class="tin"><code>false</code></pre>')
+    expect(html).toContain('<pre class="tout">old failure</pre>')
+    expect(html).not.toContain('Description')
+    const withOptions = await render([call('Bash', { command: 'true', description: ' \n ', timeout: 500 })])
+    expect(withOptions).toContain('<pre class="tin"><code>true</code></pre>')
+    expect(withOptions).toContain('&quot;timeout&quot;: 500')
+    expect(withOptions).not.toContain('&quot;command&quot;')
+    expect(withOptions).not.toContain('Description')
+  })
+
+  it('keeps partial Bash input generic until the completed input arrives', async () => {
+    const events = [
+      stream({ type: 'message_start', message: { id: 'a1' } }),
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'Bash', id: 't1' } }),
+      stream({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"tru' } }),
+    ]
+    const partial = await render(events, true)
+    expect(partial).toContain('<div class="tlabel">Input</div><pre class="tin">{&quot;command&quot;:&quot;tru</pre>')
+    expect(partial).toContain('class="spin"')
+    expect(partial).not.toContain('class="tout"')
+    const full = await render([...events, call('Bash', { command: 'true', description: 'Check fixture' })], true)
+    expect(full).toContain('<div class="tdesc">Check fixture</div>')
+    expect(full).toContain('<pre class="tin"><code>true</code></pre>')
+    expect(full).toContain('class="spin"')
+  })
+
+  it('renders the Skill name alone when args are absent or blank', async () => {
+    for (const input of [{ skill: 'test:fixture' }, { skill: 'test:fixture', args: '  \n ' }]) {
+      const html = await render([call('Skill', input), result('skill result')])
+      expect(html).toContain('<span class="tname">Skill</span><span class="tcmd">test:fixture</span>')
+      expect(html).toContain('<span class="tstat ok">✓</span></summary>')
+      expect(html).toContain('<pre class="tin"><code>test:fixture</code></pre><div class="tlabel">Output</div>')
+      expect(html).toContain('<pre class="tout">skill result</pre>')
+      expect(html).not.toContain('&quot;skill&quot;')
+      expect(html).not.toContain('Arguments')
+    }
+  })
+
+  it('makes Skill args a single-line preview but preserves full args as text in the body', async () => {
+    const longArg = 'x'.repeat(160)
+    const html = await render([call('Skill', { skill: 'test:fixture', args: `--target <file>\n  ${longArg}` }), result('skill result')])
+    expect(html).toContain(`<span class="tcmd">test:fixture --target &lt;file&gt; ${longArg}</span>`)
+    expect(html).toContain(
+      '<pre class="tin"><code>test:fixture</code></pre><div class="tlabel">Arguments</div>' +
+        `<pre class="tin"><code>--target &lt;file&gt;\n  ${longArg}</code></pre><div class="tlabel">Output</div>`,
+    )
+  })
+
+  it('does not hide malformed Skill inputs or their error result', async () => {
+    const html = await render([call('Skill', { skill: 'test:fixture', args: { legacy: true } }), result('skill failure', true)])
+    expect(html).toContain('<span class="tcmd">{&quot;skill&quot;:&quot;test:fixture&quot;,&quot;args&quot;:{&quot;legacy&quot;:true}}</span>')
+    expect(html).toContain('<span class="tstat bad">✗</span></summary>')
+    expect(html).toContain('<div class="tlabel">Input</div><pre class="tin">{')
+    expect(html).toContain('&quot;legacy&quot;: true')
+    expect(html).toContain('<pre class="tout">skill failure</pre>')
   })
 })
 
