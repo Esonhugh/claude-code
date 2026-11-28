@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { spawn } from 'child_process'
 import { PassThrough } from 'stream'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { delimiter, join } from 'path'
+import sharp from 'sharp'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
@@ -78,6 +79,7 @@ process.stdin.on('data', chunk => {
 const assets = new Map<string, WebAsset>([
   ['/index.html', { type: 'text/html; charset=utf-8', body: '<p>app</p>' }],
   ['/assets/app.js', { type: 'text/javascript', body: 'void 0' }],
+  ['/favicon.svg', { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }],
 ])
 
 type Running = {
@@ -156,6 +158,68 @@ async function signIn(r: Running): Promise<string> {
 }
 
 describe('claude web server', () => {
+  it('serves only an authenticated fixed-path icon and retains the built-in favicon', async () => {
+    const r = start()
+    const path = join(r.configDir, 'web', 'icon.png')
+    mkdirSync(join(r.configDir, 'web'))
+    writeFileSync(path, await solidPng(1024, 256, '#ff0000'))
+    expect((await fetch(`${r.base}/api/brand-icon.png?mode=desktop`)).status).toBe(401)
+    const cookie = await signIn(r)
+    const headers = { cookie }
+    const info = await (await fetch(`${r.base}/api/info?mode=desktop`, { headers })).json()
+    expect(info.brand_icon).toMatch(/^\/api\/brand-icon\.png\?v=[0-9a-f]+$/)
+    const icon = await fetch(`${r.base}${info.brand_icon}`, { headers })
+    expect(icon.headers.get('content-type')).toBe('image/png')
+    expect(icon.headers.get('cache-control')).toBe('no-store')
+    expect(icon.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(icon.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    const data = Buffer.from(await icon.arrayBuffer())
+    await expectSquareIcon(data, 128, [255, 0, 0, 255], true)
+    const head = await fetch(`${r.base}${info.brand_icon}`, { method: 'HEAD', headers })
+    expect(head.status).toBe(200)
+    expect(head.headers.get('content-type')).toBe('image/png')
+    expect(await head.text()).toBe('')
+    // The icon is stable for the process lifetime, and no query selects a different file.
+    writeFileSync(path, await solidPng(22, 22, '#00ff00'))
+    const repeat = await fetch(`${r.base}/api/brand-icon.png?path=../desktop/icon.png`, { headers })
+    expect(Buffer.from(await repeat.arrayBuffer())).toEqual(data)
+    expect((await fetch(`${r.base}${info.brand_icon}`, { headers: { ...headers, origin: 'https://example.invalid' } })).status).toBe(403)
+    const fallback = await fetch(`${r.base}/favicon.svg`, { headers })
+    expect(fallback.headers.get('content-type')).toBe('image/svg+xml')
+    expect(await fallback.text()).toContain('<svg')
+  })
+
+  for (const variant of ['missing', 'HTML masquerading as PNG', 'truncated PNG', 'oversized file', 'oversized edge', 'directory', 'linked file', 'linked directory', 'hard-linked file']) {
+    it(`keeps the default brand icon for ${variant}`, async () => {
+      const r = start()
+      const dir = join(r.configDir, 'web')
+      const path = join(dir, 'icon.png')
+      if (variant !== 'linked directory') mkdirSync(dir)
+      if (variant === 'HTML masquerading as PNG') writeFileSync(path, '<html><script></script></html>')
+      if (variant === 'truncated PNG') writeFileSync(path, (await solidPng(10, 10, '#ff0000')).subarray(0, 35))
+      if (variant === 'oversized file') {
+        const bytes = Buffer.alloc(1024 * 1024 + 1)
+        const png = await solidPng(10, 10, '#ff0000')
+        png.copy(bytes)
+        writeFileSync(path, bytes)
+      }
+      if (variant === 'oversized edge') writeFileSync(path, await solidPng(1025, 2, '#ff0000'))
+      if (variant === 'directory') mkdirSync(path)
+      if (variant === 'linked file' || variant === 'linked directory' || variant === 'hard-linked file') {
+        const target = join(r.workspace, 'icon.png')
+        writeFileSync(target, await solidPng(10, 10, '#ff0000'))
+        if (variant === 'linked file') symlinkSync(target, path)
+        else if (variant === 'hard-linked file') linkSync(target, path)
+        else symlinkSync(r.workspace, dir, 'junction')
+      }
+      const headers = { cookie: await signIn(r) }
+      const info = await (await fetch(`${r.base}/api/info`, { headers })).json()
+      expect(info.brand_icon).toBeUndefined()
+      expect((await fetch(`${r.base}/api/brand-icon.png`, { headers })).status).toBe(404)
+      expect((await fetch(`${r.base}/favicon.svg`, { headers })).headers.get('content-type')).toBe('image/svg+xml')
+    })
+  }
+
   it('serves the page only after the token is exchanged for a cookie', async () => {
     const r = start()
     const anonymous = await fetch(`${r.base}/`)
@@ -741,6 +805,31 @@ describe('claude web server', () => {
     expect(plain?.status).not.toBe(200)
   })
 
+  it('requires local web authentication and a currently trusted stored project for GitHub', async () => {
+    const trusted = new Set<string>()
+    const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => { trusted.add(dir) } } })
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const created = await fetch(`${r.base}/api/projects`, {
+      method: 'POST', headers, body: JSON.stringify({ name: 'GitHub', cwd: r.workspace }),
+    })
+    expect(created.status).toBe(201)
+    const { id } = await created.json() as { id: string }
+    const url = `${r.base}/api/projects/${id}/github`
+    expect((await fetch(url, { method: 'POST', headers: { origin: r.origin } })).status).toBe(401)
+    expect((await fetch(url, { method: 'POST', headers: { cookie } })).status).toBe(403)
+    expect((await fetch(url, { method: 'POST', headers: { cookie, origin: 'http://invalid.test' } })).status).toBe(403)
+    expect((await fetch(url, { method: 'POST', headers })).status).toBe(403)
+    trusted.add(r.workspace)
+    expect((await fetch(url, { headers })).status).toBe(405)
+    expect((await fetch(`${url}?cwd=/`, { method: 'POST', headers })).status).toBe(400)
+    expect((await fetch(url, { method: 'POST', headers, body: '{"repo":"fake/demo"}' })).status).toBe(400)
+    const response = await fetch(url, { method: 'POST', headers })
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ status: 'unsupported' })
+    expect((await fetch(`${r.base}/api/projects/${crypto.randomUUID()}/github`, { method: 'POST', headers })).status).toBe(404)
+  })
+
   it('creates, lists, edits and archives projects behind the API checks', async () => {
     const trusted = new Set<string>()
     const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
@@ -1323,6 +1412,18 @@ describe('parsePreviewOrigin', () => {
 
 type Frame = { t: string; id?: number; [key: string]: unknown }
 
+function solidPng(width: number, height: number, background: string) {
+  return sharp({ create: { width, height, channels: 4, background } }).png().toBuffer()
+}
+
+async function expectSquareIcon(data: Buffer, size: number, center: number[], padded = false) {
+  const { data: pixels, info } = await sharp(data).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  expect([info.width, info.height]).toEqual([size, size])
+  const mid = Math.floor(size / 2) * (size + 1) * 4
+  expect([...pixels.subarray(mid, mid + 4)]).toEqual(center)
+  if (padded) expect(pixels[3]).toBe(0)
+}
+
 /** The desktop app's end of `claude web --stdio`. */
 function stdioClient(overrides: Partial<WebServerConfig> = {}) {
   const input = new PassThrough()
@@ -1363,18 +1464,49 @@ function stdioClient(overrides: Partial<WebServerConfig> = {}) {
       ...(opts.body !== undefined && { body: Buffer.from(opts.body).toString('base64') }),
     })
     const head = await next(f => f.id === n && f.t === 'res')
-    let body = ''
+    const chunks: Buffer[] = []
     for (;;) {
       const frame = await next(f => f.id === n && (f.t === 'body' || f.t === 'end'))
       if (frame.t === 'end') break
-      body += Buffer.from(frame.data as string, 'base64').toString()
+      chunks.push(Buffer.from(frame.data as string, 'base64'))
     }
-    return { status: head.status as number, headers: new Map(head.headers as [string, string][]), body }
+    const bytes = Buffer.concat(chunks)
+    return { status: head.status as number, headers: new Map(head.headers as [string, string][]), body: bytes.toString(), bytes }
   }
   return { r, write, next, request, origin, nextId: () => ++id, input }
 }
 
 describe('claude web over stdio', () => {
+  it('uses the configured root and distinct square icons in Web and Desktop at the same time', async () => {
+    const previousConfig = process.env.CLAUDE_CONFIG_DIR
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'web-icons-')))
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      for (const [mode, dimensions, color] of [
+        ['web', [11, 11], '#00ff0080'],
+        ['desktop', [12, 31], '#0000ff'],
+      ] as const) {
+        mkdirSync(join(root, mode))
+        writeFileSync(join(root, mode, 'icon.png'), await solidPng(dimensions[0], dimensions[1], color))
+      }
+      const r = start({ configDir: undefined })
+      const desktop = stdioClient({ configDir: undefined })
+      const { brand_icon: desktopUrl } = JSON.parse((await desktop.request('GET', '/api/info?mode=web')).body)
+      expect(desktopUrl).toMatch(/^\/api\/brand-icon\.png\?v=[0-9a-f]+$/)
+      const { status, bytes } = await desktop.request('GET', desktopUrl, { headers: [['x-mode', 'web']] })
+      expect(status).toBe(200)
+      await expectSquareIcon(bytes, 31, [0, 0, 255, 255], true)
+      const headers = { cookie: await signIn(r), 'x-mode': 'desktop' }
+      const { brand_icon: webUrl } = await (await fetch(`${r.base}/api/info`, { headers })).json()
+      expect(desktopUrl).not.toBe(webUrl)
+      const web = await fetch(`${r.base}${webUrl}`, { headers })
+      await expectSquareIcon(Buffer.from(await web.arrayBuffer()), 11, [0, 255, 0, 128])
+    } finally {
+      if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfig
+    }
+  })
+
   it('announces itself and serves the page with no cookie and no port', async () => {
     const c = stdioClient()
     expect(await c.next(f => f.t === 'ready')).toEqual({ t: 'ready' })
@@ -1386,6 +1518,22 @@ describe('claude web over stdio', () => {
     expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
     const info = await c.request('GET', '/api/info')
     expect(JSON.parse(info.body)).toMatchObject({ local: true })
+  })
+
+  it('accepts Desktop’s empty body for the trusted local GitHub route', async () => {
+    const c = stdioClient({ folderTrust: { isTrusted: () => true, save: () => {} } })
+    const headers: [string, string][] = [['origin', c.origin]]
+    const created = await c.request('POST', '/api/projects', {
+      headers, body: JSON.stringify({ name: 'GitHub', cwd: c.r.workspace }),
+    })
+    expect(created.status).toBe(201)
+    const { id } = JSON.parse(created.body)
+    const path = `/api/projects/${id}/github`
+    const response = await c.request('POST', path, { headers, body: '' })
+    expect(response.status).toBe(200)
+    expect(JSON.parse(response.body)).toEqual({ status: 'unsupported' })
+    expect((await c.request('POST', path, { headers, body: '{}' })).status).toBe(400)
+    expect((await c.request('POST', path, { body: '' })).status).toBe(403)
   })
 
   it('keeps the Host and Origin checks', async () => {

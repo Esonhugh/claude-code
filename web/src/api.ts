@@ -174,6 +174,7 @@ export const getInfo = () =>
     home?: string
     version?: string
     local?: boolean
+    brand_icon?: string
     // The CLI's theme as the page's, for a page whose own theme was never picked.
     theme?: 'system' | 'light' | 'dark'
   }>('/api/info')

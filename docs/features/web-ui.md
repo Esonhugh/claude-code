@@ -73,7 +73,7 @@ Claude web UI: http://127.0.0.1:33777/?token=…
 Sessions start in ~/.claude/web/workspace and run with your local credentials and full access to this machine. Press Ctrl+C to stop.
 ```
 
-浏览器会自动打开这个地址（SSH 会话里或加 `--no-open` 时只打印）。地址里的 token 用一次就换成 cookie，地址栏随即去掉 token。已经有一个 `claude web` 在跑时不会再起第二个，而是打印 `claude web is already running (pid …) at …` 并打开它。浏览器标签页的图标是侧边栏的像素蟹，系统为深色时图标底色变深。
+浏览器会自动打开这个地址（SSH 会话里或加 `--no-open` 时只打印）。地址里的 token 用一次就换成 cookie，地址栏随即去掉 token。已经有一个 `claude web` 在跑时不会再起第二个，而是打印 `claude web is already running (pid …) at …` 并打开它。默认标签页图标是侧边栏的像素蟹，系统为深色时图标底色变深；也可[自定义品牌图标](#自定义品牌图标)。
 
 **第 2 步：开始对话。** 起始页是一个大输入框，下面左边选工作目录（默认 `~/.claude/web/workspace`，也可以选临时目录（排在最前）、最近用过的目录或手填路径），右边选权限模式和模型。还没有会话时输入 `/` 也列出命令和已启用的 skill，`@` 搜索所选目录里的文件。下方列出这个目录最近的 3 个会话。第一条消息发出时才启动会话进程；在默认工作目录以外的目录第一次开会话时，页面会先问你是否信任这个目录。
 
@@ -125,6 +125,12 @@ Sessions start in ~/.claude/web/workspace and run with your local credentials an
 ![设置](images/web-ui-settings.png)
 
 ![统计](images/web-ui-stats.png)
+
+## 自定义品牌图标
+
+- 浏览器：放置 `~/.claude/web/icon.png`，重启 `claude web` 后重新打开或刷新页面。登录后，左上角品牌图标和浏览器标签页共用这张图。
+- 桌面：放置 `~/.claude/desktop/icon.png`，退出并重启应用。只替换窗口内容内的品牌图标，不影响 Dock、开始菜单或安装包。
+- 设置了 `CLAUDE_CONFIG_DIR` 时，以它代替 `~/.claude`。仅支持固定文件名 `icon.png`，文件不超过 1 MiB、宽和高各不超过 1024 像素，不接受链接。图片等比缩小到最长边最多 128 像素；非正方形透明补边，不裁切、不拉伸，也不在服务端放大小图。删除图标或文件无效时，重启后恢复默认图标。
 
 ## 左侧栏
 

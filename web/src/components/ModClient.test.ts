@@ -30,6 +30,17 @@ describe('Client trees', () => {
     expect(clientTree(text, 'demo', limits)).toEqual({ type: 'Box', children: [{ type: 'Text', children: ['ok'] }] })
   })
 
+  it('only allows approved links and no outgoing callbacks in read-only project rows', () => {
+    const href = 'https://github.com/example/repo/issues/1'
+    const link = { type: 'Link', props: { href } }
+    const text = JSON.stringify({ type: 'Box', children: [
+      { ...link, held: 1 }, { type: 'Link', props: { href: 'https://invalid.test' } },
+      { type: 'Markdown', props: { text: '![image](https://invalid.test)' } },
+      { type: 'Button', held: 2 },
+    ] })
+    expect(clientTree(text, 'github-project', limits, new Set([href]))).toEqual({ type: 'Box', children: [link] })
+  })
+
   it('refuses a tree past its bounds', () => {
     const deep = (n: number): unknown => (n ? { type: 'Box', children: [deep(n - 1)] } : 'x')
     expect(() => clientTree(JSON.stringify(deep(40)), 'demo', limits)).toThrow('deeper than 32')

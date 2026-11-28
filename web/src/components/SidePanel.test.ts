@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { accountText, connectionRows, peerAddress } from './SidePanel'
+import type { TmuxSelection } from '../tmux'
 import type { T } from './ui'
 
 describe('accountText', () => {
@@ -115,6 +116,7 @@ describe('Status compact button', () => {
         onModsRequest: async () => ({}),
         onModCanvas: () => {},
         onCompact: () => {},
+        onCloseTmux: () => {},
         onClose: () => {},
       }),
     )
@@ -144,5 +146,54 @@ describe('usageRows', () => {
       },
     })
     expect(rows.map(([label]) => label)).toEqual(expect.arrayContaining(['quota5hLabel', 'quotaWeekLabel']))
+  })
+})
+
+describe('Tmux in the chat details sidebar', () => {
+  const render = async (tmuxSelection?: TmuxSelection) => {
+    const react = await import('react')
+    ;(globalThis as { React?: unknown }).React ??= react
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { SidePanel } = await import('./SidePanel')
+    const { initialState, reduce } = await import('../protocol')
+    const state = reduce(initialState, {
+      type: 'assistant', message: { id: 'a1', content: [
+        { type: 'tool_use', name: 'Read', id: 'read', input: { file_path: '/fixture/note.txt' } },
+        { type: 'tool_use', name: 'Tmux', id: 'capture', input: { action: 'capture-pane', target: 'pane-a' } },
+      ] },
+    })
+    const chat = reduce(state, {
+      type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'capture', content: JSON.stringify({ text: '<b>one</b>\r\ntwo', exitCode: 0 }) },
+      ] },
+    })
+    const nop = () => {}
+    return renderToStaticMarkup(react.createElement(SidePanel, {
+      t: (key => key) as T, open: true, tab: 'files', setTab: nop, sessionId: 's1',
+      currentFile: '/fixture/note.txt', chat: { ...chat, mode: 'readonly', start: 0 }, title: 'chat', models: [], statusText: 'idle',
+      agentsView: { kind: 'tree' }, setAgentsView: nop, setWorkflowId: nop, onOpenFile: nop, onStopTask: nop,
+      onSendTask: async () => {}, agentInput: { tools: {} as never, models: [] } as never,
+      onRequest: async () => ({}), onModsRequest: async () => ({}), onModCanvas: nop, onCloseTmux: nop, onClose: nop,
+      tmuxSelection,
+    }))
+  }
+
+  it('shows the selected snapshot in the existing shell and preserves the Files tab', async () => {
+    const html = await render({ sessionId: 's1', toolUseId: 'capture' })
+    expect(html).toContain('class="side open"')
+    expect(html).toContain('aria-selected="true">Tmux</button>')
+    expect(html).toContain('aria-selected="false">Files')
+    expect(html).toContain('&lt;b&gt;one&lt;/b&gt;\ntwo</pre>')
+    expect(html).toContain('tmuxResultJson')
+    expect(html).not.toContain('class="filelist"')
+  })
+
+  it('restores the real Files pane without a matching session and tool selection', async () => {
+    for (const selection of [undefined, { sessionId: 'old', toolUseId: 'capture' }, { sessionId: 's1', toolUseId: 'read' }]) {
+      const html = await render(selection)
+      expect(html).toContain('aria-selected="true">Files')
+      expect(html).toContain('note.txt')
+      expect(html).not.toContain('tmux-details')
+    }
   })
 })

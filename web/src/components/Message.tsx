@@ -15,6 +15,7 @@ import type { MessageKey } from '../i18n'
 import { Markdown } from '../markdown/Markdown'
 import { addUsage, type Block, type Decision, hookBlock, type Item, type ModelOption, type Usage, usageTotal } from '../protocol'
 import type { Source } from '../sources'
+import { isTmuxTool, tmuxCall } from '../tmux'
 import { stripAnsi, toolMessage, toolSummary } from '../tools'
 import { firstPreviewUrl, WebPreviewContext } from '../webPreview'
 import type { Control } from './extShared'
@@ -67,7 +68,7 @@ export function modelName(model: string | undefined, models: ModelOption[]): str
 export const FilesContext = createContext<{
   open?: (path: string) => void
   /** Opens a message's image in the artifact view; `target` names it in comments. */
-  openImage?: (src: string, n: number, target: string) => void
+  openImage?: (src: string, n: number, target: string, clickCount: number) => void
   base?: string
   /** Opens the side panel's Files tab. */
   showFiles?: () => void
@@ -126,6 +127,8 @@ export const ChatContext = createContext<{
   }
   /** Control requests to the live session (MCP Apps read their resource and call tools with it). */
   control?: Control
+  /** Opens one Tmux call from this chat's transcript in its right-side details. */
+  openTmux?: (toolUseId: string) => void
 }>({})
 
 /** Puts text into the chat's composer as a quote to reply to; only the session's own feed offers it. */
@@ -342,11 +345,32 @@ function resultProps(block: Extract<Block, { kind: 'tool' }>) {
   return { tool_use_id: block.id, tool: block.name, output: block.result ?? '', isErrored: block.isError === true, isExpanded: true }
 }
 
-function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T }) {
+function ToolCard({ block, t, streaming }: { block: Extract<Block, { kind: 'tool' }>; t: T; streaming: boolean }) {
   const files = useContext(FilesContext)
   const agents = useContext(AgentsContext)
   const web = useContext(WebPreviewContext)
   const chat = useContext(ChatContext)
+  if (chat.openTmux && isTmuxTool(block.name)) {
+    const { action, target, status, inputSummary } = tmuxCall(block)
+    const summary = [action, target, inputSummary].filter(Boolean).join(' · ')
+    const label = status === 'failed' ? t('tmuxFailed') : status === 'sent' ? t('tmuxInputSent')
+      : status === 'pending' ? t(streaming ? 'running' : 'interrupted') : t('tmuxResultReturned')
+    const decision = chat.decisions?.[block.id]
+    return (
+      <button
+        type="button"
+        className={`toolcard tmux-card${status === 'failed' ? ' bad' : ''}`}
+        data-tool-use-id={block.id}
+        aria-controls="chat-details"
+        onClick={() => chat.openTmux?.(block.id)}
+      >
+        <span className="tname">{block.name}</span>
+        <span className="tcmd" title={summary}>{summary}</span>
+        {decision && <span className="tdec">{decisionText(decision, t)}</span>}
+        <span className={`tstat${status === 'failed' ? ' bad' : ''}`}>{label}</span>
+      </button>
+    )
+  }
   const path = files.open && !block.isError ? toolFilePath(block.name, block.input) : undefined
   const webUrl =
     !path && block.result && web.target && web.open
@@ -692,7 +716,7 @@ function MessageView({
   queued?: boolean
 }) {
   const files = useContext(FilesContext)
-  const { rewind, turn } = useContext(ChatContext)
+  const { rewind, turn, openTmux } = useContext(ChatContext)
   const quote = useContext(QuoteContext)
   const [copied, setCopied] = useState(false)
   if (item.kind === 'user') {
@@ -738,12 +762,16 @@ function MessageView({
                       key={i}
                       className="bubble-image-open"
                       title={t('preview')}
-                      onClick={() => files.openImage?.(src, i + 1, imageTarget(item.text, i))}
+                      onClick={e => {
+                        const img = e.currentTarget.querySelector('img')
+                        const plainPointer = img?.complete && img.naturalWidth && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey
+                        files.openImage?.(src, i + 1, imageTarget(item.text, i), plainPointer ? e.detail : 0)
+                      }}
                     >
-                      <img className="bubble-image" src={src} alt="" />
+                      <img data-chat-image="" className="bubble-image" src={src} alt="" />
                     </button>
                   ) : (
-                    <img key={i} className="bubble-image" src={src} alt="" />
+                    <img key={i} data-chat-image="" className="bubble-image" src={src} alt="" />
                   ),
                 )}
                 <UserText text={String(p.text)} />
@@ -893,14 +921,15 @@ function MessageView({
       if (card) cards.set(i, card)
     })
   }
-  // File changes stay in sight, outside the folded steps.
+  // File changes and cards that open Tmux details stay outside the folded steps.
   const segments = turnSegments(
     item.blocks,
     i => cards.has(i),
     i => {
       const block = item.blocks[i]
       if (handbackReport(block) !== undefined) return true
-      return block?.kind === 'tool' && !block.isError && toolDiff(block.name, block.input, block.meta) !== undefined
+      return block?.kind === 'tool' && ((openTmux && isTmuxTool(block.name)) ||
+        (!block.isError && toolDiff(block.name, block.input, block.meta) !== undefined))
     },
   )
   const firstText = item.blocks.findIndex(b => b?.kind === 'text')
@@ -953,7 +982,7 @@ function MessageView({
           ...(block.result !== undefined && { output: block.result }),
         }}
       >
-        {() => <ToolCard block={block} t={t} />}
+        {() => <ToolCard block={block} t={t} streaming={streaming} />}
       </ModSite>
     )
   }

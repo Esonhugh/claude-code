@@ -1,0 +1,5 @@
+{
+  "name": "github-project",
+  "version": "0.1.0",
+  "description": "Optional display for the local Web/Desktop project GitHub panel. The host provides the read-only data."
+}

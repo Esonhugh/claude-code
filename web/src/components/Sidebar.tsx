@@ -68,6 +68,8 @@ export function Sidebar({
   lang,
   open,
   uiName,
+  brandIcon,
+  onBrandIconError,
   env,
   history,
   historyMore,
@@ -96,6 +98,8 @@ export function Sidebar({
   lang: Lang
   open: boolean
   uiName: string
+  brandIcon?: string
+  onBrandIconError: () => void
   env: SessionEnv
   history: HistoryEntry[]
   historyMore: boolean
@@ -657,7 +661,9 @@ export function Sidebar({
   return (
     <aside ref={asideRef} className={`sessions sidebar${open ? ' open' : ''}`} id="sessions" aria-label={t('sessionGroup')}>
       <div className="head">
-        <Clawd />
+        {brandIcon ? (
+          <span className="clawd brand-icon"><img src={brandIcon} alt="" onError={onBrandIconError} /></span>
+        ) : <Clawd />}
         <div className="wordmark">
           <b>{uiName}</b>
           <small>{env.version ? `v${env.version} · claude web` : 'claude web'}</small>

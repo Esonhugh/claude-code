@@ -533,6 +533,15 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
             input: { command: `mkdir -p ${'a-long-directory-segment/'.repeat(14)}LONG_TAIL`, description: 'Make a deep folder' },
           }]
           stop = 'tool_use'
+        } else if (lastText.includes('ZOOM_CHAT_IMAGES')) {
+          const png = join(workspace, 'zoom.png')
+          blocks = [{ type: 'text', text: [
+            `![Inline PNG](<${png}>)`,
+            `[![Linked PNG][zoom-png]](${new URL('/api/info?zoom-link=1', signInUrl)})`,
+            `![Missing PNG](<${join(workspace, 'zoom-missing.png')}>)`,
+            'Ordinary chat text',
+            `[zoom-png]: <${png}>`,
+          ].join('\n\n') }]
         } else if (lastText.includes('MARKDOWN')) {
           blocks = [{ type: 'text', text: MARKDOWN_REPLY }]
         }
@@ -903,6 +912,76 @@ describe.skipIf(!binary)('claude web (built binary)', () => {
       await browser.close()
     }
   }, 120_000)
+
+  it('enlarges chat images without navigating or changing the artifact', async () => {
+    const png = join(workspace, 'zoom.png')
+    writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+    const playwrightPath = Bun.spawnSync(['node', '-p', "require.resolve('playwright')"]).stdout.toString().trim()
+    const { chromium } = await import(playwrightPath)
+    const browser = await chromium.launch()
+    try {
+      const context = await browser.newContext({ locale: 'en-US' })
+      const page = await context.newPage()
+      await page.goto(signInUrl)
+      await page.getByLabel('Upload file').setInputFiles(png)
+      const input = page.getByLabel('Message', { exact: true })
+      await input.fill('ZOOM_CHAT_IMAGES')
+      await input.press('Enter')
+
+      const dialog = page.getByRole('dialog', { name: 'Enlarge image' })
+      const feed = page.locator('.feed')
+      const inline = feed.getByRole('img', { name: 'Inline PNG' })
+      const linked = feed.getByRole('img', { name: 'Linked PNG' })
+      const upload = feed.locator('.bubble-image')
+      for (const img of [inline, linked, upload]) await img.evaluate((el: HTMLImageElement) => el.decode())
+      const checkZoom = async (img: typeof inline, opener: typeof inline) => {
+        const big = dialog.locator('img')
+        await big.waitFor()
+        expect(await big.getAttribute('src')).toBe(await img.getAttribute('src'))
+        expect(await big.getAttribute('alt')).toBe(await img.getAttribute('alt'))
+        expect(await dialog.getByRole('button', { name: 'Close' }).evaluate(el => el === document.activeElement)).toBe(true)
+        await page.keyboard.press('Escape')
+        await dialog.waitFor({ state: 'detached' })
+        expect(await opener.evaluate(el => el === document.activeElement)).toBe(true)
+      }
+      const rightClickZoom = async (img: typeof inline) => {
+        await img.click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Enlarge image' }).click()
+      }
+      expect(await inline.getAttribute('src')).toStartWith('/api/files/')
+      await inline.dblclick()
+      await checkZoom(inline, inline)
+      await rightClickZoom(inline)
+      await checkZoom(inline, inline)
+      const uploadButton = page.locator('.bubble-image-open')
+      await upload.dblclick()
+      await checkZoom(upload, uploadButton)
+      await rightClickZoom(upload)
+      await checkZoom(upload, uploadButton)
+      expect(await page.locator('.preview').count()).toBe(0)
+      await upload.click()
+      await page.locator('.preview-name', { hasText: 'Image 1' }).waitFor()
+      await page.keyboard.press('Escape')
+      await page.locator('.preview').waitFor({ state: 'detached' })
+
+      await rightClickZoom(linked)
+      await checkZoom(linked, linked.locator('..'))
+      for (const modifiers of [[], ['ControlOrMeta'] as const]) {
+        const opened = context.waitForEvent('page')
+        await linked.click({ modifiers: [...modifiers] })
+        const popup = await opened
+        await popup.waitForURL(new URL('/api/info?zoom-link=1', signInUrl).href, { timeout: 5_000 })
+        await popup.close()
+      }
+      expect(await dialog.count()).toBe(0)
+      for (const el of [page.getByRole('img', { name: 'Missing PNG' }), page.getByText('Ordinary chat text', { exact: true })]) {
+        await el.click({ button: 'right' })
+        expect(await page.locator('.chat-image-menu').count()).toBe(0)
+      }
+    } finally {
+      await browser.close()
+    }
+  }, 90_000)
 
   it('attaches files and previews documents by type', async () => {
     const samples = join(workspace, 'samples')

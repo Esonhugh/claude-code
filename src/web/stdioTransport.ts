@@ -65,7 +65,7 @@ export function serveStdio<D>(
       const req = new Request(`http://${STDIO_HOST}${frame.path}`, {
         method: frame.method,
         headers: frame.headers,
-        body: frame.body === undefined ? undefined : Buffer.from(frame.body, 'base64'),
+        body: frame.body ? Buffer.from(frame.body, 'base64') : undefined,
         signal: abort.signal,
       })
       res = await handlers.fetch(req, { requestIP: () => STDIO_PEER, upgrade: () => false })

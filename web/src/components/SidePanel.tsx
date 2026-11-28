@@ -3,8 +3,9 @@ import { type AgentTask, isFinished } from '../agents'
 import { getPeers, getUsage, type Peer } from '../api'
 import { type Groups, type Pane, usedPanes } from '../background'
 import { sessionFiles, tilde } from '../files'
-import type { ModelOption, ModPane, Todo } from '../protocol'
+import type { Block, ModelOption, ModPane, Todo } from '../protocol'
 import type { SessionChat } from '../store'
+import { selectedTmuxTool, tmuxCall, type TmuxSelection } from '../tmux'
 import { type AgentInput, type AgentPick, AgentsTab, type AgentsView, agentTasks, WorkflowTab } from './Agents'
 import { BackgroundPane, type HostRequest, MonitorPane, TerminalsPane, useBackground } from './BackgroundPanes'
 import { shortTokens } from './Composer'
@@ -511,7 +512,7 @@ function FilesPane({
 export function SidePanel({
   t,
   open,
-  tab,
+  tab: baseTab,
   setTab,
   sessionId,
   chat,
@@ -534,6 +535,8 @@ export function SidePanel({
   onModsRequest,
   onModCanvas,
   canvasMod,
+  tmuxSelection,
+  onCloseTmux,
   onClose,
 }: {
   t: T
@@ -566,14 +569,18 @@ export function SidePanel({
   onModCanvas: (pane: ModPane) => void
   /** The pane shown on the canvas now, drawn there instead of here. */
   canvasMod?: string
+  tmuxSelection?: TmuxSelection
+  onCloseTmux: () => void
   onClose: () => void
 }) {
+  const tmux = selectedTmuxTool(sessionId, chat.items, tmuxSelection)
+  const tab = tmux ? 'tmux' : baseTab
   const files = useMemo(() => sessionFiles(chat.items).length, [chat.items])
   const agents = Object.keys(agentTasks(chat.tasks)).length
   const bg = useBackground(sessionId, chat.tasks, ['terminals', 'monitor', 'bg'].includes(tab), onRequest)
   const { terminals, monitors, background } = bg.groups
   const used = useMemo(() => usedPanes(chat.tasks, chat.items, bg.groups), [chat.tasks, chat.items, bg.groups])
-  const tabs = (
+  const tabs: { id: SideTab | 'tmux'; label: string; count?: number }[] = (
     [
       { id: 'status', label: 'Status' },
       { id: 'files', label: 'Files', count: files },
@@ -586,10 +593,11 @@ export function SidePanel({
     ] satisfies { id: SideTab; label: string; count?: number }[]
   ).filter(
     x =>
-      ['status', 'files', 'agents', tab].includes(x.id) ||
+      ['status', 'files', 'agents', baseTab].includes(x.id) ||
       used.includes(x.id as Pane) ||
       (x.id === 'mods' && (chat.mods.panes.length > 0 || Object.keys(chat.mods.status).length > 0)),
   )
+  if (tmux) tabs.push({ id: 'tmux', label: tmux.name })
   return (
     <aside className={`side${open ? ' open' : ''}`} aria-label={t('sidebarLabel')}>
       <div className="sheet-head">
@@ -606,6 +614,7 @@ export function SidePanel({
             key={x.id}
             aria-selected={tab === x.id}
             onClick={() => {
+              if (x.id === 'tmux') return
               setTab(x.id)
               if (x.id === 'agents') setAgentsView({ kind: 'tree' })
             }}
@@ -616,6 +625,7 @@ export function SidePanel({
         ))}
       </div>
       <div className="pane" role="tabpanel">
+        {tmux && <TmuxDetails key={tmux.id} block={tmux} t={t} onClose={onCloseTmux} />}
         {tab === 'status' && (
           <StatusPane
             t={t}
@@ -682,5 +692,40 @@ export function SidePanel({
         )}
       </div>
     </aside>
+  )
+}
+
+function TmuxDetails({ block, t, onClose }: { block: Extract<Block, { kind: 'tool' }>; t: T; onClose: () => void }) {
+  const { action, target, status, snapshot, text, json, sentInput } = tmuxCall(block)
+  return (
+    <section className="tmux-details" data-tool-use-id={block.id}>
+      <header>
+        <b>{[action ?? block.name, target].filter(Boolean).join(' · ')}</b>
+        <button className="btn" type="button" onClick={onClose}>{t('close')}</button>
+      </header>
+      {sentInput && (
+        <>
+          <div>{t(status === 'sent' ? 'tmuxSentInput' : 'toolInput')}</div>
+          <pre className="tmux-input" tabIndex={0}>{sentInput.text}
+            {sentInput.text !== undefined && sentInput.keys.length > 0 && '\n'}
+            {sentInput.keys.map((key, i) => <kbd key={i}>{i > 0 && ' · '}{key}</kbd>)}
+          </pre>
+        </>
+      )}
+      {snapshot ? (
+        <>
+          <div>{t('tmuxPaneSnapshot')}</div>
+          <pre className="screen" tabIndex={0}>{snapshot}</pre>
+        </>
+      ) : text ? (
+        <pre className="screen" tabIndex={0}>{text}</pre>
+      ) : <p className="note">{t(block.result === undefined ? 'tmuxNoResult' : 'tmuxNoSnapshot')}</p>}
+      {json !== undefined && (
+        <details>
+          <summary>{t('tmuxResultJson')}</summary>
+          <pre className="tmux-json" tabIndex={0}>{json}</pre>
+        </details>
+      )}
+    </section>
   )
 }

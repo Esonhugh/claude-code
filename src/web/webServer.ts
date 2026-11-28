@@ -11,6 +11,7 @@ import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { MCP_APP_FRAME_CSP, MCP_APP_FRAME_HTML, MCP_APP_FRAME_PATH } from './mcpAppFrame.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
+import { readProjectGithub } from './projectGithub.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
@@ -63,6 +64,7 @@ import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
+import { BRAND_ICON_PATH, loadBrandIcon } from './brandIcon.js'
 import { serveStdio, STDIO_HOST } from './stdioTransport.js'
 import {
   allowedHosts,
@@ -86,7 +88,7 @@ export type WebServerConfig = {
   /** Uploads land in `<uploadsDir>/<session id>/`. */
   uploadsDir: string
   uploadLimits?: UploadLimits
-  /** Defaults to the claude config dir; files under it are not served. */
+  /** Defaults to the Claude config dir. Only the normalized brand icon can be served from it. */
   configDir?: string
   trustedHosts?: string[]
   /** Also answer to this machine's LAN addresses and `<hostname>.local`. */
@@ -253,7 +255,7 @@ const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
 const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive|github)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -520,7 +522,8 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme, brand_icon? }
+ *   GET    /api/brand-icon.png           → optional PNG override (signed-in Web or Desktop pipe)
  *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
@@ -557,7 +560,11 @@ export function startWebServer(
   ]
   let hosts = allowedHosts(config.port, extraHosts)
   const previewOrigins = config.previewOrigins ?? []
-  const tempRoot = join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'temp')
+  const configDir = config.configDir ?? getClaudeConfigHomeDir()
+  const tempRoot = join(configDir, 'web', 'temp')
+  // Load once, only after the first authenticated request that needs branding.
+  let brandIcon: ReturnType<typeof loadBrandIcon> | undefined
+  const getBrandIcon = () => brandIcon ??= loadBrandIcon(configDir, config.stdio ? 'desktop' : 'web')
   const csp = contentSecurityPolicy(previewOrigins)
   const withHeaders = (res: Response): Response => {
     res.headers.set('Content-Security-Policy', csp)
@@ -874,9 +881,11 @@ export function startWebServer(
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   *   POST   /api/projects/:id/github       → bounded GitHub issue/PR metadata (trusted, local only)
    *   POST   /api/projects/:id/unarchive    → the archived project, listed again
    */
-  async function handleProjects(req: Request, pathname: string): Promise<Response> {
+  async function handleProjects(req: Request, url: URL, local: boolean): Promise<Response> {
+    const { pathname } = url
     if (pathname === '/api/projects') {
       if (req.method === 'GET') {
         const counts = tasks().counts()
@@ -902,6 +911,7 @@ export function startWebServer(
       return Response.json(projectJson(project), { status: 201 })
     }
     const match = PROJECT_PATH.exec(pathname)
+    if (match?.[2] === 'github' && !local) return errorResponse(403, 'Forbidden')
     const id = match && decodeURIComponent(match[1]!)
     if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
     if (match![2] === 'unarchive') {
@@ -911,6 +921,14 @@ export function startWebServer(
     }
     const project = projects().get(id)
     if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
+    if (match![2] === 'github') {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      if (match![3] || url.search || req.body) return errorResponse(400, 'Invalid request')
+      const cwd = realOr(project.cwd)
+      const isTrusted = config.folderTrust?.isTrusted ?? isPathTrusted
+      if (cwd !== project.cwd || !isTrusted(cwd)) return errorResponse(403, 'Forbidden')
+      return Response.json(await readProjectGithub(cwd, req.signal))
+    }
     if (match![2] === 'coordinator') {
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       return openCoordinator(project)
@@ -1091,10 +1109,18 @@ export function startWebServer(
         temp_root: tempRoot,
         home: homedir(),
         version: MACRO.VERSION,
+        brand_icon: (await getBrandIcon())?.url,
         // The browser runs on this machine, so it may open files there.
         local,
         // Read each time: `/theme` in a session may have changed it.
         theme: cliWebTheme(getGlobalConfig().theme),
+      })
+    }
+    if (pathname === BRAND_ICON_PATH && (req.method === 'GET' || req.method === 'HEAD')) {
+      const icon = await getBrandIcon()
+      if (!icon) return errorResponse(404, 'Not found')
+      return new Response(req.method === 'HEAD' ? null : new Uint8Array(icon.body), {
+        headers: { 'Content-Type': 'image/png', 'Cross-Origin-Resource-Policy': 'same-origin' },
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
@@ -1276,7 +1302,7 @@ export function startWebServer(
         : errorResponse(404, 'Session not found')
     }
     if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
-      return handleProjects(req, pathname)
+      return handleProjects(req, url, local)
     }
     if (pathname.startsWith('/api/ext/')) {
       return handleExtApi(req, url, config.configDir ?? getClaudeConfigHomeDir())

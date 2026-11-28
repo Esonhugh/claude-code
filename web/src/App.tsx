@@ -1,5 +1,5 @@
-import { type CSSProperties, type DragEvent, Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import { type CSSProperties, type DragEvent, Fragment, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { createPortal, flushSync } from 'react-dom'
 import {
   type AuthProvider,
   createSession,
@@ -31,6 +31,7 @@ import { buildTeam, canChat, isFinished, taskName } from './agents'
 import { AccountCard, ApiKeyDialog, LoginGate, useAccount } from './components/Account'
 import { type AgentsView, agentTasks } from './components/Agents'
 import { AskDock, ChatComposer, chatTools, ContextChip, GoalMenu, type MentionTarget, Pins } from './components/Composer'
+import { Dialog } from './components/Dialog'
 import { AppDialog, type Motion, type Palette, type Theme } from './components/Dialogs'
 import type { ContextUsage } from './components/Settings'
 import { AgentsContext, ChatContext, FilesContext, joinTurns, Message, modelOption, QuoteContext, QuoteOnSelect, replyPrompt, TeamBar } from './components/Message'
@@ -74,6 +75,7 @@ import { agentInputs, messageTarget, notesByItem, taskNoteText } from './project
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { nativeCommand, type SlashCommand, withPageCommands } from './commands'
+import type { TmuxSelection } from './tmux'
 import { previewTarget, WebPreviewContext } from './webPreview'
 
 const HISTORY_PAGE = 200
@@ -98,6 +100,8 @@ const VERBS = ['Cogitating', 'Pondering', 'Brewing', 'Crunching']
 const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 // The Messages API rejects larger inline images; those are uploaded instead.
 const INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+// A pointer click on an upload also has a single-click action (open Artifact).
+const IMAGE_DOUBLE_CLICK_MS = 500
 
 /** Images go inline as image blocks; other files are uploaded and @-mentioned. */
 async function prepareContent(
@@ -194,14 +198,25 @@ export function App() {
   const [agentTargets, setAgentTargets] = useState<Record<string, MentionTarget[]>>({})
   const [attachments, setAttachments] = useState<Record<string, File[]>>({})
   const [preview, setPreview] = useState<Canvas>()
+  const [chatImage, setChatImage] = useState<{
+    sessionId: string; src: string; alt: string; opener: HTMLElement; menu?: { x: number; y: number }
+  }>()
+  const imageMenuRef = useRef<HTMLDivElement>(null)
+  const imageClick = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
   const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
   const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean; brandIcon?: string }>({
     previewOrigins: [],
   })
+  const [brandIcon, setBrandIcon] = useState<string>()
   const [dragging, setDragging] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('status')
+  const [tmuxSelection, setTmuxSelection] = useState<TmuxSelection>()
+  const selectSideTab = useCallback((tab: SideTab) => {
+    setTmuxSelection(undefined)
+    setSideTab(tab)
+  }, [])
   const [sheetOpen, setSheetOpen] = useState(false)
   const [agentsView, setAgentsView] = useState<AgentsView>({ kind: 'tree' })
   const [workflowId, setWorkflowId] = useState<string>()
@@ -268,6 +283,40 @@ export function App() {
   const project = projects.find(p => p.id === projectId)
   const inProject = !!project && !!chat && project.coordinator_session_id === state.view
   const view = state.view
+  useLayoutEffect(() => {
+    setChatImage(undefined)
+    return () => clearTimeout(imageClick.current)
+  }, [view, inProject])
+  const imageMenu = chatImage?.menu
+  useLayoutEffect(() => {
+    const el = imageMenuRef.current
+    if (!el || !imageMenu) return
+    el.style.left = `${Math.max(0, Math.min(imageMenu.x, innerWidth - el.offsetWidth - 8))}px`
+    el.style.top = `${Math.max(0, Math.min(imageMenu.y, innerHeight - el.offsetHeight - 8))}px`
+    el.querySelector('button')?.focus({ preventScroll: true })
+    const dismiss = (e: PointerEvent) => {
+      if (!e.composedPath().includes(el)) setChatImage(undefined)
+    }
+    document.addEventListener('pointerdown', dismiss, true)
+    return () => document.removeEventListener('pointerdown', dismiss, true)
+  }, [imageMenu])
+
+  const showChatImage = (e: MouseEvent<HTMLDivElement>) => {
+    const img = e.target
+    if (!view || e.defaultPrevented || !(img instanceof HTMLImageElement) || !img.hasAttribute('data-chat-image') || !img.complete || !img.naturalWidth) return
+    const src = img.getAttribute('src')
+    if (!src) return
+    const link = img.closest<HTMLAnchorElement>('a[href]')
+    const rightClick = e.type === 'contextmenu'
+    if (!rightClick && (link || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey)) return
+    e.preventDefault()
+    e.stopPropagation()
+    clearTimeout(imageClick.current)
+    const opener = link ?? img.closest('button') ?? img
+    if (opener === img) img.tabIndex = -1
+    if (!rightClick) opener.focus({ preventScroll: true })
+    setChatImage({ sessionId: view, src, alt: img.alt, opener, menu: rightClick ? { x: e.clientX, y: e.clientY } : undefined })
+  }
   const draftKey = view ?? ''
   const draft = drafts[draftKey] ?? ''
   const setDraft = (value: string) => setDrafts(d => ({ ...d, [draftKey]: value }))
@@ -334,20 +383,25 @@ export function App() {
       view
         ? {
             open: openFile,
-            openImage: (src: string, n: number, target: string) => {
-              setPreview({ sessionId: view, path: t('chatImage', { n: String(n) }), image: { src, target } })
-              setSheetOpen(false)
+            openImage: (src: string, n: number, target: string, clickCount: number) => {
+              clearTimeout(imageClick.current)
+              const open = () => {
+                setPreview({ sessionId: view, path: t('chatImage', { n: String(n) }), image: { src, target } })
+                setSheetOpen(false)
+              }
+              if (inProject || clickCount === 0) open()
+              else if (clickCount === 1) imageClick.current = setTimeout(open, IMAGE_DOUBLE_CLICK_MS)
             },
             base: filesBase(view),
             cwd: chatCwd,
             showFiles: () => {
               setPreview(undefined)
-              setSideTab('files')
+              selectSideTab('files')
               if (isNarrow(760)) setSheetOpen(true)
             },
           }
         : {},
-    [view, openFile, chatCwd, t],
+    [view, openFile, chatCwd, selectSideTab, t, inProject],
   )
   const webPreviewValue = useMemo(() => {
     const target = (href: string) => previewTarget(href, { uiOrigin: location.origin, origins: info.previewOrigins })
@@ -415,20 +469,21 @@ export function App() {
         const task = tasks?.[taskId]
         if (task?.type === 'local_workflow') {
           setWorkflowId(taskId)
-          setSideTab('workflow')
+          selectSideTab('workflow')
         } else {
-          setSideTab('agents')
+          selectSideTab('agents')
           setAgentsView({ kind: 'task', id: taskId })
         }
         if (isNarrow(760)) setSheetOpen(true)
       },
     }
-  }, [tasks, agentNames])
+  }, [tasks, agentNames, selectSideTab])
   useEffect(() => {
     setAgentsView({ kind: 'tree' })
     setWorkflowId(undefined)
+    setTmuxSelection(undefined)
     setSheetOpen(false)
-  }, [view])
+  }, [view, inProject])
   const items = chat?.items
   // An agent the main conversation started that handed back its report or ended, under the turn it ended in.
   const agentNotes = useMemo(
@@ -557,7 +612,7 @@ export function App() {
           writeStored(CLI_THEME_KEY, res.theme)
           if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
         }
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local, brandIcon: res.brand_icon })
       },
       () => {},
     )
@@ -566,6 +621,29 @@ export function App() {
       for (const socket of map.values()) socket.close()
     }
   }, [refreshHistory])
+
+  useEffect(() => {
+    const url = info.brandIcon
+    if (!url) return
+    let active = true
+    const image = new Image()
+    image.src = url
+    // Switch both marks only once the replacement is usable in this renderer.
+    image.decode().then(() => { if (active) setBrandIcon(url) }, () => {})
+    return () => { active = false }
+  }, [info.brandIcon])
+
+  useEffect(() => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    if (!link || !brandIcon) return
+    const { href, type } = link
+    link.type = 'image/png'
+    link.href = brandIcon
+    return () => {
+      link.type = type
+      link.href = href
+    }
+  }, [brandIcon])
 
   // Messages that arrived while the reader was scrolled up, for the "↓ N new messages" button.
   const [newBelow, setNewBelow] = useState(0)
@@ -1112,7 +1190,7 @@ export function App() {
     }
     if ('panel' in native) {
       setPreview(undefined)
-      setSideTab(native.panel)
+      selectSideTab(native.panel)
       if (isNarrow(760)) setSheetOpen(true)
       return true
     }
@@ -1437,7 +1515,7 @@ export function App() {
 
   const openStatus = () => {
     setPreview(undefined)
-    setSideTab('status')
+    selectSideTab('status')
     if (isNarrow(760)) setSheetOpen(true)
   }
   // Page shortcuts: Ctrl+K search, Ctrl+Shift+O new session, Ctrl+. Status, ? help.
@@ -1838,8 +1916,15 @@ export function App() {
             }
           : undefined,
       control,
+      openTmux: view && !inProject
+        ? (toolUseId: string) => {
+            setPreview(undefined)
+            setTmuxSelection({ sessionId: view, toolUseId })
+            if (isNarrow(760)) setSheetOpen(true)
+          }
+        : undefined,
     }),
-    [decisions, canRewind, view, rewindTarget, rewindPoints, control],
+    [decisions, canRewind, inProject, view, rewindTarget, rewindPoints, control],
   )
 
   const withChat = (node: ReactNode) => (
@@ -1964,6 +2049,8 @@ export function App() {
             className="feed"
             ref={feedRef}
             aria-busy={chat.busy}
+            onDoubleClick={showChatImage}
+            onContextMenu={showChatImage}
             onScroll={e => {
               stickToBottom.current = followScroll(e.currentTarget, stickToBottom.current, feedTop)
               e.currentTarget.style.overflowAnchor = stickToBottom.current ? 'none' : ''
@@ -2158,6 +2245,8 @@ export function App() {
         lang={lang}
         open={sidebarOpen}
         uiName={uiName}
+        brandIcon={brandIcon}
+        onBrandIconError={() => setBrandIcon(undefined)}
         env={env}
         history={projectSessions.size ? state.history.filter(h => !projectSessions.has(h.id)) : state.history}
         historyMore={state.historyMore}
@@ -2310,6 +2399,8 @@ export function App() {
             onContextWindow={tokens => changeContextWindow(view, tokens)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
+            local={info.local === true}
+            githubModRequest={modsAttached ? modsRequest : undefined}
             onStopTask={taskId => requestAsync(view, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })}
             onSendTask={async (taskId, text, pick) => {
               // A coordinator that stopped (or a server that restarted) is resumed first.
@@ -2349,7 +2440,7 @@ export function App() {
           t={t}
           open={sheetOpen}
           tab={sideTab}
-          setTab={setSideTab}
+          setTab={selectSideTab}
           sessionId={view}
           chat={chat}
           title={chatTitle}
@@ -2377,6 +2468,8 @@ export function App() {
             signedOut,
           }}
           onRequest={body => requestAsync(view, REQUEST_PREFIX.background, body)}
+          tmuxSelection={tmuxSelection}
+          onCloseTmux={() => setTmuxSelection(undefined)}
           onClose={() => setSheetOpen(false)}
         />
       )}
@@ -2384,6 +2477,34 @@ export function App() {
       {sheetOpen && (
         <div className="scrim" style={{ zIndex: 26 }} aria-hidden="true" onClick={() => setSheetOpen(false)} />
       )}
+      {chatImage && chatImage.sessionId === view && !inProject && (chatImage.menu ? (
+        createPortal(
+          <div className="pop ctxmenu chat-image-menu" ref={imageMenuRef} role="menu" aria-label={t('enlargeImage')}>
+            <button
+              className="mi"
+              type="button"
+              role="menuitem"
+              onKeyDown={e => {
+                if (e.key !== 'Escape' && e.key !== 'Tab') return
+                e.stopPropagation()
+                chatImage.opener.focus({ preventScroll: true })
+                setChatImage(undefined)
+              }}
+              onClick={() => {
+                chatImage.opener.focus({ preventScroll: true })
+                setChatImage({ ...chatImage, menu: undefined })
+              }}
+            >
+              {t('enlargeImage')}
+            </button>
+          </div>,
+          document.body,
+        )
+      ) : (
+        <Dialog t={t} xl title={t('enlargeImage')} onClose={() => setChatImage(undefined)}>
+          <img className="chat-image-preview" src={chatImage.src} alt={chatImage.alt} />
+        </Dialog>
+      ))}
       {dialog && (
         <AppDialog
           kind={dialog}
