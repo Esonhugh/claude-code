@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
 
+import { initialState, reduce } from '../../../web/src/protocol.js'
+import { coordinatorTaskNotes, workerTaskNotes } from '../../../web/src/projects.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
 import type { AppState } from '../../state/AppState.js'
 import {
+  enqueueAgentNotification,
   isLocalAgentTask,
+  killAsyncAgent,
   registerAsyncAgent,
   stopBackgroundAgentTasks,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { AbortError } from '../../utils/errors.js'
+import { asAgentId } from '../../types/ids.js'
 import { getCommandQueue } from '../../utils/messageQueueManager.js'
-import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
+import { drainSdkEvents, getTaskRunId } from '../../utils/sdkEventQueue.js'
 import {
   beginSubagentHandback,
   deliverSubagentHandback,
@@ -137,6 +142,96 @@ const queued = (taskId: string) =>
 const lastReport = () => reports.at(-1)
 const sdkNotice = (taskId: string) =>
   drainSdkEvents().find(event => event.subtype === 'task_notification' && event.task_id === taskId) as Record<string, unknown> | undefined
+
+// The SDK describes the same owner as the model's queue, and distinguishes actual fallback.
+for (const ownerIsLive of [true, false]) {
+  const owner = `owner-${ownerIsLive}`
+  const child = `child-${ownerIsLive}`
+  registerAsyncAgent({ agentId: owner, description: owner, prompt: 'go', selectedAgent, setAppState, spawnDepth: 1 })
+  registerAsyncAgent({ agentId: child, ownerAgentId: owner, description: child, prompt: 'go', selectedAgent, setAppState, spawnDepth: 2 })
+  assert.ok(drainSdkEvents().some(event => event.subtype === 'task_started' && event.task_id === child && event.parent_task_id === owner))
+  if (!ownerIsLive) {
+    const parent = state.tasks[owner]
+    assert.ok(isLocalAgentTask(parent))
+    state = { ...state, tasks: { ...state.tasks, [owner]: { ...parent, status: 'completed', keepaliveReasons: new Set() } } }
+  }
+  enqueueAgentNotification({ taskId: child, description: child, status: 'completed', setAppState, finalMessage: 'done', toolUseId: `toolu_${child}` })
+  const ending = sdkNotice(child)
+  assert.equal(ending?.parent_task_id, owner)
+  assert.equal(ending?.notification_to_main, ownerIsLive ? undefined : true)
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(queued(child).length, 1)
+  assert.equal(queued(child)[0]?.agentId, ownerIsLive ? asAgentId(owner) : undefined)
+  // Do not let these synthetic running tasks participate in the later interrupt fixture.
+  state = { ...state, tasks: {} }
+}
+
+// Exercise the actual owner queue and its late reroute, with no CLI or model call.
+{
+  const owner = 'fixture-late-owner'
+  const child = 'fixture-late-child'
+  registerAsyncAgent({ agentId: owner, description: owner, prompt: 'go', selectedAgent, setAppState, spawnDepth: 1 })
+  registerAsyncAgent({ agentId: child, ownerAgentId: owner, description: child, prompt: 'go', selectedAgent, setAppState, spawnDepth: 2 })
+  const starts = drainSdkEvents()
+  enqueueAgentNotification({ taskId: child, description: child, status: 'completed', setAppState, finalMessage: 'done' })
+  const end = sdkNotice(child)
+  assert.ok(end)
+  assert.equal(end.tool_use_id, undefined)
+  const started = starts.find(event => event.subtype === 'task_started' && event.task_id === child) as { run_id?: string } | undefined
+  assert.ok(started?.run_id)
+  assert.equal(end.run_id, started.run_id)
+  const queuedForOwner = queued(child).find(command => command.taskId === child)
+  assert.equal(queuedForOwner?.agentId, asAgentId(owner))
+  assert.ok(!String(queuedForOwner?.value).includes('<tool-use-id>'))
+  const history = (uuid: string, content: unknown) => ({ type: 'user', isReplay: true, uuid, message: { content } })
+  const ownedHistory = reduce(initialState, history('owner-log', queuedForOwner?.value))
+  const before = [...starts, end].reduce(reduce, initialState)
+  assert.deepEqual(coordinatorTaskNotes(before), [])
+  assert.equal(workerTaskNotes(before, owner, ownedHistory).length, 1)
+  assert.equal(ownedHistory.taskNotes[0]?.runId, started.run_id)
+  const firstRun = state.tasks[child]
+  assert.ok(isLocalAgentTask(firstRun))
+  state = { ...state, tasks: { ...state.tasks, [child]: { ...firstRun, status: 'completed' } } }
+  registerAsyncAgent({ agentId: child, ownerAgentId: owner, description: child, prompt: 'resume', selectedAgent, setAppState, spawnDepth: 2 })
+  assert.notEqual(getTaskRunId(child), started.run_id)
+  killAsyncAgent(owner, setAppState, 'parent')
+  await Promise.resolve()
+  await Promise.resolve()
+  const rerouted = queued(child).find(command => command.taskId === child)
+  assert.ok(rerouted)
+  assert.equal(rerouted.agentId, undefined)
+  assert.equal(rerouted.value, queuedForOwner?.value)
+  assert.equal(rerouted.sdkTaskNotificationSent, true)
+  assert.ok(!sdkNotice(child))
+  const mainLog = history('main-log', rerouted.value)
+  for (const after of [reduce(before, mainLog), [mainLog, ...starts, end].reduce(reduce, initialState)]) {
+    assert.deepEqual(coordinatorTaskNotes(after).map(note => note.runId), [started.run_id])
+    assert.deepEqual(workerTaskNotes(after, owner, ownedHistory), [])
+    assert.deepEqual(workerTaskNotes(after, owner, initialState), [])
+  }
+  state = { ...state, tasks: {} }
+}
+
+// A direct Web resume has no tool call when its reply is queued to main.
+{
+  const taskId = 'fixture-web-resume'
+  registerAsyncAgent({ agentId: taskId, description: taskId, prompt: 'resume', selectedAgent, setAppState, spawnDepth: 1 })
+  const runId = getTaskRunId(taskId)
+  assert.ok(runId)
+  enqueueAgentNotification({ taskId, description: taskId, status: 'completed', setAppState, finalMessage: 'done' })
+  const end = sdkNotice(taskId)
+  const command = queued(taskId).find(item => item.taskId === taskId)
+  assert.ok(end && command)
+  assert.equal(end.run_id, runId)
+  assert.equal(end.tool_use_id, undefined)
+  assert.equal(command.agentId, undefined)
+  const log = { type: 'user', isReplay: true, uuid: 'web-resume-log', message: { content: command.value } }
+  for (const frames of [[end, log], [log, end]]) {
+    assert.deepEqual(coordinatorTaskNotes(frames.reduce(reduce, initialState)).map(note => note.runId), [runId])
+  }
+  state = { ...state, tasks: {} }
+}
 
 // A finished background run is reported, and the parent reads the report's answer.
 // SDK hosts are told the summary is that report, as no review of it is to come (official 2.1.329 outside auto mode).

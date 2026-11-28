@@ -6,7 +6,7 @@
 import { type AgentTask, formatTokens } from './agents'
 import type { ProjectTask } from './api'
 import type { MessageKey } from './i18n'
-import type { Approval, Item, TaskNote } from './protocol'
+import { type Approval, type ChatState, type Item, sameTaskEnding, type TaskNote } from './protocol'
 
 /** running · blocked (an unanswered approval) · review (finished, not looked at) · done · stopped. */
 export type TaskState = ProjectTask['state']
@@ -128,6 +128,83 @@ export function taskNoteText(
     return { key: 'taskFinishedNote', vars: { title, time: formatTaskTime(note.durationMs ?? task?.durationMs) } }
   }
   return { key: note.status === 'failed' ? 'taskFailedNote' : 'taskStoppedNote', vars: { title } }
+}
+
+/** Link only unambiguous SDK/history copies. A legacy XML line must not consume two runs. */
+function taskCopies(logs: TaskNote[], live: TaskNote[]): Map<TaskNote, TaskNote> {
+  const unique = new Map<TaskNote, TaskNote>()
+  // Legacy evidence cannot make an exact match ambiguous or take its SDK copy.
+  const matched = new Set<TaskNote>()
+  for (const log of logs) {
+    if (!log.runId) continue
+    const copy = live.find(note => note.runId === log.runId && note.taskId === log.taskId)
+    if (copy) {
+      unique.set(log, copy)
+      matched.add(copy)
+    }
+  }
+  const counts = new Map<TaskNote, number>()
+  for (const log of logs) {
+    if (unique.has(log)) continue
+    const candidates = live.filter(note => !matched.has(note) && sameTaskEnding(log, note, true))
+    for (const note of candidates) counts.set(note, (counts.get(note) ?? 0) + 1)
+    if (candidates.length === 1) unique.set(log, candidates[0]!)
+  }
+  for (const [log, note] of unique) if (!matched.has(note) && counts.get(note) !== 1) unique.delete(log)
+  return unique
+}
+
+/** Main receives its direct workers and reports actually delivered to its transcript. */
+export function coordinatorTaskNotes(chat: ChatState, rows: ProjectTask[] = []): TaskNote[] {
+  const live = chat.taskNotes.filter(note => !note.inTranscript)
+  const recorded = chat.taskNotes.filter(note => note.inTranscript)
+  const copies = taskCopies(recorded, live)
+  const logs = new Map(Array.from(copies, ([log, note]) => [note, log]))
+  const isMain = (note: TaskNote) => note.notificationToMain || note.parentTaskId === null || (
+    note.parentTaskId === undefined && note.runId && note.legacyProjectToolId &&
+    note.toolUseId === note.legacyProjectToolId && rows.some(row => row.id === note.taskId && row.tool_use_id === note.toolUseId)
+  )
+  return chat.taskNotes.flatMap((note, i) => {
+    if (note.inTranscript) {
+      const copy = copies.get(note)
+      if (copy) return chat.taskNotes.indexOf(copy) < i ? [] : [{ ...copy, ...note }]
+      // A legacy log of repeated direct endings need not add an extra row if all its
+      // possible copies are already shown here. Keep ambiguous owner fallback visible.
+      const candidates = live.filter(ending => sameTaskEnding(note, ending, true))
+      return candidates.length > 1 && candidates.every(isMain) &&
+        recorded.filter(log => candidates.some(ending => sameTaskEnding(log, ending, true))).length <= candidates.length ? [] : [note]
+    }
+    const log = logs.get(note)
+    if (log) return chat.taskNotes.indexOf(log) < i ? [] : [{ ...note, ...log }]
+    return isMain(note) ? [note] : []
+  })
+}
+
+/** Merge only this owner's live endings with its local transcript. Main reports win. */
+export function workerTaskNotes(chat: ChatState, ownerId: string, history: ChatState): TaskNote[] {
+  const live = chat.taskNotes.filter(note => !note.inTranscript)
+  const mainLogs = chat.taskNotes.filter(note => note.inTranscript)
+  const main = taskCopies(mainLogs, live)
+  const promoted = new Set(main.values())
+  const owned = live.filter(note => note.parentTaskId === ownerId)
+  const copies = taskCopies(history.taskNotes, owned)
+  const shadowed = new Set(copies.values())
+  const toMain = (note: TaskNote) => note.notificationToMain || promoted.has(note)
+  const recorded = history.taskNotes.filter(log => {
+    // An identified main report also wins when only the two transcripts were replayed.
+    if (log.runId && mainLogs.some(mainLog => mainLog.runId === log.runId && mainLog.taskId === log.taskId)) return false
+    const note = copies.get(log)
+    return !note || !toMain(note)
+  })
+  const byTool = new Map<string, string>()
+  for (const item of history.items) {
+    if (item.kind === 'assistant') for (const block of item.blocks) {
+      if (block.kind === 'tool') byTool.set(block.id, item.id)
+    }
+  }
+  return [...recorded, ...owned.filter(note => !toMain(note) && !shadowed.has(note)).map(note => ({
+    ...note, afterId: note.toolUseId ? byTool.get(note.toolUseId) : undefined,
+  }))]
 }
 
 /** Notes keyed by the item they follow; `''` holds the rest (their item is not shown), drawn last. */

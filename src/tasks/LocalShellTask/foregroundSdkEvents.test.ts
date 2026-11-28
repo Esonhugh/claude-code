@@ -4,7 +4,9 @@ import { onChangeAppState } from '../../state/onChangeAppState.js'
 import { getDefaultAppState, type AppState } from '../../state/AppStateStore.js'
 import { getCommandQueue, resetCommandQueue } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
+import { asAgentId } from '../../types/ids.js'
 import type { ExecResult, ShellCommand } from '../../utils/ShellCommand.js'
+import { killTask } from './killShellTasks.js'
 import { backgroundTaskForToolUse, registerForeground, unregisterForeground } from './LocalShellTask.js'
 
 let state: AppState
@@ -34,7 +36,7 @@ const events = () =>
     return rest
   })
 
-function foreground(taskId: string) {
+function foreground(taskId: string, ownerId?: string) {
   const result = Promise.withResolvers<ExecResult>()
   const shellCommand = {
     status: 'running',
@@ -44,7 +46,7 @@ function foreground(taskId: string) {
     cleanup: () => {},
     kill: () => {},
   } as unknown as ShellCommand
-  registerForeground({ command: 'make test', description: 'Run the tests', shellCommand }, setAppState, 'toolu_1')
+  registerForeground({ command: 'make test', description: 'Run the tests', shellCommand, agentId: ownerId ? asAgentId(ownerId) : undefined }, setAppState, 'toolu_1')
   return result
 }
 
@@ -85,6 +87,17 @@ test('a foreground command that ends is closed with the status it ended with', (
   // Nothing is left to close a second time.
   unregisterForeground('b2', setAppState, 'failed')
   expect(events()).toEqual([])
+})
+
+test('a worker-owned shell keeps its owner and tool id when it stops', () => {
+  // The shell is still attributable even when the owning Agent's start is not in the host's replay.
+  foreground('b-owned', 'worker-id')
+  events()
+  killTask('b-owned', setAppState)
+  expect(events()).toContainEqual(expect.objectContaining({
+    subtype: 'task_notification', task_id: 'b-owned', tool_use_id: 'toolu_1', parent_task_id: 'worker-id', status: 'stopped',
+  }))
+  expect(getCommandQueue()).toEqual([])
 })
 
 test('moving it to the background is a task_updated, and its end is told before it leaves the list', async () => {

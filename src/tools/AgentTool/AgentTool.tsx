@@ -2333,6 +2333,7 @@ export const AgentTool = buildTool({
                   subtype: 'task_notification',
                   task_id: foregroundTaskId,
                   tool_use_id: toolUseContext.toolUseId,
+                  parent_task_id: toolUseContext.agentId ?? null,
                   status,
                   output_file: getTaskOutputPath(foregroundTaskId),
                   summary: syncAgentError?.message ?? (report || description),

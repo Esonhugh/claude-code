@@ -220,7 +220,7 @@ function enqueueShellNotification(
 
   // Like official 2.1.329, SDK hosts hear of the end when it happens, not
   // when the model is told.
-  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, { toolUseId, summary, outputFile: outputPath })
+  emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, { toolUseId, parentTaskId: agentId, summary, outputFile: outputPath })
   updateTaskState(taskId, setAppState, task => ({ ...task, notified: true }))
   return enqueuePendingNotification({
     value: message,
@@ -713,7 +713,7 @@ export function unregisterForeground(
   // Call cleanup outside of the state updater (avoid side effects in updater)
   removed?.unregisterCleanup?.()
   if (removed && status && !removed.notified) {
-    emitTaskTerminatedSdk(taskId, status, { toolUseId: removed.toolUseId, summary: removed.description })
+    emitTaskTerminatedSdk(taskId, status, { toolUseId: removed.toolUseId, parentTaskId: removed.agentId, summary: removed.description })
   }
 }
 

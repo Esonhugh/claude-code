@@ -21,6 +21,7 @@ import {
   messageTarget,
   canMessage,
   coordinatorApprovals,
+  coordinatorTaskNotes,
   isLive,
   notesByItem,
   TASK_GROUPS,
@@ -31,8 +32,9 @@ import {
   type TaskState,
   withApprovals,
   workerItems,
+  workerTaskNotes,
 } from '../projects'
-import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
+import { type Approval, type ApprovalChoice, type Block, type ChatState, currentTodos, initialState, type Item, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
 import { toolMessage } from '../tools'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
@@ -173,11 +175,44 @@ function useWorkerTranscript(projectId: string, task: ProjectTask, followUntil: 
   return messages
 }
 
+function WorkerConversation({ t, chat, ownerId, history, items, model, models }: {
+  t: T
+  chat: SessionChat
+  ownerId: string
+  history: ChatState
+  items: Item[]
+  model?: string
+  models: ModelOption[]
+}) {
+  const notes = notesByItem(workerTaskNotes(chat, ownerId, history), items)
+  const agentCalls = useMemo(() => agentInputs(items), [items])
+  const showNotes = (afterId: string) => notes.get(afterId)?.map(note => {
+    const child = chat.tasks[note.taskId]
+    const call = note.toolUseId ? agentCalls.get(note.toolUseId) : undefined
+    const title = child?.title || child?.description || call?.description
+    const { key, vars } = taskNoteText(note, title ? { description: title, durationMs: child?.durationMs } : undefined)
+    return <Note key={noteKey(note)} text={t(key, vars)} />
+  })
+  return (
+    <>
+      {joinTurns(items, id => notes.has(id)).map(({ item, ids }) => (
+        <Fragment key={item.id}>
+          <Message item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
+          {showNotes(ids.at(-1)!)}
+        </Fragment>
+      ))}
+      {showNotes('')}
+
+    </>
+  )
+}
+
 /** The open task: checklist, brief, the worker's conversation and its own input box. */
 function TaskPane({
   t,
   project,
   task,
+  chat,
   model,
   effort,
   models,
@@ -208,6 +243,7 @@ function TaskPane({
   t: T
   project: Project
   task: ProjectTask
+  chat: SessionChat
   model: string | undefined
   effort: string | undefined
   models: ModelOption[]
@@ -241,7 +277,8 @@ function TaskPane({
 }) {
   const quoteHere = useCallback((quote: string | undefined) => onQuote(task.id, quote), [onQuote, task.id])
   const messages = useWorkerTranscript(project.id, task, followUntil)
-  const items = useMemo(() => messages.reduce(reduce, initialState).items, [messages])
+  const history = useMemo(() => messages.reduce(reduce, initialState), [messages])
+  const { items } = history
   const shown = useMemo(() => workerItems(items, task.brief), [items, task.brief])
   const todos = useMemo(() => currentTodos(items), [items])
   const prompts = useMemo(() => items.flatMap(i => (i.kind === 'user' && i.text ? [i.text] : [])), [items])
@@ -289,9 +326,7 @@ function TaskPane({
           </div>
         )}
         <AgentConversation>
-          {joinTurns(shown).map(({ item }) => (
-            <Message key={item.id} item={item} t={t} who="worker" fallbackModel={model} models={models} streaming={false} />
-          ))}
+          <WorkerConversation t={t} chat={chat} ownerId={task.agent_id} history={history} items={shown} model={model} models={models} />
           {unread.map(m => (
             <Message key={m.id} item={{ kind: 'user', id: m.id, text: m.text }} t={t} streaming={false} />
           ))}
@@ -527,7 +562,7 @@ export function ProjectView({
   useEffect(() => () => clearTimeout(flashTimer.current), [])
 
   const inputs = useMemo(() => agentInputs(chat.items), [chat.items])
-  const notes = useMemo(() => notesByItem(chat.taskNotes, chat.items), [chat.taskNotes, chat.items])
+  const notes = notesByItem(coordinatorTaskNotes(chat, tasks), chat.items)
   const byToolUse = useMemo(() => new Map(tasks.filter(x => x.tool_use_id).map(x => [x.tool_use_id!, x])), [tasks])
   // Until the coordinator's first turn reports them, the model and effort it was started with.
   const chatModel = chat.model ?? project.coordinator_model ?? undefined
@@ -993,7 +1028,7 @@ export function ProjectView({
         role={item.kind === 'assistant' ? t('coordinatorRole') : undefined}
         taskCard={taskCard}
       />
-      {notes.get(ids.at(-1)!)?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
+      {notes.get(ids.at(-1)!)?.map(note => <Note key={noteKey(note)} text={noteText(note)} />)}
     </Fragment>
   ))
 
@@ -1083,7 +1118,7 @@ export function ProjectView({
           {chat.queued.map(item => (
             <Message key={item.id} item={item} t={t} streaming={false} queued />
           ))}
-          {notes.get('')?.map(note => <Note key={`${note.taskId}-${note.n}`} text={noteText(note)} />)}
+          {notes.get('')?.map(note => <Note key={noteKey(note)} text={noteText(note)} />)}
           {(chat.busy || running + blocked > 0) && (
             <div className="status-line" role="status">
               <span className="glyph">✻</span>
@@ -1176,6 +1211,7 @@ export function ProjectView({
             t={t}
             project={project}
             task={open}
+            chat={chat}
             model={modelOf(open)}
             effort={picks[open.id]?.effort ?? open.effort ?? chatEffort}
             models={models}
@@ -1233,6 +1269,10 @@ export function ProjectView({
         )}
     </section>
   )
+}
+
+function noteKey(note: TaskNote): string {
+  return `${note.taskId}-${note.inTranscript ? 'log' : 'sys'}-${note.runId ?? note.n}`
 }
 
 function Note({ text }: { text: string }) {

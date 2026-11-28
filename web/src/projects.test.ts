@@ -4,6 +4,7 @@ import {
   agentInputs,
   canMessage,
   coordinatorApprovals,
+  coordinatorTaskNotes,
   messageTarget,
   notesByItem,
   taskElapsed,
@@ -12,8 +13,9 @@ import {
   taskNoteText,
   withApprovals,
   workerItems,
+  workerTaskNotes,
 } from './projects'
-import { type Approval, type Item, initialState, reduce } from './protocol'
+import { type Approval, type Item, initialState, mergeTaskNotes, reduce } from './protocol'
 
 const sys = (subtype: string, rest: Record<string, unknown>) => ({ type: 'system', subtype, session_id: 's', uuid: 'u', ...rest })
 
@@ -50,6 +52,149 @@ const row = (patch: Partial<ProjectTask>): ProjectTask => ({
 })
 
 describe('project tasks', () => {
+  it('shows a project worker ending on the coordinator and its internal endings only on their owners', () => {
+    const started = (id: string, task_type: string, spawn_depth?: number, parent_task_id?: string) =>
+      sys('task_started', { task_id: id, run_id: `run-${id}`, tool_use_id: `toolu_${id}`, description: id, task_type, spawn_depth, parent_task_id })
+    const ended = (id: string, status: string, extra: Record<string, unknown> = {}) =>
+      sys('task_notification', { uuid: `end-${id}`, run_id: `run-${id}`, task_id: id, tool_use_id: `toolu_${id}`, status, ...extra })
+    const log = (id: string, status: string) => ({
+      type: 'user', isReplay: true, uuid: `log-${id}`,
+      message: { content: `<task-notification><task-id>${id}</task-id><tool-use-id>toolu_${id}</tool-use-id><status>${status}</status></task-notification>` },
+    })
+    const ids = (notes: { taskId: string; status: string }[]) => notes.map(n => [n.taskId, n.status])
+    const worker = 'file-tree-worker'
+    const completed = ended('narrow-check', 'completed')
+    const stopped = ended('mock-preparation', 'stopped')
+    const frames = [
+      started(worker, 'local_agent', 1),
+      started('other-worker', 'local_agent', 1),
+      started('narrow-check', 'local_agent', 2, worker),
+      started('mock-preparation', 'local_bash', undefined, worker),
+      completed, stopped, ended(worker, 'completed'), completed,
+      ended('orphan', 'completed'),
+      ended('other-check', 'completed', { parent_task_id: 'other-worker' }),
+      ended('deeper-check', 'completed', { parent_task_id: 'narrow-check' }),
+    ]
+    const chat = frames.reduce(reduce, initialState)
+    expect(ids(coordinatorTaskNotes(chat))).toEqual([[worker, 'completed']])
+    const history = [assistant('owner-reply', []), log('narrow-check', 'completed')].reduce(reduce, initialState)
+    expect(ids(workerTaskNotes(chat, worker, history))).toEqual([
+      ['narrow-check', 'completed'], ['mock-preparation', 'stopped'],
+    ])
+    expect(ids(workerTaskNotes(chat, 'other-worker', initialState))).toEqual([['other-check', 'completed']])
+    expect(ids(workerTaskNotes(chat, 'narrow-check', initialState))).toEqual([['deeper-check', 'completed']])
+    expect(ids(coordinatorTaskNotes(reduce(chat, log('narrow-check', 'completed'))))).toEqual([
+      ['narrow-check', 'completed'], [worker, 'completed'],
+    ])
+    const fallback = ended('fallback', 'stopped', { parent_task_id: worker, notification_to_main: true })
+    const withFallback = reduce(chat, fallback)
+    expect(ids(coordinatorTaskNotes(withFallback))).toEqual([[worker, 'completed'], ['fallback', 'stopped']])
+    expect(ids(workerTaskNotes(withFallback, worker, history))).toEqual([
+      ['narrow-check', 'completed'], ['mock-preparation', 'stopped'],
+    ])
+    const replayed = [log('fallback', 'killed'), ...frames, fallback, fallback].reduce(reduce, initialState)
+    expect(ids(coordinatorTaskNotes(replayed))).toEqual([['fallback', 'killed'], [worker, 'completed']])
+  })
+
+  it('binds each ending to its own run, not the latest task owner or status', () => {
+    const start = (run_id: string, parent_task_id?: string) => sys('task_started', {
+      task_id: 'shared', run_id, parent_task_id, task_type: 'local_agent', spawn_depth: parent_task_id ? 2 : 1,
+    })
+    const end = (run_id: string, parent_task_id?: string) => sys('task_notification', {
+      task_id: 'shared', tool_use_id: `tool-${run_id}`, status: 'completed', run_id, parent_task_id,
+    })
+    const fold = (...frames: unknown[]) => frames.reduce(reduce, initialState)
+    const first = end('shared-run-1', 'a')
+    const second = end('shared-run-2', 'b')
+    const noteRuns = (chat: ReturnType<typeof fold>, owner: string) => workerTaskNotes(chat, owner, initialState).map(n => n.runId)
+    const resumed = fold(start('shared-run-1', 'a'), first, second, second)
+    expect(noteRuns(resumed, 'a')).toEqual(['shared-run-1'])
+    expect(noteRuns(resumed, 'b')).toEqual(['shared-run-2'])
+    expect(coordinatorTaskNotes(resumed)).toEqual([])
+
+    const late = fold(end('shared-run-1'), start('shared-run-1'))
+    expect(coordinatorTaskNotes(late).map(n => n.runId)).toEqual(['shared-run-1'])
+    expect(late.tasks.shared?.status).toBe('completed')
+    const inFlight = fold(start('shared-run-1', 'a'), start('shared-run-2', 'b'), end('shared-run-1'))
+    expect(noteRuns(inFlight, 'a')).toEqual(['shared-run-1'])
+    expect(noteRuns(inFlight, 'b')).toEqual([])
+    expect(inFlight.tasks.shared?.status).toBe('running')
+    const unknown = fold(start('shared-run-1', 'a'), end('shared-run-2'))
+    expect(noteRuns(unknown, 'a')).toEqual([])
+    expect(coordinatorTaskNotes(unknown)).toEqual([])
+  })
+
+  it('promotes a late main report once, without consuming an ambiguous unrelated run', () => {
+    const end = (run_id: string, parent_task_id: string, tool_use_id = 'tool-shared') => sys('task_notification', {
+      task_id: 'shared', run_id, parent_task_id, tool_use_id, status: 'stopped', usage: { duration_ms: 42 },
+    })
+    const log = (uuid: string, tool = 'tool-shared') => ({ type: 'user', uuid, isReplay: true,
+      message: { content: `<task-notification><task-id>shared</task-id><tool-use-id>${tool}</tool-use-id><status>killed</status><usage><duration_ms>42</duration_ms></usage></task-notification>` },
+    })
+    const fold = (...frames: unknown[]) => frames.reduce(reduce, initialState)
+    const first = end('first', 'a')
+    const firstHistory = fold(log('worker-log'))
+    const mainLog = log('main-log')
+    const before = fold(first)
+    expect(workerTaskNotes(before, 'a', firstHistory)).toHaveLength(1)
+    const after = fold(first, mainLog, first)
+    expect(coordinatorTaskNotes(after).map(n => n.runId)).toEqual(['first'])
+    expect(workerTaskNotes(after, 'a', firstHistory)).toEqual([])
+    expect(workerTaskNotes(after, 'a', initialState)).toEqual([])
+    const distinct = fold(first, mainLog, end('second', 'b', 'tool-other'))
+    expect(workerTaskNotes(distinct, 'a', firstHistory)).toEqual([])
+    expect(workerTaskNotes(distinct, 'b', fold(log('b-log', 'tool-other')))).toHaveLength(1)
+    const ambiguous = fold(mainLog, first, end('second', 'b'))
+    expect(coordinatorTaskNotes(ambiguous)).toHaveLength(1)
+    expect(workerTaskNotes(ambiguous, 'a', initialState).map(n => n.runId)).toEqual(['first'])
+    expect(workerTaskNotes(ambiguous, 'b', initialState).map(n => n.runId)).toEqual(['second'])
+    const direct = fold(mainLog, { ...first, parent_task_id: null }, { ...end('second', 'b'), parent_task_id: null })
+    expect(coordinatorTaskNotes(direct).map(n => n.runId)).toEqual(['first', 'second'])
+  })
+
+  it('uses a project row only to corroborate a matching legacy run with no depth', () => {
+    const started = (run_id: string, parent_task_id?: string) => sys('task_started', {
+      task_id: 'worker', task_type: 'local_agent', run_id, tool_use_id: 'launch-tool', parent_task_id,
+    })
+    const ended = (run_id: string | undefined, parent_task_id?: string | null) => sys('task_notification', {
+      uuid: `end-${run_id}`, task_id: 'worker', run_id, tool_use_id: 'launch-tool', parent_task_id, status: 'completed',
+    })
+    const projectRows = [row({ id: 'worker', agent_id: 'worker', tool_use_id: 'launch-tool' })]
+    const legacy = [started('one'), ended('one')].reduce(reduce, initialState)
+    expect(coordinatorTaskNotes(legacy)).toEqual([])
+    expect(coordinatorTaskNotes(legacy, projectRows).map(n => n.runId)).toEqual(['one'])
+    const unknown = [started('one'), ended(undefined), ended('two')].reduce(reduce, initialState)
+    expect(coordinatorTaskNotes(unknown, projectRows)).toEqual([])
+    const scoped = [started('one'), ended('one', 'owner')].reduce(reduce, initialState)
+    expect(coordinatorTaskNotes(scoped, projectRows)).toEqual([])
+    expect(workerTaskNotes(scoped, 'owner', initialState)).toHaveLength(1)
+    expect(coordinatorTaskNotes(reduce(initialState, ended('main', null)))).toHaveLength(1)
+  })
+
+  it('correlates transcript and SDK copies by run when a worker resumes without a tool call', () => {
+    const end = (run_id: string, parent_task_id: string | null) => sys('task_notification', {
+      task_id: 'worker', status: 'completed', run_id, parent_task_id,
+    })
+    const log = (run: string, uuid: string) => ({ type: 'user', isReplay: true, uuid, message: {
+      content: `<task-notification><task-id>worker</task-id><run-id>${run}</run-id><status>completed</status></task-notification>`,
+    } })
+    const fold = (...frames: unknown[]) => frames.reduce(reduce, initialState)
+    const direct = end('direct-run', null)
+    const directLog = log('direct-run', 'main-direct')
+    const owned = end('owned-run', 'owner')
+    const ownedLog = log('owned-run', 'worker-owned')
+    const ownedHistory = fold(ownedLog)
+    for (const chat of [fold(direct, directLog, owned), fold(owned, directLog, direct)]) {
+      expect(coordinatorTaskNotes(chat).map(note => note.runId)).toEqual(['direct-run'])
+      expect(workerTaskNotes(chat, 'owner', ownedHistory).map(note => note.runId)).toEqual(['owned-run'])
+    }
+    const rerouted = log('owned-run', 'main-rerouted')
+    for (const chat of [fold(owned, rerouted), fold(rerouted, owned), fold(rerouted, log('owned-run', 'main-replayed'))]) {
+      expect(coordinatorTaskNotes(chat).map(note => note.runId)).toEqual(['owned-run'])
+      expect(workerTaskNotes(chat, 'owner', ownedHistory)).toEqual([])
+    }
+  })
+
   it('notes each task that ends after the item last shown, and reads the Agent call input', () => {
     let state = reduce(
       initialState,
@@ -133,11 +278,11 @@ describe('project tasks', () => {
     loaded = reduce(loaded, assistant('m3', [{ type: 'text', text: 'Done.' }]))
     for (const line of [started, failed, resumed, done]) loaded = reduce(loaded, line)
     expect(loaded.items.map(i => i.id)).toEqual(['m1', 'm2', 'm3'])
-    expect(loaded.taskNotes.map(n => [n.status, n.afterId, n.n])).toEqual([
+    expect(mergeTaskNotes(loaded.taskNotes).map(n => [n.status, n.afterId, n.n])).toEqual([
       ['failed', 'm1', 1],
       ['completed', 'm2', 2],
     ])
-    expect(taskNoteText(loaded.taskNotes[1]!, undefined).vars.time).toBe('1m35s')
+    expect(taskNoteText(mergeTaskNotes(loaded.taskNotes)[1]!, undefined).vars.time).toBe('1m35s')
 
     // A resumed session replays only the endings since it restarted; a new ending still shows.
     const usage = (ms: number) => ({ total_tokens: 1, tool_uses: 0, duration_ms: ms })
@@ -149,7 +294,7 @@ describe('project tasks', () => {
     restarted = reduce(restarted, sys('task_started', { task_id: 'a', description: 'Alpha', task_type: 'local_agent', spawn_depth: 1, uuid: 's3' }))
     restarted = reduce(restarted, assistant('m3', [{ type: 'text', text: 'Again.' }]))
     restarted = reduce(restarted, sys('task_notification', { task_id: 'a', status: 'completed', usage: usage(150_000), uuid: 'n3' }))
-    expect(restarted.taskNotes.map(n => [n.status, n.afterId])).toEqual([
+    expect(mergeTaskNotes(restarted.taskNotes).map(n => [n.status, n.afterId])).toEqual([
       ['failed', 'm1'],
       ['completed', 'm2'],
       ['completed', 'm3'],
@@ -175,7 +320,7 @@ describe('project tasks', () => {
     loaded = reduce(loaded, notification('u1', waitingSummary))
     loaded = reduce(loaded, assistant('m2', [{ type: 'text', text: 'Waiting.' }]))
     loaded = reduce(loaded, notification('u2', 'Agent "Alpha" finished'))
-    expect(loaded.taskNotes.map(n => [n.afterId, n.n])).toEqual([['m2', 1]])
+    expect(mergeTaskNotes(loaded.taskNotes).map(n => [n.afterId, n.n])).toEqual([['m2', 1]])
   })
 
   it('formats a card meta line, with the running clock and the tool only while running', () => {

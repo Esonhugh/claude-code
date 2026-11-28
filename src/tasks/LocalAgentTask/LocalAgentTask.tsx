@@ -5,6 +5,7 @@ import {
   SUMMARY_TAG,
   TASK_ID_TAG,
   TASK_NOTIFICATION_TAG,
+  TASK_RUN_ID_TAG,
   TOOL_USE_ID_TAG,
   WORKTREE_BRANCH_TAG,
   WORKTREE_PATH_TAG,
@@ -46,7 +47,7 @@ import {
   updateTaskState,
 } from '../../utils/task/framework.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
-import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
+import { emitTaskTerminatedSdk, getTaskRunId } from '../../utils/sdkEventQueue.js'
 import type { SdkHandbackReport } from '../../utils/sdkEventQueue.js'
 import type { SubagentHandbackOutcome } from '../../utils/subagentHandback.js'
 import type { TaskState } from '../types.js'
@@ -432,6 +433,8 @@ export function enqueueAgentNotification({
   // paths synchronously while that enqueue is pending.
   let shouldEnqueue = false
   let routedAgentId: AgentId | undefined
+  let ownerTaskId: string | undefined
+  let runId: string | undefined
   let stoppedBy = ''
   let userMessages: string[] | undefined
   setAppState(prev => {
@@ -441,12 +444,14 @@ export function enqueueAgentNotification({
     }
 
     shouldEnqueue = true
+    runId = getTaskRunId(taskId)
     userMessages = task.userMessages
     stoppedBy = task.stoppedByUser ? ' by user' : task.stoppedByParent ? ' by Claude' : ''
-    if (task.ownerAgentId) {
-      const parentTask = prev.tasks[task.ownerAgentId]
+    ownerTaskId = task.ownerAgentId
+    if (ownerTaskId) {
+      const parentTask = prev.tasks[ownerTaskId]
       if (isLiveLocalAgentTask(parentTask)) {
-        routedAgentId = asAgentId(task.ownerAgentId)
+        routedAgentId = asAgentId(ownerTaskId)
       }
     }
 
@@ -460,7 +465,9 @@ export function enqueueAgentNotification({
     // Its report is then only that reason, a harness note, so summary_is_report never holds; a
     // withheld hand-back stays withheld, with no report to render.
     emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
+      runId,
       toolUseId,
+      parentTaskId: ownerTaskId ?? null,
       summary: description,
       ...(status === 'completed' && handback === 'withheld' && { handback }),
       usage: usage && {
@@ -490,6 +497,8 @@ export function enqueueAgentNotification({
   const toolUseIdLine = toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${escapeXml(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
+  // A queued report can outlive this run or be rerouted to main. Keep its original identity.
+  const runIdLine = runId ? `\n<${TASK_RUN_ID_TAG}>${escapeXml(runId)}</${TASK_RUN_ID_TAG}>` : ''
   const escapedResult = finalMessage ? escapeXml(finalMessage) : ''
   const truncatedResult = escapedResult.length > NOTIFICATION_RESULT_MAX_CHARS
     ? `${escapedResult.slice(0, NOTIFICATION_RESULT_MAX_CHARS)}\n... (truncated ${escapedResult.length - NOTIFICATION_RESULT_MAX_CHARS} chars, full result in ${escapeXml(outputPath)})`
@@ -509,7 +518,7 @@ export function enqueueAgentNotification({
     : ''
 
   const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
+<${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${runIdLine}${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${userSection}${resultSection}${usageSection}${worktreeSection}
@@ -520,7 +529,10 @@ export function enqueueAgentNotification({
   // summary is its result text and carries its usage; a failed one's is the
   // error it failed on, a stopped one's its description.
   emitTaskTerminatedSdk(taskId, status === 'killed' ? 'stopped' : status, {
+    runId,
     toolUseId,
+    parentTaskId: ownerTaskId ?? null,
+    notificationToMain: ownerTaskId !== undefined && routedAgentId === undefined,
     summary:
       status === 'completed'
         ? !waiting && finalMessage ? finalMessage : summaryText
@@ -669,7 +681,7 @@ export function stopBackgroundAgentTasks(
   const stopped = Object.values(tasks).filter(isLiveLocalAgentTask).filter(task => task.isBackgrounded)
   for (const task of stopped) {
     killAsyncAgent(task.id, setAppState, 'user')
-    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, summary: task.description, outputFile: getTaskOutputPath(task.id) })
+    emitTaskTerminatedSdk(task.id, 'stopped', { toolUseId: task.toolUseId, parentTaskId: task.ownerAgentId ?? null, summary: task.description, outputFile: getTaskOutputPath(task.id) })
     markAgentsNotified(task.id, setAppState)
   }
   return stopped
