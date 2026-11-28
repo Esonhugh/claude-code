@@ -750,13 +750,9 @@ export function isPathTrusted(dir: string): boolean {
 /** Persists trust for `dir`, the latch a trust dialog writes for it. */
 export function savePathTrusted(dir: string): void {
   const key = normalizePathForConfigKey(resolve(dir))
-  saveGlobalConfig(current => ({
-    ...current,
-    projects: {
-      ...current.projects,
-      [key]: { ...(current.projects?.[key] ?? DEFAULT_PROJECT_CONFIG), hasTrustDialogAccepted: true },
-    },
-  }))
+  saveProjectConfig(key, current =>
+    current.hasTrustDialogAccepted ? current : { ...current, hasTrustDialogAccepted: true },
+  )
 }
 
 // We have to put this test code here because Jest doesn't support mocking ES modules :O
@@ -1722,7 +1718,18 @@ export function saveCurrentProjectConfig(
     Object.assign(TEST_PROJECT_CONFIG_FOR_TESTING, config)
     return true
   }
-  const absolutePath = getProjectPathForConfig()
+  return saveProjectConfig(getProjectPathForConfig(), updater)
+}
+
+function saveProjectConfig(
+  absolutePath: string,
+  updater: (currentConfig: ProjectConfig) => ProjectConfig,
+): boolean {
+  if (process.env.NODE_ENV === 'test') {
+    const projects = (TEST_GLOBAL_CONFIG_FOR_TESTING.projects ??= {})
+    projects[absolutePath] = updater(projects[absolutePath] ?? DEFAULT_PROJECT_CONFIG)
+    return true
+  }
 
   let written: GlobalConfig | null = null
   let refused = true
@@ -1765,7 +1772,7 @@ export function saveCurrentProjectConfig(
     if (!config) return false
     if (wouldLoseAuthState(config)) {
       logForDebugging(
-        'saveCurrentProjectConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
+      'saveProjectConfig fallback: re-read config is missing auth that cache has; refusing to write. See GH #3117.',
         { level: 'error' },
       )
       logEvent('tengu_config_auth_loss_prevented', {})

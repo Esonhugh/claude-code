@@ -11,7 +11,7 @@ import { SessionManager } from '../server/sessionManager.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { COOKIE_NAME, signCookie } from './auth.js'
 import { addressKind } from './network.js'
-import { webWorkspaceOptions } from './projectTree.js'
+import { projectTreeSupported, webWorkspaceOptions } from './projectTree.js'
 import { STDIO_FRAME_PREFIX, STDIO_HOST } from './stdioTransport.js'
 import {
   cliWebTheme,
@@ -338,6 +338,7 @@ describe('claude web server', () => {
       temp_root: join(r.configDir, 'web', 'temp'),
       home: homedir(),
       local: true,
+      workspace_tree: projectTreeSupported(),
       version: '9.9.9-test',
       theme: 'light',
     })
