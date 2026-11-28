@@ -26,7 +26,7 @@ type Listener = {
   post: (text: string) => void
   fault: (phase: string, reason: string) => void
 }
-type WireNode = string | { type: string; props?: Record<string, unknown>; children?: WireNode[]; press?: { plugin: string; handle: number } }
+export type WireNode = string | { type: string; props?: Record<string, unknown>; children?: WireNode[]; press?: { plugin: string; handle: number } }
 
 const ELEMENTS = new Set(['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Markdown'])
 let nextId = 0
@@ -138,7 +138,7 @@ function frameFor(request: HostRequest, plugin: string, hash: string | undefined
 }
 
 /** A Client's tree as the page draws it: known elements only, within the bundle's bounds, presses by handle. */
-export function clientTree(text: string, plugin: string, limits: { nodes: number; depth: number; chars: number }): WireNode {
+export function clientTree(text: string, plugin: string, limits: { nodes: number; depth: number; chars: number }, readOnlyLinks?: ReadonlySet<string>): WireNode {
   if (text.length > limits.chars) throw new Error(`a tree serializing to more than ${limits.chars} characters`)
   let count = 0
   const walk = (node: unknown, depth: number): WireNode | null => {
@@ -149,12 +149,15 @@ export function clientTree(text: string, plugin: string, limits: { nodes: number
     const n = node as { type?: unknown; props?: unknown; children?: unknown; held?: unknown }
     if (typeof n.type !== 'string' || !ELEMENTS.has(n.type)) return null
     const props = n.props && typeof n.props === 'object' && !Array.isArray(n.props) ? (n.props as Record<string, unknown>) : undefined
+    // A Project GitHub Client can draw text and only link to rows approved by the host.
+    if (readOnlyLinks && n.type !== 'Box' && n.type !== 'Text' &&
+      !(n.type === 'Link' && typeof props?.href === 'string' && readOnlyLinks.has(props.href))) return null
     const children = Array.isArray(n.children) ? n.children.map(c => walk(c, depth + 1)).filter((c): c is WireNode => c !== null) : undefined
     return {
       type: n.type,
       ...(props && { props }),
       ...(children && { children }),
-      ...(typeof n.held === 'number' && { press: { plugin, handle: n.held } }),
+      ...(!readOnlyLinks && typeof n.held === 'number' && { press: { plugin, handle: n.held } }),
     }
   }
   return walk(JSON.parse(text), 0) ?? ''
@@ -180,11 +183,19 @@ const KEYS: Record<string, string> = {
 export function ModClient({
   node,
   t,
+  readOnlyLinks,
+  renderReadOnlyTree,
+  fallback,
 }: {
+  readOnlyLinks?: ReadonlySet<string>
+  renderReadOnlyTree?: (tree: WireNode) => ReactNode
+  fallback?: ReactNode
   node: { props?: Record<string, unknown>; client?: { plugin: string } }
   t: T
 }): ReactNode {
   const site = useContext(ModClientSite)
+  const approvedLinks = useRef(readOnlyLinks)
+  approvedLinks.current = readOnlyLinks
   const p = node.props ?? {}
   const plugin = node.client?.plugin ?? ''
   const key = typeof p.key === 'string' ? p.key : ''
@@ -209,13 +220,14 @@ export function ModClient({
       {
         tree: text => {
           try {
-            setTree(clientTree(text, plugin, frame.limits))
+            setTree(clientTree(text, plugin, frame.limits, approvedLinks.current))
           } catch (err) {
             frame.unmount(id)
             report('render', err instanceof Error ? err.message : String(err))
           }
         },
         post: text => {
+          if (approvedLinks.current) return
           const now = Date.now()
           posts.current = posts.current.filter(at => now - at < 1000)
           if (posts.current.length >= 20) return
@@ -237,6 +249,7 @@ export function ModClient({
       live.current = undefined
       setTree(undefined)
       setFault({ reason, props: propsText })
+      if (approvedLinks.current) return
       void site.request({ subtype: 'ui_client_fault', ...address, phase, reason }).catch(() => {})
     }
     return () => {
@@ -286,6 +299,9 @@ export function ModClient({
     const button = e.button === 1 ? 'middle' : e.button === 2 ? 'right' : 'left'
     const mods = { ...(e.shiftKey && { shift: true }), ...(e.altKey && { alt: true }), ...(e.ctrlKey && { ctrl: true }) }
     live.current.frame.send({ op: 'pointer', id: live.current.id, event: { type, ...cell(e), ...(type !== 'move' || e.buttons ? { button } : {}), ...mods } })
+  }
+  if (readOnlyLinks) {
+    return <div ref={box}>{tree && !fault ? renderReadOnlyTree?.(tree) ?? fallback : fallback}</div>
   }
   return (
     <div

@@ -35,10 +35,12 @@ import {
 import { type Approval, type ApprovalChoice, type Block, currentTodos, initialState, type ModelOption, reduce, type TaskNote } from '../protocol'
 import type { HistoryEntry, SessionChat } from '../store'
 import { toolMessage } from '../tools'
+import type { HostRequest } from './BackgroundPanes'
 import { AskDock, ChatComposer, chatTools, type ComposerTools, type MentionTarget } from './Composer'
 import { Dialog } from './Dialog'
 import { AgentConversation, joinTurns, Message, modelName, QuoteContext, QuoteOnSelect, replyPrompt, type SentMessage, useUnread } from './Message'
 import { WORKER_MODELS } from './ProjectDialog'
+import { ProjectGithub } from './ProjectGithub'
 import { mergeSkills, useEnabledSkills } from './StartPage'
 import { followScroll, readStored, type T, writeStored } from './ui'
 
@@ -395,6 +397,8 @@ export function ProjectView({
   onContextWindow,
   onAnswer,
   onSettings,
+  local,
+  githubModRequest,
   onStopTask,
   onSendTask,
   onSendCoordinator,
@@ -429,6 +433,8 @@ export function ProjectView({
   onContextWindow: (tokens: number | null) => void
   onAnswer: (approval: Approval, choice: ApprovalChoice) => void
   onSettings: () => void
+  local?: boolean
+  githubModRequest?: HostRequest
   /** Rejects when the coordinator is gone or refuses the stop. */
   onStopTask: (taskId: string) => Promise<unknown>
   /** Resolves with the delivery (`queued`, `resumed`…); an ended task resumes on `model` and `effort`. */
@@ -903,6 +909,7 @@ export function ProjectView({
       <span className="chip mono">{tilde(project.cwd)}</span>
       <span className="sp" />
       {seg}
+      {local && <ProjectGithub key={project.id} projectId={project.id} modRequest={githubModRequest} t={t} />}
       {ib(t('projectSettings'), '⚙', onSettings)}
     </div>
   )

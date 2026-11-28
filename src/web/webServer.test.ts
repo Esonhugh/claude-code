@@ -741,6 +741,31 @@ describe('claude web server', () => {
     expect(plain?.status).not.toBe(200)
   })
 
+  it('requires local web authentication and a currently trusted stored project for GitHub', async () => {
+    const trusted = new Set<string>()
+    const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => { trusted.add(dir) } } })
+    const cookie = await signIn(r)
+    const headers = { cookie, origin: r.origin }
+    const created = await fetch(`${r.base}/api/projects`, {
+      method: 'POST', headers, body: JSON.stringify({ name: 'GitHub', cwd: r.workspace }),
+    })
+    expect(created.status).toBe(201)
+    const { id } = await created.json() as { id: string }
+    const url = `${r.base}/api/projects/${id}/github`
+    expect((await fetch(url, { method: 'POST', headers: { origin: r.origin } })).status).toBe(401)
+    expect((await fetch(url, { method: 'POST', headers: { cookie } })).status).toBe(403)
+    expect((await fetch(url, { method: 'POST', headers: { cookie, origin: 'http://invalid.test' } })).status).toBe(403)
+    expect((await fetch(url, { method: 'POST', headers })).status).toBe(403)
+    trusted.add(r.workspace)
+    expect((await fetch(url, { headers })).status).toBe(405)
+    expect((await fetch(`${url}?cwd=/`, { method: 'POST', headers })).status).toBe(400)
+    expect((await fetch(url, { method: 'POST', headers, body: '{"repo":"fake/demo"}' })).status).toBe(400)
+    const response = await fetch(url, { method: 'POST', headers })
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toEqual({ status: 'unsupported' })
+    expect((await fetch(`${r.base}/api/projects/${crypto.randomUUID()}/github`, { method: 'POST', headers })).status).toBe(404)
+  })
+
   it('creates, lists, edits and archives projects behind the API checks', async () => {
     const trusted = new Set<string>()
     const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
@@ -1386,6 +1411,22 @@ describe('claude web over stdio', () => {
     expect(page.headers.get('content-security-policy')).toContain("script-src 'self'")
     const info = await c.request('GET', '/api/info')
     expect(JSON.parse(info.body)).toMatchObject({ local: true })
+  })
+
+  it('accepts Desktop’s empty body for the trusted local GitHub route', async () => {
+    const c = stdioClient({ folderTrust: { isTrusted: () => true, save: () => {} } })
+    const headers: [string, string][] = [['origin', c.origin]]
+    const created = await c.request('POST', '/api/projects', {
+      headers, body: JSON.stringify({ name: 'GitHub', cwd: c.r.workspace }),
+    })
+    expect(created.status).toBe(201)
+    const { id } = JSON.parse(created.body)
+    const path = `/api/projects/${id}/github`
+    const response = await c.request('POST', path, { headers, body: '' })
+    expect(response.status).toBe(200)
+    expect(JSON.parse(response.body)).toEqual({ status: 'unsupported' })
+    expect((await c.request('POST', path, { headers, body: '{}' })).status).toBe(400)
+    expect((await c.request('POST', path, { body: '' })).status).toBe(403)
   })
 
   it('keeps the Host and Origin checks', async () => {

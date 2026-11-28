@@ -11,6 +11,7 @@ import { getAPIProvider } from '../utils/model/providers.js'
 import { lazySchema } from '../utils/lazySchema.js'
 import { MCP_APP_FRAME_CSP, MCP_APP_FRAME_HTML, MCP_APP_FRAME_PATH } from './mcpAppFrame.js'
 import { MODS_FRAME_CSP, MODS_FRAME_HTML, MODS_FRAME_PATH } from './modsFrame.js'
+import { readProjectGithub } from './projectGithub.js'
 import { getMainLoopModel } from '../utils/model/model.js'
 import { getModelInfos } from '../utils/model/modelInfos.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
@@ -253,7 +254,7 @@ const AGENT_ISSUERS_PATH = /^\/api\/history\/([^/]+)\/agent-issuers$/
 const FILES_PATH = /^\/api\/files\/([^/]+)(\/pdf|\/list)?$/
 const SNIPPET_PATH = /^\/api\/history\/([^/]+)\/snippet$/
 const FORK_PATH = /^\/api\/history\/([^/]+)\/fork$/
-const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
+const PROJECT_PATH = /^\/api\/projects\/([^/]+)(?:\/(coordinator|tasks|unarchive|github)(?:\/([^/]+)(?:\/(transcript|review))?)?)?$/
 const EFFORT = /^[a-z]{1,20}$/
 
 // Served as text so a file from the workspace never runs as a page on this origin.
@@ -874,9 +875,11 @@ export function startWebServer(
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   *   POST   /api/projects/:id/github       → bounded GitHub issue/PR metadata (trusted, local only)
    *   POST   /api/projects/:id/unarchive    → the archived project, listed again
    */
-  async function handleProjects(req: Request, pathname: string): Promise<Response> {
+  async function handleProjects(req: Request, url: URL, local: boolean): Promise<Response> {
+    const { pathname } = url
     if (pathname === '/api/projects') {
       if (req.method === 'GET') {
         const counts = tasks().counts()
@@ -902,6 +905,7 @@ export function startWebServer(
       return Response.json(projectJson(project), { status: 201 })
     }
     const match = PROJECT_PATH.exec(pathname)
+    if (match?.[2] === 'github' && !local) return errorResponse(403, 'Forbidden')
     const id = match && decodeURIComponent(match[1]!)
     if (!id || !SESSION_ID.test(id)) return errorResponse(400, 'Invalid project id')
     if (match![2] === 'unarchive') {
@@ -911,6 +915,14 @@ export function startWebServer(
     }
     const project = projects().get(id)
     if (!project || project.archived_at !== null) return errorResponse(404, 'Project not found')
+    if (match![2] === 'github') {
+      if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
+      if (match![3] || url.search || req.body) return errorResponse(400, 'Invalid request')
+      const cwd = realOr(project.cwd)
+      const isTrusted = config.folderTrust?.isTrusted ?? isPathTrusted
+      if (cwd !== project.cwd || !isTrusted(cwd)) return errorResponse(403, 'Forbidden')
+      return Response.json(await readProjectGithub(cwd, req.signal))
+    }
     if (match![2] === 'coordinator') {
       if (req.method !== 'POST') return errorResponse(405, 'Method not allowed')
       return openCoordinator(project)
@@ -1276,7 +1288,7 @@ export function startWebServer(
         : errorResponse(404, 'Session not found')
     }
     if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
-      return handleProjects(req, pathname)
+      return handleProjects(req, url, local)
     }
     if (pathname.startsWith('/api/ext/')) {
       return handleExtApi(req, url, config.configDir ?? getClaudeConfigHomeDir())

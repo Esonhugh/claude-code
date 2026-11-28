@@ -2310,6 +2310,8 @@ export function App() {
             onContextWindow={tokens => changeContextWindow(view, tokens)}
             onAnswer={(approval, choice) => answer(view, approval, choice)}
             onSettings={() => setProjectDialog(project)}
+            local={info.local === true}
+            githubModRequest={modsAttached ? modsRequest : undefined}
             onStopTask={taskId => requestAsync(view, REQUEST_PREFIX.stopTask, { subtype: 'stop_task', task_id: taskId })}
             onSendTask={async (taskId, text, pick) => {
               // A coordinator that stopped (or a server that restarted) is resumed first.

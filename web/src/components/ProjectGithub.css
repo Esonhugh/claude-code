@@ -1,0 +1,11 @@
+.github-table { width: 100%; border-collapse: collapse; text-align: start }
+.github-table th, .github-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: start }
+.github-table th { white-space: nowrap }
+.github-table td:last-child { width: 100%; overflow-wrap: anywhere }
+.github-ids { display: flex; flex-wrap: wrap; gap: 4px 10px }
+.github-id { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; text-decoration: underline; text-underline-offset: 2px }
+.github-id:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px }
+.github-id svg { flex: none; width: 14px; height: 14px; color: var(--muted) }
+.github-id svg[data-state="open"] { color: var(--ok) }
+.github-id svg[data-state="accepted"] { color: var(--mod-magenta) }
+.github-id svg[data-state="rejected"] { color: var(--bad) }
