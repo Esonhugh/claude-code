@@ -360,6 +360,16 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
   const patchPath = (path: string) => (path.startsWith('/') || !files.cwd ? path : `${files.cwd}/${path}`)
   const message = toolMessage(block.name, block.input)
   const decision = chat.decisions?.[block.id]
+  const input = block.name === 'Bash' || block.name === 'Skill' ? parsedInput(block.input) : undefined
+  const fields = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const { command, description, ...bashOptions } = block.name === 'Bash' ? fields : {}
+  const { skill, args, ...skillOptions } = block.name === 'Skill' ? fields : {}
+  const bashInput = typeof command === 'string' && (description === undefined || typeof description === 'string')
+  const skillInput = typeof skill === 'string' && !!skill.trim() && (args === undefined || typeof args === 'string')
+  const bashDescription = bashInput ? description?.trim() : undefined
+  const bashSummary = bashInput ? command.split('\n').find(line => line.trim()) : undefined
+  const skillSummary = skillInput ? `${skill} ${args ?? ''}`.replace(/\s+/g, ' ').trim() : undefined
+  const extraInput = bashInput ? bashOptions : skillInput ? skillOptions : undefined
   const card = (
     <details
       className={`toolcard${block.isError ? ' bad' : ''}`}
@@ -388,7 +398,7 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
                 ? `${t('sentTo')} ${sentTo.title ?? sentTo.description}`
                 : patched.length
                   ? patched.map(f => f.path).join(', ')
-                  : shortSummary(block, files.cwd)}
+                  : bashSummary ?? skillSummary ?? shortSummary(block, files.cwd)}
           </span>
         )}
         <span className="tacts">
@@ -460,8 +470,35 @@ function ToolCard({ block, t }: { block: Extract<Block, { kind: 'tool' }>; t: T 
         </div>
       ) : (
         <div className="tbody">
-          <div className="tlabel">{t('toolInput')}</div>
-          <pre className="tin">{prettyJson(block.input)}</pre>
+          {bashInput ? (
+            <>
+              {bashDescription && (
+                <>
+                  <div className="tlabel">{t('toolDescription')}</div>
+                  <div className="tdesc">{bashDescription}</div>
+                </>
+              )}
+              <div className="tlabel">{t('commandTag')}</div>
+              <pre className="tin"><code>{command}</code></pre>
+            </>
+          ) : skillInput ? (
+            <>
+              <div className="tlabel">{t('skillTag')}</div>
+              <pre className="tin"><code>{skill}</code></pre>
+              {args?.trim() && (
+                <>
+                  <div className="tlabel">{t('toolArgs')}</div>
+                  <pre className="tin"><code>{args}</code></pre>
+                </>
+              )}
+            </>
+          ) : null}
+          {(!extraInput || Object.keys(extraInput).length > 0) && (
+            <>
+              <div className="tlabel">{t('toolInput')}</div>
+              <pre className="tin">{extraInput ? JSON.stringify(extraInput, null, 2) : prettyJson(block.input)}</pre>
+            </>
+          )}
           {done && (
             <ModSite component="ToolResult" id={block.id} props={resultProps(block)}>
               {p => (

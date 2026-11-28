@@ -10,6 +10,8 @@
   "thinking": "Thinking",
   "toolInput": "Input",
   "toolOutput": "Output",
+  "toolDescription": "Description",
+  "toolArgs": "Arguments",
   "sessionEnded": "The session ended.",
   "sessionEndedReason": "The session ended: {reason}",
   "sessionDisconnected": "Disconnected from the session. Send a message to continue.",

@@ -10,6 +10,8 @@
   "thinking": "思考過程",
   "toolInput": "輸入",
   "toolOutput": "輸出",
+  "toolDescription": "描述",
+  "toolArgs": "參數",
   "sessionEnded": "對話已結束。",
   "sessionEndedReason": "對話已結束：{reason}",
   "sessionDisconnected": "與會話的連線已中斷，傳送訊息即可繼續。",
