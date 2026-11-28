@@ -16,6 +16,7 @@ import { getModelInfos } from '../utils/model/modelInfos.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { ensureModelStringsInitialized } from '../utils/model/modelStrings.js'
 import type { ServerLogger } from '../server/serverLog.js'
+import type { SessionInfo } from '../server/types.js'
 import {
   type SessionManager,
   SessionManagerError,
@@ -26,6 +27,7 @@ import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { formatPeerAddress } from '../utils/peerProtocol.js'
 import { listAllLiveSessions } from '../utils/udsClient.js'
 import { resolveSessionFilePath } from '../utils/sessionStoragePortable.js'
+import { defaultTreeWorkspace, identifyTreeRoot, listProjectTree, projectTreePath, projectTreeSupported, type TreeRoot } from './projectTree.js'
 import {
   convertToPdf,
   DEFAULT_UPLOAD_LIMITS,
@@ -83,6 +85,8 @@ export type WebServerConfig = {
   token: string
   cookieKey: Buffer
   workspace: string
+  /** Startup metadata: true only when using the built-in workspace, not --workspace. */
+  usesDefaultWorkspace?: boolean
   /** Uploads land in `<uploadsDir>/<session id>/`. */
   uploadsDir: string
   uploadLimits?: UploadLimits
@@ -520,11 +524,12 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, workspace_tree, theme }
  *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
  *                                          409 { needs_trust } for an untrusted folder
+ *   GET    /api/sessions/:id/tree?dir=   → bounded names/types under the admitted startup cwd (local only)
  *   GET    /api/sessions/:id/ws         → stream-json relay to the session
  *   DELETE /api/sessions/:id            → stop the session
  *   DELETE /api/sessions/:id?transcript=1 → stop it and delete its transcript
@@ -557,7 +562,12 @@ export function startWebServer(
   ]
   let hosts = allowedHosts(config.port, extraHosts)
   const previewOrigins = config.previewOrigins ?? []
-  const tempRoot = join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'temp')
+  const configDir = config.configDir ?? getClaudeConfigHomeDir()
+  const tempRoot = join(configDir, 'web', 'temp')
+  const defaultWorkspace = config.usesDefaultWorkspace ? defaultTreeWorkspace(configDir, config.workspace) : undefined
+  const treeAvailable = (local: boolean) => local && projectTreeSupported()
+  // Object keys isolate reused IDs, with no ID-based exit callback to clear a newer binding.
+  const sessionTreeRoots = new WeakMap<SessionInfo, { root: TreeRoot; process: SessionInfo['process']; projectId?: string }>()
   const csp = contentSecurityPolicy(previewOrigins)
   const withHeaders = (res: Response): Response => {
     res.headers.set('Content-Security-Policy', csp)
@@ -867,6 +877,56 @@ export function startWebServer(
     return page ? { ...task, tokens: transcriptTokens(page.messages) } : task
   }
 
+  let activeProjectTrees = 0
+  function treeRootTrusted(path: string): boolean {
+    return path === realOr(config.workspace) || (config.folderTrust?.isTrusted ?? isPathTrusted)(path)
+  }
+
+  async function handleWorkspaceTree(req: Request, url: URL, id: string, local: boolean, scope: 'project' | 'session'): Promise<Response> {
+    const uncached = (res: Response) => {
+      res.headers.set('Cache-Control', 'no-store')
+      return res
+    }
+    const unavailable = () => uncached(errorResponse(404, 'Workspace Files unavailable'))
+    if (!treeAvailable(local)) return unavailable()
+    if (req.method !== 'GET') return uncached(errorResponse(405, 'Method not allowed'))
+    if (!SESSION_ID.test(id)) return uncached(errorResponse(400, 'Invalid scope id'))
+    if (url.searchParams.getAll('dir').length > 1 || [...url.searchParams.keys()].some(key => key !== 'dir')) {
+      return uncached(errorResponse(400, 'Invalid directory'))
+    }
+    const parts = projectTreePath(url.searchParams.get('dir') ?? '')
+    if (!parts) return uncached(errorResponse(400, 'Invalid directory'))
+    if (activeProjectTrees >= 4) return uncached(errorResponse(503, 'Workspace Files busy'))
+    activeProjectTrees++
+    try {
+      const session = scope === 'session' ? sessionManager.get(id) : undefined
+      const binding = session && sessionTreeRoots.get(session)
+      const sessionRoot = binding?.root
+      const path = scope === 'project' ? projects().get(id)?.cwd : sessionRoot?.path
+      const authorized = () => {
+        if (scope === 'project') return projects().get(id)?.archived_at === null
+        if (!session || !binding || sessionManager.get(id) !== session || session.process !== binding.process ||
+          !session.process || session.process.killed || (session.status !== 'running' && session.status !== 'detached')) return false
+        if (binding.projectId && projects().get(binding.projectId)?.archived_at !== null) return false
+        const mark = db().query('SELECT archived_at FROM session_meta WHERE session_id = ?').get(id) as { archived_at: number | null } | null
+        return !mark || mark.archived_at === null
+      }
+      if (!path || !authorized() || !treeRootTrusted(path)) return unavailable()
+      const tree = await listProjectTree(path, parts, { configDir, uploadsDir: config.uploadsDir, defaultWorkspace, sessionRoot }, req.signal)
+      if (tree && !req.signal.aborted && authorized() && treeRootTrusted(path)) {
+        return uncached(Response.json(tree))
+      }
+      return unavailable()
+    } catch (err) {
+      if (req.signal.aborted) return unavailable()
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EACCES' || code === 'EPERM') return unavailable()
+      return uncached(errorResponse(500, 'Could not list directory'))
+    } finally {
+      activeProjectTrees--
+    }
+  }
+
   /**
    *   GET    /api/projects                  → projects, newest change first; ?archived=1 adds the archived ones
    *   POST   /api/projects                  → create; 409 { needs_trust } for an untrusted folder
@@ -874,9 +934,13 @@ export function startWebServer(
    *   DELETE /api/projects/:id              → archive and stop its coordinator
    *   DELETE /api/projects/:id?purge=1      → also delete it; its sessions go back to their folders
    *   POST   /api/projects/:id/coordinator  → { session_id, work_dir }: start or resume the coordinator
+   *   GET    /api/projects/:id/tree?dir=    → bounded names/types of one directory (local only)
    *   POST   /api/projects/:id/unarchive    → the archived project, listed again
    */
-  async function handleProjects(req: Request, pathname: string): Promise<Response> {
+  async function handleProjects(req: Request, url: URL, local: boolean): Promise<Response> {
+    const { pathname } = url
+    const tree = /^\/api\/projects\/([^/]+)\/tree$/.exec(pathname)
+    if (tree) return handleWorkspaceTree(req, url, decodeURIComponent(tree[1]!), local, 'project')
     if (pathname === '/api/projects') {
       if (req.method === 'GET') {
         const counts = tasks().counts()
@@ -994,6 +1058,8 @@ export function startWebServer(
     const resume =
       previous && (sessionManager.get(previous) || (await resolveSessionFilePath(previous))) ? previous : undefined
     try {
+      const root = !resume && treeRootTrusted(project.cwd) ? identifyTreeRoot(project.cwd) : undefined
+      let fresh = false
       const session = sessionManager.create({
         cwd: project.cwd,
         permissionMode: project.permission_mode,
@@ -1004,11 +1070,15 @@ export function startWebServer(
         ...(!resume && previous && { sessionId: previous }),
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
         coordinator: coordinatorSpawn(project),
+        onCreated: session => {
+          fresh = !resume
+          if (root) sessionTreeRoots.set(session, { root, process: session.process, projectId: project.id })
+        },
       })
       coordinators.set(session.id, project.id)
       if (session.id !== previous) projects().update(project.id, { coordinator_session_id: session.id })
       // `fresh`: a new coordinator, with no transcript to load yet.
-      return Response.json({ session_id: session.id, work_dir: session.workDir, ...(!resume && { fresh: true }) })
+      return Response.json({ session_id: session.id, work_dir: session.workDir, ...(fresh ? { fresh: true } : {}) })
     } catch (err) {
       if (err instanceof SessionManagerError) return errorResponse(err.status, err.message)
       throw err
@@ -1028,6 +1098,7 @@ export function startWebServer(
     }
     const { cwd, temporary, resume, permission_mode: permissionMode, model, effort, trust } = parsed.data
     let workDir = config.workspace
+    let treeRoot: TreeRoot | undefined
     if (temporary && !cwd && !resume) {
       mkdirSync(tempRoot, { recursive: true })
       workDir = mkdtempSync(join(tempRoot, 'chat-'))
@@ -1038,12 +1109,17 @@ export function startWebServer(
       // A folder other than the workspace needs the trust the TUI asks for;
       // `claude -p` skips that dialog, so the page asks instead.
       if (!resume) {
-        const refused = checkTrust(realpathSync(cwd), trust)
+        workDir = realpathSync(cwd)
+        const refused = checkTrust(workDir, trust)
         if (refused) return refused
-      }
-      workDir = cwd
+        treeRoot = identifyTreeRoot(workDir)
+      } else workDir = cwd
     } else {
       mkdirSync(workDir, { recursive: true })
+      if (!resume) {
+        workDir = realpathSync(workDir)
+        treeRoot = identifyTreeRoot(workDir)
+      }
     }
     try {
       const spawned = !resume || !sessionManager.get(resume)
@@ -1054,6 +1130,9 @@ export function startWebServer(
         effort,
         resume,
         channels: ext.readDefaultChannels(config.configDir ?? getClaudeConfigHomeDir()),
+        onCreated: session => {
+          if (treeRoot) sessionTreeRoots.set(session, { root: treeRoot, process: session.process })
+        },
       })
       if (spawned) {
         sessionProviders.set(session.id, getAPIProvider())
@@ -1093,9 +1172,10 @@ export function startWebServer(
         version: MACRO.VERSION,
         // The browser runs on this machine, so it may open files there.
         local,
+        workspace_tree: treeAvailable(local),
         // Read each time: `/theme` in a session may have changed it.
         theme: cliWebTheme(getGlobalConfig().theme),
-      })
+      }, { headers: { 'Cache-Control': 'no-store' } })
     }
     if (pathname === '/api/models' && req.method === 'GET') {
       await ensureModelStringsInitialized()
@@ -1276,7 +1356,7 @@ export function startWebServer(
         : errorResponse(404, 'Session not found')
     }
     if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) {
-      return handleProjects(req, pathname)
+      return handleProjects(req, url, local)
     }
     if (pathname.startsWith('/api/ext/')) {
       return handleExtApi(req, url, config.configDir ?? getClaudeConfigHomeDir())
@@ -1290,6 +1370,8 @@ export function startWebServer(
       const res = await handleAccount(req, url)
       if (res) return res
     }
+    const sessionTree = /^\/api\/sessions\/([^/]+)\/tree$/.exec(pathname)
+    if (sessionTree) return handleWorkspaceTree(req, url, decodeURIComponent(sessionTree[1]!), local, 'session')
     const filesMatch = FILES_PATH.exec(pathname)
     if (filesMatch) {
       return handleFiles(req, url, decodeURIComponent(filesMatch[1]!), filesMatch[2])

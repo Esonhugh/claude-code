@@ -1,14 +1,17 @@
-import { afterEach, describe, expect, it } from 'bun:test'
-import { spawn } from 'child_process'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
+import { spawn, type ChildProcess } from 'child_process'
+import { EventEmitter } from 'events'
 import { PassThrough } from 'stream'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'fs'
 import { homedir, hostname, networkInterfaces, tmpdir } from 'os'
 import { delimiter, join } from 'path'
 import type { SpawnSessionOptions } from '../server/backends/dangerousBackend.js'
 import { createServerLogger } from '../server/serverLog.js'
 import { SessionManager } from '../server/sessionManager.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { COOKIE_NAME, signCookie } from './auth.js'
 import { addressKind } from './network.js'
+import { webWorkspaceOptions } from './projectTree.js'
 import { STDIO_FRAME_PREFIX, STDIO_HOST } from './stdioTransport.js'
 import {
   cliWebTheme,
@@ -88,6 +91,7 @@ type Running = {
   configDir: string
   /** What each child was spawned with. */
   spawned: SpawnSessionOptions[]
+  manager: SessionManager
   stop: () => Promise<void>
 }
 
@@ -97,7 +101,7 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map(r => r.stop()))
 })
 
-function start(overrides: Partial<WebServerConfig> = {}): Running {
+function start(overrides: Partial<WebServerConfig> = {}, spawnFixture?: (options: SpawnSessionOptions) => ChildProcess): Running {
   const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'web-ws-')))
   const configDir = realpathSync(mkdtempSync(join(tmpdir(), 'web-cfg-')))
   const uploads = join(configDir, 'web', 'uploads')
@@ -105,7 +109,7 @@ function start(overrides: Partial<WebServerConfig> = {}): Running {
   const manager = new SessionManager({
     spawn: (options: SpawnSessionOptions) => {
       spawned.push(options)
-      return spawn(process.execPath, ['-e', FAKE_CHILD], {
+      return spawnFixture?.(options) ?? spawn(process.execPath, ['-e', FAKE_CHILD], {
         cwd: options.cwd,
         env: { ...process.env, ...options.env },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -136,6 +140,7 @@ function start(overrides: Partial<WebServerConfig> = {}): Running {
     uploads,
     configDir,
     spawned,
+    manager,
     stop: async () => {
       server.stop(true)
       await manager.destroyAll()
@@ -741,6 +746,67 @@ describe('claude web server', () => {
     expect(plain?.status).not.toBe(200)
   })
 
+  it('lists only bounded names and types within the selected trusted project', async () => {
+    const trusted = new Set<string>()
+    const r = start({ projectsDb: ':memory:', folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
+    const cookie = `${COOKIE_NAME}=${signCookie(Buffer.alloc(32, 1))}`
+    const info = await fetch(`${r.base}/api/info`, { headers: { cookie } })
+    expect(await info.json()).toMatchObject({ workspace_tree: process.platform === 'darwin' && process.arch === 'arm64' })
+    expect(info.headers.get('cache-control')).toBe('no-store')
+    const register = async (cwd: string) => {
+      const res = await fetch(`${r.base}/api/projects`, {
+        method: 'POST', headers: { cookie, origin: r.origin }, body: JSON.stringify({ name: 'Tree fixture', cwd, trust: true }),
+      })
+      expect(res.status).toBe(201)
+      return ((await res.json()) as { id: string }).id
+    }
+    const dir = join(r.workspace, 'project')
+    const sibling = join(r.workspace, 'project-other')
+    for (const d of ['src', 'empty', '.private', 'node_modules', 'unused.pem', 'many']) mkdirSync(join(dir, d), { recursive: true })
+    mkdirSync(sibling)
+    writeFileSync(join(dir, 'README.md'), 'not in the response')
+    writeFileSync(join(dir, 'src', 'app.ts'), '')
+    writeFileSync(join(sibling, 'other.txt'), '')
+    symlinkSync(sibling, join(dir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir')
+    for (let i = 0; i < 201; i++) writeFileSync(join(dir, 'many', `file-${i}`), '')
+    const id = await register(dir)
+    const other = await register(sibling)
+    const get = (id: string, dir?: string, headers: Record<string, string> = { cookie }) =>
+      fetch(`${r.base}/api/projects/${id}/tree${dir === undefined ? '' : `?dir=${encodeURIComponent(dir)}`}`, { headers })
+    expect((await get(id, undefined, {})).status).toBe(401)
+    expect((await get(id, undefined, { cookie, origin: 'http://other.example' })).status).toBe(403)
+    const root = await get(id)
+    if (process.platform !== 'darwin' || process.arch !== 'arm64') {
+      expect(root.status).toBe(404)
+      expect(r.spawned).toEqual([])
+      return
+    }
+    expect(root.status).toBe(200)
+    expect(root.headers.get('cache-control')).toBe('no-store')
+    expect(await root.json()).toEqual({ entries: [
+      { name: 'empty', type: 'directory' }, { name: 'many', type: 'directory' },
+      { name: 'src', type: 'directory' }, { name: 'README.md', type: 'file' },
+    ], truncated: false })
+    expect(await (await get(id, 'src')).json()).toEqual({ entries: [{ name: 'app.ts', type: 'file' }], truncated: false })
+    expect(await (await get(id, 'empty')).json()).toEqual({ entries: [], truncated: false })
+    expect(await (await get(other)).json()).toEqual({ entries: [{ name: 'other.txt', type: 'file' }], truncated: false })
+    expect(await (await get(id, 'many')).json()).toMatchObject({ truncated: true })
+    expect(((await (await get(id, 'many')).json()) as { entries: unknown[] }).entries).toHaveLength(200)
+    expect((await get(id, 'src//child')).status).toBe(400)
+    for (const hidden of ['.private', 'node_modules', 'unused.pem', 'linked', 'README.md']) expect((await get(id, hidden)).status).toBe(404)
+    mkdirSync(r.uploads, { recursive: true })
+    expect((await get(await register(r.uploads))).status).toBe(404)
+    trusted.delete(dir)
+    expect((await get(id)).status).toBe(404)
+    trusted.add(dir)
+    renameSync(dir, `${dir}-moved`)
+    expect((await get(id)).status).toBe(404)
+    const archived = await fetch(`${r.base}/api/projects/${other}`, { method: 'DELETE', headers: { cookie, origin: r.origin } })
+    expect(archived.status).toBe(204)
+    expect((await get(other)).status).toBe(404)
+    expect(r.spawned).toEqual([])
+  })
+
   it('creates, lists, edits and archives projects behind the API checks', async () => {
     const trusted = new Set<string>()
     const r = start({ folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
@@ -861,8 +927,8 @@ describe('claude web server', () => {
     // attached to it reconnects; two opens at once get one process.
     await fetch(`${r.base}/api/sessions/${first.session_id}`, { method: 'DELETE', headers })
     const [second, third] = await Promise.all([open(), open()])
-    expect(second).toMatchObject({ session_id: first.session_id, fresh: true })
-    expect(third!.session_id).toBe(first.session_id)
+    expect([second.session_id, third.session_id]).toEqual([first.session_id, first.session_id])
+    expect([second, third].filter(opened => opened.fresh)).toHaveLength(1)
     expect(r.spawned).toHaveLength(2)
     expect(r.spawned[1]).toMatchObject({ sessionId: first.session_id })
     expect(r.spawned[1]!.resume).toBeUndefined()
@@ -1324,10 +1390,10 @@ describe('parsePreviewOrigin', () => {
 type Frame = { t: string; id?: number; [key: string]: unknown }
 
 /** The desktop app's end of `claude web --stdio`. */
-function stdioClient(overrides: Partial<WebServerConfig> = {}) {
+function stdioClient(overrides: Partial<WebServerConfig> = {}, spawnFixture?: (options: SpawnSessionOptions) => ChildProcess) {
   const input = new PassThrough()
   const output = new PassThrough()
-  const r = start({ ...overrides, stdio: { input, output } })
+  const r = start({ ...overrides, stdio: { input, output } }, spawnFixture)
   const frames: Frame[] = []
   const waiters: (() => void)[] = []
   let buffer = ''
@@ -1398,6 +1464,199 @@ describe('claude web over stdio', () => {
     const wrongHost = await c.request('GET', '/', { headers: [['host', 'attacker.example']] })
     expect(wrongHost.status).toBe(403)
     expect((await post([['origin', c.origin]])).status).toBe(200)
+  })
+
+  it('lists the built-in prefilled project but not neighboring private state or a configured lookalike', async () => {
+    const configDir = join(realpathSync(mkdtempSync(join(tmpdir(), 'web-default-tree-'))), '.claude')
+    const defaults = webWorkspaceOptions(configDir)
+    const { workspace } = defaults
+    const web = join(configDir, 'web')
+    const uploadsDir = join(web, 'uploads')
+    const sibling = join(web, 'workspace-other')
+    const transcripts = join(configDir, 'projects')
+    const subproject = join(workspace, 'src')
+    for (const dir of [uploadsDir, sibling, transcripts, subproject, join(workspace, '.private')]) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(join(workspace, 'readme.txt'), 'fixture contents')
+    writeFileSync(join(web, 'server.json'), 'fixture state')
+    symlinkSync(uploadsDir, join(workspace, 'linked-uploads'), process.platform === 'win32' ? 'junction' : 'dir')
+    const trusted = new Set<string>()
+    const config = { configDir, uploadsDir, projectsDb: ':memory:', folderTrust: { isTrusted: (dir: string) => trusted.has(dir), save: (dir: string) => trusted.add(dir) } }
+    const c = stdioClient({ ...config, ...defaults })
+    const register = async (client: typeof c, cwd: string, trust?: boolean) => {
+      const res = await client.request('POST', '/api/projects', {
+        headers: [['origin', client.origin]], body: JSON.stringify({ name: 'Tree fixture', cwd, trust }),
+      })
+      expect(res.status).toBe(201)
+      return `/api/projects/${(JSON.parse(res.body) as { id: string }).id}/tree`
+    }
+    const info = await c.request('GET', '/api/info')
+    const advertised = JSON.parse(info.body) as { workspace: string; workspace_tree?: boolean }
+    const supported = process.platform === 'darwin' && process.arch === 'arm64'
+    expect(advertised).toMatchObject({ workspace, workspace_tree: supported })
+    expect(info.headers.get('cache-control')).toBe('no-store')
+    const path = await register(c, advertised.workspace)
+    const root = await c.request('GET', path)
+    expect(root.status).toBe(supported ? 200 : 404)
+    if (supported) {
+      expect(JSON.parse(root.body)).toEqual({ entries: [{ name: 'src', type: 'directory' }, { name: 'readme.txt', type: 'file' }], truncated: false })
+      expect(JSON.parse((await c.request('GET', await register(c, subproject, true))).body)).toEqual({ entries: [], truncated: false })
+    }
+    for (const dir of [web, configDir, sibling, uploadsDir, transcripts, join(workspace, '.private')]) {
+      const denied = await c.request('GET', await register(c, dir, true))
+      expect(denied.status).toBe(404)
+      expect(denied.body).toBe(JSON.stringify({ error: 'Workspace Files unavailable' }))
+    }
+    expect((await c.request('GET', `${path}?dir=linked-uploads`)).status).toBe(404)
+    const configured = stdioClient({ ...config, ...webWorkspaceOptions(configDir, workspace) })
+    expect((await configured.request('GET', await register(configured, workspace))).status).toBe(404)
+    expect(c.r.spawned).toEqual([])
+    const session = await c.request('POST', '/api/sessions', { headers: [['origin', c.origin]], body: '{}' })
+    expect(session.status).toBe(200)
+    const { session_id } = JSON.parse(session.body) as { session_id: string }
+    const sessionTree = await c.request('GET', `/api/sessions/${session_id}/tree`)
+    expect(sessionTree.status).toBe(root.status)
+    expect(sessionTree.body).toBe(root.body)
+    // An observed replacement cannot inherit the dedicated directory exception.
+    renameSync(workspace, `${workspace}-prior`)
+    mkdirSync(workspace)
+    expect((await c.request('GET', path)).status).toBe(404)
+  })
+
+  it('uses each admitted active session launch cwd without falling back on resume or project roots', async () => {
+    const trusted = new Set<string>()
+    const c = stdioClient({ projectsDb: ':memory:', folderTrust: { isTrusted: dir => trusted.has(dir), save: dir => trusted.add(dir) } })
+    const project = join(c.r.workspace, 'repo')
+    const worktree = join(project, '.claude', 'worktrees', 'branch')
+    const sibling = join(c.r.workspace, 'other')
+    mkdirSync(worktree, { recursive: true })
+    mkdirSync(sibling)
+    writeFileSync(join(project, 'parent.txt'), '')
+    writeFileSync(join(worktree, 'branch.txt'), '')
+    writeFileSync(join(sibling, 'other.txt'), '')
+    const post = (path: string, data: object) => c.request('POST', path, {
+      headers: [['origin', c.origin]], body: JSON.stringify(data),
+    })
+    const registered = await post('/api/projects', { name: 'Parent', cwd: project, trust: true })
+    expect(registered.status).toBe(201)
+    const a = await post('/api/sessions', { cwd: worktree, trust: true })
+    expect(a.status).toBe(200)
+    expect((await post('/api/sessions', { cwd: sibling })).status).toBe(409)
+    const b = await post('/api/sessions', { cwd: sibling, trust: true })
+    expect(b.status).toBe(200)
+    const tree = (id: string) => `/api/sessions/${id}/tree`
+    const aId = (JSON.parse(a.body) as { session_id: string }).session_id
+    const bId = (JSON.parse(b.body) as { session_id: string }).session_id
+    const aTree = await c.request('GET', tree(aId))
+    const bTree = await c.request('GET', tree(bId))
+    if (process.platform === 'darwin' && process.arch === 'arm64') {
+      expect(JSON.parse(aTree.body)).toEqual({ entries: [{ name: 'branch.txt', type: 'file' }], truncated: false })
+      expect(JSON.parse(bTree.body)).toEqual({ entries: [{ name: 'other.txt', type: 'file' }], truncated: false })
+      expect((await c.request('GET', `${tree(aId)}?cwd=${encodeURIComponent(sibling)}`)).status).toBe(400)
+    } else {
+      expect(aTree.status).toBe(404)
+      expect(bTree.status).toBe(404)
+    }
+    expect((await c.request('PATCH', `/api/sessions/${bId}/meta`, { headers: [['origin', c.origin]], body: '{"archived":true}' })).status).toBe(200)
+    expect((await c.request('GET', tree(bId))).status).toBe(404)
+    expect((await c.request('DELETE', `/api/sessions/${aId}`, { headers: [['origin', c.origin]] })).status).toBe(204)
+    expect((await c.request('GET', tree(aId))).status).toBe(404)
+    expect((await post('/api/sessions', { resume: aId, cwd: sibling })).status).toBe(200)
+    expect((await c.request('GET', tree(aId))).status).toBe(404)
+    const temp = await post('/api/sessions', { temporary: true })
+    expect(temp.status).toBe(200)
+    expect((await c.request('GET', tree((JSON.parse(temp.body) as { session_id: string }).session_id))).status).toBe(404)
+  })
+
+  it('keeps coordinator reuse bound to its original generation and refuses tree reads while stopping', async () => {
+    const stopRequested = Promise.withResolvers<void>()
+    let holdStop = true
+    let finishStop = () => {}
+    const c = stdioClient({ projectsDb: ':memory:' }, () => {
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() })
+      const finish = () => {
+        child.stdout.end()
+        child.stderr.end()
+        child.emit('close', 0, null)
+      }
+      return Object.assign(child, { kill: () => {
+        if (holdStop) {
+          finishStop = finish
+          stopRequested.resolve()
+        } else finish()
+        return true
+      } }) as unknown as ChildProcess
+    })
+    const api = (method: string, path: string, body?: object) => c.request(method, path, {
+      headers: [['origin', c.origin]], ...(body && { body: JSON.stringify(body) }),
+    })
+    try {
+      writeFileSync(join(c.r.workspace, 'fixture.txt'), '')
+      const project = await api('POST', '/api/projects', { name: 'Lifecycle', cwd: c.r.workspace })
+      expect(project.status).toBe(201)
+      const coordinator = `/api/projects/${(JSON.parse(project.body) as { id: string }).id}/coordinator`
+      const opened = await api('POST', coordinator)
+      const { session_id: id } = JSON.parse(opened.body) as { session_id: string }
+      const treePath = `/api/sessions/${id}/tree`
+      const available = (JSON.parse((await c.request('GET', '/api/info')).body) as { workspace_tree: boolean }).workspace_tree
+      expect((await c.request('GET', treePath)).status).toBe(available ? 200 : 404)
+      expect(JSON.parse((await api('POST', coordinator)).body)).toMatchObject({ session_id: id })
+      expect(c.r.spawned).toHaveLength(1)
+      const stopping = api('DELETE', `/api/sessions/${id}`)
+      await stopRequested.promise
+      expect((await c.request('GET', treePath)).status).toBe(404)
+      expect(JSON.parse((await api('POST', coordinator)).body)).toMatchObject({ session_id: id })
+      expect((await c.request('GET', treePath)).status).toBe(404)
+      expect(c.r.spawned).toHaveLength(1)
+      holdStop = false
+      finishStop()
+      expect((await stopping).status).toBe(204)
+      const otherCwd = join(c.r.workspace, 'resumed')
+      mkdirSync(otherCwd)
+      // Model the interval between the coordinator's initial lookup and create(): the ID
+      // has been reused for a cold resume, while the coordinator lookup still sees a miss.
+      const lookup = spyOn(c.r.manager, 'get').mockImplementationOnce(() => {
+        c.r.manager.create({ resume: id, cwd: otherCwd })
+        return undefined
+      })
+      try {
+        expect(JSON.parse((await api('POST', coordinator)).body)).toEqual({ session_id: id, work_dir: otherCwd })
+      } finally {
+        lookup.mockRestore()
+      }
+      expect(c.r.spawned).toHaveLength(2)
+      expect((await c.request('GET', treePath)).status).toBe(404)
+    } finally {
+      if (holdStop) { holdStop = false; finishStop() }
+    }
+  })
+
+  it('lists a registered project over the shared stdio route without opening a coordinator', async () => {
+    const c = stdioClient({ projectsDb: ':memory:' })
+    writeFileSync(join(c.r.workspace, 'notes.txt'), 'not returned')
+    const created = await c.request('POST', '/api/projects', {
+      headers: [['origin', c.origin]], body: JSON.stringify({ name: 'Desktop fixture', cwd: c.r.workspace }),
+    })
+    expect(created.status).toBe(201)
+    const { id } = JSON.parse(created.body) as { id: string }
+    const path = `/api/projects/${id}/tree`
+    const response = await c.request('GET', path)
+    if (process.platform === 'darwin' && process.arch === 'arm64') {
+      expect(response.status).toBe(200)
+      expect(JSON.parse(response.body)).toEqual({ entries: [{ name: 'notes.txt', type: 'file' }], truncated: false })
+    } else {
+      expect(response.status).toBe(404)
+    }
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect((await c.request('GET', path, { headers: [['origin', 'null']] })).status).toBe(403)
+    const canceled = c.nextId()
+    c.write({ t: 'req', id: canceled, method: 'GET', path, headers: [['host', STDIO_HOST]] })
+    c.write({ t: 'cancel', id: canceled })
+    expect((await c.next(f => f.id === canceled && f.t === 'res')).status).toBe(404)
+    await c.next(f => f.id === canceled && f.t === 'end')
+    expect((await c.request('GET', path)).status).toBe(response.status)
+    expect(c.r.spawned).toEqual([])
   })
 
   it('relays a session socket and refuses a second one', async () => {

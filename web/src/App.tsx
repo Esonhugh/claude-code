@@ -70,7 +70,7 @@ import {
   userMessage,
   usesTaskList,
 } from './protocol'
-import { agentInputs, messageTarget, notesByItem, taskNoteText } from './projects'
+import { agentInputs, finishCoordinatorOpen, messageTarget, notesByItem, taskNoteText, workspaceTreeScope } from './projects'
 import { turnSources } from './sources'
 import { appReducer, type HistoryEntry, initialAppState, type SessionChat } from './store'
 import { nativeCommand, type SlashCommand, withPageCommands } from './commands'
@@ -197,7 +197,7 @@ export function App() {
   // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
   const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
   const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean; workspaceTree?: boolean }>({
     previewOrigins: [],
   })
   const [dragging, setDragging] = useState(false)
@@ -219,6 +219,13 @@ export function App() {
   projectsRef.current = projects
   // The project shown in place of the chat; its coordinator is `state.view`.
   const [projectId, setProjectId] = useState<string>()
+  const navigation = useRef<{ sequence: number; projectId?: string }>({ sequence: 0 })
+  const locationTarget = () => /^#([sp])=([\w-]+)$/.exec(location.hash)
+  const restoreTo = useRef(locationTarget())
+  const beginNavigation = (projectId?: string) => {
+    restoreTo.current = null
+    return (navigation.current = { sequence: navigation.current.sequence + 1, projectId })
+  }
   const [projectDialog, setProjectDialog] = useState<'new' | Project>()
   const pendingRequests = useRef(new Map<string, { id: string; settle: (response: Record<string, unknown>) => void }>())
   // The last session's models, with the provider they came from: another provider's list is stale.
@@ -557,7 +564,7 @@ export function App() {
           writeStored(CLI_THEME_KEY, res.theme)
           if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
         }
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local, workspaceTree: res.workspace_tree })
       },
       () => {},
     )
@@ -704,7 +711,7 @@ export function App() {
 
   const getSettings = (id: string) => request(id, REQUEST_PREFIX.settings, { subtype: 'get_settings' })
 
-  const attach = async (id: string): Promise<void> => {
+  const attach = async (id: string, current = () => true): Promise<void> => {
     // Stream deltas come many times a frame; they are drawn once per frame.
     // Anything else draws the deltas before it first, so the order holds.
     let deltas: unknown[] = []
@@ -717,7 +724,9 @@ export function App() {
       deltas = []
       dispatch({ type: 'chat', id, action: { type: 'messages', raws } })
     }
+    let accepted = false
     const socket = await openSessionSocket(id, raw => {
+      if (!accepted && !current()) return
       if ((raw as { type?: string }).type === 'stream_event') {
         deltas.push(raw)
         frame ||= requestAnimationFrame(flush)
@@ -750,6 +759,11 @@ export function App() {
         setTimeout(() => void refreshHistory(), 500)
       }
     })
+    if (!current()) {
+      socket.close()
+      return
+    }
+    accepted = true
     socket.addEventListener('close', event => {
       flush()
       if (sockets.current.get(id) !== socket) return
@@ -816,8 +830,9 @@ export function App() {
     void refreshHistory()
   }
 
-  const loadInto = async (id: string, before?: number) => {
+  const loadInto = async (id: string, before?: number, current = () => true) => {
     const page = await loadTranscript(id, before)
+    if (!current()) return
     dispatch({
       type: 'loaded',
       id,
@@ -843,6 +858,7 @@ export function App() {
   }
 
   const openSession = (entry: HistoryEntry): Promise<void> => {
+    beginNavigation()
     setProjectId(undefined)
     stickToBottom.current = true
     dispatch({ type: 'view', id: entry.id })
@@ -905,66 +921,87 @@ export function App() {
 
   /** Shows a project: starts or resumes its coordinator and attaches to it. */
   const openProject = (p: Project): Promise<void> => {
+    const previous = navigation.current
+    const pending = previous.projectId === p.id && opening.current.get(`p:${previous.sequence}`)
+    if (pending) return pending
+    const target = beginNavigation(p.id)
+    const current = () => navigation.current === target
     setSidebarOpen(false)
     setPreview(undefined)
     setStartError(undefined)
     setProjectId(p.id)
-    return openOnce(`p:${p.id}`, () => connectProject(p))
-  }
-  const connectProject = async (p: Project) => {
-    try {
-      const created = await openCoordinator(p.id)
-      const id = created.session_id
-      setProjects(list => list.map(x => (x.id === p.id ? { ...x, coordinator_session_id: id, running: true } : x)))
-      dispatch({ type: 'view', id })
-      if (!stateRef.current.chats[id]) {
+    dispatch({ type: 'view', id: null })
+    let selected: string | undefined
+    return openOnce(`p:${target.sequence}`, () => finishCoordinatorOpen(current, {
+      open: () => openCoordinator(p.id),
+      select: created => {
+        selected = created.session_id
+        const id = selected
+        setProjects(list => list.map(x => (x.id === p.id ? { ...x, coordinator_session_id: id, running: true } : x)))
+        dispatch({ type: 'view', id })
+      },
+      prepare: async created => {
+        const id = created.session_id
+        const existing = stateRef.current.chats[id]
+        if (existing && existing.mode !== 'connecting') return
         dispatch({ type: 'mode', id, mode: 'connecting' })
-        const empty = () => dispatch({ type: 'loaded', id, messages: [], start: 0, workDir: created.work_dir })
-        // A new coordinator has no transcript yet.
+        const empty = () => {
+          if (current()) dispatch({ type: 'loaded', id, messages: [], start: 0, workDir: created.work_dir })
+        }
         if (created.fresh) empty()
-        else await loadInto(id).catch(empty)
-      }
-      if (sockets.current.has(id)) return
-      const running = await listRunning().catch(() => [])
-      if (running.find(r => r.id === id)?.attached) {
-        dispatch({ type: 'mode', id, mode: 'elsewhere' })
-        return
-      }
-      // A coordinator started again gets the context window it last had from the server, with its model and effort.
-      await attach(id)
-    } catch (err) {
-      setProjectId(undefined)
-      dispatch({ type: 'view', id: null })
-      setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
-    }
+        else await loadInto(id, undefined, current).catch(empty)
+      },
+      attach: async ({ session_id: id }) => {
+        if (sockets.current.has(id)) return
+        const running = await listRunning().catch(() => [])
+        if (!current()) return
+        if (running.find(r => r.id === id)?.attached) {
+          dispatch({ type: 'mode', id, mode: 'elsewhere' })
+          return
+        }
+        await attach(id, current)
+      },
+      fail: err => {
+        // Keep the selected session, even if it has no verified tree root.
+        if (selected) dispatch({ type: 'mode', id: selected, mode: 'readonly' })
+        setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      },
+    }))
   }
 
-  // The open session or project is kept in the address (`#s=<id>`, `#p=<id>`), so a reload reopens it.
-  const restoreTo = useRef(/^#([sp])=([\w-]+)$/.exec(location.hash))
-  const hashTarget = inProject && projectId ? `#p=${projectId}` : view ? `#s=${view}` : ''
+  // Reload and browser navigation use the same selection paths as the sidebar.
+  const hashTarget = projectId ? `#p=${projectId}` : view ? `#s=${view}` : ''
   useEffect(() => {
     if (restoreTo.current) return
     if (location.hash !== hashTarget) history.replaceState(null, '', hashTarget || location.pathname + location.search)
   }, [hashTarget])
   useEffect(() => {
-    const want = restoreTo.current
-    if (!want) return
-    if (!sidebarLoaded) return
-    restoreTo.current = null
-    const [, kind, id] = want
-    const p = kind === 'p' ? projects.find(x => x.id === id) : undefined
-    const entry = kind === 's' ? state.history.find(h => h.id === id) : undefined
-    if (p) void openProject(p)
-    else if (entry) void openSession(entry)
-    // Older than the sidebar's first page: open it if its transcript is still there.
-    else if (kind === 's') {
-      void loadTranscript(id).then(
-        page => openSession({ id, title: page.title ?? id, cwd: page.cwd, lastModified: 0 }),
-        () => history.replaceState(null, '', location.pathname + location.search),
-      )
+    const restore = (want: RegExpExecArray) => {
+      const [, kind, id] = want
+      const p = kind === 'p' ? projectsRef.current.find(x => x.id === id) : undefined
+      const entry = kind === 's' ? stateRef.current.history.find(h => h.id === id) : undefined
+      if (p) void openProject(p)
+      else if (entry) void openSession(entry)
+      // Older than the sidebar's first page: keep the selected ID, even if its transcript fails.
+      else if (kind === 's') void openSession({ id, title: id, lastModified: 0 })
+      else {
+        newChat()
+        history.replaceState(null, '', location.pathname + location.search)
+      }
     }
-    // Gone (deleted, archived): the start page, without the stale address.
-    else history.replaceState(null, '', location.pathname + location.search)
+    if (!sidebarLoaded) return
+    if (restoreTo.current) {
+      const want = restoreTo.current
+      restoreTo.current = null
+      restore(want)
+    }
+    const onHashChange = () => {
+      const want = locationTarget()
+      if (want) restore(want)
+      else newChat()
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
   }, [sidebarLoaded])
 
   /** The project keeps a permission mode only once the live coordinator accepted it. */
@@ -1249,6 +1286,8 @@ export function App() {
     const pending = attachments[''] ?? []
     if (!text && !pending.length) return
     if (!pending.length && openNative(text, '')) return
+    const target = beginNavigation()
+    const current = () => navigation.current === target
     const { cwd, mode, model, temporary, effort, contextWindow } = state.start
     setTrustDir(undefined)
     let createdId: string | undefined
@@ -1260,7 +1299,16 @@ export function App() {
       })
       const id = created.session_id
       createdId = id
+      if (!current()) {
+        void deleteTranscript(id).catch(() => {})
+        return
+      }
       const content = await prepareContent(id, text, pending)
+      if (!current()) {
+        void deleteTranscript(id).catch(() => {})
+        return
+      }
+      setProjectId(undefined)
       setDrafts(d => ({ ...d, '': '' }))
       setAttachments(a => ({ ...a, '': [] }))
       stickToBottom.current = true
@@ -1279,8 +1327,10 @@ export function App() {
       dispatch({ type: 'chat', id, action: { type: 'user', ...content, uuid } })
       send(id, userMessage(content.text, content.images, uuid))
     } catch (err) {
-      if (err instanceof NeedsTrustError) setTrustDir(err.directory)
-      else setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      if (current()) {
+        if (err instanceof NeedsTrustError) setTrustDir(err.directory)
+        else setStartError(t('connectFailed', { error: err instanceof Error ? err.message : String(err) }))
+      }
       // The session was created but its socket never opened: a chat left 'connecting' can be
       // neither sent to nor resumed, so let the user resume it from read-only.
       if (createdId && stateRef.current.chats[createdId]?.mode === 'connecting') {
@@ -1381,9 +1431,11 @@ export function App() {
   const forkTurn = async (id: string, firstId: string) => {
     const { last } = turnOf(id, firstId)
     if (!last) return
+    const target = navigation.current
     try {
       const { session_id: forkId } = await forkSession(id, last)
       await refreshHistory()
+      if (navigation.current !== target) return
       await openSession(stateRef.current.history.find(h => h.id === forkId) ?? { ...stateRef.current.history.find(h => h.id === id)!, id: forkId })
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
@@ -1558,6 +1610,7 @@ export function App() {
   }
 
   function newChat({ cwd, temporary = false }: { cwd?: string; temporary?: boolean } = {}) {
+    beginNavigation()
     setProjectId(undefined)
     setStartError(undefined)
     setSidebarOpen(false)
@@ -2188,7 +2241,10 @@ export function App() {
           setDialog(kind)
         }}
         projects={sidebarProjects}
-        projectId={inProject ? projectId : undefined}
+        projectId={project?.id}
+        workspaceTreeSupported={info.workspaceTree}
+        workspaceTreeScope={workspaceTreeScope(project?.id, view)}
+        workspaceTreeSessionMode={chat?.mode}
         onProject={p => void openProject(p)}
         onNewProject={() => {
           setSidebarOpen(false)
@@ -2438,10 +2494,13 @@ export function App() {
             setProjectDialog(undefined)
             setProjects(list => [saved, ...list.filter(x => x.id !== saved.id)])
             // A new project starts with the coordinator's input box focused.
-            if (projectDialog === 'new')
-              void openProject(saved).then(() =>
-                requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('#projview .pv-chat textarea')?.focus()),
-              )
+            if (projectDialog === 'new') {
+              const opened = openProject(saved)
+              const target = navigation.current
+              void opened.then(() => requestAnimationFrame(() => {
+                if (navigation.current === target) document.querySelector<HTMLTextAreaElement>('#projview .pv-chat textarea')?.focus()
+              }))
+            }
           }}
         />
       )}

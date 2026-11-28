@@ -51,8 +51,8 @@ export async function createSession(body: {
   return (await res.json()) as CreatedSession
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, signal ? { signal } : undefined)
   if (!res.ok) throw new ApiError(await errorText(res), res.status)
   return (await res.json()) as T
 }
@@ -174,6 +174,7 @@ export const getInfo = () =>
     home?: string
     version?: string
     local?: boolean
+    workspace_tree?: boolean
     // The CLI's theme as the page's, for a page whose own theme was never picked.
     theme?: 'system' | 'light' | 'dark'
   }>('/api/info')
@@ -428,6 +429,13 @@ export type ProjectFields = {
 }
 
 /** Every project, the archived ones included. */
+export type ProjectTree = { entries: { name: string; type: 'directory' | 'file' }[]; truncated: boolean }
+
+export type FileTreeScope = { kind: 'project' | 'session'; id: string }
+
+export const listWorkspaceTree = (scope: FileTreeScope, dir: string, signal: AbortSignal) =>
+  getJson<ProjectTree>(`/api/${scope.kind === 'project' ? 'projects' : 'sessions'}/${encodeURIComponent(scope.id)}/tree?dir=${encodeURIComponent(dir)}`, signal)
+
 export const listProjects = () => getJson<Project[]>('/api/projects?archived=1')
 
 export async function createProject(body: ProjectFields & { name: string; cwd: string; trust?: boolean }): Promise<Project> {

@@ -15,7 +15,7 @@ export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
 }
 
 // Credentials never leave the machine through the file API, wherever they are.
-const DENIED_NAME =
+export const DENIED_NAME =
   /^(\.credentials\.json|\.claude\.json(\..*)?|\.env(\..*)?|\.netrc|\.git-credentials|\.npmrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)|.*\.(key|pem|p12|pfx))$/i
 
 /** Keeps the last path segment and drops control characters. */
@@ -162,7 +162,7 @@ export async function resolveAllowedFile(
 }
 
 // Folders `@` completion never walks into: dependencies, build output, VCS.
-const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', '__pycache__', 'vendor'])
+export const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', '__pycache__', 'vendor'])
 
 /**
  * Files under `root` whose relative path contains `query` (case-insensitive),
