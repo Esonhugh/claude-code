@@ -1,3 +1,7 @@
+import { z } from 'zod'
+
+export const usageResetTimestamp = z.iso.datetime({ offset: true })
+
 export type OpenAIActivityStats = {
   lifetime_tokens?: number | null
   peak_daily_tokens?: number | null
@@ -24,6 +28,7 @@ export type UsageLimit = {
   title: string
   limit: RateLimit
   extraSubtext?: string
+  modelName?: string
 }
 
 // One row of the usage endpoint's `limits[]`: the server classifies a row by

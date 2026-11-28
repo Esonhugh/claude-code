@@ -50,6 +50,7 @@ export function getModelScopedUsageLimits(
     return [
       {
         title: `Current week (${displayName})`,
+        modelName: displayName,
         limit: { utilization: row.percent, resets_at: row.resets_at ?? null },
       },
     ]
@@ -80,10 +81,11 @@ export async function fetchClaudeCodeUtilization(): Promise<Utilization | null> 
 
   const url = `${getOauthConfig().BASE_API_URL}/api/oauth/usage`
 
-  const response = await axios.get<Utilization>(url, {
+  const response = await axios.get<Utilization | null>(url, {
     headers,
     timeout: 5000, // 5 second timeout
   })
 
-  return response.data
+  const data = response.data
+  return data && Object.keys(data).length ? { ...data, source: 'claude' } : data
 }

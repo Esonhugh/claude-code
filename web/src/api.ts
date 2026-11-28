@@ -358,10 +358,13 @@ export const getSettings = () => getJson<WebSettings>('/api/settings')
 export const patchSettings = (patch: { uiName?: string; features?: Partial<Record<FeatureKey, boolean>>; daybreak?: Daybreak }) =>
   sendJson('/api/settings', 'PATCH', patch) as Promise<WebSettings>
 
-export type UsageWindow = { utilization: number; resets_at?: string | null }
+export type UsageWindow = { utilization: number | null; resets_at?: string | null }
 
 /** The `get_usage` control response (src/cli/hostControlRequests.ts); `/api/usage` answers the same shape. */
 export type Usage = {
+  source?: 'claude' | 'chatgpt'
+  credits?: { balance?: number | string; unlimited?: true }
+  rate_limit_reset_credits?: { available_count: number }
   session?: {
     total_cost_usd?: number
     total_api_duration_ms?: number
@@ -385,9 +388,10 @@ export type Usage = {
   rate_limits?: {
     five_hour?: UsageWindow | null
     seven_day?: UsageWindow | null
+    seven_day_oauth_apps?: UsageWindow | null
     seven_day_opus?: UsageWindow | null
     seven_day_sonnet?: UsageWindow | null
-    model_scoped?: { display_name: string; utilization: number; resets_at?: string | null }[]
+    model_scoped?: (UsageWindow & { display_name: string; model_name?: string })[]
     extra_usage?: { is_enabled?: boolean } | null
   } | null
 }

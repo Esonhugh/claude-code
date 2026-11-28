@@ -45,10 +45,12 @@ test('model-scoped weekly rows project allowlisted models into usage bars', () =
     [
       {
         title: 'Current week (Fable)',
+        modelName: 'Fable',
         limit: { utilization: 37.5, resets_at: '2026-10-20T00:00:00Z' },
       },
       {
         title: 'Current week (fable 5.1)',
+        modelName: 'fable 5.1',
         limit: { utilization: 61, resets_at: null },
       },
     ],
@@ -77,6 +79,7 @@ test('the overage-included allowlist defaults to the Fable models', () => {
   assert.deepEqual(getModelScopedUsageLimits([fableRow]), [
     {
       title: 'Current week (Fable)',
+      modelName: 'Fable',
       limit: { utilization: 37.5, resets_at: '2026-10-20T00:00:00Z' },
     },
   ])

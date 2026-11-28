@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { usageResetTimestamp } from '../../../src/services/api/usage-types'
 import type { Account, FeatureKey, Usage, UsageWindow, WebSettings } from '../api'
 import { type Lang, LANGS } from '../i18n'
 import type { ModelOption } from '../protocol'
@@ -73,9 +74,9 @@ export function fmtTokens(n: number): string {
 }
 
 function resetTime(lang: Lang, iso?: string | null): string | undefined {
-  if (!iso) return undefined
-  const at = new Date(iso)
-  if (Number.isNaN(at.getTime())) return undefined
+  const { data } = usageResetTimestamp.safeParse(iso)
+  if (data === undefined) return undefined
+  const at = new Date(data)
   const sameDay = at.toDateString() === new Date().toDateString()
   return new Intl.DateTimeFormat(lang, {
     ...(sameDay ? {} : { month: 'short', day: 'numeric', weekday: 'short' }),
@@ -85,18 +86,101 @@ function resetTime(lang: Lang, iso?: string | null): string | undefined {
   }).format(at)
 }
 
-function Meter({ label, pct, sub }: { label: string; pct: number; sub?: string }) {
-  const p = Math.max(0, Math.min(100, Math.round(pct)))
+function Meter({ label, pct, sub }: { label: string; pct: number | null; sub?: string }) {
+  const p = pct !== null && Number.isFinite(pct) ? Math.max(0, Math.min(100, Math.round(pct))) : null
+  if (p === null && !sub) return null
   return (
     <div className="usage">
       <div className="ulabel">
         <b>{label}</b>
-        <span className="mono">{p}%</span>
+        {p !== null && <span className="mono">{p}%</span>}
       </div>
-      <div className="bar">
+      {p !== null && <div className="bar">
         <i style={{ width: `${p}%`, ...(p >= 80 && { background: '#c2410c' }) }} />
-      </div>
+      </div>}
       {sub && <small>{sub}</small>}
+    </div>
+  )
+}
+
+export function PlanLimits({ t, lang, usage, account, cost }: {
+  t: T
+  lang: Lang
+  usage?: Usage
+  account?: Account
+  cost?: string
+}) {
+  const limits = usage?.rate_limits
+  const chatgpt = usage?.source === 'chatgpt'
+  const scoped = new Map<string, NonNullable<NonNullable<Usage['rate_limits']>['model_scoped']>[number]>()
+  const extraWindows = limits?.model_scoped ?? []
+  for (const row of chatgpt ? [] : extraWindows) {
+    const key = (row.model_name ?? row.display_name).toLowerCase()
+    const previous = scoped.get(key)
+    if (!previous || (!resetTime(lang, previous.resets_at) && resetTime(lang, row.resets_at))) scoped.set(key, row)
+  }
+  const windows: [string, UsageWindow | null | undefined][] = [
+    [t('window5h'), limits?.five_hour],
+    [t('weekAll'), limits?.seven_day],
+  ]
+  if (!chatgpt) {
+    windows.push([t('weekOAuthApps'), limits?.seven_day_oauth_apps])
+    for (const [name, legacy] of [['Opus', limits?.seven_day_opus], ['Sonnet', limits?.seven_day_sonnet]] as const) {
+      const key = name.toLowerCase()
+      const row = scoped.get(key)
+      scoped.delete(key)
+      // Prefer the scoped weekly reading, but keep a valid legacy reset when the scoped row lacks one.
+      windows.push([t('weekScoped', { name }), row ? {
+        utilization: Number.isFinite(row.utilization) ? row.utilization : legacy?.utilization ?? null,
+        resets_at: resetTime(lang, row.resets_at) ? row.resets_at : legacy?.resets_at,
+      } : legacy])
+    }
+  }
+  for (const row of chatgpt ? extraWindows : scoped.values()) {
+    windows.push([!chatgpt && row.model_name ? t('weekScoped', { name: row.model_name }) : row.display_name, row])
+  }
+  const meters = windows.flatMap(([label, w], index) => {
+    if (!w) return []
+    const time = resetTime(lang, w.resets_at)
+    return time || Number.isFinite(w.utilization)
+      ? [<Meter key={`${index}:${label}`} label={label} pct={w.utilization} sub={time && t('resetsAt', { time })} />]
+      : []
+  })
+  const extraUsage = chatgpt ? undefined : limits?.extra_usage?.is_enabled
+  const hasExtraUsage = typeof extraUsage === 'boolean'
+  if (!usage?.source && !meters.length && !hasExtraUsage && account?.kind === 'apikey') {
+    return (
+      <div className="usegroup">
+        <h4>
+          {t('costTitle')}{' '}
+          <small>
+            {keyName(account.provider)} · {t('payAsYouGo')}
+          </small>
+        </h4>
+        <dl className="kv">
+          <dt>{t('thisSession')}</dt>
+          <dd>{cost ?? '—'}</dd>
+        </dl>
+      </div>
+    )
+  }
+  const credits = chatgpt ? usage.credits : undefined
+  const balance = credits?.unlimited === true ? t('creditsUnlimited') : credits?.balance
+  const resetCount = chatgpt ? usage.rate_limit_reset_credits?.available_count : undefined
+  return (
+    <div className="usegroup">
+      <h4>{t('planLimits')}</h4>
+      {meters}
+      {!meters.length && <small className="note">{t('limitsUnavailable')}</small>}
+      {hasExtraUsage && (
+        <small className="note">{t(extraUsage ? 'extraUsageOn' : 'extraUsageOff')}</small>
+      )}
+      {(balance !== undefined || resetCount !== undefined) && (
+        <dl className="kv">
+          {balance !== undefined && <><dt>{t('creditBalance')}</dt><dd>{balance}</dd></>}
+          {resetCount !== undefined && <><dt>{t('resetCreditCount')}</dt><dd>{resetCount}</dd></>}
+        </dl>
+      )}
     </div>
   )
 }
@@ -143,24 +227,7 @@ function UsageTab({
     first.current.context?.().then(setContext, () => {})
   }, [])
   if (!usage && !failed) return <p className="note">{t('loading')}</p>
-  const apikey = account?.kind === 'apikey'
-  const limits = usage?.rate_limits
-  const allWindows: [string, UsageWindow | null | undefined][] = limits
-    ? [
-        [t('window5h'), limits.five_hour],
-        [t('weekAll'), limits.seven_day],
-        ...(limits.model_scoped?.length
-          ? limits.model_scoped.map(
-              // ChatGPT names each extra limit with its own window ("… 5h usage", "Monthly credit limit").
-              row => [account?.kind === 'chatgpt' ? row.display_name : t('weekScoped', { name: row.display_name }), row] as [string, UsageWindow],
-            )
-          : ([
-              [t('weekScoped', { name: 'Opus' }), limits.seven_day_opus],
-              [t('weekScoped', { name: 'Sonnet' }), limits.seven_day_sonnet],
-            ] as [string, UsageWindow | null | undefined][])),
-      ]
-    : []
-  const windows = allWindows.filter((w): w is [string, UsageWindow] => !!w[1] && typeof w[1].utilization === 'number')
+  const apikey = !usage?.source && account?.kind === 'apikey'
   const session = source.live ? usage?.session : undefined
   const rows = usageByModel(session?.model_usage)
   const sum = (pick: (u: (typeof rows)[number][1]) => number | undefined) => rows.reduce((n, [, u]) => n + (pick(u) ?? 0), 0)
@@ -174,33 +241,7 @@ function UsageTab({
   const ctxPct = context?.totalTokens !== undefined && context.maxTokens ? (context.totalTokens / context.maxTokens) * 100 : undefined
   return (
     <div>
-      {apikey && !windows.length ? (
-        <div className="usegroup">
-          <h4>
-            {t('costTitle')}{' '}
-            <small>
-              {keyName(account.provider)} · {t('payAsYouGo')}
-            </small>
-          </h4>
-          <dl className="kv">
-            <dt>{t('thisSession')}</dt>
-            <dd>{session ? cost : '—'}</dd>
-          </dl>
-        </div>
-      ) : (
-        <div className="usegroup">
-          <h4>{t('planLimits')}</h4>
-          {windows.map(([label, w]) => {
-            const time = resetTime(lang, w.resets_at)
-            return <Meter key={label} label={label} pct={w.utilization} sub={time && t('resetsAt', { time })} />
-          })}
-          {windows.length ? (
-            <small className="note">{t(limits?.extra_usage?.is_enabled ? 'extraUsageOn' : 'extraUsageOff')}</small>
-          ) : (
-            <small className="note">{t('limitsUnavailable')}</small>
-          )}
-        </div>
-      )}
+      <PlanLimits t={t} lang={lang} usage={usage} account={account} cost={session ? cost : undefined} />
       <div className="usegroup">
         <h4>{t('thisSession')}</h4>
         {session ? (
