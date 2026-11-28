@@ -198,9 +198,10 @@ export function App() {
   // Per session: the Mod panes put on the canvas (tabs beside the file shown there), and that file.
   const [canvasMods, setCanvasMods] = useState<Record<string, string[]>>({})
   const [canvasFile, setCanvasFile] = useState<Record<string, Exclude<Canvas, { mod: string }>>>({})
-  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean }>({
+  const [info, setInfo] = useState<{ workspace?: string; tempRoot?: string; previewOrigins: string[]; version?: string; local?: boolean; brandIcon?: string }>({
     previewOrigins: [],
   })
+  const [brandIcon, setBrandIcon] = useState<string>()
   const [dragging, setDragging] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('status')
   const [tmuxSelection, setTmuxSelection] = useState<TmuxSelection>()
@@ -564,7 +565,7 @@ export function App() {
           writeStored(CLI_THEME_KEY, res.theme)
           if (readStored<Theme | undefined>(THEME_KEY, undefined) === undefined) setThemeState(res.theme)
         }
-        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local })
+        setInfo({ workspace: res.workspace, tempRoot: res.temp_root, previewOrigins: res.preview_origins ?? [], version: res.version, local: res.local, brandIcon: res.brand_icon })
       },
       () => {},
     )
@@ -573,6 +574,29 @@ export function App() {
       for (const socket of map.values()) socket.close()
     }
   }, [refreshHistory])
+
+  useEffect(() => {
+    const url = info.brandIcon
+    if (!url) return
+    let active = true
+    const image = new Image()
+    image.src = url
+    // Switch both marks only once the replacement is usable in this renderer.
+    image.decode().then(() => { if (active) setBrandIcon(url) }, () => {})
+    return () => { active = false }
+  }, [info.brandIcon])
+
+  useEffect(() => {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    if (!link || !brandIcon) return
+    const { href, type } = link
+    link.type = 'image/png'
+    link.href = brandIcon
+    return () => {
+      link.type = type
+      link.href = href
+    }
+  }, [brandIcon])
 
   // Messages that arrived while the reader was scrolled up, for the "↓ N new messages" button.
   const [newBelow, setNewBelow] = useState(0)
@@ -2172,6 +2196,8 @@ export function App() {
         lang={lang}
         open={sidebarOpen}
         uiName={uiName}
+        brandIcon={brandIcon}
+        onBrandIconError={() => setBrandIcon(undefined)}
         env={env}
         history={projectSessions.size ? state.history.filter(h => !projectSessions.has(h.id)) : state.history}
         historyMore={state.historyMore}

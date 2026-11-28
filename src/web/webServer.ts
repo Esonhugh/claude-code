@@ -64,6 +64,7 @@ import { deleteTranscript, loadSidebar } from './sidebar.js'
 import { parseLine, type Task, TaskStore, transcriptTokens } from './tasks.js'
 import * as ext from './extensions.js'
 import { addressKind, isAllowedPeer, lanHostNames } from './network.js'
+import { BRAND_ICON_PATH, loadBrandIcon } from './brandIcon.js'
 import { serveStdio, STDIO_HOST } from './stdioTransport.js'
 import {
   allowedHosts,
@@ -87,7 +88,7 @@ export type WebServerConfig = {
   /** Uploads land in `<uploadsDir>/<session id>/`. */
   uploadsDir: string
   uploadLimits?: UploadLimits
-  /** Defaults to the claude config dir; files under it are not served. */
+  /** Defaults to the Claude config dir. Only the normalized brand icon can be served from it. */
   configDir?: string
   trustedHosts?: string[]
   /** Also answer to this machine's LAN addresses and `<hostname>.local`. */
@@ -521,7 +522,8 @@ function isDirectory(path: string): boolean {
  * `/?token=` URL once. `/api` and the WebSocket additionally require the
  * request to come from this server's own origin.
  *
- *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme }
+ *   GET    /api/info                    → { workspace, preview_origins, temp_root, home, version, local, theme, brand_icon? }
+ *   GET    /api/brand-icon.png           → optional PNG override (signed-in Web or Desktop pipe)
  *   GET    /api/models                  → { models, model } the model picker lists before any session runs, and the model one started without a pick runs
  *   GET    /api/sessions                → running sessions
  *   POST   /api/sessions                → { session_id, work_dir } (new or resume);
@@ -558,7 +560,11 @@ export function startWebServer(
   ]
   let hosts = allowedHosts(config.port, extraHosts)
   const previewOrigins = config.previewOrigins ?? []
-  const tempRoot = join(config.configDir ?? getClaudeConfigHomeDir(), 'web', 'temp')
+  const configDir = config.configDir ?? getClaudeConfigHomeDir()
+  const tempRoot = join(configDir, 'web', 'temp')
+  // Load once, only after the first authenticated request that needs branding.
+  let brandIcon: ReturnType<typeof loadBrandIcon> | undefined
+  const getBrandIcon = () => brandIcon ??= loadBrandIcon(configDir, config.stdio ? 'desktop' : 'web')
   const csp = contentSecurityPolicy(previewOrigins)
   const withHeaders = (res: Response): Response => {
     res.headers.set('Content-Security-Policy', csp)
@@ -1103,10 +1109,18 @@ export function startWebServer(
         temp_root: tempRoot,
         home: homedir(),
         version: MACRO.VERSION,
+        brand_icon: (await getBrandIcon())?.url,
         // The browser runs on this machine, so it may open files there.
         local,
         // Read each time: `/theme` in a session may have changed it.
         theme: cliWebTheme(getGlobalConfig().theme),
+      })
+    }
+    if (pathname === BRAND_ICON_PATH && (req.method === 'GET' || req.method === 'HEAD')) {
+      const icon = await getBrandIcon()
+      if (!icon) return errorResponse(404, 'Not found')
+      return new Response(req.method === 'HEAD' ? null : new Uint8Array(icon.body), {
+        headers: { 'Content-Type': 'image/png', 'Cross-Origin-Resource-Policy': 'same-origin' },
       })
     }
     if (pathname === '/api/models' && req.method === 'GET') {

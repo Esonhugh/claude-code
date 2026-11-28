@@ -208,6 +208,8 @@ h1, h2, h3 { text-wrap: balance; margin: 0 }
 .sessions { gap: 4px; padding: 0; overflow: hidden }
 .sessions .head { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px }
 .clawd { width: 30px; height: 22px; flex: none }
+.brand-icon { display: grid; place-items: center }
+.brand-icon img { width: 22px; height: 22px; object-fit: contain }
 .wordmark { display: grid; line-height: 1.15 }
 .wordmark b { font-size: 15px; font-weight: 600; letter-spacing: .01em }
 .wordmark small { color: var(--muted); font-size: 11px; font-family: var(--f-mono) }

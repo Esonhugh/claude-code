@@ -34,7 +34,7 @@ type SharpCreator = (options: SharpCreatorOptions) => SharpInstance
 let imageProcessorModule: { default: SharpFunction } | null = null
 let imageCreatorModule: { default: SharpCreator } | null = null
 
-async function loadSharp<T extends (...args: never[]) => unknown>(): Promise<T> {
+export async function loadSharp<T extends (...args: never[]) => unknown>(): Promise<T> {
   if (isInBundledMode()) {
     await globalThis.__CLAUDE_CODE_LOAD_SHARP_NATIVE__?.()
   }
